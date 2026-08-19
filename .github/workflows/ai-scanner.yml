@@ -11,7 +11,17 @@ jobs:
     runs-on: ubuntu-latest
     steps:
       - name: Checkout Code
-        uses: actions/checkout@v3
+        uses: actions/checkout@v4
+      
+      - name: Setup Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: '3.10'
+          
+      - name: Install Dependencies
+        run: pip install requests
       
       - name: Run TimeCodeSecurity AI Scanner
+        env:
+          GROQ_API_KEY: ${{ secrets.GROQ_API_KEY }}
         run: python scripts/scanner.py
