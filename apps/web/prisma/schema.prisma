@@ -1,0 +1,17 @@
+datasource db {
+  provider = "postgresql"
+  url      = env("DATABASE_URL")
+}
+
+generator client {
+  provider = "prisma-client-js"
+}
+
+model Scan {
+  id                String   @id @default(cuid())
+  fileName          String
+  vulnerabilityType String   // e.g., "insecure_eval_call", "hardcoded_secret"
+  riskLevel         String   // e.g., "Critical", "High"
+  status            String   // e.g., "Auto-Healed", "Pending"
+  createdAt         DateTime @default(now())
+}

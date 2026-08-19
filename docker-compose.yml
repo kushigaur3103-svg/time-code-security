@@ -1,0 +1,68 @@
+services:
+  db:
+    image: postgres:15-alpine
+    restart: unless-stopped
+    environment:
+      POSTGRES_USER: ai_agent
+      POSTGRES_PASSWORD: secure_password
+      POSTGRES_DB: code_security
+    ports:
+      - "5432:5432"
+    networks:
+      - ai_net
+    volumes:
+      - pgdata:/var/lib/postgresql/data
+
+  ai-engine:
+    build:
+      context: ./apps/ai-engine
+    restart: unless-stopped
+    ports:
+      - "8000:8000"
+    environment:
+      # Map to the internal 'db' container host
+      - DATABASE_URL=postgresql://ai_agent:secure_password@db:5432/code_security
+      - GROQ_API_KEYS=${GROQ_API_KEYS}
+    depends_on:
+      - db
+    networks:
+      - ai_net
+
+  scanner-core:
+    build:
+      context: ./apps/scanner-core
+    restart: unless-stopped
+    ports:
+      - "3000:3000"
+    environment:
+      # Map the Rust proxy's outbound destination to the internal 'ai-engine' container
+      - AI_ENGINE_URL=http://ai-engine:8000/analyze
+    depends_on:
+      - ai-engine
+    networks:
+      - ai_net
+
+  web-dashboard:
+    build:
+      context: ./apps/web
+    restart: unless-stopped
+    ports:
+      - "3001:3001"
+    environment:
+      - DATABASE_URL=postgresql://ai_agent:secure_password@db:5432/code_security
+      - GITHUB_ID=${GITHUB_ID}
+      - GITHUB_SECRET=${GITHUB_SECRET}
+      - STRIPE_SECRET_KEY=${STRIPE_SECRET_KEY}
+      - NEXTAUTH_SECRET=${NEXTAUTH_SECRET}
+      - NEXTAUTH_URL=${NEXTAUTH_URL}
+    depends_on:
+      - db
+    networks:
+      - ai_net
+
+networks:
+  ai_net:
+    driver: bridge
+
+volumes:
+  pgdata:

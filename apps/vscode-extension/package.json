@@ -1,0 +1,33 @@
+{
+  "name": "vscode-extension",
+  "displayName": "AI Security Agent",
+  "description": "Real-Time Code Security & Self-Healing Agent",
+  "version": "1.0.0",
+  "engines": {
+    "vscode": "^1.80.0"
+  },
+  "categories": [
+    "Other"
+  ],
+  "activationEvents": [
+    "onLanguage:javascript",
+    "onLanguage:typescript"
+  ],
+  "main": "./dist/extension.js",
+  "scripts": {
+    "build": "tsc -p ./",
+    "dev": "tsc -watch -p ./",
+    "lint": "eslint src --ext ts",
+    "vscode:prepublish": "npm run build"
+  },
+  "dependencies": {
+    "node-fetch": "^2.7.0"
+  },
+  "devDependencies": {
+    "@types/node": "^18.x",
+    "@types/vscode": "^1.80.0",
+    "@types/node-fetch": "^2.6.11",
+    "eslint": "^8.x",
+    "typescript": "^5.x"
+  }
+}

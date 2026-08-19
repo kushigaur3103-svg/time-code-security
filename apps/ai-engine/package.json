@@ -1,0 +1,10 @@
+{
+  "name": "ai-engine",
+  "version": "1.0.0",
+  "private": true,
+  "scripts": {
+    "dev": "bash -c 'source venv/bin/activate && uvicorn app.main:app --reload --port 8000'",
+    "build": "echo 'Python build complete'",
+    "test": "bash -c 'source venv/bin/activate && pytest'"
+  }
+}

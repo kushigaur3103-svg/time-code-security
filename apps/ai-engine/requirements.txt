@@ -1,0 +1,9 @@
+fastapi==0.109.2
+uvicorn==0.27.1
+pydantic==2.6.1
+sqlalchemy==2.0.27
+psycopg2-binary==2.9.9
+langchain==0.1.9
+langchain-groq==0.0.1
+python-dotenv==1.0.1
+wheel<0.46.0
