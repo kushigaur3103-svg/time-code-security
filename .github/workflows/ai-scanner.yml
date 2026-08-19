@@ -13,8 +13,5 @@ jobs:
       - name: Checkout Code
         uses: actions/checkout@v3
       
-      - name: Initialize AI Security Engine
-        run: |
-          echo "Starting TimeCodeSecurity AI analysis..."
-          echo "Connected to Enterprise Master Control."
-          # In the next step, we will connect this to your live AI API.
+      - name: Run TimeCodeSecurity AI Scanner
+        run: python scripts/scanner.py
