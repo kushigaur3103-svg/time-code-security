@@ -13,14 +13,13 @@ def scan_code():
     print("[+] Connected to Enterprise Master Control.")
     
     url = "https://api.groq.com/openai/v1/chat/completions"
-    # .strip() removes any accidental spaces or hidden newline characters
     headers = {
         "Authorization": f"Bearer {api_key.strip()}",
         "Content-Type": "application/json"
     }
     
     payload = {
-        "model": "llama3-8b-8192", 
+        "model": "llama-3.1-8b-instant", 
         "messages": [
             {"role": "system", "content": "You are TimeCodeSecurity, an elite enterprise code security AI. Analyze the given code for vulnerabilities. Keep your response brief, professional, and point out the exact security flaw."},
             {"role": "user", "content": "Review this code for security issues: const db_password = 'admin_super_secret_123'; console.log(db_password);"}
@@ -29,7 +28,7 @@ def scan_code():
     }
     
     try:
-        print("[+] Transmitting data to Groq Llama-3.1-70B Engine...")
+        print("[+] Transmitting data to Groq Engine...")
         response = requests.post(url, headers=headers, json=payload)
         response.raise_for_status()
         
