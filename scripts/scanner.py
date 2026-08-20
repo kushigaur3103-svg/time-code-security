@@ -19,7 +19,7 @@ def scan_code():
     }
     
     payload = {
-        "model": "llama-3.1-8b-instant", 
+        "model": "openai/gpt-oss-120b", 
         "messages": [
             {"role": "system", "content": "You are TimeCodeSecurity, an elite enterprise code security AI. Analyze the given code for vulnerabilities. Keep your response brief, professional, and point out the exact security flaw."},
             {"role": "user", "content": "Review this code for security issues: const db_password = 'admin_super_secret_123'; console.log(db_password);"}
