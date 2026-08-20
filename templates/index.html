@@ -26,9 +26,40 @@
         .glow-text {
             text-shadow: 0 0 20px rgba(52, 211, 153, 0.4);
         }
+        .cyber-grid {
+            background-size: 40px 40px;
+            background-image: 
+                linear-gradient(to right, rgba(255,255,255,0.05) 1px, transparent 1px),
+                linear-gradient(to bottom, rgba(255,255,255,0.05) 1px, transparent 1px);
+            mask-image: linear-gradient(to bottom, transparent, black 10%, black 90%, transparent);
+            -webkit-mask-image: linear-gradient(to bottom, transparent, black 10%, black 90%, transparent);
+        }
+        @keyframes scanline {
+            0% { transform: translateY(-100%); }
+            100% { transform: translateY(100vh); }
+        }
+        .scan-line {
+            position: fixed;
+            top: 0;
+            left: 0;
+            width: 100%;
+            height: 2px;
+            background: rgba(52, 211, 153, 0.2);
+            box-shadow: 0 0 10px rgba(52, 211, 153, 0.5);
+            animation: scanline 8s linear infinite;
+            pointer-events: none;
+            z-index: 50;
+        }
     </style>
 </head>
-<body class="bg-[#030712] text-white font-sans min-h-screen flex flex-col items-center py-12 bg-[radial-gradient(ellipse_at_top,_var(--tw-gradient-stops))] from-gray-900 via-[#030712] to-[#030712]">
+<body class="bg-[#030712] text-white font-sans min-h-screen flex flex-col items-center py-12 relative overflow-x-hidden">
+    <!-- Cyber Grid Background -->
+    <div class="fixed inset-0 cyber-grid z-0 pointer-events-none"></div>
+    <!-- Animated Scanline -->
+    <div class="scan-line"></div>
+    
+    <!-- Main Content Wrapper (z-index above grid) -->
+    <div class="relative z-10 w-full flex flex-col items-center">
     
     <!-- Header -->
     <div class="text-center mb-10 px-2">
@@ -40,7 +71,7 @@
 
     <!-- Main Dashboard -->
     <div class="max-w-5xl w-full px-6">
-        <div class="bg-gray-900/80 backdrop-blur-xl border border-gray-700/50 rounded-2xl shadow-2xl p-8">
+        <div class="bg-gray-900/70 backdrop-blur-2xl border border-gray-700/50 rounded-2xl shadow-2xl p-8 hover:shadow-[0_0_30px_rgba(16,185,129,0.15)] hover:border-gray-600/50 transition-all duration-500">
             
             <!-- Input Section -->
             <div class="mb-5 flex flex-col sm:flex-row justify-between items-start sm:items-end gap-3 sm:gap-0">
@@ -87,6 +118,7 @@
             </div>
 
         </div>
+    </div>
     </div>
 <script>
     const scanBtn = document.getElementById('scanBtn');
