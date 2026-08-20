@@ -23,6 +23,11 @@ async def home(request: Request):
 async def scan_code(payload: CodePayload):
     api_key = os.getenv("GROQ_API_KEY")
     if not api_key:
+        api_keys_str = os.getenv("GROQ_API_KEYS")
+        if api_keys_str:
+            api_key = api_keys_str.split(",")[0].strip()
+            
+    if not api_key:
         return {"error": "GROQ_API_KEY not found in .env file. Please ensure it is set."}
         
     url = "https://api.groq.com/openai/v1/chat/completions"
