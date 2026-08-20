@@ -37,9 +37,83 @@
             </button>
         </form>
         
+        <div id="errorMsg" class="hidden mt-4 text-center text-red-500 font-mono text-sm"></div>
+        <div id="successMsg" class="hidden mt-4 text-center text-green-500 font-mono text-sm"></div>
+        
         <div class="mt-6 text-center text-sm text-gray-500 font-mono">
-            <p>New operative? <a href="#" onclick="alert('Signup system activating in Phase 5.2')" class="text-blue-400 hover:text-blue-300 transition-colors">Request Clearance</a></p>
+            <p id="toggleText">New operative? <a href="#" id="toggleBtn" class="text-blue-400 hover:text-blue-300 transition-colors">Request Clearance</a></p>
         </div>
     </div>
+
+    <script>
+        let isLogin = true;
+        const toggleText = document.getElementById('toggleText');
+        const authForm = document.getElementById('authForm');
+        const submitBtn = authForm.querySelector('button[type="submit"]');
+        const errorMsg = document.getElementById('errorMsg');
+        const successMsg = document.getElementById('successMsg');
+
+        function setupToggleListener() {
+            document.getElementById('toggleBtn').addEventListener('click', (e) => {
+                e.preventDefault();
+                isLogin = !isLogin;
+                if (isLogin) {
+                    submitBtn.textContent = 'AUTHORIZE ACCESS';
+                    toggleText.innerHTML = `New operative? <a href="#" id="toggleBtn" class="text-blue-400 hover:text-blue-300 transition-colors">Request Clearance</a>`;
+                } else {
+                    submitBtn.textContent = 'REGISTER OPERATOR';
+                    toggleText.innerHTML = `Already registered? <a href="#" id="toggleBtn" class="text-blue-400 hover:text-blue-300 transition-colors">Access Portal</a>`;
+                }
+                setupToggleListener();
+            });
+        }
+        setupToggleListener();
+
+        authForm.addEventListener('submit', async (e) => {
+            e.preventDefault();
+            errorMsg.classList.add('hidden');
+            successMsg.classList.add('hidden');
+            submitBtn.disabled = true;
+            
+            const email = document.getElementById('email').value;
+            const password = document.getElementById('password').value;
+            const endpoint = isLogin ? '/api/login' : '/api/signup';
+
+            try {
+                const response = await fetch(endpoint, {
+                    method: 'POST',
+                    headers: { 'Content-Type': 'application/json' },
+                    body: JSON.stringify({ email, password })
+                });
+                
+                const data = await response.json();
+                
+                if (!response.ok) {
+                    errorMsg.textContent = data.detail || 'Authentication failed.';
+                    errorMsg.classList.remove('hidden');
+                } else {
+                    successMsg.textContent = data.message;
+                    successMsg.classList.remove('hidden');
+                    if (isLogin) {
+                        localStorage.setItem('token', data.token);
+                        setTimeout(() => window.location.href = '/', 1000);
+                    } else {
+                        setTimeout(() => {
+                            isLogin = true;
+                            submitBtn.textContent = 'AUTHORIZE ACCESS';
+                            toggleText.innerHTML = `New operative? <a href="#" id="toggleBtn" class="text-blue-400 hover:text-blue-300 transition-colors">Request Clearance</a>`;
+                            setupToggleListener();
+                            window.location.reload();
+                        }, 1500);
+                    }
+                }
+            } catch (err) {
+                errorMsg.textContent = 'Network error. Core systems offline.';
+                errorMsg.classList.remove('hidden');
+            } finally {
+                submitBtn.disabled = false;
+            }
+        });
+    </script>
 </body>
 </html>

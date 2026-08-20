@@ -1,16 +1,42 @@
 import os
+import sqlite3
 import requests
-from fastapi import FastAPI, Request
+import jwt
+from fastapi import FastAPI, Request, HTTPException
 from fastapi.templating import Jinja2Templates
 from pydantic import BaseModel
 import uvicorn
 from dotenv import load_dotenv
+from passlib.context import CryptContext
+from datetime import datetime, timedelta
 
 # Load the .env file containing API keys
 load_dotenv()
 
 app = FastAPI(title="TimeCodeSecurity Enterprise API")
 templates = Jinja2Templates(directory="templates")
+
+pwd_context = CryptContext(schemes=["bcrypt"], deprecated="auto")
+SECRET_KEY = "super_secret_enterprise_key_change_me_in_prod"
+
+def init_db():
+    conn = sqlite3.connect('users.db')
+    cursor = conn.cursor()
+    cursor.execute('''
+        CREATE TABLE IF NOT EXISTS users (
+            id INTEGER PRIMARY KEY AUTOINCREMENT,
+            email TEXT UNIQUE NOT NULL,
+            password_hash TEXT NOT NULL
+        )
+    ''')
+    conn.commit()
+    conn.close()
+
+init_db()
+
+class AuthPayload(BaseModel):
+    email: str
+    password: str
 
 class CodePayload(BaseModel):
     code: str
@@ -22,6 +48,41 @@ async def home(request: Request):
 @app.get("/login")
 async def login_page(request: Request):
     return templates.TemplateResponse(request=request, name="login.html")
+
+@app.post("/api/signup")
+async def signup(payload: AuthPayload):
+    conn = sqlite3.connect('users.db')
+    cursor = conn.cursor()
+    
+    # Check if user exists
+    cursor.execute("SELECT email FROM users WHERE email = ?", (payload.email,))
+    if cursor.fetchone():
+        conn.close()
+        raise HTTPException(status_code=400, detail="Operator ID already registered.")
+        
+    password_hash = pwd_context.hash(payload.password)
+    cursor.execute("INSERT INTO users (email, password_hash) VALUES (?, ?)", (payload.email, password_hash))
+    conn.commit()
+    conn.close()
+    return {"message": "Signup successful. Clearance granted."}
+
+@app.post("/api/login")
+async def login(payload: AuthPayload):
+    conn = sqlite3.connect('users.db')
+    cursor = conn.cursor()
+    cursor.execute("SELECT password_hash FROM users WHERE email = ?", (payload.email,))
+    row = cursor.fetchone()
+    conn.close()
+    
+    if not row or not pwd_context.verify(payload.password, row[0]):
+        raise HTTPException(status_code=401, detail="Invalid credentials. Access Denied.")
+        
+    token = jwt.encode(
+        {"sub": payload.email, "exp": datetime.utcnow() + timedelta(hours=2)},
+        SECRET_KEY,
+        algorithm="HS256"
+    )
+    return {"message": "Login successful", "token": token}
 
 @app.post("/scan")
 async def scan_code(payload: CodePayload):
