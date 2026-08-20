@@ -6,12 +6,43 @@
     <title>TimeCodeSecurity | Enterprise AI Scanner</title>
     <script src="https://cdn.tailwindcss.com"></script>
 </head>
-<body class="bg-gray-900 text-white flex items-center justify-center h-screen font-sans">
-    <div class="text-center">
-        <h1 class="text-5xl font-extrabold text-transparent bg-clip-text bg-gradient-to-r from-green-400 to-blue-500 mb-4">
+<body class="bg-gray-950 text-white font-sans min-h-screen flex flex-col items-center py-10">
+    
+    <!-- Header -->
+    <div class="text-center mb-8">
+        <h1 class="text-5xl font-extrabold text-transparent bg-clip-text bg-gradient-to-r from-green-400 to-blue-500 mb-2 tracking-tight">
             TimeCodeSecurity
         </h1>
-        <p class="text-gray-400 text-lg">Enterprise Master Control - Web Interface Online</p>
+        <p class="text-gray-400 text-sm tracking-widest uppercase">Enterprise Deep Scan Interface</p>
+    </div>
+
+    <!-- Main Dashboard -->
+    <div class="max-w-5xl w-full px-6">
+        <div class="bg-gray-900 border border-gray-800 rounded-xl shadow-2xl p-6">
+            
+            <!-- Input Section -->
+            <div class="mb-4 flex justify-between items-end">
+                <h2 class="text-lg font-semibold text-gray-300">Target Source Code</h2>
+                <span class="text-xs text-green-500 font-mono bg-green-900/30 px-2 py-1 rounded">System Online</span>
+            </div>
+            
+            <textarea id="codeInput" spellcheck="false" class="w-full h-72 bg-[#0d1117] text-green-400 font-mono text-sm p-4 rounded-lg border border-gray-700 focus:outline-none focus:border-blue-500 focus:ring-1 focus:ring-blue-500 transition-all resize-none shadow-inner" placeholder="// Paste your code here for vulnerability analysis...&#10;&#10;function connectDB() {&#10;    const password = 'hardcoded_secret';&#10;}"></textarea>
+            
+            <!-- Scan Button -->
+            <button id="scanBtn" class="mt-6 w-full bg-gradient-to-r from-green-600 to-blue-600 hover:from-green-500 hover:to-blue-500 text-white font-bold py-4 px-4 rounded-lg shadow-lg hover:shadow-green-500/20 transition-all duration-300 flex justify-center items-center gap-2">
+                <svg xmlns="http://www.w3.org/2000/svg" class="h-6 w-6" fill="none" viewBox="0 0 24 24" stroke="currentColor">
+                    <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M9 12l2 2 4-4m5.618-4.016A11.955 11.955 0 0112 2.944a11.955 11.955 0 01-8.618 3.04A12.02 12.02 0 003 9c0 5.591 3.824 10.29 9 11.622 5.176-1.332 9-6.03 9-11.622 0-1.042-.133-2.052-.382-3.016z" />
+                </svg>
+                INITIATE DEEP SCAN
+            </button>
+
+            <!-- Report Section (Hidden by default) -->
+            <div id="reportContainer" class="mt-8 hidden">
+                <h3 class="text-lg font-semibold text-gray-300 mb-3 border-b border-gray-800 pb-2">AI Analysis Report</h3>
+                <div id="scanResult" class="bg-[#0d1117] text-gray-300 font-mono text-sm p-5 rounded-lg border border-gray-700 whitespace-pre-wrap leading-relaxed shadow-inner overflow-x-auto"></div>
+            </div>
+
+        </div>
     </div>
 </body>
 </html>
