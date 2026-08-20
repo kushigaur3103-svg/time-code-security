@@ -7,7 +7,8 @@ templates = Jinja2Templates(directory="templates")
 
 @app.get("/")
 async def home(request: Request):
-    return templates.TemplateResponse("index.html", {"request": request})
+    # Updated syntax for latest FastAPI/Starlette compatibility
+    return templates.TemplateResponse(request=request, name="index.html")
 
 if __name__ == "__main__":
     print("--- Starting TimeCodeSecurity Web Server ---")
