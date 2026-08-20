@@ -19,6 +19,10 @@ class CodePayload(BaseModel):
 async def home(request: Request):
     return templates.TemplateResponse(request=request, name="index.html")
 
+@app.get("/login")
+async def login_page(request: Request):
+    return templates.TemplateResponse(request=request, name="login.html")
+
 @app.post("/scan")
 async def scan_code(payload: CodePayload):
     api_key = os.getenv("GROQ_API_KEY")
