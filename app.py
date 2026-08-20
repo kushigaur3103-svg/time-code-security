@@ -39,7 +39,7 @@ async def scan_code(payload: CodePayload):
     prompt = f"Analyze this code for security vulnerabilities. Keep your response professional, brief, and actionable. Point out exact flaws.\n\nCode to analyze:\n{payload.code}"
     
     groq_payload = {
-        "model": "mixtral-8x7b-32768", 
+        "model": "openai/gpt-oss-120b", 
         "messages": [
             {"role": "system", "content": "You are TimeCodeSecurity, an elite enterprise code security AI."},
             {"role": "user", "content": prompt}
@@ -54,7 +54,13 @@ async def scan_code(payload: CodePayload):
         ai_reply = result['choices'][0]['message']['content']
         return {"result": ai_reply}
     except Exception as e:
-        return {"error": f"API Error: {str(e)}"}
+        error_msg = f"API Error: {str(e)}"
+        if 'response' in locals() and response is not None:
+            try:
+                error_msg += f" - Details: {response.json().get('error', {}).get('message', response.text)}"
+            except:
+                error_msg += f" - Details: {response.text}"
+        return {"error": error_msg}
 
 if __name__ == "__main__":
     print("--- Starting TimeCodeSecurity Web Server ---")
