@@ -44,5 +44,64 @@
 
         </div>
     </div>
+<script>
+    const scanBtn = document.getElementById('scanBtn');
+    const codeInput = document.getElementById('codeInput');
+    const reportContainer = document.getElementById('reportContainer');
+    const scanResult = document.getElementById('scanResult');
+
+    scanBtn.addEventListener('click', async () => {
+        const code = codeInput.value.trim();
+        if (!code) {
+            alert("Please enter some code to scan!");
+            return;
+        }
+
+        // Loading State
+        scanBtn.disabled = true;
+        scanBtn.innerHTML = `
+            <svg class="animate-spin -ml-1 mr-3 h-5 w-5 text-white" xmlns="http://www.w3.org/2000/svg" fill="none" viewBox="0 0 24 24">
+                <circle class="opacity-25" cx="12" cy="12" r="10" stroke="currentColor" stroke-width="4"></circle>
+                <path class="opacity-75" fill="currentColor" d="M4 12a8 8 0 018-8V0C5.373 0 0 5.373 0 12h4zm2 5.291A7.962 7.962 0 014 12H0c0 3.042 1.135 5.824 3 7.938l3-2.647z"></path>
+            </svg>
+            ANALYZING CODE...
+        `;
+        reportContainer.classList.add('hidden');
+        scanResult.textContent = "";
+
+        try {
+            const response = await fetch('/scan', {
+                method: 'POST',
+                headers: { 'Content-Type': 'application/json' },
+                body: JSON.stringify({ code: code })
+            });
+            
+            const data = await response.json();
+            
+            if (data.error) {
+                scanResult.textContent = "Error: " + data.error;
+                scanResult.classList.add("text-red-400");
+            } else {
+                scanResult.textContent = data.result;
+                scanResult.classList.remove("text-red-400");
+            }
+            
+            reportContainer.classList.remove('hidden');
+        } catch (error) {
+            scanResult.textContent = "System Failure: Could not reach the backend.";
+            scanResult.classList.add("text-red-400");
+            reportContainer.classList.remove('hidden');
+        } finally {
+            // Reset Button
+            scanBtn.disabled = false;
+            scanBtn.innerHTML = `
+                <svg xmlns="http://www.w3.org/2000/svg" class="h-6 w-6" fill="none" viewBox="0 0 24 24" stroke="currentColor">
+                    <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M9 12l2 2 4-4m5.618-4.016A11.955 11.955 0 0112 2.944a11.955 11.955 0 01-8.618 3.04A12.02 12.02 0 003 9c0 5.591 3.824 10.29 9 11.622 5.176-1.332 9-6.03 9-11.622 0-1.042-.133-2.052-.382-3.016z" />
+                </svg>
+                INITIATE DEEP SCAN
+            `;
+        }
+    });
+</script>
 </body>
 </html>
