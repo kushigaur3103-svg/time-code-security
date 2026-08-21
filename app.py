@@ -246,6 +246,62 @@ async def scan_code(payload: CodePayload, authorization: str = Header(None)):
     finally:
         db.close()
 
+@app.post("/api/fix-code")
+async def fix_code(payload: CodePayload, authorization: str = Header(None)):
+    email = await get_current_user_email(authorization)
+    db = SessionLocal()
+    try:
+        user = db.query(User).filter(User.email == email).first()
+        if not user or not user.is_premium:
+            raise HTTPException(status_code=403, detail="Premium feature only")
+            
+        api_key = os.getenv("GROQ_API_KEY")
+        if not api_key:
+            api_keys_str = os.getenv("GROQ_API_KEYS")
+            if api_keys_str:
+                api_key = api_keys_str.split(",")[0].strip()
+                
+        if not api_key:
+            return {"error": "GROQ_API_KEY not found in .env file. Please ensure it is set."}
+            
+        url = "https://api.groq.com/openai/v1/chat/completions"
+        headers = {
+            "Authorization": f"Bearer {api_key.strip()}",
+            "Content-Type": "application/json"
+        }
+        
+        system_prompt = (
+            "You are a senior cybersecurity engineer. Fix the provided vulnerable code. "
+            "Return ONLY the secure, remediated code inside a markdown code block. Do not include any explanations."
+        )
+        prompt = f"Code to fix:\n{payload.code}"
+        
+        groq_payload = {
+            "model": "openai/gpt-oss-120b", 
+            "messages": [
+                {"role": "system", "content": system_prompt},
+                {"role": "user", "content": prompt}
+            ],
+            "temperature": 0.1
+        }
+        
+        try:
+            response = requests.post(url, headers=headers, json=groq_payload)
+            response.raise_for_status()
+            result = response.json()
+            ai_reply = result['choices'][0]['message']['content']
+            return {"fixed_code": ai_reply}
+        except Exception as e:
+            error_msg = f"API Error: {str(e)}"
+            if 'response' in locals() and response is not None:
+                try:
+                    error_msg += f" - Details: {response.json().get('error', {}).get('message', response.text)}"
+                except:
+                    error_msg += f" - Details: {response.text}"
+            return {"error": error_msg}
+    finally:
+        db.close()
+
 if __name__ == "__main__":
     print("--- Starting TimeCodeSecurity Web Server ---")
     uvicorn.run("app:app", host="127.0.0.1", port=8000, reload=True)

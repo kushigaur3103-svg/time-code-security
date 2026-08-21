@@ -132,6 +132,21 @@
                     </button>
                 </div>
                 <div id="scanResult" class="bg-[#0a0d14] text-gray-300 font-mono text-sm p-6 rounded-xl border border-gray-700/80 whitespace-pre-wrap leading-relaxed shadow-inner overflow-x-auto"></div>
+                
+                <button id="fixCodeBtn" class="mt-6 w-full bg-gradient-to-r from-green-500 to-emerald-600 hover:from-green-400 hover:to-emerald-500 text-white font-bold py-3 px-4 rounded-xl shadow-lg transition-all duration-300 flex justify-center items-center gap-2">
+                    <svg class="w-5 h-5" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M10 20l4-16m4 4l4 4-4 4M6 16l-4-4 4-4"></path></svg>
+                    Generate Secure Code (PRO)
+                </button>
+                
+                <div id="fixedCodeContainer" class="mt-6 hidden">
+                    <div class="flex justify-between items-center mb-2">
+                        <h4 class="text-sm font-bold text-emerald-400">Secure Remediated Code</h4>
+                        <button id="copyFixedCodeBtn" class="text-xs bg-gray-800 hover:bg-gray-700 text-gray-300 px-3 py-1 rounded border border-gray-600 transition-colors">
+                            Copy Code
+                        </button>
+                    </div>
+                    <pre><code id="fixedCodeResult" class="block bg-[#0d1117] text-green-400 font-mono text-sm p-4 rounded-lg border border-gray-700/80 overflow-x-auto whitespace-pre-wrap"></code></pre>
+                </div>
             </div>
 
         </div>
@@ -372,6 +387,67 @@
             document.getElementById('codeInput').value = event.target.result;
         };
         reader.readAsText(file);
+    });
+
+    const fixCodeBtn = document.getElementById('fixCodeBtn');
+    const fixedCodeContainer = document.getElementById('fixedCodeContainer');
+    const fixedCodeResult = document.getElementById('fixedCodeResult');
+    const copyFixedCodeBtn = document.getElementById('copyFixedCodeBtn');
+
+    fixCodeBtn.addEventListener('click', async () => {
+        if (!isPremium) {
+            upgradePromptBtn.click();
+            return;
+        }
+
+        const code = codeInput.value.trim();
+        if (!code) {
+            alert("No code to fix.");
+            return;
+        }
+
+        fixCodeBtn.disabled = true;
+        const originalText = fixCodeBtn.innerHTML;
+        fixCodeBtn.innerHTML = "Generating Secure Code...";
+        fixedCodeContainer.classList.add('hidden');
+
+        try {
+            const res = await fetch('/api/fix-code', {
+                method: 'POST',
+                headers: { 
+                    'Content-Type': 'application/json',
+                    'Authorization': `Bearer ${token}` 
+                },
+                body: JSON.stringify({ code: code })
+            });
+            const data = await res.json();
+            
+            if (data.error || data.detail) {
+                alert("Failed to generate code: " + (data.error || data.detail));
+            } else {
+                let cleanCode = data.fixed_code;
+                if (cleanCode.startsWith('```')) {
+                    cleanCode = cleanCode.replace(/^```[a-z]*\n/, '').replace(/\n```$/, '');
+                }
+                fixedCodeResult.textContent = cleanCode;
+                fixedCodeContainer.classList.remove('hidden');
+            }
+        } catch (e) {
+            alert("Network error.");
+        } finally {
+            fixCodeBtn.disabled = false;
+            fixCodeBtn.innerHTML = originalText;
+        }
+    });
+
+    copyFixedCodeBtn.addEventListener('click', () => {
+        navigator.clipboard.writeText(fixedCodeResult.textContent).then(() => {
+            const originalText = copyFixedCodeBtn.textContent;
+            copyFixedCodeBtn.textContent = "Copied!";
+            setTimeout(() => {
+                copyFixedCodeBtn.textContent = originalText;
+            }, 2000);
+        });
     });
 
     document.getElementById('logoutBtn').addEventListener('click', () => {
