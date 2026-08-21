@@ -134,6 +134,37 @@
         </div>
     </div>
     </div>
+
+    <!-- Upgrade Modal -->
+    <div id="upgradeModal" class="hidden fixed inset-0 z-50 flex items-center justify-center bg-black/80 backdrop-blur-sm">
+        <div class="bg-[#0a0d14] border border-gray-700/80 rounded-2xl p-8 max-w-md w-full shadow-2xl relative">
+            <div class="flex justify-between items-center mb-6">
+                <h2 class="text-2xl font-bold text-transparent bg-clip-text bg-gradient-to-r from-yellow-400 to-orange-500">Upgrade to PRO</h2>
+                <button id="closeModalBtn" class="text-gray-400 hover:text-white transition-colors">
+                    <svg class="w-6 h-6" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M6 18L18 6M6 6l12 12"></path></svg>
+                </button>
+            </div>
+            
+            <div class="space-y-4 mb-6">
+                <div class="bg-gray-800/50 p-4 rounded-lg border border-gray-700">
+                    <h3 class="text-lg font-bold text-gray-300">Free Plan: 5 Scans, Basic On-Screen Report</h3>
+                </div>
+                <div class="bg-yellow-900/20 p-4 rounded-lg border border-yellow-800/50">
+                    <h3 class="text-lg font-bold text-yellow-400">PRO Plan: Unlimited Scans, PDF Export, Deep AI Analysis</h3>
+                </div>
+            </div>
+
+            <div class="mb-4">
+                <label for="licenseKeyInput" class="block text-gray-400 text-sm mb-2">Premium Key</label>
+                <input type="text" id="licenseKeyInput" class="w-full bg-[#0d1117] text-white p-3 rounded-lg border border-gray-700 focus:outline-none focus:border-yellow-500 transition-colors" placeholder="Enter license key...">
+            </div>
+            
+            <button id="submitKeyBtn" class="w-full bg-gradient-to-r from-yellow-500 to-orange-500 hover:from-yellow-400 hover:to-orange-400 text-black font-bold py-3 px-4 rounded-lg shadow-lg transition-all mt-2">
+                Unlock PRO
+            </button>
+        </div>
+    </div>
+    
 <script>
     const token = localStorage.getItem('token');
     if (!token) {
@@ -177,9 +208,24 @@
     }
     fetchPlan();
 
-    upgradePromptBtn.addEventListener('click', async () => {
-        const key = prompt("Enter Premium License Key:");
+    upgradePromptBtn.addEventListener('click', () => {
+        document.getElementById('upgradeModal').classList.remove('hidden');
+    });
+
+    document.getElementById('closeModalBtn').addEventListener('click', () => {
+        document.getElementById('upgradeModal').classList.add('hidden');
+    });
+
+    document.getElementById('submitKeyBtn').addEventListener('click', async () => {
+        const keyInput = document.getElementById('licenseKeyInput');
+        const key = keyInput.value.trim();
         if (!key) return;
+        
+        const btn = document.getElementById('submitKeyBtn');
+        const originalText = btn.innerHTML;
+        btn.disabled = true;
+        btn.innerHTML = "Verifying...";
+        
         try {
             const res = await fetch('/api/upgrade', {
                 method: 'POST',
@@ -192,9 +238,13 @@
                 window.location.reload();
             } else {
                 alert("Upgrade Failed: " + data.detail);
+                btn.disabled = false;
+                btn.innerHTML = originalText;
             }
         } catch(e) {
             alert("Network error.");
+            btn.disabled = false;
+            btn.innerHTML = originalText;
         }
     });
 
@@ -225,7 +275,10 @@
         try {
             const response = await fetch('/scan', {
                 method: 'POST',
-                headers: { 'Content-Type': 'application/json' },
+                headers: { 
+                    'Content-Type': 'application/json',
+                    'Authorization': `Bearer ${token}`
+                },
                 body: JSON.stringify({ code: code })
             });
             
