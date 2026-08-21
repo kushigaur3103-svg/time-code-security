@@ -4,7 +4,8 @@ requests
 jinja2
 python-dotenv
 
-bcrypt
+passlib[bcrypt]
+bcrypt==3.2.2
 PyJWT
 
 fpdf
