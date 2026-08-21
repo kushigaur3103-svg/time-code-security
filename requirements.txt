@@ -12,3 +12,5 @@ fpdf
 SQLAlchemy
 psycopg2-binary
 google-generativeai
+openai
+cohere

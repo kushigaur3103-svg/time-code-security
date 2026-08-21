@@ -15,6 +15,8 @@ from sqlalchemy import create_engine, Column, Integer, String, Boolean, Text, Da
 from sqlalchemy.orm import declarative_base, sessionmaker
 import hashlib
 import google.generativeai as genai
+import openai
+import cohere
 
 load_dotenv()
 
@@ -228,18 +230,53 @@ def get_cached_or_generate_ai(payload_code: str, system_prompt: str, is_fix: boo
     if ai_reply is None:
         gemini_keys_str = os.getenv("GEMINI_API_KEYS", "")
         gemini_keys = [k.strip() for k in gemini_keys_str.split(",") if k.strip()]
-        if gemini_keys:
-            gemini_key = gemini_keys[0]
+        for key in gemini_keys:
             try:
-                genai.configure(api_key=gemini_key)
+                genai.configure(api_key=key)
                 model = genai.GenerativeModel('gemini-1.5-flash')
                 full_prompt = f"{system_prompt}\n\n{prompt}"
                 gemini_response = model.generate_content(full_prompt)
                 ai_reply = gemini_response.text
+                break
             except Exception as e:
-                raise Exception(f"Groq failed ({last_error}) and Gemini Fallback also failed: {str(e)}")
-        else:
-            raise Exception(f"All Groq keys failed ({last_error}) and no GEMINI_API_KEYS found.")
+                continue
+                
+    if ai_reply is None:
+        or_keys_str = os.getenv("OPENROUTER_API_KEYS", "")
+        or_keys = [k.strip() for k in or_keys_str.split(",") if k.strip()]
+        for key in or_keys:
+            try:
+                client = openai.OpenAI(base_url="https://openrouter.ai/api/v1", api_key=key)
+                response = client.chat.completions.create(
+                    model="meta-llama/llama-3-8b-instruct",
+                    messages=[
+                        {"role": "system", "content": system_prompt},
+                        {"role": "user", "content": prompt}
+                    ]
+                )
+                ai_reply = response.choices[0].message.content
+                break
+            except Exception as e:
+                continue
+
+    if ai_reply is None:
+        cohere_keys_str = os.getenv("COHERE_API_KEYS", "")
+        cohere_keys = [k.strip() for k in cohere_keys_str.split(",") if k.strip()]
+        for key in cohere_keys:
+            try:
+                co = cohere.Client(key)
+                response = co.chat(
+                    message=prompt,
+                    preamble=system_prompt,
+                    model="command-r"
+                )
+                ai_reply = response.text
+                break
+            except Exception as e:
+                continue
+                
+    if ai_reply is None:
+        raise HTTPException(status_code=500, detail="All AI core systems are currently overloaded. Please try again in a few minutes.")
             
     new_cache = ScanCache(code_hash=code_hash, report_text=ai_reply, is_fix=is_fix)
     db.add(new_cache)
@@ -281,6 +318,8 @@ async def scan_code(payload: CodePayload, authorization: str = Header(None)):
             user.scan_count += 1
             db.commit()
             return {"result": ai_reply}
+        except HTTPException as he:
+            raise he
         except Exception as e:
             return {"error": f"API Error: {str(e)}"}
     finally:
@@ -303,6 +342,8 @@ async def fix_code(payload: CodePayload, authorization: str = Header(None)):
         try:
             ai_reply = get_cached_or_generate_ai(payload.code, system_prompt, is_fix=True, db=db)
             return {"fixed_code": ai_reply}
+        except HTTPException as he:
+            raise he
         except Exception as e:
             return {"error": f"API Error: {str(e)}"}
     finally:
