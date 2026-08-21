@@ -17,6 +17,7 @@ import hashlib
 import google.generativeai as genai
 import openai
 import cohere
+import secrets
 
 load_dotenv()
 
@@ -36,6 +37,7 @@ class User(Base):
     password_hash = Column(String, nullable=False)
     is_premium = Column(Boolean, default=False)
     scan_count = Column(Integer, default=0)
+    api_key = Column(String, unique=True, index=True, nullable=True)
 
 class ScanCache(Base):
     __tablename__ = "scan_cache"
@@ -121,6 +123,17 @@ async def get_current_user_email(authorization: str = Header(None)):
     if not authorization or not authorization.startswith("Bearer "):
         raise HTTPException(status_code=401, detail="Unauthorized")
     token = authorization.split(" ")[1]
+    
+    if token.startswith("tcs_"):
+        db = SessionLocal()
+        try:
+            user = db.query(User).filter(User.api_key == token).first()
+            if not user:
+                raise HTTPException(status_code=401, detail="Invalid API Key")
+            return user.email
+        finally:
+            db.close()
+            
     try:
         payload = jwt.decode(token, SECRET_KEY, algorithms=["HS256"])
         return payload.get("sub")
@@ -135,7 +148,23 @@ async def get_me(authorization: str = Header(None)):
         user = db.query(User).filter(User.email == email).first()
         if not user:
             raise HTTPException(status_code=404, detail="User not found")
-        return {"email": user.email, "is_premium": user.is_premium, "scan_count": user.scan_count}
+        return {"email": user.email, "is_premium": user.is_premium, "scan_count": user.scan_count, "api_key": user.api_key}
+    finally:
+        db.close()
+
+@app.post("/api/developer-key")
+async def generate_api_key(authorization: str = Header(None)):
+    email = await get_current_user_email(authorization)
+    db = SessionLocal()
+    try:
+        user = db.query(User).filter(User.email == email).first()
+        if not user or not user.is_premium:
+            raise HTTPException(status_code=403, detail="Developer API access is for PRO users only.")
+        
+        new_key = "tcs_" + secrets.token_hex(20)
+        user.api_key = new_key
+        db.commit()
+        return {"api_key": new_key}
     finally:
         db.close()
 
