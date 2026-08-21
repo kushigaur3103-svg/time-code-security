@@ -8,7 +8,7 @@ from fastapi.templating import Jinja2Templates
 from pydantic import BaseModel
 import uvicorn
 from dotenv import load_dotenv
-import bcrypt
+from passlib.context import CryptContext
 from datetime import datetime, timedelta
 from fpdf import FPDF
 
@@ -17,6 +17,8 @@ load_dotenv()
 
 app = FastAPI(title="TimeCodeSecurity Enterprise API")
 templates = Jinja2Templates(directory="templates")
+
+pwd_context = CryptContext(schemes=["bcrypt"], deprecated="auto")
 SECRET_KEY = "super_secret_enterprise_key_change_me_in_prod"
 
 def init_db():
@@ -74,8 +76,8 @@ async def signup(payload: AuthPayload):
         conn.close()
         raise HTTPException(status_code=400, detail="Operator ID already registered.")
         
-    safe_password = payload.password[:72].encode('utf-8')
-    password_hash = bcrypt.hashpw(safe_password, bcrypt.gensalt()).decode('utf-8')
+    safe_password = payload.password[:72]
+    password_hash = pwd_context.hash(safe_password)
     cursor.execute("INSERT INTO users (email, password_hash) VALUES (?, ?)", (payload.email, password_hash))
     conn.commit()
     conn.close()
@@ -89,7 +91,7 @@ async def login(payload: AuthPayload):
     row = cursor.fetchone()
     conn.close()
     
-    if not row or not bcrypt.checkpw(payload.password[:72].encode('utf-8'), row[0].encode('utf-8')):
+    if not row or not pwd_context.verify(payload.password[:72], row[0]):
         raise HTTPException(status_code=401, detail="Invalid credentials. Access Denied.")
         
     token = jwt.encode(
@@ -207,12 +209,25 @@ async def scan_code(payload: CodePayload, authorization: str = Header(None)):
         "Content-Type": "application/json"
     }
     
-    prompt = f"Analyze this code for security vulnerabilities. Keep your response professional, brief, and actionable. Point out exact flaws.\n\nCode to analyze:\n{payload.code}"
+    if is_premium:
+        system_prompt = (
+            "You are a highly advanced cybersecurity expert. "
+            "You must analyze the provided code for Zero-Day vulnerabilities, "
+            "SQL/NoSQL injections, XSS, memory leaks, and architectural flaws, "
+            "providing strict remediation code and a severity score."
+        )
+    else:
+        system_prompt = (
+            "You are a basic code analyzer. Identify only simple syntax errors or basic bugs. "
+            "You must explicitly state at the end of the response: 'Upgrade to PRO for deep vulnerability analysis and remediation code.'"
+        )
+
+    prompt = f"Code to analyze:\n{payload.code}"
     
     groq_payload = {
         "model": "openai/gpt-oss-120b", 
         "messages": [
-            {"role": "system", "content": "You are TimeCodeSecurity, an elite enterprise code security AI."},
+            {"role": "system", "content": system_prompt},
             {"role": "user", "content": prompt}
         ],
         "temperature": 0.1
