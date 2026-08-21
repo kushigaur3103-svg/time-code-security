@@ -87,8 +87,9 @@ async def signup(payload: AuthPayload):
             
         safe_password = payload.password[:72]
         password_hash = pwd_context.hash(safe_password)
+        new_api_key = "tcs_" + secrets.token_hex(16)
         
-        new_user = User(email=payload.email, password_hash=password_hash)
+        new_user = User(email=payload.email, password_hash=password_hash, api_key=new_api_key)
         db.add(new_user)
         db.commit()
     finally:
@@ -99,7 +100,7 @@ async def signup(payload: AuthPayload):
         SECRET_KEY,
         algorithm="HS256"
     )
-    return {"message": "User created", "token": token}
+    return {"message": "Success", "token": token}
 
 @app.post("/api/login")
 async def login(payload: AuthPayload):
@@ -120,8 +121,8 @@ async def login(payload: AuthPayload):
     )
     return {"message": "Login successful", "token": token}
 
-class UpgradePayload(BaseModel):
-    key: str
+class CodePayload(BaseModel):
+    code: str
 
 class ReportPayload(BaseModel):
     report_text: str
@@ -155,7 +156,30 @@ async def get_me(authorization: str = Header(None)):
         user = db.query(User).filter(User.email == email).first()
         if not user:
             raise HTTPException(status_code=404, detail="User not found")
+        if not user.api_key:
+            user.api_key = "tcs_" + secrets.token_hex(16)
+            db.commit()
         return {"email": user.email, "is_premium": user.is_premium, "scan_count": user.scan_count, "api_key": user.api_key, "webhook_url": user.webhook_url}
+    finally:
+        db.close()
+
+class UpgradePayload(BaseModel):
+    key: str
+
+@app.post("/api/upgrade")
+async def upgrade_plan(payload: UpgradePayload, authorization: str = Header(None)):
+    email = await get_current_user_email(authorization)
+    expected_key = os.getenv("PREMIUM_LICENSE_KEY")
+    if not expected_key or payload.key != expected_key:
+        raise HTTPException(status_code=400, detail="Invalid license key")
+        
+    db = SessionLocal()
+    try:
+        user = db.query(User).filter(User.email == email).first()
+        if user:
+            user.is_premium = True
+            db.commit()
+            return {"message": "Success"}
     finally:
         db.close()
 
@@ -439,6 +463,79 @@ async def fix_code(payload: CodePayload, authorization: str = Header(None)):
             raise he
         except Exception as e:
             return {"error": f"API Error: {str(e)}"}
+    finally:
+        db.close()
+
+class CICDScanPayload(BaseModel):
+    code: str
+    filename: str
+
+@app.post("/api/cicd/scan")
+async def cicd_scan(payload: CICDScanPayload, x_api_key: str = Header(None)):
+    if not x_api_key:
+        raise HTTPException(status_code=401, detail="X-API-Key header missing")
+        
+    db = SessionLocal()
+    try:
+        user = db.query(User).filter(User.api_key == x_api_key).first()
+        if not user:
+            raise HTTPException(status_code=401, detail="Invalid API Key")
+            
+        system_prompt = (
+            "You are a highly advanced cybersecurity expert. "
+            "You must analyze the provided code for Zero-Day vulnerabilities, "
+            "SQL/NoSQL injections, XSS, memory leaks, and architectural flaws. "
+            "You must categorize the vulnerabilities by regulatory compliance frameworks (SOC 2, HIPAA, GDPR). "
+            "Explicitly state which laws are violated. Also, assign a Severity Level (CRITICAL, HIGH, MEDIUM, LOW). "
+            "Provide strict remediation code and a severity score."
+        ) if user.is_premium else (
+            "You are a basic code analyzer. Identify only simple syntax errors or basic bugs. "
+            "You must explicitly state at the end of the response: 'Upgrade to PRO for deep vulnerability analysis and remediation code.'"
+        )
+
+        secrets_found = False
+        redacted_code = payload.code
+        
+        if SECRET_PATTERNS["AWS Access Keys"].search(redacted_code):
+            secrets_found = True
+            redacted_code = SECRET_PATTERNS["AWS Access Keys"].sub("***REDACTED_BY_TIMECODESECURITY***", redacted_code)
+            
+        if SECRET_PATTERNS["Stripe Secrets"].search(redacted_code):
+            secrets_found = True
+            redacted_code = SECRET_PATTERNS["Stripe Secrets"].sub("***REDACTED_BY_TIMECODESECURITY***", redacted_code)
+            
+        def replace_generic(match):
+            full_match = match.group(0)
+            secret_val = match.group(1)
+            return full_match.replace(secret_val, "***REDACTED_BY_TIMECODESECURITY***")
+            
+        if SECRET_PATTERNS["Generic Tokens"].search(redacted_code):
+            secrets_found = True
+            redacted_code = SECRET_PATTERNS["Generic Tokens"].sub(replace_generic, redacted_code)
+
+        ai_reply = get_cached_or_generate_ai(redacted_code, system_prompt, is_fix=False, db=db)
+        
+        if secrets_found:
+            ai_reply = "🚨 **CRITICAL SECURITY VIOLATION:** Hardcoded secrets/passwords were detected and successfully redacted before AI analysis to prevent data leakage. \n\n" + ai_reply
+
+        user.scan_count += 1
+        db.commit()
+        
+        vulnerabilities_found = "vulnerabilities" in ai_reply.lower() or secrets_found or "CRITICAL" in ai_reply or "HIGH" in ai_reply
+        severity_level = "LOW"
+        if "CRITICAL" in ai_reply or secrets_found:
+            severity_level = "CRITICAL"
+        elif "HIGH" in ai_reply:
+            severity_level = "HIGH"
+        elif "MEDIUM" in ai_reply:
+            severity_level = "MEDIUM"
+
+        return {
+            "status": "success", 
+            "vulnerabilities_found": vulnerabilities_found, 
+            "report": ai_reply, 
+            "severity_level": severity_level
+        }
     finally:
         db.close()
 

@@ -170,6 +170,19 @@
                     Save Integration
                 </button>
             </div>
+            
+            <hr class="my-6 border-gray-700/50">
+            <h3 class="text-sm font-bold text-gray-200 mb-4">CI/CD Pipeline Authentication</h3>
+            <div class="flex flex-col sm:flex-row gap-4 items-end">
+                <div class="flex-1 w-full">
+                    <label class="block text-gray-400 text-xs mb-2 uppercase tracking-wide">Your API Key (X-API-Key)</label>
+                    <input type="text" id="displayApiKey" readonly class="w-full bg-[#0d1117] text-gray-400 p-3 rounded-lg border border-gray-700 font-mono text-sm" value="Loading...">
+                    <p class="text-gray-500 text-xs mt-2">Use this key in your GitHub Actions via the X-API-Key header to automate security scans.</p>
+                </div>
+                <button id="copyApiKeyBtn" class="bg-gray-800 hover:bg-gray-700 text-gray-300 font-bold py-3 px-6 rounded-lg border border-gray-600 transition-all text-sm whitespace-nowrap">
+                    Copy API Key
+                </button>
+            </div>
         </div>
 
     </div>
@@ -237,6 +250,9 @@
             if (data.webhook_url) {
                 document.getElementById('webhookUrlInput').value = data.webhook_url;
             }
+            if (data.api_key) {
+                document.getElementById('displayApiKey').value = data.api_key;
+            }
             
             planBadge.classList.remove('hidden');
             planBadge.classList.add('flex');
@@ -256,6 +272,14 @@
         }
     }
     fetchPlan();
+    
+    document.getElementById('copyApiKeyBtn').addEventListener('click', () => {
+        const apiKey = document.getElementById('displayApiKey').value;
+        if (apiKey && apiKey !== 'Loading...') {
+            navigator.clipboard.writeText(apiKey);
+            alert("API Key copied to clipboard!");
+        }
+    });
     
     document.getElementById('saveIntegrationBtn').addEventListener('click', async () => {
         const webhook_url = document.getElementById('webhookUrlInput').value.trim();
