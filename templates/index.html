@@ -154,6 +154,25 @@
             </div>
 
         </div>
+
+        <!-- Integrations Section -->
+        <div class="mt-8 bg-gray-900/70 backdrop-blur-2xl border border-gray-700/50 rounded-2xl p-6 shadow-2xl w-full">
+            <h2 class="text-lg font-bold text-gray-200 mb-4 flex items-center gap-2">
+                <svg class="w-5 h-5 text-purple-400" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M13 10V3L4 14h7v7l9-11h-7z"></path></svg>
+                Enterprise Integrations
+            </h2>
+            <div class="flex flex-col sm:flex-row gap-4 items-end">
+                <div class="flex-1 w-full">
+                    <label class="block text-gray-400 text-xs mb-2 uppercase tracking-wide">Slack/Discord Webhook URL</label>
+                    <input type="text" id="webhookUrlInput" class="w-full bg-[#0d1117] text-white p-3 rounded-lg border border-gray-700 focus:outline-none focus:border-purple-500 transition-colors font-mono text-sm" placeholder="https://hooks.slack.com/...">
+                </div>
+                <button id="saveIntegrationBtn" class="bg-gray-800 hover:bg-gray-700 text-purple-400 font-bold py-3 px-6 rounded-lg border border-gray-600 hover:border-purple-500 transition-all text-sm whitespace-nowrap">
+                    Save Integration
+                </button>
+            </div>
+        </div>
+
+    </div>
     </div>
     </div>
 
@@ -215,6 +234,10 @@
             scanCount = data.scan_count;
             userApiKey = data.api_key;
             
+            if (data.webhook_url) {
+                document.getElementById('webhookUrlInput').value = data.webhook_url;
+            }
+            
             planBadge.classList.remove('hidden');
             planBadge.classList.add('flex');
             
@@ -233,6 +256,30 @@
         }
     }
     fetchPlan();
+    
+    document.getElementById('saveIntegrationBtn').addEventListener('click', async () => {
+        const webhook_url = document.getElementById('webhookUrlInput').value.trim();
+        const btn = document.getElementById('saveIntegrationBtn');
+        const oldText = btn.innerHTML;
+        btn.innerHTML = "Saving...";
+        
+        try {
+            const res = await fetch('/api/settings', {
+                method: 'POST',
+                headers: { 'Content-Type': 'application/json', 'Authorization': `Bearer ${token}` },
+                body: JSON.stringify({ webhook_url })
+            });
+            if (res.ok) {
+                alert("Integration saved! You will now receive security alerts.");
+            } else {
+                alert("Failed to save integration.");
+            }
+        } catch(e) {
+            alert("Network error.");
+        } finally {
+            btn.innerHTML = oldText;
+        }
+    });
 
     document.getElementById('devApiBtn').addEventListener('click', async () => {
         if (userApiKey) {

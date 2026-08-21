@@ -148,7 +148,24 @@ async def get_me(authorization: str = Header(None)):
         user = db.query(User).filter(User.email == email).first()
         if not user:
             raise HTTPException(status_code=404, detail="User not found")
-        return {"email": user.email, "is_premium": user.is_premium, "scan_count": user.scan_count, "api_key": user.api_key}
+        return {"email": user.email, "is_premium": user.is_premium, "scan_count": user.scan_count, "api_key": user.api_key, "webhook_url": user.webhook_url}
+    finally:
+        db.close()
+
+class SettingsPayload(BaseModel):
+    webhook_url: str
+
+@app.post("/api/settings")
+async def update_settings(payload: SettingsPayload, authorization: str = Header(None)):
+    email = await get_current_user_email(authorization)
+    db = SessionLocal()
+    try:
+        user = db.query(User).filter(User.email == email).first()
+        if not user:
+            raise HTTPException(status_code=404, detail="User not found")
+        user.webhook_url = payload.webhook_url
+        db.commit()
+        return {"message": "Settings updated"}
     finally:
         db.close()
 
@@ -335,8 +352,10 @@ async def scan_code(payload: CodePayload, authorization: str = Header(None)):
             system_prompt = (
                 "You are a highly advanced cybersecurity expert. "
                 "You must analyze the provided code for Zero-Day vulnerabilities, "
-                "SQL/NoSQL injections, XSS, memory leaks, and architectural flaws, "
-                "providing strict remediation code and a severity score."
+                "SQL/NoSQL injections, XSS, memory leaks, and architectural flaws. "
+                "You must categorize the vulnerabilities by regulatory compliance frameworks (SOC 2, HIPAA, GDPR). "
+                "Explicitly state which laws are violated. Also, assign a Severity Level (CRITICAL, HIGH, MEDIUM, LOW). "
+                "Provide strict remediation code and a severity score."
             )
         else:
             system_prompt = (
@@ -347,6 +366,18 @@ async def scan_code(payload: CodePayload, authorization: str = Header(None)):
         try:
             ai_reply = get_cached_or_generate_ai(payload.code, system_prompt, is_fix=False, db=db)
             user.scan_count += 1
+            
+            if user.webhook_url:
+                import threading
+                def send_webhook(url, text):
+                    try:
+                        import requests
+                        payload = {"content": "🚨 **TimeCodeSecurity Alert** 🚨\n\n**Vulnerability Detected!**\n" + text[:1500]}
+                        requests.post(url, json=payload, timeout=5)
+                    except:
+                        pass
+                threading.Thread(target=send_webhook, args=(user.webhook_url, ai_reply)).start()
+                
             db.commit()
             return {"result": ai_reply}
         except HTTPException as he:
