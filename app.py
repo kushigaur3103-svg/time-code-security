@@ -18,6 +18,13 @@ import google.generativeai as genai
 import openai
 import cohere
 import secrets
+import re
+
+SECRET_PATTERNS = {
+    "AWS Access Keys": re.compile(r"(?i)AKIA[0-9A-Z]{16}"),
+    "Stripe Secrets": re.compile(r"(?i)sk_live_[0-9a-zA-Z]{24,}"),
+    "Generic Tokens": re.compile(r"(?i)(?:password|secret|api_key|token|auth)[\s=:]+['\"]([^'\"]+)['\"]")
+}
 
 load_dotenv()
 
@@ -364,7 +371,31 @@ async def scan_code(payload: CodePayload, authorization: str = Header(None)):
             )
     
         try:
-            ai_reply = get_cached_or_generate_ai(payload.code, system_prompt, is_fix=False, db=db)
+            secrets_found = False
+            redacted_code = payload.code
+            
+            if SECRET_PATTERNS["AWS Access Keys"].search(redacted_code):
+                secrets_found = True
+                redacted_code = SECRET_PATTERNS["AWS Access Keys"].sub("***REDACTED_BY_TIMECODESECURITY***", redacted_code)
+                
+            if SECRET_PATTERNS["Stripe Secrets"].search(redacted_code):
+                secrets_found = True
+                redacted_code = SECRET_PATTERNS["Stripe Secrets"].sub("***REDACTED_BY_TIMECODESECURITY***", redacted_code)
+                
+            def replace_generic(match):
+                full_match = match.group(0)
+                secret_val = match.group(1)
+                return full_match.replace(secret_val, "***REDACTED_BY_TIMECODESECURITY***")
+                
+            if SECRET_PATTERNS["Generic Tokens"].search(redacted_code):
+                secrets_found = True
+                redacted_code = SECRET_PATTERNS["Generic Tokens"].sub(replace_generic, redacted_code)
+
+            ai_reply = get_cached_or_generate_ai(redacted_code, system_prompt, is_fix=False, db=db)
+            
+            if secrets_found:
+                ai_reply = "🚨 **CRITICAL SECURITY VIOLATION:** Hardcoded secrets/passwords were detected and successfully redacted before AI analysis to prevent data leakage. \n\n" + ai_reply
+
             user.scan_count += 1
             
             if user.webhook_url:
