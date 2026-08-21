@@ -76,7 +76,8 @@ async def signup(payload: AuthPayload):
         conn.close()
         raise HTTPException(status_code=400, detail="Operator ID already registered.")
         
-    password_hash = pwd_context.hash(payload.password)
+    safe_password = payload.password[:72]
+    password_hash = pwd_context.hash(safe_password)
     cursor.execute("INSERT INTO users (email, password_hash) VALUES (?, ?)", (payload.email, password_hash))
     conn.commit()
     conn.close()
@@ -90,7 +91,7 @@ async def login(payload: AuthPayload):
     row = cursor.fetchone()
     conn.close()
     
-    if not row or not pwd_context.verify(payload.password, row[0]):
+    if not row or not pwd_context.verify(payload.password[:72], row[0]):
         raise HTTPException(status_code=401, detail="Invalid credentials. Access Denied.")
         
     token = jwt.encode(
