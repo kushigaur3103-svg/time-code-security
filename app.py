@@ -3,12 +3,14 @@ import sqlite3
 import requests
 import jwt
 from fastapi import FastAPI, Request, HTTPException, Header
+from fastapi.responses import Response
 from fastapi.templating import Jinja2Templates
 from pydantic import BaseModel
 import uvicorn
 from dotenv import load_dotenv
 from passlib.context import CryptContext
 from datetime import datetime, timedelta
+from fpdf import FPDF
 
 # Load the .env file containing API keys
 load_dotenv()
@@ -87,6 +89,9 @@ async def login(payload: AuthPayload):
 class UpgradePayload(BaseModel):
     license_key: str
 
+class ReportPayload(BaseModel):
+    report_text: str
+
 async def get_current_user_email(authorization: str = Header(None)):
     if not authorization or not authorization.startswith("Bearer "):
         raise HTTPException(status_code=401, detail="Unauthorized")
@@ -122,6 +127,37 @@ async def upgrade_plan(payload: UpgradePayload, authorization: str = Header(None
     conn.commit()
     conn.close()
     return {"message": "License accepted. Premium unlocked."}
+
+@app.post("/api/generate-pdf")
+async def generate_pdf(payload: ReportPayload, authorization: str = Header(None)):
+    email = await get_current_user_email(authorization)
+    
+    conn = sqlite3.connect('users.db')
+    cursor = conn.cursor()
+    cursor.execute("SELECT is_premium FROM users WHERE email = ?", (email,))
+    row = cursor.fetchone()
+    conn.close()
+    
+    if not row or not row[0]:
+        raise HTTPException(status_code=403, detail="Premium feature only")
+        
+    pdf = FPDF()
+    pdf.add_page()
+    pdf.set_font("Arial", size=12)
+    pdf.cell(200, 10, txt="TimeCodeSecurity Enterprise Audit Report", ln=True, align='C')
+    pdf.cell(200, 10, txt=f"Date: {datetime.utcnow().strftime('%Y-%m-%d %H:%M:%S UTC')}", ln=True, align='C')
+    pdf.ln(10)
+    
+    # We must sanitize the text for latin-1 because PyFPDF only supports latin-1 out of the box unless a unicode font is added.
+    sanitized_text = payload.report_text.encode('latin-1', 'replace').decode('latin-1')
+    pdf.multi_cell(0, 10, txt=sanitized_text)
+    
+    pdf_output = pdf.output(dest='S')
+    # FPDF output(dest='S') in PyFPDF returns a string which needs encoding to bytes
+    if isinstance(pdf_output, str):
+        pdf_output = pdf_output.encode('latin-1')
+    
+    return Response(content=pdf_output, media_type="application/pdf", headers={"Content-Disposition": "attachment; filename=report.pdf"})
 
 @app.post("/scan")
 async def scan_code(payload: CodePayload, authorization: str = Header(None)):

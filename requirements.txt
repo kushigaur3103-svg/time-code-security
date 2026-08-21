@@ -7,3 +7,5 @@ python-dotenv
 passlib[bcrypt]
 bcrypt
 PyJWT
+
+fpdf

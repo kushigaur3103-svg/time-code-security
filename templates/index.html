@@ -118,10 +118,16 @@
 
             <!-- Report Section (Hidden by default) -->
             <div id="reportContainer" class="mt-10 hidden animate-fade-in">
-                <h3 class="text-xl font-bold text-gray-200 mb-4 flex items-center gap-2">
-                    <svg class="w-5 h-5 text-cyan-400" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M9 12h6m-6 4h6m2 5H7a2 2 0 01-2-2V5a2 2 0 012-2h5.586a1 1 0 01.707.293l5.414 5.414a1 1 0 01.293.707V19a2 2 0 01-2 2z"></path></svg>
-                    AI Analysis Report
-                </h3>
+                <div class="flex flex-col sm:flex-row justify-between items-start sm:items-center mb-4 gap-4">
+                    <h3 class="text-xl font-bold text-gray-200 flex items-center gap-2">
+                        <svg class="w-5 h-5 text-cyan-400" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M9 12h6m-6 4h6m2 5H7a2 2 0 01-2-2V5a2 2 0 012-2h5.586a1 1 0 01.707.293l5.414 5.414a1 1 0 01.293.707V19a2 2 0 01-2 2z"></path></svg>
+                        AI Analysis Report
+                    </h3>
+                    <button id="downloadPdfBtn" class="bg-gradient-to-r from-blue-600 to-purple-600 hover:from-blue-500 hover:to-purple-500 text-white text-sm font-bold py-2 px-4 rounded shadow-lg transition-all flex items-center gap-2">
+                        <svg xmlns="http://www.w3.org/2000/svg" class="h-4 w-4" fill="none" viewBox="0 0 24 24" stroke="currentColor"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M4 16v1a3 3 0 003 3h10a3 3 0 003-3v-1m-4-4l-4 4m0 0l-4-4m4 4V4" /></svg>
+                        Download PDF Report
+                    </button>
+                </div>
                 <div id="scanResult" class="bg-[#0a0d14] text-gray-300 font-mono text-sm p-6 rounded-xl border border-gray-700/80 whitespace-pre-wrap leading-relaxed shadow-inner overflow-x-auto"></div>
             </div>
 
@@ -247,6 +253,55 @@
                 </svg>
                 INITIATE DEEP SCAN
             `;
+        }
+    });
+
+    const downloadPdfBtn = document.getElementById('downloadPdfBtn');
+    
+    downloadPdfBtn.addEventListener('click', async () => {
+        if (!isPremium) {
+            upgradePromptBtn.click();
+            return;
+        }
+        
+        const reportText = scanResult.textContent;
+        if (!reportText || reportText.startsWith("Error:") || reportText.startsWith("System Failure:")) {
+            alert("No valid report to download.");
+            return;
+        }
+        
+        downloadPdfBtn.disabled = true;
+        downloadPdfBtn.innerHTML = "Generating...";
+        
+        try {
+            const res = await fetch('/api/generate-pdf', {
+                method: 'POST',
+                headers: { 
+                    'Content-Type': 'application/json',
+                    'Authorization': `Bearer ${token}` 
+                },
+                body: JSON.stringify({ report_text: reportText })
+            });
+            
+            if (res.ok) {
+                const blob = await res.blob();
+                const url = window.URL.createObjectURL(blob);
+                const a = document.createElement('a');
+                a.href = url;
+                a.download = 'TimeCodeSecurity_Report.pdf';
+                document.body.appendChild(a);
+                a.click();
+                a.remove();
+                window.URL.revokeObjectURL(url);
+            } else {
+                const err = await res.json();
+                alert("Failed to generate PDF: " + (err.detail || "Unknown error"));
+            }
+        } catch (e) {
+            alert("Network error generating PDF.");
+        } finally {
+            downloadPdfBtn.disabled = false;
+            downloadPdfBtn.innerHTML = `<svg xmlns="http://www.w3.org/2000/svg" class="h-4 w-4" fill="none" viewBox="0 0 24 24" stroke="currentColor"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M4 16v1a3 3 0 003 3h10a3 3 0 003-3v-1m-4-4l-4 4m0 0l-4-4m4 4V4" /></svg> Download PDF Report`;
         }
     });
 
