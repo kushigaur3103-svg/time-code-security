@@ -294,6 +294,7 @@
             } else {
                 scanResult.textContent = data.result;
                 scanResult.classList.remove("text-red-400");
+                await fetchPlan();
             }
             
             reportContainer.classList.remove('hidden');
