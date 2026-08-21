@@ -4,7 +4,6 @@ requests
 jinja2
 python-dotenv
 
-passlib[bcrypt]
 bcrypt
 PyJWT
 

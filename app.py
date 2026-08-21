@@ -8,7 +8,7 @@ from fastapi.templating import Jinja2Templates
 from pydantic import BaseModel
 import uvicorn
 from dotenv import load_dotenv
-from passlib.context import CryptContext
+import bcrypt
 from datetime import datetime, timedelta
 from fpdf import FPDF
 
@@ -17,8 +17,6 @@ load_dotenv()
 
 app = FastAPI(title="TimeCodeSecurity Enterprise API")
 templates = Jinja2Templates(directory="templates")
-
-pwd_context = CryptContext(schemes=["bcrypt"], deprecated="auto")
 SECRET_KEY = "super_secret_enterprise_key_change_me_in_prod"
 
 def init_db():
@@ -76,8 +74,8 @@ async def signup(payload: AuthPayload):
         conn.close()
         raise HTTPException(status_code=400, detail="Operator ID already registered.")
         
-    safe_password = payload.password[:72]
-    password_hash = pwd_context.hash(safe_password)
+    safe_password = payload.password[:72].encode('utf-8')
+    password_hash = bcrypt.hashpw(safe_password, bcrypt.gensalt()).decode('utf-8')
     cursor.execute("INSERT INTO users (email, password_hash) VALUES (?, ?)", (payload.email, password_hash))
     conn.commit()
     conn.close()
@@ -91,7 +89,7 @@ async def login(payload: AuthPayload):
     row = cursor.fetchone()
     conn.close()
     
-    if not row or not pwd_context.verify(payload.password[:72], row[0]):
+    if not row or not bcrypt.checkpw(payload.password[:72].encode('utf-8'), row[0].encode('utf-8')):
         raise HTTPException(status_code=401, detail="Invalid credentials. Access Denied.")
         
     token = jwt.encode(
