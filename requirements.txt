@@ -11,3 +11,4 @@ PyJWT
 fpdf
 SQLAlchemy
 psycopg2-binary
+google-generativeai

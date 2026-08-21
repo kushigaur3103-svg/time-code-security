@@ -11,8 +11,10 @@ from passlib.context import CryptContext
 from datetime import datetime, timedelta
 from fpdf import FPDF
 
-from sqlalchemy import create_engine, Column, Integer, String, Boolean
+from sqlalchemy import create_engine, Column, Integer, String, Boolean, Text, DateTime
 from sqlalchemy.orm import declarative_base, sessionmaker
+import hashlib
+import google.generativeai as genai
 
 load_dotenv()
 
@@ -32,6 +34,15 @@ class User(Base):
     password_hash = Column(String, nullable=False)
     is_premium = Column(Boolean, default=False)
     scan_count = Column(Integer, default=0)
+
+class ScanCache(Base):
+    __tablename__ = "scan_cache"
+    
+    id = Column(Integer, primary_key=True, index=True)
+    code_hash = Column(String, unique=True, index=True, nullable=False)
+    report_text = Column(Text, nullable=False)
+    is_fix = Column(Boolean, default=False)
+    created_at = Column(DateTime, default=datetime.utcnow)
 
 Base.metadata.create_all(bind=engine)
 
@@ -169,6 +180,73 @@ async def generate_pdf(payload: ReportPayload, authorization: str = Header(None)
     
     return Response(content=pdf_output, media_type="application/pdf", headers={"Content-Disposition": "attachment; filename=report.pdf"})
 
+def get_cached_or_generate_ai(payload_code: str, system_prompt: str, is_fix: bool, db):
+    code_hash = hashlib.sha256(f"{payload_code}_{is_fix}".encode('utf-8')).hexdigest()
+    cached = db.query(ScanCache).filter(ScanCache.code_hash == code_hash, ScanCache.is_fix == is_fix).first()
+    if cached:
+        return cached.report_text
+        
+    prompt = f"Code to {'fix' if is_fix else 'analyze'}:\n{payload_code}"
+    
+    groq_keys_str = os.getenv("GROQ_API_KEYS", "")
+    if not groq_keys_str:
+        single = os.getenv("GROQ_API_KEY", "")
+        groq_keys = [single] if single else []
+    else:
+        groq_keys = [k.strip() for k in groq_keys_str.split(",") if k.strip()]
+        
+    url = "https://api.groq.com/openai/v1/chat/completions"
+    groq_payload = {
+        "model": "openai/gpt-oss-120b", 
+        "messages": [
+            {"role": "system", "content": system_prompt},
+            {"role": "user", "content": prompt}
+        ],
+        "temperature": 0.1
+    }
+    
+    ai_reply = None
+    last_error = None
+    
+    for key in groq_keys:
+        headers = {
+            "Authorization": f"Bearer {key}",
+            "Content-Type": "application/json"
+        }
+        try:
+            response = requests.post(url, headers=headers, json=groq_payload)
+            if response.status_code == 429:
+                last_error = "Rate Limit 429"
+                continue
+            response.raise_for_status()
+            ai_reply = response.json()['choices'][0]['message']['content']
+            break
+        except Exception as e:
+            last_error = str(e)
+            continue
+            
+    if ai_reply is None:
+        gemini_keys_str = os.getenv("GEMINI_API_KEYS", "")
+        gemini_keys = [k.strip() for k in gemini_keys_str.split(",") if k.strip()]
+        if gemini_keys:
+            gemini_key = gemini_keys[0]
+            try:
+                genai.configure(api_key=gemini_key)
+                model = genai.GenerativeModel('gemini-1.5-flash')
+                full_prompt = f"{system_prompt}\n\n{prompt}"
+                gemini_response = model.generate_content(full_prompt)
+                ai_reply = gemini_response.text
+            except Exception as e:
+                raise Exception(f"Groq failed ({last_error}) and Gemini Fallback also failed: {str(e)}")
+        else:
+            raise Exception(f"All Groq keys failed ({last_error}) and no GEMINI_API_KEYS found.")
+            
+    new_cache = ScanCache(code_hash=code_hash, report_text=ai_reply, is_fix=is_fix)
+    db.add(new_cache)
+    db.commit()
+    
+    return ai_reply
+
 @app.post("/scan")
 async def scan_code(payload: CodePayload, authorization: str = Header(None)):
     email = await get_current_user_email(authorization)
@@ -185,21 +263,6 @@ async def scan_code(payload: CodePayload, authorization: str = Header(None)):
         if not is_premium and scan_count >= 5:
             raise HTTPException(status_code=403, detail="Free plan limit reached. Please upgrade to Premium.")
             
-        api_key = os.getenv("GROQ_API_KEY")
-        if not api_key:
-            api_keys_str = os.getenv("GROQ_API_KEYS")
-            if api_keys_str:
-                api_key = api_keys_str.split(",")[0].strip()
-                
-        if not api_key:
-            return {"error": "GROQ_API_KEY not found in .env file. Please ensure it is set."}
-            
-        url = "https://api.groq.com/openai/v1/chat/completions"
-        headers = {
-            "Authorization": f"Bearer {api_key.strip()}",
-            "Content-Type": "application/json"
-        }
-        
         if is_premium:
             system_prompt = (
                 "You are a highly advanced cybersecurity expert. "
@@ -213,36 +276,13 @@ async def scan_code(payload: CodePayload, authorization: str = Header(None)):
                 "You must explicitly state at the end of the response: 'Upgrade to PRO for deep vulnerability analysis and remediation code.'"
             )
     
-        prompt = f"Code to analyze:\n{payload.code}"
-        
-        groq_payload = {
-            "model": "openai/gpt-oss-120b", 
-            "messages": [
-                {"role": "system", "content": system_prompt},
-                {"role": "user", "content": prompt}
-            ],
-            "temperature": 0.1
-        }
-        
         try:
-            response = requests.post(url, headers=headers, json=groq_payload)
-            response.raise_for_status()
-            result = response.json()
-            ai_reply = result['choices'][0]['message']['content']
-            
-            # Increment scan_count on success
+            ai_reply = get_cached_or_generate_ai(payload.code, system_prompt, is_fix=False, db=db)
             user.scan_count += 1
             db.commit()
-            
             return {"result": ai_reply}
         except Exception as e:
-            error_msg = f"API Error: {str(e)}"
-            if 'response' in locals() and response is not None:
-                try:
-                    error_msg += f" - Details: {response.json().get('error', {}).get('message', response.text)}"
-                except:
-                    error_msg += f" - Details: {response.text}"
-            return {"error": error_msg}
+            return {"error": f"API Error: {str(e)}"}
     finally:
         db.close()
 
@@ -255,50 +295,16 @@ async def fix_code(payload: CodePayload, authorization: str = Header(None)):
         if not user or not user.is_premium:
             raise HTTPException(status_code=403, detail="Premium feature only")
             
-        api_key = os.getenv("GROQ_API_KEY")
-        if not api_key:
-            api_keys_str = os.getenv("GROQ_API_KEYS")
-            if api_keys_str:
-                api_key = api_keys_str.split(",")[0].strip()
-                
-        if not api_key:
-            return {"error": "GROQ_API_KEY not found in .env file. Please ensure it is set."}
-            
-        url = "https://api.groq.com/openai/v1/chat/completions"
-        headers = {
-            "Authorization": f"Bearer {api_key.strip()}",
-            "Content-Type": "application/json"
-        }
-        
         system_prompt = (
             "You are a senior cybersecurity engineer. Fix the provided vulnerable code. "
             "Return ONLY the secure, remediated code inside a markdown code block. Do not include any explanations."
         )
-        prompt = f"Code to fix:\n{payload.code}"
-        
-        groq_payload = {
-            "model": "openai/gpt-oss-120b", 
-            "messages": [
-                {"role": "system", "content": system_prompt},
-                {"role": "user", "content": prompt}
-            ],
-            "temperature": 0.1
-        }
         
         try:
-            response = requests.post(url, headers=headers, json=groq_payload)
-            response.raise_for_status()
-            result = response.json()
-            ai_reply = result['choices'][0]['message']['content']
+            ai_reply = get_cached_or_generate_ai(payload.code, system_prompt, is_fix=True, db=db)
             return {"fixed_code": ai_reply}
         except Exception as e:
-            error_msg = f"API Error: {str(e)}"
-            if 'response' in locals() and response is not None:
-                try:
-                    error_msg += f" - Details: {response.json().get('error', {}).get('message', response.text)}"
-                except:
-                    error_msg += f" - Details: {response.text}"
-            return {"error": error_msg}
+            return {"error": f"API Error: {str(e)}"}
     finally:
         db.close()
 
