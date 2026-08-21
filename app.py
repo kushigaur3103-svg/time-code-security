@@ -28,9 +28,23 @@ def init_db():
         CREATE TABLE IF NOT EXISTS users (
             id INTEGER PRIMARY KEY AUTOINCREMENT,
             email TEXT UNIQUE NOT NULL,
-            password_hash TEXT NOT NULL
+            password_hash TEXT NOT NULL,
+            is_premium BOOLEAN DEFAULT 0,
+            scan_count INTEGER DEFAULT 0
         )
     ''')
+    
+    # Also attempt to alter table for existing databases (Phase 6.1 upgrade)
+    try:
+        cursor.execute("ALTER TABLE users ADD COLUMN is_premium BOOLEAN DEFAULT 0")
+    except sqlite3.OperationalError:
+        pass
+        
+    try:
+        cursor.execute("ALTER TABLE users ADD COLUMN scan_count INTEGER DEFAULT 0")
+    except sqlite3.OperationalError:
+        pass
+
     conn.commit()
     conn.close()
 
