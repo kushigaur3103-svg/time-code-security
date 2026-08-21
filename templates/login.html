@@ -41,7 +41,7 @@
         <div id="successMsg" class="hidden mt-4 text-center text-green-500 font-mono text-sm"></div>
         
         <div class="mt-6 text-center text-sm text-gray-500 font-mono">
-            <p id="toggleText">New operative? <a href="#" id="toggleBtn" class="text-blue-400 hover:text-blue-300 transition-colors">Request Clearance</a></p>
+            <p id="toggleText">New operative? <a href="#" id="toggleBtn" class="text-blue-400 hover:text-blue-300 transition-colors">Create an account</a></p>
         </div>
     </div>
 
@@ -63,7 +63,7 @@
                 isLogin = !isLogin;
                 if (isLogin) {
                     submitBtn.textContent = 'AUTHORIZE ACCESS';
-                    toggleText.innerHTML = `New operative? <a href="#" id="toggleBtn" class="text-blue-400 hover:text-blue-300 transition-colors">Request Clearance</a>`;
+                    toggleText.innerHTML = `New operative? <a href="#" id="toggleBtn" class="text-blue-400 hover:text-blue-300 transition-colors">Create an account</a>`;
                 } else {
                     submitBtn.textContent = 'REGISTER OPERATOR';
                     toggleText.innerHTML = `Already registered? <a href="#" id="toggleBtn" class="text-blue-400 hover:text-blue-300 transition-colors">Access Portal</a>`;
@@ -93,13 +93,17 @@
                 const data = await response.json();
                 
                 if (!response.ok) {
-                    errorMsg.textContent = data.detail || 'Authentication failed.';
+                    errorMsg.innerText = data.detail;
                     errorMsg.classList.remove('hidden');
                 } else {
-                    successMsg.textContent = data.message;
-                    successMsg.classList.remove('hidden');
-                    localStorage.setItem('token', data.token);
-                    setTimeout(() => window.location.href = '/', 1000);
+                    if (!isLogin) {
+                        localStorage.setItem('token', data.token);
+                        alert("Account created successfully!");
+                        window.location.href = "/";
+                    } else {
+                        localStorage.setItem('token', data.token);
+                        window.location.href = "/";
+                    }
                 }
             } catch (err) {
                 errorMsg.textContent = 'Network error. Core systems offline.';

@@ -97,8 +97,10 @@ async def login(payload: AuthPayload):
     db = SessionLocal()
     try:
         user = db.query(User).filter(User.email == payload.email).first()
-        if not user or not pwd_context.verify(payload.password[:72], user.password_hash):
-            raise HTTPException(status_code=401, detail="Invalid credentials. Access Denied.")
+        if not user:
+            raise HTTPException(status_code=401, detail="Please create account first")
+        if not pwd_context.verify(payload.password[:72], user.password_hash):
+            raise HTTPException(status_code=401, detail="Invalid password")
     finally:
         db.close()
         
