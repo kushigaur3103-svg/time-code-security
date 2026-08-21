@@ -81,7 +81,12 @@ async def signup(payload: AuthPayload):
     cursor.execute("INSERT INTO users (email, password_hash) VALUES (?, ?)", (payload.email, password_hash))
     conn.commit()
     conn.close()
-    return {"message": "Signup successful. Clearance granted."}
+    token = jwt.encode(
+        {"sub": payload.email, "exp": datetime.utcnow() + timedelta(hours=2)},
+        SECRET_KEY,
+        algorithm="HS256"
+    )
+    return {"message": "User created", "token": token}
 
 @app.post("/api/login")
 async def login(payload: AuthPayload):

@@ -46,6 +46,10 @@
     </div>
 
     <script>
+        if (localStorage.getItem('token')) {
+            window.location.href = '/';
+        }
+
         let isLogin = true;
         const toggleText = document.getElementById('toggleText');
         const authForm = document.getElementById('authForm');
@@ -94,18 +98,8 @@
                 } else {
                     successMsg.textContent = data.message;
                     successMsg.classList.remove('hidden');
-                    if (isLogin) {
-                        localStorage.setItem('token', data.token);
-                        setTimeout(() => window.location.href = '/', 1000);
-                    } else {
-                        setTimeout(() => {
-                            isLogin = true;
-                            submitBtn.textContent = 'AUTHORIZE ACCESS';
-                            toggleText.innerHTML = `New operative? <a href="#" id="toggleBtn" class="text-blue-400 hover:text-blue-300 transition-colors">Request Clearance</a>`;
-                            setupToggleListener();
-                            window.location.reload();
-                        }, 1500);
-                    }
+                    localStorage.setItem('token', data.token);
+                    setTimeout(() => window.location.href = '/', 1000);
                 }
             } catch (err) {
                 errorMsg.textContent = 'Network error. Core systems offline.';

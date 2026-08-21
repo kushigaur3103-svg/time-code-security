@@ -93,6 +93,9 @@
                         </span>
                         <span class="text-xs text-emerald-400 font-mono tracking-wide">System Online</span>
                     </div>
+                    <button id="logoutBtn" class="bg-gray-800 hover:bg-red-900/50 text-gray-300 hover:text-red-400 text-xs font-bold py-1.5 px-3 rounded-full border border-gray-700 hover:border-red-800 transition-colors shadow-lg">
+                        LOGOUT
+                    </button>
                 </div>
             </div>
             
@@ -368,6 +371,11 @@
             document.getElementById('codeInput').value = event.target.result;
         };
         reader.readAsText(file);
+    });
+
+    document.getElementById('logoutBtn').addEventListener('click', () => {
+        localStorage.removeItem('token');
+        window.location.href = '/login';
     });
 </script>
 </body>
