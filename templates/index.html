@@ -79,12 +79,20 @@
                     <svg class="w-5 h-5 text-gray-400" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M10 20l4-16m4 4l4 4-4 4M6 16l-4-4 4-4"></path></svg>
                     Target Source Code
                 </h2>
-                <div class="flex items-center gap-2 bg-emerald-900/20 border border-emerald-800/50 px-3 py-1.5 rounded-full shadow-[0_0_10px_rgba(16,185,129,0.2)]">
-                    <span class="relative flex h-2.5 w-2.5">
-                      <span class="animate-ping absolute inline-flex h-full w-full rounded-full bg-emerald-400 opacity-75"></span>
-                      <span class="relative inline-flex rounded-full h-2.5 w-2.5 bg-emerald-500"></span>
-                    </span>
-                    <span class="text-xs text-emerald-400 font-mono tracking-wide">System Online</span>
+                <div class="flex items-center flex-wrap justify-end gap-3">
+                    <div id="planBadge" class="hidden items-center gap-2 bg-blue-900/20 border border-blue-800/50 px-3 py-1.5 rounded-full">
+                        <span class="text-xs text-blue-400 font-mono tracking-wide" id="planText">Fetching Plan...</span>
+                    </div>
+                    <button id="upgradePromptBtn" class="hidden bg-gradient-to-r from-yellow-500 to-orange-500 hover:from-yellow-400 hover:to-orange-400 text-black text-xs font-bold py-1.5 px-3 rounded-full shadow-lg transition-all">
+                        UPGRADE
+                    </button>
+                    <div class="flex items-center gap-2 bg-emerald-900/20 border border-emerald-800/50 px-3 py-1.5 rounded-full shadow-[0_0_10px_rgba(16,185,129,0.2)]">
+                        <span class="relative flex h-2.5 w-2.5">
+                          <span class="animate-ping absolute inline-flex h-full w-full rounded-full bg-emerald-400 opacity-75"></span>
+                          <span class="relative inline-flex rounded-full h-2.5 w-2.5 bg-emerald-500"></span>
+                        </span>
+                        <span class="text-xs text-emerald-400 font-mono tracking-wide">System Online</span>
+                    </div>
                 </div>
             </div>
             
@@ -121,15 +129,78 @@
     </div>
     </div>
 <script>
+    const token = localStorage.getItem('token');
+    if (!token) {
+        window.location.href = '/login';
+    }
+
     const scanBtn = document.getElementById('scanBtn');
     const codeInput = document.getElementById('codeInput');
     const reportContainer = document.getElementById('reportContainer');
     const scanResult = document.getElementById('scanResult');
+    const planBadge = document.getElementById('planBadge');
+    const planText = document.getElementById('planText');
+    const upgradePromptBtn = document.getElementById('upgradePromptBtn');
+    
+    let isPremium = false;
+    let scanCount = 0;
+
+    async function fetchPlan() {
+        try {
+            const res = await fetch('/api/me', { headers: { 'Authorization': `Bearer ${token}` } });
+            if (!res.ok) throw new Error("Auth failed");
+            const data = await res.json();
+            isPremium = data.is_premium;
+            scanCount = data.scan_count;
+            
+            planBadge.classList.remove('hidden');
+            planBadge.classList.add('flex');
+            
+            if (isPremium) {
+                planText.textContent = "PRO PLAN: UNLIMITED";
+                planText.className = "text-xs text-yellow-400 font-mono tracking-wide font-bold";
+                planBadge.className = "flex items-center gap-2 bg-yellow-900/20 border border-yellow-800/50 px-3 py-1.5 rounded-full";
+            } else {
+                planText.textContent = `FREE PLAN: ${scanCount}/5 SCANS`;
+                upgradePromptBtn.classList.remove('hidden');
+            }
+        } catch (e) {
+            localStorage.removeItem('token');
+            window.location.href = '/login';
+        }
+    }
+    fetchPlan();
+
+    upgradePromptBtn.addEventListener('click', async () => {
+        const key = prompt("Enter Premium License Key:");
+        if (!key) return;
+        try {
+            const res = await fetch('/api/upgrade', {
+                method: 'POST',
+                headers: { 'Content-Type': 'application/json', 'Authorization': `Bearer ${token}` },
+                body: JSON.stringify({ license_key: key })
+            });
+            const data = await res.json();
+            if (res.ok) {
+                alert("Premium Unlocked! Refreshing...");
+                window.location.reload();
+            } else {
+                alert("Upgrade Failed: " + data.detail);
+            }
+        } catch(e) {
+            alert("Network error.");
+        }
+    });
 
     scanBtn.addEventListener('click', async () => {
         const code = codeInput.value.trim();
         if (!code) {
             alert("Please enter some code to scan!");
+            return;
+        }
+        
+        if (!isPremium && scanCount >= 5) {
+            alert("Free plan limit reached. Please upgrade to Premium to continue scanning.");
             return;
         }
 
