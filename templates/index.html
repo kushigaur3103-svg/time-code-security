@@ -248,20 +248,23 @@
         try {
             const res = await fetch('/api/upgrade', {
                 method: 'POST',
-                headers: { 'Content-Type': 'application/json', 'Authorization': `Bearer ${token}` },
-                body: JSON.stringify({ license_key: key })
+                headers: { 
+                    'Content-Type': 'application/json', 
+                    'Authorization': `Bearer ${token}` 
+                },
+                body: JSON.stringify({ key: key })
             });
             const data = await res.json();
             if (res.ok) {
                 alert("Premium Unlocked! Refreshing...");
                 window.location.reload();
             } else {
-                alert("Upgrade Failed: " + data.detail);
+                alert("Upgrade Failed: " + (data.detail || data.error || "Unknown error"));
                 btn.disabled = false;
                 btn.innerHTML = originalText;
             }
         } catch(e) {
-            alert("Network error.");
+            alert("Network error. Could not connect to server.");
             btn.disabled = false;
             btn.innerHTML = originalText;
         }

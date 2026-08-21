@@ -110,7 +110,7 @@ async def login(payload: AuthPayload):
     return {"message": "Login successful", "token": token}
 
 class UpgradePayload(BaseModel):
-    license_key: str
+    key: str
 
 class ReportPayload(BaseModel):
     report_text: str
@@ -141,8 +141,8 @@ async def get_me(authorization: str = Header(None)):
 async def upgrade_plan(payload: UpgradePayload, authorization: str = Header(None)):
     email = await get_current_user_email(authorization)
     expected_key = os.getenv("PREMIUM_LICENSE_KEY")
-    if not expected_key or payload.license_key != expected_key:
-        raise HTTPException(status_code=400, detail="Invalid License Key")
+    if not expected_key or payload.key != expected_key:
+        raise HTTPException(status_code=400, detail="Invalid license key")
         
     db = SessionLocal()
     try:
@@ -150,9 +150,9 @@ async def upgrade_plan(payload: UpgradePayload, authorization: str = Header(None
         if user:
             user.is_premium = True
             db.commit()
+            return {"message": "Success"}
     finally:
         db.close()
-    return {"message": "License accepted. Premium unlocked."}
 
 @app.post("/api/generate-pdf")
 async def generate_pdf(payload: ReportPayload, authorization: str = Header(None)):
