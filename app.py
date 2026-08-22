@@ -889,5 +889,7 @@ async def generate_test(payload: CodePayload, authorization: str = Header(None))
         db.close()
 
 if __name__ == "__main__":
-    print("--- Starting TimeCodeSecurity Web Server ---")
-    uvicorn.run("app:app", host="127.0.0.1", port=8000, reload=True)
+    import os
+    port = int(os.environ.get("PORT", 8000))
+    print(f"--- Starting TimeCodeSecurity Web Server on port {port} ---")
+    uvicorn.run("app:app", host="0.0.0.0", port=port, reload=False)
