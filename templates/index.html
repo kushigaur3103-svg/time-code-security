@@ -200,6 +200,60 @@
                 </button>
             </div>
         </div>
+        
+        <!-- Enterprise Workspace -->
+        <div class="mt-8 bg-gray-900/70 backdrop-blur-2xl border border-gray-700/50 rounded-2xl p-6 shadow-2xl w-full">
+            <h2 class="text-lg font-bold text-gray-200 mb-4 flex items-center gap-2">
+                <svg class="w-5 h-5 text-blue-400" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M17 20h5v-2a3 3 0 00-5.356-1.857M17 20H7m10 0v-2c0-.656-.126-1.283-.356-1.857M7 20H2v-2a3 3 0 015.356-1.857M7 20v-2c0-.656.126-1.283.356-1.857m0 0a5.002 5.002 0 019.288 0M15 7a3 3 0 11-6 0 3 3 0 016 0zm6 3a2 2 0 11-4 0 2 2 0 014 0zM7 10a2 2 0 11-4 0 2 2 0 014 0z"></path></svg>
+                Enterprise Workspace
+            </h2>
+            
+            <div id="workspaceNoOrg" class="hidden">
+                <div class="flex flex-col sm:flex-row gap-4 items-end mb-4">
+                    <div class="flex-1 w-full">
+                        <label class="block text-gray-400 text-xs mb-2 uppercase tracking-wide">Create Workspace</label>
+                        <input type="text" id="createOrgInput" class="w-full bg-[#0d1117] text-white p-3 rounded-lg border border-gray-700 focus:outline-none focus:border-blue-500 transition-colors font-mono text-sm" placeholder="Organization Name">
+                    </div>
+                    <button id="createOrgBtn" class="bg-blue-600 hover:bg-blue-500 text-white font-bold py-3 px-6 rounded-lg border border-blue-500 transition-all text-sm whitespace-nowrap">
+                        Create Workspace
+                    </button>
+                </div>
+                <div class="flex flex-col sm:flex-row gap-4 items-end">
+                    <div class="flex-1 w-full">
+                        <label class="block text-gray-400 text-xs mb-2 uppercase tracking-wide">Join Workspace</label>
+                        <input type="text" id="joinOrgInput" class="w-full bg-[#0d1117] text-white p-3 rounded-lg border border-gray-700 focus:outline-none focus:border-blue-500 transition-colors font-mono text-sm" placeholder="Invite Code (e.g. a1b2c3)">
+                    </div>
+                    <button id="joinOrgBtn" class="bg-gray-800 hover:bg-gray-700 text-blue-400 font-bold py-3 px-6 rounded-lg border border-gray-600 hover:border-blue-500 transition-all text-sm whitespace-nowrap">
+                        Join Workspace
+                    </button>
+                </div>
+            </div>
+
+            <div id="workspaceHasOrg" class="hidden">
+                <div class="flex flex-col gap-4">
+                    <div class="flex justify-between items-center bg-[#0d1117] p-4 rounded-lg border border-gray-700">
+                        <div>
+                            <p class="text-xs text-gray-500 uppercase tracking-wide">Workspace Name</p>
+                            <p id="displayOrgName" class="text-lg text-white font-bold">...</p>
+                        </div>
+                        <div class="text-right">
+                            <p class="text-xs text-gray-500 uppercase tracking-wide">Your Role</p>
+                            <p id="displayOrgRole" class="text-sm text-blue-400 font-bold uppercase">...</p>
+                        </div>
+                    </div>
+                    
+                    <div id="adminInviteSection" class="hidden mt-2">
+                        <label class="block text-gray-400 text-xs mb-2 uppercase tracking-wide">Invite Team (Admin Only)</label>
+                        <div class="flex flex-col sm:flex-row gap-4 items-end">
+                            <input type="text" id="displayInviteCode" readonly class="w-full bg-[#0d1117] text-gray-400 p-3 rounded-lg border border-gray-700 font-mono text-sm">
+                            <button id="copyInviteBtn" class="bg-gray-800 hover:bg-gray-700 text-gray-300 font-bold py-3 px-6 rounded-lg border border-gray-600 transition-all text-sm whitespace-nowrap">
+                                Copy Invite Code
+                            </button>
+                        </div>
+                    </div>
+                </div>
+            </div>
+        </div>
 
     </div>
     </div>
@@ -276,6 +330,20 @@
                 document.getElementById('displayApiKey').value = data.api_key;
             }
             
+            if (data.org_name) {
+                document.getElementById('workspaceNoOrg').classList.add('hidden');
+                document.getElementById('workspaceHasOrg').classList.remove('hidden');
+                document.getElementById('displayOrgName').textContent = data.org_name;
+                document.getElementById('displayOrgRole').textContent = data.org_role;
+                if (data.org_role === 'admin') {
+                    document.getElementById('adminInviteSection').classList.remove('hidden');
+                    document.getElementById('displayInviteCode').value = data.invite_code;
+                }
+            } else {
+                document.getElementById('workspaceNoOrg').classList.remove('hidden');
+                document.getElementById('workspaceHasOrg').classList.add('hidden');
+            }
+            
             planBadge.classList.remove('hidden');
             planBadge.classList.add('flex');
             
@@ -299,6 +367,56 @@
         if (apiKey && apiKey !== 'Loading...') {
             navigator.clipboard.writeText(apiKey);
             alert("API Key copied to clipboard!");
+        }
+    });
+
+    document.getElementById('createOrgBtn').addEventListener('click', async () => {
+        const name = document.getElementById('createOrgInput').value.trim();
+        if (!name) return alert("Enter an organization name.");
+        
+        try {
+            const res = await fetch('/api/workspaces/create', {
+                method: 'POST',
+                headers: { 'Content-Type': 'application/json', 'Authorization': `Bearer ${token}` },
+                body: JSON.stringify({ name: name })
+            });
+            const data = await res.json();
+            if (res.ok) {
+                window.location.reload();
+            } else {
+                alert("Error: " + (data.detail || data.error));
+            }
+        } catch (e) {
+            alert("Network error.");
+        }
+    });
+
+    document.getElementById('joinOrgBtn').addEventListener('click', async () => {
+        const invite = document.getElementById('joinOrgInput').value.trim();
+        if (!invite) return alert("Enter an invite code.");
+        
+        try {
+            const res = await fetch('/api/workspaces/join', {
+                method: 'POST',
+                headers: { 'Content-Type': 'application/json', 'Authorization': `Bearer ${token}` },
+                body: JSON.stringify({ invite_code: invite })
+            });
+            const data = await res.json();
+            if (res.ok) {
+                window.location.reload();
+            } else {
+                alert("Error: " + (data.detail || data.error));
+            }
+        } catch (e) {
+            alert("Network error.");
+        }
+    });
+
+    document.getElementById('copyInviteBtn').addEventListener('click', () => {
+        const code = document.getElementById('displayInviteCode').value;
+        if (code) {
+            navigator.clipboard.writeText(code);
+            alert("Invite code copied!");
         }
     });
     

@@ -36,6 +36,16 @@ engine = create_engine(DATABASE_URL)
 SessionLocal = sessionmaker(autocommit=False, autoflush=False, bind=engine)
 Base = declarative_base()
 
+from sqlalchemy import Column, Integer, String, Text, DateTime, Boolean, ForeignKey
+from sqlalchemy.orm import relationship
+
+class Organization(Base):
+    __tablename__ = "organization"
+    
+    id = Column(Integer, primary_key=True, index=True)
+    name = Column(String, unique=True, index=True, nullable=False)
+    invite_code = Column(String, unique=True, index=True, nullable=False)
+
 class User(Base):
     __tablename__ = "users"
     
@@ -45,6 +55,11 @@ class User(Base):
     is_premium = Column(Boolean, default=False)
     scan_count = Column(Integer, default=0)
     api_key = Column(String, unique=True, index=True, nullable=True)
+    webhook_url = Column(String, nullable=True)
+    org_id = Column(Integer, ForeignKey("organization.id"), nullable=True)
+    org_role = Column(String, default="member", nullable=True)
+    
+    organization = relationship("Organization", backref="users")
 
 class ScanCache(Base):
     __tablename__ = "scan_cache"
@@ -159,7 +174,71 @@ async def get_me(authorization: str = Header(None)):
         if not user.api_key:
             user.api_key = "tcs_" + secrets.token_hex(16)
             db.commit()
-        return {"email": user.email, "is_premium": user.is_premium, "scan_count": user.scan_count, "api_key": user.api_key, "webhook_url": user.webhook_url}
+            
+        org_name = user.organization.name if user.organization else None
+        invite_code = user.organization.invite_code if user.organization else None
+        
+        return {
+            "email": user.email, 
+            "is_premium": user.is_premium, 
+            "scan_count": user.scan_count, 
+            "api_key": user.api_key, 
+            "webhook_url": user.webhook_url,
+            "org_name": org_name,
+            "org_role": user.org_role,
+            "invite_code": invite_code
+        }
+    finally:
+        db.close()
+
+class CreateWorkspacePayload(BaseModel):
+    name: str
+
+class JoinWorkspacePayload(BaseModel):
+    invite_code: str
+
+@app.post("/api/workspaces/create")
+async def create_workspace(payload: CreateWorkspacePayload, authorization: str = Header(None)):
+    email = await get_current_user_email(authorization)
+    db = SessionLocal()
+    try:
+        user = db.query(User).filter(User.email == email).first()
+        if not user:
+            raise HTTPException(status_code=404, detail="User not found")
+        
+        if db.query(Organization).filter(Organization.name == payload.name).first():
+            raise HTTPException(status_code=400, detail="Organization name already taken")
+            
+        invite_code = secrets.token_hex(3)
+        new_org = Organization(name=payload.name, invite_code=invite_code)
+        db.add(new_org)
+        db.commit()
+        db.refresh(new_org)
+        
+        user.org_id = new_org.id
+        user.org_role = "admin"
+        db.commit()
+        return {"message": "Workspace created"}
+    finally:
+        db.close()
+
+@app.post("/api/workspaces/join")
+async def join_workspace(payload: JoinWorkspacePayload, authorization: str = Header(None)):
+    email = await get_current_user_email(authorization)
+    db = SessionLocal()
+    try:
+        user = db.query(User).filter(User.email == email).first()
+        if not user:
+            raise HTTPException(status_code=404, detail="User not found")
+            
+        org = db.query(Organization).filter(Organization.invite_code == payload.invite_code).first()
+        if not org:
+            raise HTTPException(status_code=404, detail="Invalid invite code")
+            
+        user.org_id = org.id
+        user.org_role = "developer"
+        db.commit()
+        return {"message": "Joined workspace"}
     finally:
         db.close()
 
