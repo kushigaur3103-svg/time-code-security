@@ -73,6 +73,17 @@ class ScanCache(Base):
     job_id = Column(String, unique=True, index=True, nullable=True)
     created_at = Column(DateTime, default=datetime.utcnow)
 
+class CodeVault(Base):
+    __tablename__ = "code_vault"
+    
+    id = Column(Integer, primary_key=True, index=True)
+    org_id = Column(Integer, ForeignKey("organization.id"), nullable=False)
+    vulnerable_code = Column(Text, nullable=False)
+    secure_code = Column(Text, nullable=False)
+    created_at = Column(DateTime, default=datetime.utcnow)
+    
+    organization = relationship("Organization", backref="vaults")
+
 Base.metadata.create_all(bind=engine)
 
 app = FastAPI(title="TimeCodeSecurity Enterprise API")
@@ -663,11 +674,44 @@ async def fix_code(payload: CodePayload, authorization: str = Header(None)):
         
         try:
             ai_reply = get_cached_or_generate_ai(payload.code, system_prompt, is_fix=True, db=db)
+            
+            if user.org_id:
+                new_vault = CodeVault(
+                    org_id=user.org_id,
+                    vulnerable_code=payload.code,
+                    secure_code=ai_reply
+                )
+                db.add(new_vault)
+                db.commit()
+                
             return {"fixed_code": ai_reply}
         except HTTPException as he:
             raise he
         except Exception as e:
             return {"error": f"API Error: {str(e)}"}
+    finally:
+        db.close()
+
+@app.get("/api/vault")
+async def get_vault(authorization: str = Header(None)):
+    email = await get_current_user_email(authorization)
+    db = SessionLocal()
+    try:
+        user = db.query(User).filter(User.email == email).first()
+        if not user or not user.org_id:
+            return []
+            
+        vault_entries = db.query(CodeVault).filter(CodeVault.org_id == user.org_id).order_by(CodeVault.created_at.desc()).all()
+        
+        result = []
+        for v in vault_entries:
+            result.append({
+                "id": v.id,
+                "vulnerable_code": v.vulnerable_code,
+                "secure_code": v.secure_code,
+                "created_at": v.created_at.isoformat()
+            })
+        return result
     finally:
         db.close()
 

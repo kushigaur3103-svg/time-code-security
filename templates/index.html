@@ -309,6 +309,20 @@
             </div>
         </div>
 
+        <!-- Company Code Vault -->
+        <div class="mt-8 bg-gray-900/70 backdrop-blur-2xl border border-gray-700/50 rounded-2xl p-6 shadow-2xl w-full">
+            <h2 class="text-lg font-bold text-gray-200 mb-4 flex items-center gap-2">
+                <svg class="w-5 h-5 text-indigo-400" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M19 11H5m14 0a2 2 0 012 2v6a2 2 0 01-2 2H5a2 2 0 01-2-2v-6a2 2 0 012-2m14 0V9a2 2 0 00-2-2M5 11V9a2 2 0 012-2m0 0V5a2 2 0 012-2h6a2 2 0 012 2v2M7 7h10"></path></svg>
+                Company Code Vault
+            </h2>
+            <div class="mb-4">
+                <input type="text" id="vaultSearchInput" class="w-full bg-[#0d1117] text-gray-300 p-3 rounded-lg border border-gray-700 focus:outline-none focus:border-indigo-500 transition-colors font-mono text-sm" placeholder="Search knowledge base...">
+            </div>
+            <div id="vaultList" class="flex flex-col gap-6 max-h-96 overflow-y-auto pr-2">
+                <!-- Vault items injected here -->
+            </div>
+        </div>
+
     </div>
     </div>
     </div>
@@ -496,6 +510,60 @@
         }
     }
     fetchAnalytics();
+    
+    let vaultData = [];
+    async function fetchVault() {
+        try {
+            const res = await fetch('/api/vault', { headers: { 'Authorization': `Bearer ${token}` } });
+            if (!res.ok) return;
+            vaultData = await res.json();
+            renderVault(vaultData);
+        } catch (e) {
+            console.error("Failed to fetch vault", e);
+        }
+    }
+    
+    function renderVault(data) {
+        const vaultList = document.getElementById('vaultList');
+        vaultList.innerHTML = '';
+        if (data.length === 0) {
+            vaultList.innerHTML = '<p class="text-gray-500 text-sm text-center py-4">No code entries in your organization vault.</p>';
+            return;
+        }
+        
+        data.forEach(entry => {
+            const div = document.createElement('div');
+            div.className = "bg-[#0a0d14] p-4 rounded-xl border border-gray-800 shadow-inner";
+            
+            const vCode = entry.vulnerable_code.replace(/</g, "&lt;").replace(/>/g, "&gt;");
+            const sCode = entry.secure_code.replace(/</g, "&lt;").replace(/>/g, "&gt;");
+            
+            div.innerHTML = `
+                <p class="text-xs text-gray-500 mb-2">Saved: ${new Date(entry.created_at).toLocaleString()}</p>
+                <div class="grid grid-cols-1 lg:grid-cols-2 gap-4">
+                    <div>
+                        <h4 class="text-xs text-red-400 font-bold mb-2 uppercase tracking-wide">Vulnerable Code</h4>
+                        <pre class="bg-[#111827] text-gray-300 p-3 rounded border border-gray-800 text-xs font-mono overflow-x-auto whitespace-pre-wrap max-h-64 overflow-y-auto">${vCode}</pre>
+                    </div>
+                    <div>
+                        <h4 class="text-xs text-green-400 font-bold mb-2 uppercase tracking-wide">Secure Code</h4>
+                        <pre class="bg-[#111827] text-green-400 p-3 rounded border border-gray-800 text-xs font-mono overflow-x-auto whitespace-pre-wrap max-h-64 overflow-y-auto">${sCode}</pre>
+                    </div>
+                </div>
+            `;
+            vaultList.appendChild(div);
+        });
+    }
+    fetchVault();
+
+    document.getElementById('vaultSearchInput').addEventListener('input', (e) => {
+        const keyword = e.target.value.toLowerCase();
+        const filtered = vaultData.filter(entry => 
+            entry.vulnerable_code.toLowerCase().includes(keyword) || 
+            entry.secure_code.toLowerCase().includes(keyword)
+        );
+        renderVault(filtered);
+    });
     
     document.getElementById('copyApiKeyBtn').addEventListener('click', () => {
         const apiKey = document.getElementById('displayApiKey').value;
@@ -835,6 +903,7 @@
                 }
                 fixedCodeResult.textContent = cleanCode;
                 fixedCodeContainer.classList.remove('hidden');
+                await fetchVault();
             }
         } catch (e) {
             alert("Network error.");
