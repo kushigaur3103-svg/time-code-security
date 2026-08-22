@@ -20,7 +20,12 @@ import openai
 import cohere
 import secrets
 import re
-import razorpay
+try:
+    import razorpay
+    razorpay_client = razorpay.Client(auth=("rzp_test_dummy_key", "dummy_secret_key"))
+except ImportError as e:
+    razorpay_client = None
+    print(f"[!] Warning: Razorpay import failed ({e}). Payments will be disabled, but server will start.")
 
 try:
     from rag_engine.vector_db import CodeContextEngine
@@ -28,8 +33,6 @@ try:
 except Exception as e:
     rag_engine_instance = None
     print(f"RAG Load Error: {e}")
-
-razorpay_client = razorpay.Client(auth=("rzp_test_dummy_key", "dummy_secret_key"))
 
 SECRET_PATTERNS = {
     "AWS Access Keys": re.compile(r"(?i)AKIA[0-9A-Z]{16}"),

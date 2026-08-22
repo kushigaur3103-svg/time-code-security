@@ -15,3 +15,5 @@ google-generativeai
 openai
 cohere
 razorpay
+celery
+redis
