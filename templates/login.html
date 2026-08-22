@@ -117,10 +117,10 @@
                     if (!isLogin) {
                         localStorage.setItem('token', data.token);
                         alert("Account created successfully!");
-                        window.location.href = "/";
+                        window.location.href = "/dashboard";
                     } else {
                         localStorage.setItem('token', data.token);
-                        window.location.href = "/";
+                        window.location.href = "/dashboard";
                     }
                 }
             } catch (err) {

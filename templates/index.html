@@ -382,7 +382,7 @@
             const res = await fetch('/api/me', { headers: { 'Authorization': 'Bearer ' + currentToken } });
             if (res.status === 401 || res.status === 403) {
                 localStorage.removeItem('token');
-                window.location.href = '/login';
+                window.location.href = '/';
                 return;
             }
             if (!res.ok) return;
@@ -986,7 +986,7 @@
 
     document.getElementById('logoutBtn').addEventListener('click', () => {
         localStorage.removeItem('token');
-        window.location.href = '/login';
+        window.location.href = '/';
     });
 
     const scanDependenciesBtn = document.getElementById('scanDependenciesBtn');

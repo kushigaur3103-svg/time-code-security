@@ -101,6 +101,10 @@ class CodePayload(BaseModel):
 
 @app.get("/")
 async def home(request: Request):
+    return templates.TemplateResponse(request=request, name="landing.html")
+
+@app.get("/dashboard")
+async def dashboard(request: Request):
     return templates.TemplateResponse(request=request, name="index.html")
 
 @app.get("/login")

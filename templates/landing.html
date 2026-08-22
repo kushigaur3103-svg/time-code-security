@@ -1,0 +1,179 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>TimeCodeSecurity | Secure Your Code Before They Hack It</title>
+    <script src="https://cdn.tailwindcss.com"></script>
+    <style>
+        @import url('https://fonts.googleapis.com/css2?family=Inter:wght@400;600;800;900&family=JetBrains+Mono:wght@400;700&display=swap');
+        body { font-family: 'Inter', sans-serif; background-color: #030712; color: #f9fafb; overflow-x: hidden; }
+        .font-mono { font-family: 'JetBrains Mono', monospace; }
+        .gradient-text { background: linear-gradient(to right, #60a5fa, #c084fc); -webkit-background-clip: text; color: transparent; }
+        .glow { box-shadow: 0 0 40px rgba(96, 165, 250, 0.15); }
+    </style>
+</head>
+<body class="antialiased selection:bg-blue-500/30 selection:text-blue-200">
+
+    <!-- Navbar -->
+    <nav class="fixed w-full z-50 top-0 bg-[#030712]/80 backdrop-blur-xl border-b border-gray-800">
+        <div class="max-w-7xl mx-auto px-6 h-20 flex items-center justify-between">
+            <div class="flex items-center gap-2">
+                <svg class="w-8 h-8 text-blue-500" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M12 15v2m-6 4h12a2 2 0 002-2v-6a2 2 0 00-2-2H6a2 2 0 00-2 2v6a2 2 0 002 2zm10-10V7a4 4 0 00-8 0v4h8z"></path></svg>
+                <span class="font-bold text-xl tracking-tight text-white">TimeCode<span class="text-blue-500">Security</span></span>
+            </div>
+            <div class="hidden md:flex gap-8 text-sm font-semibold text-gray-300">
+                <a href="#features" class="hover:text-white transition">Features</a>
+                <a href="#pricing" class="hover:text-white transition">Pricing</a>
+                <a href="#customers" class="hover:text-white transition">Customers</a>
+            </div>
+            <div class="flex gap-4">
+                <a href="/login" class="text-sm font-bold text-gray-300 hover:text-white py-2 px-4 transition">Login</a>
+                <a href="/login" class="text-sm font-bold bg-blue-600 hover:bg-blue-500 text-white py-2 px-5 rounded-full transition shadow-[0_0_15px_rgba(37,99,235,0.4)] hover:shadow-[0_0_25px_rgba(37,99,235,0.6)]">Start Free</a>
+            </div>
+        </div>
+    </nav>
+
+    <!-- Hero Section -->
+    <section class="relative pt-40 pb-20 overflow-hidden">
+        <div class="absolute inset-0 bg-[url('https://www.transparenttextures.com/patterns/carbon-fibre.png')] opacity-5"></div>
+        <div class="absolute top-1/2 left-1/2 -translate-x-1/2 -translate-y-1/2 w-[800px] h-[800px] bg-blue-600/20 rounded-full blur-[120px] pointer-events-none"></div>
+        
+        <div class="max-w-7xl mx-auto px-6 relative z-10 text-center flex flex-col items-center">
+            <div class="inline-block py-1 px-3 rounded-full border border-gray-700 bg-gray-800/50 text-xs font-bold text-gray-300 tracking-wider mb-8 uppercase">
+                <span class="text-blue-400 mr-2">New</span> Enterprise Code Vault v2.0 is Live
+            </div>
+            <h1 class="text-5xl md:text-7xl font-black tracking-tight mb-6 leading-tight">
+                Secure Your Code.<br/>
+                <span class="gradient-text">Before They Hack It.</span>
+            </h1>
+            <p class="text-lg md:text-xl text-gray-400 max-w-3xl mb-10 leading-relaxed">
+                The most advanced DevSecOps AI engine. Automatically detect vulnerabilities, redact zero-leak secrets, fix flawed logic, and seamlessly integrate into your CI/CD pipelines—in real-time.
+            </p>
+            <div class="flex flex-col sm:flex-row gap-4 w-full justify-center max-w-md mx-auto sm:max-w-none">
+                <a href="/login" class="bg-white text-black font-bold py-4 px-8 rounded-full text-lg hover:bg-gray-200 transition-all text-center">Start Scanning for Free</a>
+                <a href="#pricing" class="bg-gray-900 border border-gray-700 text-white font-bold py-4 px-8 rounded-full text-lg hover:bg-gray-800 transition-all text-center">View Enterprise Plans</a>
+            </div>
+        </div>
+    </section>
+
+    <!-- Social Proof Banner -->
+    <section id="customers" class="border-y border-gray-800/50 bg-[#070b14] py-8">
+        <div class="max-w-7xl mx-auto px-6 text-center">
+            <p class="text-sm font-bold text-gray-500 uppercase tracking-widest mb-6">Trusted by DevSecOps Teams Worldwide</p>
+            <div class="flex flex-wrap justify-center gap-12 opacity-40 grayscale">
+                <!-- Mock Logos -->
+                <div class="text-xl font-black">ACME Corp</div>
+                <div class="text-xl font-black">CyberTech</div>
+                <div class="text-xl font-black">GlobalBank</div>
+                <div class="text-xl font-black">CloudScale AI</div>
+                <div class="text-xl font-black">SecureNet</div>
+            </div>
+        </div>
+    </section>
+
+    <!-- Features Grid -->
+    <section id="features" class="py-32 relative">
+        <div class="max-w-7xl mx-auto px-6">
+            <div class="text-center mb-20">
+                <h2 class="text-4xl font-black mb-4">Billion-Dollar Features. <br/><span class="text-gray-400">Zero Configuration.</span></h2>
+            </div>
+            
+            <div class="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-2 gap-8">
+                <!-- Feature 1 -->
+                <div class="bg-gray-900/40 border border-gray-800 p-8 rounded-3xl hover:bg-gray-800/50 transition">
+                    <div class="w-14 h-14 bg-red-900/30 rounded-2xl flex items-center justify-center mb-6 border border-red-500/20">
+                        <svg class="w-7 h-7 text-red-500" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M12 15v2m-6 4h12a2 2 0 002-2v-6a2 2 0 00-2-2H6a2 2 0 00-2 2v6a2 2 0 002 2zm10-10V7a4 4 0 00-8 0v4h8z"></path></svg>
+                    </div>
+                    <h3 class="text-2xl font-bold mb-3">Zero-Leak Redaction</h3>
+                    <p class="text-gray-400 leading-relaxed">Our strict Regex engine hunts down AWS Keys, Stripe secrets, and generic tokens, replacing them with <code class="text-red-400 bg-red-900/20 px-1 rounded">***REDACTED***</code> locally before any code reaches the AI.</p>
+                </div>
+                <!-- Feature 2 -->
+                <div class="bg-gray-900/40 border border-gray-800 p-8 rounded-3xl hover:bg-gray-800/50 transition">
+                    <div class="w-14 h-14 bg-blue-900/30 rounded-2xl flex items-center justify-center mb-6 border border-blue-500/20">
+                        <svg class="w-7 h-7 text-blue-500" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M4 7v10c0 2.21 3.582 4 8 4s8-1.79 8-4V7M4 7c0 2.21 3.582 4 8 4s8-1.79 8-4M4 7c0-2.21 3.582-4 8-4s8 1.79 8 4m0 5c0 2.21-3.582 4-8 4s-8-1.79-8-4"></path></svg>
+                    </div>
+                    <h3 class="text-2xl font-bold mb-3">B2B Workspaces & Vault</h3>
+                    <p class="text-gray-400 leading-relaxed">Create isolated team organizations. Every AI auto-fix generates a permanent record in your Company Code Vault, building an enterprise knowledge base over time.</p>
+                </div>
+                <!-- Feature 3 -->
+                <div class="bg-gray-900/40 border border-gray-800 p-8 rounded-3xl hover:bg-gray-800/50 transition">
+                    <div class="w-14 h-14 bg-purple-900/30 rounded-2xl flex items-center justify-center mb-6 border border-purple-500/20">
+                        <svg class="w-7 h-7 text-purple-500" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M10 20l4-16m4 4l4 4-4 4M6 16l-4-4 4-4"></path></svg>
+                    </div>
+                    <h3 class="text-2xl font-bold mb-3">CI/CD Pipeline Integration</h3>
+                    <p class="text-gray-400 leading-relaxed">Generate a Developer API Key and plug it directly into GitHub Actions or GitLab CI. Enforce autonomous security gates that block vulnerable PRs from deploying.</p>
+                </div>
+                <!-- Feature 4 -->
+                <div class="bg-gray-900/40 border border-gray-800 p-8 rounded-3xl hover:bg-gray-800/50 transition">
+                    <div class="w-14 h-14 bg-green-900/30 rounded-2xl flex items-center justify-center mb-6 border border-green-500/20">
+                        <svg class="w-7 h-7 text-green-500" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M13 10V3L4 14h7v7l9-11h-7z"></path></svg>
+                    </div>
+                    <h3 class="text-2xl font-bold mb-3">Slack Webhooks & Polling</h3>
+                    <p class="text-gray-400 leading-relaxed">Asynchronous scanning architecture automatically sends instant critical vulnerability alerts to your Slack or Discord channels without blocking your workflow.</p>
+                </div>
+            </div>
+        </div>
+    </section>
+
+    <!-- Pricing Section -->
+    <section id="pricing" class="py-24 bg-[#070b14] border-y border-gray-800/50">
+        <div class="max-w-7xl mx-auto px-6">
+            <div class="text-center mb-16">
+                <h2 class="text-4xl font-black mb-4">Simple Pricing. <br/><span class="text-blue-500">Unbeatable Security.</span></h2>
+            </div>
+            
+            <div class="grid grid-cols-1 md:grid-cols-2 gap-8 max-w-4xl mx-auto">
+                <!-- Free Plan -->
+                <div class="bg-[#030712] border border-gray-800 p-8 rounded-3xl">
+                    <h3 class="text-xl font-bold text-gray-400 mb-2">Free Plan</h3>
+                    <div class="text-4xl font-black mb-6">$0<span class="text-lg font-normal text-gray-500">/mo</span></div>
+                    <ul class="space-y-4 mb-8 text-gray-400">
+                        <li class="flex gap-3 items-center"><svg class="w-5 h-5 text-gray-500" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M5 13l4 4L19 7"></path></svg> 5 Deep AI Scans Total</li>
+                        <li class="flex gap-3 items-center"><svg class="w-5 h-5 text-gray-500" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M5 13l4 4L19 7"></path></svg> Basic On-Screen Reports</li>
+                        <li class="flex gap-3 items-center"><svg class="w-5 h-5 text-gray-500" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M5 13l4 4L19 7"></path></svg> Zero-Leak Redaction</li>
+                    </ul>
+                    <a href="/login" class="block w-full text-center bg-gray-800 hover:bg-gray-700 text-white font-bold py-3 rounded-xl transition">Start Free</a>
+                </div>
+                
+                <!-- PRO Plan -->
+                <div class="bg-gradient-to-b from-blue-900/40 to-[#030712] border border-blue-500/30 p-8 rounded-3xl relative glow">
+                    <div class="absolute top-0 right-8 transform -translate-y-1/2 bg-blue-600 text-white text-xs font-bold py-1 px-3 rounded-full uppercase tracking-wide">Most Popular</div>
+                    <h3 class="text-xl font-bold text-blue-400 mb-2">Enterprise PRO Plan</h3>
+                    <div class="flex items-end gap-3 mb-1">
+                        <div class="text-4xl font-black">$499<span class="text-lg font-normal text-gray-500">/mo</span></div>
+                    </div>
+                    <div class="text-sm font-bold text-green-400 mb-6 border-b border-gray-800 pb-6">Special Indian Pricing: ₹499/mo</div>
+                    
+                    <ul class="space-y-4 mb-8 text-gray-300">
+                        <li class="flex gap-3 items-center"><svg class="w-5 h-5 text-blue-500" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M5 13l4 4L19 7"></path></svg> Unlimited AI Scans</li>
+                        <li class="flex gap-3 items-center"><svg class="w-5 h-5 text-blue-500" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M5 13l4 4L19 7"></path></svg> CI/CD Pipeline API Key</li>
+                        <li class="flex gap-3 items-center"><svg class="w-5 h-5 text-blue-500" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M5 13l4 4L19 7"></path></svg> B2B Workspaces & Code Vault</li>
+                        <li class="flex gap-3 items-center"><svg class="w-5 h-5 text-blue-500" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M5 13l4 4L19 7"></path></svg> Slack Webhooks & Defensive Testing</li>
+                    </ul>
+                    <a href="/login" class="block w-full text-center bg-blue-600 hover:bg-blue-500 text-white font-bold py-3 rounded-xl transition shadow-lg">Upgrade to PRO</a>
+                </div>
+            </div>
+        </div>
+    </section>
+
+    <!-- Footer -->
+    <footer class="bg-[#030712] py-12 border-t border-gray-800">
+        <div class="max-w-7xl mx-auto px-6 flex flex-col md:flex-row justify-between items-center gap-6">
+            <div class="flex items-center gap-2">
+                <svg class="w-6 h-6 text-blue-500" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M12 15v2m-6 4h12a2 2 0 002-2v-6a2 2 0 00-2-2H6a2 2 0 00-2 2v6a2 2 0 002 2zm10-10V7a4 4 0 00-8 0v4h8z"></path></svg>
+                <span class="font-bold tracking-tight text-white">TimeCode<span class="text-blue-500">Security</span></span>
+            </div>
+            <div class="flex gap-6 text-sm text-gray-500">
+                <a href="#" class="hover:text-white transition">Privacy Policy</a>
+                <a href="#" class="hover:text-white transition">Terms of Service</a>
+                <a href="#" class="hover:text-white transition">Contact Sales</a>
+            </div>
+            <div class="text-sm text-gray-600">
+                &copy; 2026 TimeCodeSecurity Inc. All rights reserved.
+            </div>
+        </div>
+    </footer>
+
+</body>
+</html>
