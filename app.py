@@ -730,7 +730,7 @@ async def scan_code(payload: CodePayload, background_tasks: BackgroundTasks, aut
             job_id = str(uuid.uuid4())
             code_hash = hashlib.sha256(f"{redacted_code}_{system_prompt}".encode('utf-8')).hexdigest()
             
-            new_job = ScanCache(job_id=job_id, code_hash=code_hash, status="pending", is_fix=False, report_text="")
+            new_job = ScanCache(job_id=job_id, code_hash=code_hash, status="pending", is_fix=False, report_text="AI Scan in progress...")
             db.add(new_job)
             
             user.scan_count += 1
