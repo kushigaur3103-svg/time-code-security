@@ -55,6 +55,7 @@
     </style>
 </head>
 <body class="bg-[#030712] text-white font-sans min-h-screen flex flex-col items-center py-12 relative overflow-x-hidden">
+    <div id="toast-container" class="fixed top-5 right-5 z-[100] flex flex-col gap-3 pointer-events-none"></div>
     <!-- Cyber Grid Background -->
     <div class="fixed inset-0 cyber-grid z-0 pointer-events-none"></div>
     <!-- Animated Scanline -->
@@ -360,6 +361,45 @@
     </div>
     
 <script>
+    // ==========================================
+    // BILLION-DOLLAR ENTERPRISE TOAST SYSTEM
+    // ==========================================
+    function showToast(message, type="success") {
+        const container = document.getElementById('toast-container');
+        if (!container) return;
+        const toast = document.createElement('div');
+        const bgColor = type === 'success' ? 'bg-emerald-500' : (type === 'error' ? 'bg-rose-500' : 'bg-gray-800');
+        toast.className = `min-w-[280px] pointer-events-auto p-4 rounded-xl shadow-2xl text-white text-sm font-semibold tracking-wide transition-all duration-300 transform translate-x-full opacity-0 flex items-center justify-between ${bgColor} border border-white/10 backdrop-blur-md`;
+        
+        const icon = type === 'success' ? '<svg class="w-5 h-5 mr-3 flex-shrink-0" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2.5" d="M5 13l4 4L19 7"></path></svg>' : (type === 'error' ? '<svg class="w-5 h-5 mr-3 flex-shrink-0" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2.5" d="M6 18L18 6M6 6l12 12"></path></svg>' : '');
+        
+        toast.innerHTML = `<div class="flex items-center">${icon} <span>${message}</span></div> <button onclick="this.parentElement.remove()" class="text-white/60 hover:text-white transition-colors ml-4 focus:outline-none">&times;</button>`;
+        
+        container.appendChild(toast);
+        
+        requestAnimationFrame(() => {
+            requestAnimationFrame(() => {
+                toast.classList.remove('translate-x-full', 'opacity-0');
+            });
+        });
+        
+        setTimeout(() => {
+            toast.classList.add('translate-x-full', 'opacity-0');
+            setTimeout(() => toast.remove(), 300);
+        }, 4000);
+    }
+    
+    // Globally override primitive alert
+    window.alert = function(msg) {
+        if (!msg) return;
+        const lowerMsg = String(msg).toLowerCase();
+        if (lowerMsg.includes('error') || lowerMsg.includes('fail') || lowerMsg.includes('limit') || lowerMsg.includes('no code') || lowerMsg.includes('please')) {
+            showToast(msg, 'error');
+        } else {
+            showToast(msg, 'success');
+        }
+    };
+
     // ==========================================
     // ULTIMATE BULLET-PROOF GLOBAL JS SHIELD
     // ==========================================
