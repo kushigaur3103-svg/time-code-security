@@ -1,0 +1,65 @@
+name: TimeCodeSecurity CI/CD Gateway
+
+on:
+  push:
+    branches:
+      - main
+  pull_request:
+    branches:
+      - main
+
+jobs:
+  security_scan:
+    runs-on: ubuntu-latest
+    name: DevSecOps Code Scan
+    steps:
+      - name: Checkout Code
+        uses: actions/checkout@v3
+
+      - name: Run TimeCodeSecurity Deep Scan
+        run: |
+          echo "Initiating TimeCodeSecurity AI Engine..."
+          
+          # Read the vulnerable python file and escape it for JSON
+          # In a real environment, you might scan multiple files or a diff
+          FILE_CONTENT=$(cat vulnerable_test.py)
+          
+          # Create a secure JSON payload using jq
+          PAYLOAD=$(jq -n --arg code "$FILE_CONTENT" --arg filename "vulnerable_test.py" '{code: $code, filename: $filename}')
+          
+          echo "Sending payload to TimeCodeSecurity API..."
+          
+          # Send POST request to production API
+          HTTP_RESPONSE=$(curl -s -w "\n%{http_code}" -X POST https://time-code-security.onrender.com/api/cicd/scan \
+            -H "Content-Type: application/json" \
+            -H "X-API-Key: ${{ secrets.TCS_API_KEY }}" \
+            -d "$PAYLOAD")
+          
+          # Extract body and status code
+          HTTP_BODY=$(echo "$HTTP_RESPONSE" | sed -e '$d')
+          HTTP_STATUS=$(echo "$HTTP_RESPONSE" | tail -n1)
+          
+          if [ "$HTTP_STATUS" -ne 200 ]; then
+            echo "::error::API Request Failed. Status: $HTTP_STATUS, Response: $HTTP_BODY"
+            exit 1
+          fi
+          
+          echo "Analysis complete. Parsing results..."
+          
+          # Use jq to parse the vulnerabilities_found flag
+          VULNS_FOUND=$(echo "$HTTP_BODY" | jq -r '.vulnerabilities_found')
+          SEVERITY=$(echo "$HTTP_BODY" | jq -r '.severity_level')
+          REPORT=$(echo "$HTTP_BODY" | jq -r '.report')
+          
+          echo "=========================================================="
+          echo "TimeCodeSecurity Report (Severity: $SEVERITY)"
+          echo "=========================================================="
+          echo "$REPORT"
+          echo "=========================================================="
+          
+          if [ "$VULNS_FOUND" = "true" ]; then
+            echo "::error::TimeCodeSecurity detected vulnerabilities! Failing the build."
+            exit 1
+          else
+            echo "Code is secure. Pipeline may proceed."
+          fi
