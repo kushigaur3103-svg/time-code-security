@@ -269,6 +269,36 @@ async def get_analytics(authorization: str = Header(None)):
     finally:
         db.close()
 
+class AuditDependenciesPayload(BaseModel):
+    file_type: str
+    content: str
+
+@app.post("/api/audit-dependencies")
+async def audit_dependencies(payload: AuditDependenciesPayload, authorization: str = Header(None)):
+    email = await get_current_user_email(authorization)
+    db = SessionLocal()
+    try:
+        user = db.query(User).filter(User.email == email).first()
+        if not user:
+            raise HTTPException(status_code=404, detail="User not found")
+            
+        system_prompt = (
+            "You are an expert security auditor. Review the provided dependency file. "
+            "Identify any notoriously vulnerable packages, suggest secure version upgrades, "
+            "and warn about potential supply chain risks. Return the analysis formatted in clean markdown "
+            "without any extra explanations."
+        )
+        
+        code_input = f"File Type: {payload.file_type}\n\n{payload.content}"
+        
+        try:
+            ai_reply = get_cached_or_generate_ai(code_input, system_prompt, is_fix=False, db=db)
+            return {"report": ai_reply}
+        except Exception as e:
+            return {"error": f"API Error: {str(e)}"}
+    finally:
+        db.close()
+
 class UpgradePayload(BaseModel):
     key: str
 

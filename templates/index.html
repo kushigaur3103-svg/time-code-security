@@ -200,6 +200,31 @@
 
         </div>
 
+        <!-- Supply Chain Auditor -->
+        <div class="mt-8 bg-gray-900/70 backdrop-blur-2xl border border-gray-700/50 rounded-2xl p-6 shadow-2xl w-full">
+            <h2 class="text-lg font-bold text-gray-200 mb-4 flex items-center gap-2">
+                <svg class="w-5 h-5 text-orange-400" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M19 11H5m14 0a2 2 0 012 2v6a2 2 0 01-2 2H5a2 2 0 01-2-2v-6a2 2 0 012-2m14 0V9a2 2 0 00-2-2M5 11V9a2 2 0 012-2m0 0V5a2 2 0 012-2h6a2 2 0 012 2v2M7 7h10"></path></svg>
+                Supply Chain Auditor
+            </h2>
+            <div class="flex flex-col gap-4">
+                <select id="dependencyFileType" class="bg-[#0d1117] text-white p-3 rounded-lg border border-gray-700 focus:outline-none focus:border-orange-500 transition-colors font-mono text-sm w-full sm:w-64">
+                    <option value="requirements.txt">Python (requirements.txt)</option>
+                    <option value="package.json">Node.js (package.json)</option>
+                </select>
+                <textarea id="dependencyInput" spellcheck="false" class="w-full h-48 bg-[#0d1117] text-orange-400 font-mono text-sm leading-relaxed p-4 rounded-xl border border-gray-700/80 focus:outline-none focus:border-orange-500 focus:ring-1 focus:ring-orange-500 transition-all resize-none shadow-inner" placeholder="Paste your requirements.txt or package.json here..."></textarea>
+                <button id="scanDependenciesBtn" class="bg-gradient-to-r from-orange-600 to-red-600 hover:from-orange-500 hover:to-red-500 text-white font-bold py-3 px-4 rounded-xl shadow-lg transition-all duration-300 flex justify-center items-center gap-2">
+                    <svg class="w-5 h-5" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M21 21l-6-6m2-5a7 7 0 11-14 0 7 7 0 0114 0z"></path></svg>
+                    Scan Dependencies
+                </button>
+                <div id="dependencyReportContainer" class="hidden mt-4">
+                    <div class="flex justify-between items-center mb-2">
+                        <h4 class="text-orange-400 font-bold flex items-center gap-2">Audit Report</h4>
+                    </div>
+                    <div id="dependencyResult" class="bg-[#0a0d14] text-gray-300 font-mono text-sm p-6 rounded-xl border border-gray-700/80 whitespace-pre-wrap leading-relaxed shadow-inner overflow-x-auto"></div>
+                </div>
+            </div>
+        </div>
+
         <!-- Integrations Section -->
         <div class="mt-8 bg-gray-900/70 backdrop-blur-2xl border border-gray-700/50 rounded-2xl p-6 shadow-2xl w-full">
             <h2 class="text-lg font-bold text-gray-200 mb-4 flex items-center gap-2">
@@ -863,6 +888,55 @@
     document.getElementById('logoutBtn').addEventListener('click', () => {
         localStorage.removeItem('token');
         window.location.href = '/login';
+    });
+
+    const scanDependenciesBtn = document.getElementById('scanDependenciesBtn');
+    const dependencyInput = document.getElementById('dependencyInput');
+    const dependencyFileType = document.getElementById('dependencyFileType');
+    const dependencyReportContainer = document.getElementById('dependencyReportContainer');
+    const dependencyResult = document.getElementById('dependencyResult');
+
+    scanDependenciesBtn.addEventListener('click', async () => {
+        const content = dependencyInput.value.trim();
+        const fileType = dependencyFileType.value;
+        
+        if (!content) {
+            alert("Please paste dependency file content.");
+            return;
+        }
+
+        scanDependenciesBtn.disabled = true;
+        const originalText = scanDependenciesBtn.innerHTML;
+        scanDependenciesBtn.innerHTML = "Auditing Dependencies...";
+        dependencyReportContainer.classList.add('hidden');
+
+        try {
+            const res = await fetch('/api/audit-dependencies', {
+                method: 'POST',
+                headers: { 
+                    'Content-Type': 'application/json',
+                    'Authorization': `Bearer ${token}` 
+                },
+                body: JSON.stringify({ file_type: fileType, content: content })
+            });
+            const data = await res.json();
+            
+            if (data.error || data.detail) {
+                alert("Audit Failed: " + (data.error || data.detail));
+            } else {
+                let cleanReport = data.report;
+                if (cleanReport.startsWith('```')) {
+                    cleanReport = cleanReport.replace(/^```[a-z]*\n/, '').replace(/\n```$/, '');
+                }
+                dependencyResult.textContent = cleanReport;
+                dependencyReportContainer.classList.remove('hidden');
+            }
+        } catch (e) {
+            alert("Network error.");
+        } finally {
+            scanDependenciesBtn.disabled = false;
+            scanDependenciesBtn.innerHTML = originalText;
+        }
     });
 </script>
 </body>
