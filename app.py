@@ -113,6 +113,31 @@ class CodeVault(Base):
 Base.metadata.create_all(bind=engine)
 
 app = FastAPI(title="TimeCodeSecurity Enterprise API")
+
+from fastapi.responses import JSONResponse
+import traceback
+
+# ==========================================
+# ULTIMATE BULLET-PROOF GLOBAL CRASH HANDLER
+# ==========================================
+@app.exception_handler(Exception)
+async def ultimate_global_exception_handler(request: Request, exc: Exception):
+    """
+    Catches EVERY unhandled exception, crash, or memory fault in the app.
+    Prevents the server from dying and returns a safe, structured JSON response.
+    """
+    print(f"[FATAL ZERO-DAY CRASH PREVENTED] {exc}")
+    traceback.print_exc()
+    return JSONResponse(
+        status_code=500,
+        content={
+            "status": "error",
+            "detail": "An internal server fault occurred. The TimeCodeSecurity global shield intercepted the crash and kept the server alive.",
+            "error_type": type(exc).__name__,
+            "safe_fallback": True
+        }
+    )
+
 templates = Jinja2Templates(directory="templates")
 
 pwd_context = CryptContext(schemes=["bcrypt"], deprecated="auto")

@@ -360,6 +360,18 @@
     </div>
     
 <script>
+    // ==========================================
+    // ULTIMATE BULLET-PROOF GLOBAL JS SHIELD
+    // ==========================================
+    window.onerror = function(message, source, lineno, colno, error) {
+        console.error("[CRITICAL UI CRASH PREVENTED]", message, error);
+        // Prevent infinite loops or frozen UI by silently catching errors
+        return true; 
+    };
+    window.addEventListener('unhandledrejection', function(event) {
+        console.error("[PROMISE CRASH PREVENTED]", event.reason);
+        event.preventDefault();
+    });
     const token = localStorage.getItem('token');
     if (!token) {
         window.location.href = '/login';
