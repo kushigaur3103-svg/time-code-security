@@ -17,3 +17,4 @@ cohere
 razorpay
 celery
 redis
+pydantic

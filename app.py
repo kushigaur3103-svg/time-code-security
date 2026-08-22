@@ -66,10 +66,14 @@ def apply_zero_leak_redaction(code: str):
 load_dotenv()
 
 DATABASE_URL = os.getenv("DATABASE_URL")
-if not DATABASE_URL:
-    raise RuntimeError("CRITICAL ERROR: DATABASE_URL is not set.")
-
-engine = create_engine(DATABASE_URL)
+try:
+    if not DATABASE_URL:
+        raise ValueError("DATABASE_URL missing")
+    engine = create_engine(DATABASE_URL)
+except Exception as e:
+    print(f"[!] Warning: PostgreSQL connection failed or missing ({e}). Falling back to SQLite.")
+    DATABASE_URL = "sqlite:///./sql_app.db"
+    engine = create_engine(DATABASE_URL, connect_args={"check_same_thread": False})
 SessionLocal = sessionmaker(autocommit=False, autoflush=False, bind=engine)
 Base = declarative_base()
 
@@ -726,7 +730,7 @@ async def scan_code(payload: CodePayload, background_tasks: BackgroundTasks, aut
             job_id = str(uuid.uuid4())
             code_hash = hashlib.sha256(f"{redacted_code}_{system_prompt}".encode('utf-8')).hexdigest()
             
-            new_job = ScanCache(job_id=job_id, code_hash=code_hash, status="pending", is_fix=False)
+            new_job = ScanCache(job_id=job_id, code_hash=code_hash, status="pending", is_fix=False, report_text="")
             db.add(new_job)
             
             user.scan_count += 1
@@ -952,6 +956,6 @@ async def generate_test(payload: CodePayload, authorization: str = Header(None))
 
 if __name__ == "__main__":
     import os
-    port = int(os.environ.get("PORT", 8000))
+    port = int(os.environ.get("PORT", 10000))
     print(f"--- Starting TimeCodeSecurity Web Server on port {port} ---")
-    uvicorn.run("app:app", host="0.0.0.0", port=port, reload=False)
+    uvicorn.run(app, host="0.0.0.0", port=port)
