@@ -333,15 +333,21 @@ async def get_analytics(authorization: str = Header(None)):
         total_scans = db.query(ScanCache).filter(ScanCache.is_fix != True).count()
         total_fixes = db.query(ScanCache).filter(ScanCache.is_fix == True).count()
         
-        # Real-time threat intelligence parsing from actual scan reports
-        critical_count = db.query(ScanCache).filter(ScanCache.is_fix != True, ScanCache.report_text.ilike("%critical%")).count()
-        high_count = db.query(ScanCache).filter(ScanCache.is_fix != True, ScanCache.report_text.ilike("%high%")).count()
-        medium_count = db.query(ScanCache).filter(ScanCache.is_fix != True, ScanCache.report_text.ilike("%medium%")).count()
-        low_count = db.query(ScanCache).filter(ScanCache.is_fix != True, ScanCache.report_text.ilike("%low%")).count()
+        critical_count = 0
+        high_count = 0
+        medium_count = 0
+        low_count = 0
         
-        # Fallback logic to prevent empty donut charts
-        if (critical_count + high_count + medium_count + low_count) == 0:
-            low_count = total_scans # Default to low if LLM didn't use specific keywords
+        all_reports = db.query(ScanCache.report_text).filter(ScanCache.is_fix != True).all()
+        for (report,) in all_reports:
+            if not report: continue
+            text = report.lower()
+            if 'critical' in text: critical_count += 1
+            elif 'high' in text: high_count += 1
+            elif 'medium' in text: medium_count += 1
+            elif re.search(r'\blow\b', text): low_count += 1
+        
+        # Removed fallback logic so chart accurately reflects 0 if no severities are found in reports
             
         severity_breakdown = {
             "Critical": critical_count,
