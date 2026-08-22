@@ -1,0 +1,43 @@
+{
+  "name": "timecodesecurity-vscode",
+  "displayName": "TimeCodeSecurity AI",
+  "description": "Enterprise AI DevSecOps Code Scanner & Auto-Remediation",
+  "version": "1.0.0",
+  "engines": {
+    "vscode": "^1.74.0"
+  },
+  "categories": [
+    "Security",
+    "Linters"
+  ],
+  "main": "./extension.js",
+  "contributes": {
+    "commands": [
+      {
+        "command": "timecodesecurity.scanActiveFile",
+        "title": "TimeCodeSecurity: Scan Active File"
+      }
+    ],
+    "keybindings": [
+      {
+        "command": "timecodesecurity.scanActiveFile",
+        "key": "ctrl+alt+s",
+        "mac": "cmd+alt+s",
+        "when": "editorTextFocus"
+      }
+    ],
+    "configuration": {
+      "title": "TimeCodeSecurity",
+      "properties": {
+        "timecodesecurity.apiKey": {
+          "type": "string",
+          "default": "",
+          "description": "Your Developer API Key (e.g. tcs_...) generated from the dashboard."
+        }
+      }
+    }
+  },
+  "dependencies": {
+    "node-fetch": "^2.6.7"
+  }
+}
