@@ -364,6 +364,16 @@
         window.location.href = '/login';
     }
 
+    const originalFetch = window.fetch;
+    window.fetch = async function() {
+        const response = await originalFetch.apply(this, arguments);
+        if (response.status === 401 || response.status === 403) {
+            localStorage.removeItem('token');
+            window.location.href = '/login';
+        }
+        return response;
+    };
+
     const scanBtn = document.getElementById('scanBtn');
     const codeInput = document.getElementById('codeInput');
     const reportContainer = document.getElementById('reportContainer');
@@ -380,11 +390,6 @@
         try {
             const currentToken = localStorage.getItem('token');
             const res = await fetch('/api/me', { headers: { 'Authorization': 'Bearer ' + currentToken } });
-            if (res.status === 401 || res.status === 403) {
-                localStorage.removeItem('token');
-                window.location.href = '/';
-                return;
-            }
             if (!res.ok) return;
             const data = await res.json();
             isPremium = data.is_premium;
@@ -992,7 +997,7 @@
 
     document.getElementById('logoutBtn').addEventListener('click', () => {
         localStorage.removeItem('token');
-        window.location.href = '/';
+        window.location.href = '/login';
     });
 
     const scanDependenciesBtn = document.getElementById('scanDependenciesBtn');
