@@ -22,6 +22,13 @@ import secrets
 import re
 import razorpay
 
+try:
+    from rag_engine.vector_db import CodeContextEngine
+    rag_engine_instance = CodeContextEngine()
+except Exception as e:
+    rag_engine_instance = None
+    print(f"RAG Load Error: {e}")
+
 razorpay_client = razorpay.Client(auth=("rzp_test_dummy_key", "dummy_secret_key"))
 
 SECRET_PATTERNS = {
@@ -686,6 +693,18 @@ async def scan_code(payload: CodePayload, background_tasks: BackgroundTasks, aut
                 "Explicitly state which laws are violated. Also, assign a Severity Level (CRITICAL, HIGH, MEDIUM, LOW). "
                 "Provide strict remediation code and a severity score."
             )
+            # ====== GOD-MODE RAG CONTEXT INJECTION ======
+            if rag_engine_instance:
+                try:
+                    context_files = rag_engine_instance.retrieve_context("default_repo", payload.code, top_k=2)
+                    if context_files:
+                        context_str = "\n".join([f"--- File: {f['filename']} ---\n{f['content']}" for f in context_files])
+                        system_prompt += (
+                            f"\n\n[ARCHITECTURAL CONTEXT PROVIDED BY RAG ENGINE]\n"
+                            f"Consider the following related files from the codebase to detect cross-file vulnerabilities:\n{context_str}"
+                        )
+                except Exception as e:
+                    print(f"[RAG WARNING] {e}")
         else:
             system_prompt = (
                 "You are a basic code analyzer. Identify only simple syntax errors or basic bugs. "
@@ -806,6 +825,27 @@ class CICDScanPayload(BaseModel):
     code: str
     filename: str
 
+from typing import List, Dict
+class RAGIngestPayload(BaseModel):
+    repo_id: str
+    files: List[Dict[str, str]]
+
+@app.post("/api/rag/ingest")
+async def rag_ingest(payload: RAGIngestPayload, x_api_key: str = Header(None)):
+    if not x_api_key:
+        raise HTTPException(status_code=401, detail="X-API-Key header missing")
+    db = SessionLocal()
+    try:
+        user = db.query(User).filter(User.api_key == x_api_key).first()
+        if not user or not user.is_premium:
+            raise HTTPException(status_code=403, detail="PRO required for RAG ingestion")
+        if rag_engine_instance:
+            rag_engine_instance.ingest_repository(payload.repo_id, payload.files)
+            return {"status": "success", "message": f"Ingested {len(payload.files)} files into Vector DB."}
+        return {"status": "error", "message": "RAG Engine offline."}
+    finally:
+        db.close()
+
 @app.post("/api/cicd/scan")
 async def cicd_scan(payload: CICDScanPayload, x_api_key: str = Header(None)):
     if not x_api_key:
@@ -830,6 +870,19 @@ async def cicd_scan(payload: CICDScanPayload, x_api_key: str = Header(None)):
         )
 
         redacted_code, secrets_found = apply_zero_leak_redaction(payload.code)
+
+        # ====== GOD-MODE RAG CONTEXT INJECTION ======
+        if rag_engine_instance and user.is_premium:
+            try:
+                context_files = rag_engine_instance.retrieve_context("default_repo", redacted_code, top_k=2)
+                if context_files:
+                    context_str = "\n".join([f"--- File: {f['filename']} ---\n{f['content']}" for f in context_files])
+                    system_prompt += (
+                        f"\n\n[ARCHITECTURAL CONTEXT PROVIDED BY RAG ENGINE]\n"
+                        f"Consider the following related files from the codebase to detect cross-file vulnerabilities:\n{context_str}"
+                    )
+            except Exception as e:
+                print(f"[RAG WARNING] {e}")
 
         ai_reply = get_cached_or_generate_ai(redacted_code, system_prompt, is_fix=False, db=db)
         
