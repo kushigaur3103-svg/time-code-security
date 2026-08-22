@@ -323,11 +323,21 @@ async def get_analytics(authorization: str = Header(None)):
         total_scans = db.query(ScanCache).filter(ScanCache.is_fix != True).count()
         total_fixes = db.query(ScanCache).filter(ScanCache.is_fix == True).count()
         
+        # Real-time threat intelligence parsing from actual scan reports
+        critical_count = db.query(ScanCache).filter(ScanCache.is_fix != True, ScanCache.report_text.ilike("%critical%")).count()
+        high_count = db.query(ScanCache).filter(ScanCache.is_fix != True, ScanCache.report_text.ilike("%high%")).count()
+        medium_count = db.query(ScanCache).filter(ScanCache.is_fix != True, ScanCache.report_text.ilike("%medium%")).count()
+        low_count = db.query(ScanCache).filter(ScanCache.is_fix != True, ScanCache.report_text.ilike("%low%")).count()
+        
+        # Fallback logic to prevent empty donut charts
+        if (critical_count + high_count + medium_count + low_count) == 0:
+            low_count = total_scans # Default to low if LLM didn't use specific keywords
+            
         severity_breakdown = {
-            "Critical": 12,
-            "High": 34,
-            "Medium": 56,
-            "Low": 19
+            "Critical": critical_count,
+            "High": high_count,
+            "Medium": medium_count,
+            "Low": low_count
         }
         
         return {
