@@ -671,11 +671,30 @@
         }
     });
 
-    document.getElementById('devApiBtn').addEventListener('click', async () => {
+    document.getElementById('devApiBtn').addEventListener('click', async (e) => {
+        const btn = e.currentTarget;
+        const originalText = btn.innerHTML;
+        
+        async function copyAndShowToast(key) {
+            try {
+                await navigator.clipboard.writeText(key);
+                btn.innerHTML = "✅ Copied to Clipboard!";
+                btn.classList.add("text-green-400", "border-green-500");
+                setTimeout(() => {
+                    btn.innerHTML = originalText;
+                    btn.classList.remove("text-green-400", "border-green-500");
+                }, 2000);
+            } catch (err) {
+                console.error("Failed to copy", err);
+            }
+        }
+
         if (userApiKey) {
-            alert("Your Developer API Key (for VS Code integration):\n\n" + userApiKey);
+            await copyAndShowToast(userApiKey);
             return;
         }
+        
+        btn.innerHTML = '<svg class="animate-spin w-3.5 h-3.5 mr-1" viewBox="0 0 24 24" fill="none"><circle class="opacity-25" cx="12" cy="12" r="10" stroke="currentColor" stroke-width="4"></circle><path class="opacity-75" fill="currentColor" d="M4 12a8 8 0 018-8V0C5.373 0 0 5.373 0 12h4zm2 5.291A7.962 7.962 0 014 12H0c0 3.042 1.135 5.824 3 7.938l3-2.647z"></path></svg> Generating...';
         try {
             const res = await fetch('/api/developer-key', {
                 method: 'POST',
@@ -684,9 +703,14 @@
             if (!res.ok) throw new Error("Failed to generate key");
             const data = await res.json();
             userApiKey = data.api_key;
-            alert("New Developer API Key Generated (for VS Code integration):\n\n" + userApiKey);
-        } catch(e) {
-            alert("Error generating API key.");
+            await copyAndShowToast(userApiKey);
+        } catch(err) {
+            btn.innerHTML = "❌ Error";
+            btn.classList.add("text-red-400");
+            setTimeout(() => {
+                btn.innerHTML = originalText;
+                btn.classList.remove("text-red-400");
+            }, 2000);
         }
     });
 
