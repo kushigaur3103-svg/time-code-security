@@ -27,6 +27,29 @@ SECRET_PATTERNS = {
     "Generic Tokens": re.compile(r"(?i)(?:password|secret|api_key|token|auth)[\s=:]+['\"]([^'\"]+)['\"]")
 }
 
+def apply_zero_leak_redaction(code: str):
+    secrets_found = False
+    redacted_code = code
+    
+    if SECRET_PATTERNS["AWS Access Keys"].search(redacted_code):
+        secrets_found = True
+        redacted_code = SECRET_PATTERNS["AWS Access Keys"].sub("***REDACTED_BY_TIMECODESECURITY***", redacted_code)
+        
+    if SECRET_PATTERNS["Stripe Secrets"].search(redacted_code):
+        secrets_found = True
+        redacted_code = SECRET_PATTERNS["Stripe Secrets"].sub("***REDACTED_BY_TIMECODESECURITY***", redacted_code)
+        
+    def replace_generic(match):
+        full_match = match.group(0)
+        secret_val = match.group(1)
+        return full_match.replace(secret_val, "***REDACTED_BY_TIMECODESECURITY***")
+        
+    if SECRET_PATTERNS["Generic Tokens"].search(redacted_code):
+        secrets_found = True
+        redacted_code = SECRET_PATTERNS["Generic Tokens"].sub(replace_generic, redacted_code)
+        
+    return redacted_code, secrets_found
+
 load_dotenv()
 
 DATABASE_URL = os.getenv("DATABASE_URL")
@@ -313,6 +336,10 @@ async def audit_dependencies(payload: AuditDependenciesPayload, authorization: s
         
         try:
             ai_reply = get_cached_or_generate_ai(code_input, system_prompt, is_fix=False, db=db)
+            
+            user.scan_count += 1
+            db.commit()
+            
             return {"report": ai_reply}
         except Exception as e:
             return {"error": f"API Error: {str(e)}"}
@@ -402,7 +429,7 @@ async def generate_pdf(payload: ReportPayload, authorization: str = Header(None)
     return Response(content=pdf_output, media_type="application/pdf", headers={"Content-Disposition": "attachment; filename=report.pdf"})
 
 def get_cached_or_generate_ai(payload_code: str, system_prompt: str, is_fix: bool, db, existing_job_id: str = None):
-    code_hash = hashlib.sha256(f"{payload_code}_{is_fix}".encode('utf-8')).hexdigest()
+    code_hash = hashlib.sha256(f"{payload_code}_{system_prompt}".encode('utf-8')).hexdigest()
     cached = db.query(ScanCache).filter(ScanCache.code_hash == code_hash, ScanCache.is_fix == is_fix, ScanCache.status == 'completed').first()
     if cached:
         if existing_job_id:
@@ -579,28 +606,10 @@ async def scan_code(payload: CodePayload, background_tasks: BackgroundTasks, aut
             )
     
         try:
-            secrets_found = False
-            redacted_code = payload.code
-            
-            if SECRET_PATTERNS["AWS Access Keys"].search(redacted_code):
-                secrets_found = True
-                redacted_code = SECRET_PATTERNS["AWS Access Keys"].sub("***REDACTED_BY_TIMECODESECURITY***", redacted_code)
-                
-            if SECRET_PATTERNS["Stripe Secrets"].search(redacted_code):
-                secrets_found = True
-                redacted_code = SECRET_PATTERNS["Stripe Secrets"].sub("***REDACTED_BY_TIMECODESECURITY***", redacted_code)
-                
-            def replace_generic(match):
-                full_match = match.group(0)
-                secret_val = match.group(1)
-                return full_match.replace(secret_val, "***REDACTED_BY_TIMECODESECURITY***")
-                
-            if SECRET_PATTERNS["Generic Tokens"].search(redacted_code):
-                secrets_found = True
-                redacted_code = SECRET_PATTERNS["Generic Tokens"].sub(replace_generic, redacted_code)
+            redacted_code, secrets_found = apply_zero_leak_redaction(payload.code)
 
             job_id = str(uuid.uuid4())
-            code_hash = hashlib.sha256(f"{redacted_code}_False".encode('utf-8')).hexdigest()
+            code_hash = hashlib.sha256(f"{redacted_code}_{system_prompt}".encode('utf-8')).hexdigest()
             
             new_job = ScanCache(job_id=job_id, code_hash=code_hash, status="pending", is_fix=False)
             db.add(new_job)
@@ -661,16 +670,19 @@ async def fix_code(payload: CodePayload, authorization: str = Header(None)):
         )
         
         try:
-            ai_reply = get_cached_or_generate_ai(payload.code, system_prompt, is_fix=True, db=db)
+            redacted_code, _ = apply_zero_leak_redaction(payload.code)
+            ai_reply = get_cached_or_generate_ai(redacted_code, system_prompt, is_fix=True, db=db)
             
             if user.org_id:
                 new_vault = CodeVault(
                     org_id=user.org_id,
-                    vulnerable_code=payload.code,
+                    vulnerable_code=redacted_code,
                     secure_code=ai_reply
                 )
                 db.add(new_vault)
-                db.commit()
+            
+            user.scan_count += 1
+            db.commit()
                 
             return {"fixed_code": ai_reply}
         except HTTPException as he:
@@ -730,25 +742,7 @@ async def cicd_scan(payload: CICDScanPayload, x_api_key: str = Header(None)):
             "You must explicitly state at the end of the response: 'Upgrade to PRO for deep vulnerability analysis and remediation code.'"
         )
 
-        secrets_found = False
-        redacted_code = payload.code
-        
-        if SECRET_PATTERNS["AWS Access Keys"].search(redacted_code):
-            secrets_found = True
-            redacted_code = SECRET_PATTERNS["AWS Access Keys"].sub("***REDACTED_BY_TIMECODESECURITY***", redacted_code)
-            
-        if SECRET_PATTERNS["Stripe Secrets"].search(redacted_code):
-            secrets_found = True
-            redacted_code = SECRET_PATTERNS["Stripe Secrets"].sub("***REDACTED_BY_TIMECODESECURITY***", redacted_code)
-            
-        def replace_generic(match):
-            full_match = match.group(0)
-            secret_val = match.group(1)
-            return full_match.replace(secret_val, "***REDACTED_BY_TIMECODESECURITY***")
-            
-        if SECRET_PATTERNS["Generic Tokens"].search(redacted_code):
-            secrets_found = True
-            redacted_code = SECRET_PATTERNS["Generic Tokens"].sub(replace_generic, redacted_code)
+        redacted_code, secrets_found = apply_zero_leak_redaction(payload.code)
 
         ai_reply = get_cached_or_generate_ai(redacted_code, system_prompt, is_fix=False, db=db)
         
@@ -793,7 +787,12 @@ async def generate_test(payload: CodePayload, authorization: str = Header(None))
         )
         
         try:
-            ai_reply = get_cached_or_generate_ai(payload.code, system_prompt, is_fix=False, db=db)
+            redacted_code, _ = apply_zero_leak_redaction(payload.code)
+            ai_reply = get_cached_or_generate_ai(redacted_code, system_prompt, is_fix=False, db=db)
+            
+            user.scan_count += 1
+            db.commit()
+            
             return {"test_code": ai_reply}
         except HTTPException as he:
             raise he
