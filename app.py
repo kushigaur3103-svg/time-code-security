@@ -1,7 +1,8 @@
 import os
 import requests
 import jwt
-from fastapi import FastAPI, Request, HTTPException, Header
+import uuid
+from fastapi import FastAPI, Request, HTTPException, Header, BackgroundTasks
 from fastapi.responses import Response
 from fastapi.templating import Jinja2Templates
 from pydantic import BaseModel
@@ -65,9 +66,11 @@ class ScanCache(Base):
     __tablename__ = "scan_cache"
     
     id = Column(Integer, primary_key=True, index=True)
-    code_hash = Column(String, unique=True, index=True, nullable=False)
-    report_text = Column(Text, nullable=False)
+    code_hash = Column(String, index=True, nullable=False)
+    report_text = Column(Text, nullable=True) # made nullable for pending jobs
     is_fix = Column(Boolean, default=False)
+    status = Column(String, default="completed")
+    job_id = Column(String, unique=True, index=True, nullable=True)
     created_at = Column(DateTime, default=datetime.utcnow)
 
 Base.metadata.create_all(bind=engine)
@@ -397,10 +400,16 @@ async def generate_pdf(payload: ReportPayload, authorization: str = Header(None)
     
     return Response(content=pdf_output, media_type="application/pdf", headers={"Content-Disposition": "attachment; filename=report.pdf"})
 
-def get_cached_or_generate_ai(payload_code: str, system_prompt: str, is_fix: bool, db):
+def get_cached_or_generate_ai(payload_code: str, system_prompt: str, is_fix: bool, db, existing_job_id: str = None):
     code_hash = hashlib.sha256(f"{payload_code}_{is_fix}".encode('utf-8')).hexdigest()
-    cached = db.query(ScanCache).filter(ScanCache.code_hash == code_hash, ScanCache.is_fix == is_fix).first()
+    cached = db.query(ScanCache).filter(ScanCache.code_hash == code_hash, ScanCache.is_fix == is_fix, ScanCache.status == 'completed').first()
     if cached:
+        if existing_job_id:
+            pending_job = db.query(ScanCache).filter(ScanCache.job_id == existing_job_id).first()
+            if pending_job:
+                pending_job.report_text = cached.report_text
+                pending_job.status = 'completed'
+                db.commit()
         return cached.report_text
         
     prompt = f"Code to {'fix' if is_fix else 'analyze'}:\n{payload_code}"
@@ -493,14 +502,54 @@ def get_cached_or_generate_ai(payload_code: str, system_prompt: str, is_fix: boo
     if ai_reply is None:
         raise HTTPException(status_code=500, detail="All AI core systems are currently overloaded. Please try again in a few minutes.")
             
-    new_cache = ScanCache(code_hash=code_hash, report_text=ai_reply, is_fix=is_fix)
-    db.add(new_cache)
-    db.commit()
+    if existing_job_id:
+        pending_job = db.query(ScanCache).filter(ScanCache.job_id == existing_job_id).first()
+        if pending_job:
+            pending_job.report_text = ai_reply
+            pending_job.status = 'completed'
+            db.commit()
+    else:
+        new_cache = ScanCache(code_hash=code_hash, report_text=ai_reply, is_fix=is_fix, status='completed')
+        db.add(new_cache)
+        db.commit()
     
     return ai_reply
 
+def background_scan_task(job_id: str, email: str, redacted_code: str, system_prompt: str, secrets_found: bool):
+    db = SessionLocal()
+    try:
+        ai_reply = get_cached_or_generate_ai(redacted_code, system_prompt, is_fix=False, db=db, existing_job_id=job_id)
+        
+        if secrets_found:
+            ai_reply = "🚨 **CRITICAL SECURITY VIOLATION:** Hardcoded secrets/passwords were detected and successfully redacted before AI analysis to prevent data leakage. \n\n" + ai_reply
+            pending_job = db.query(ScanCache).filter(ScanCache.job_id == job_id).first()
+            if pending_job:
+                pending_job.report_text = ai_reply
+                db.commit()
+
+        user = db.query(User).filter(User.email == email).first()
+        if user and user.webhook_url:
+            import threading
+            def send_webhook(url, text):
+                try:
+                    import requests
+                    payload = {"content": "🚨 **TimeCodeSecurity Alert** 🚨\n\n**Vulnerability Detected!**\n" + text[:1500]}
+                    requests.post(url, json=payload, timeout=5)
+                except:
+                    pass
+            threading.Thread(target=send_webhook, args=(user.webhook_url, ai_reply)).start()
+            
+    except Exception as e:
+        pending_job = db.query(ScanCache).filter(ScanCache.job_id == job_id).first()
+        if pending_job:
+            pending_job.status = "failed"
+            pending_job.report_text = f"Error: {str(e)}"
+            db.commit()
+    finally:
+        db.close()
+
 @app.post("/scan")
-async def scan_code(payload: CodePayload, authorization: str = Header(None)):
+async def scan_code(payload: CodePayload, background_tasks: BackgroundTasks, authorization: str = Header(None)):
     email = await get_current_user_email(authorization)
     
     db = SessionLocal()
@@ -551,30 +600,50 @@ async def scan_code(payload: CodePayload, authorization: str = Header(None)):
                 secrets_found = True
                 redacted_code = SECRET_PATTERNS["Generic Tokens"].sub(replace_generic, redacted_code)
 
-            ai_reply = get_cached_or_generate_ai(redacted_code, system_prompt, is_fix=False, db=db)
+            job_id = str(uuid.uuid4())
+            code_hash = hashlib.sha256(f"{redacted_code}_False".encode('utf-8')).hexdigest()
             
-            if secrets_found:
-                ai_reply = "🚨 **CRITICAL SECURITY VIOLATION:** Hardcoded secrets/passwords were detected and successfully redacted before AI analysis to prevent data leakage. \n\n" + ai_reply
-
+            new_job = ScanCache(job_id=job_id, code_hash=code_hash, status="pending", is_fix=False)
+            db.add(new_job)
+            
+            background_tasks.add_task(
+                background_scan_task,
+                job_id,
+                email,
+                redacted_code,
+                system_prompt,
+                secrets_found
+            )
+            
             user.scan_count += 1
-            
-            if user.webhook_url:
-                import threading
-                def send_webhook(url, text):
-                    try:
-                        import requests
-                        payload = {"content": "🚨 **TimeCodeSecurity Alert** 🚨\n\n**Vulnerability Detected!**\n" + text[:1500]}
-                        requests.post(url, json=payload, timeout=5)
-                    except:
-                        pass
-                threading.Thread(target=send_webhook, args=(user.webhook_url, ai_reply)).start()
-                
             db.commit()
-            return {"result": ai_reply}
+            
+            return {"job_id": job_id, "status": "pending"}
         except HTTPException as he:
             raise he
         except Exception as e:
             return {"error": f"API Error: {str(e)}"}
+    finally:
+        db.close()
+
+@app.get("/api/scan/status/{job_id}")
+async def get_scan_status(job_id: str, authorization: str = Header(None)):
+    email = await get_current_user_email(authorization)
+    db = SessionLocal()
+    try:
+        user = db.query(User).filter(User.email == email).first()
+        if not user:
+            raise HTTPException(status_code=404, detail="User not found")
+            
+        job = db.query(ScanCache).filter(ScanCache.job_id == job_id).first()
+        if not job:
+            raise HTTPException(status_code=404, detail="Job not found")
+            
+        return {
+            "job_id": job.job_id,
+            "status": job.status,
+            "report": job.report_text if job.status == "completed" else None
+        }
     finally:
         db.close()
 

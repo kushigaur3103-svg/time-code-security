@@ -660,7 +660,7 @@
                 <circle class="opacity-25" cx="12" cy="12" r="10" stroke="currentColor" stroke-width="4"></circle>
                 <path class="opacity-75" fill="currentColor" d="M4 12a8 8 0 018-8V0C5.373 0 0 5.373 0 12h4zm2 5.291A7.962 7.962 0 014 12H0c0 3.042 1.135 5.824 3 7.938l3-2.647z"></path>
             </svg>
-            ANALYZING CODE...
+            SCANNING IN BACKGROUND...
         `;
         reportContainer.classList.add('hidden');
         scanResult.textContent = "";
@@ -680,19 +680,49 @@
             if (data.error) {
                 scanResult.textContent = "Error: " + data.error;
                 scanResult.classList.add("text-red-400");
-            } else {
-                scanResult.textContent = data.result;
-                scanResult.classList.remove("text-red-400");
-                await fetchPlan();
+                reportContainer.classList.remove('hidden');
+                resetScanBtn();
+            } else if (data.job_id) {
+                const jobId = data.job_id;
+                
+                const pollInterval = setInterval(async () => {
+                    try {
+                        const statusRes = await fetch(`/api/scan/status/${jobId}`, {
+                            headers: { 'Authorization': `Bearer ${token}` }
+                        });
+                        const statusData = await statusRes.json();
+                        
+                        if (statusData.status === 'completed') {
+                            clearInterval(pollInterval);
+                            scanResult.textContent = statusData.report;
+                            scanResult.classList.remove("text-red-400");
+                            await fetchPlan();
+                            reportContainer.classList.remove('hidden');
+                            resetScanBtn();
+                        } else if (statusData.status === 'failed') {
+                            clearInterval(pollInterval);
+                            scanResult.textContent = "Error: " + (statusData.report || "Scan failed.");
+                            scanResult.classList.add("text-red-400");
+                            reportContainer.classList.remove('hidden');
+                            resetScanBtn();
+                        }
+                    } catch (err) {
+                        clearInterval(pollInterval);
+                        scanResult.textContent = "System Failure: Polling error.";
+                        scanResult.classList.add("text-red-400");
+                        reportContainer.classList.remove('hidden');
+                        resetScanBtn();
+                    }
+                }, 2000);
             }
-            
-            reportContainer.classList.remove('hidden');
         } catch (error) {
             scanResult.textContent = "System Failure: Could not reach the backend.";
             scanResult.classList.add("text-red-400");
             reportContainer.classList.remove('hidden');
-        } finally {
-            // Reset Button
+            resetScanBtn();
+        }
+        
+        function resetScanBtn() {
             scanBtn.disabled = false;
             scanBtn.innerHTML = `
                 <svg xmlns="http://www.w3.org/2000/svg" class="h-6 w-6" fill="none" viewBox="0 0 24 24" stroke="currentColor">
