@@ -539,6 +539,31 @@ async def cicd_scan(payload: CICDScanPayload, x_api_key: str = Header(None)):
     finally:
         db.close()
 
+@app.post("/api/generate-test")
+async def generate_test(payload: CodePayload, authorization: str = Header(None)):
+    email = await get_current_user_email(authorization)
+    db = SessionLocal()
+    try:
+        user = db.query(User).filter(User.email == email).first()
+        if not user or not user.is_premium:
+            raise HTTPException(status_code=403, detail="Premium feature only")
+            
+        system_prompt = (
+            "You are a senior DevSecOps engineer. Generate a defensive Unit Test (e.g., PyTest or Jest) "
+            "that will explicitly FAIL when run against the provided vulnerable code, proving the vulnerability "
+            "exists without being an active exploit. Return ONLY the raw test code inside a markdown code block."
+        )
+        
+        try:
+            ai_reply = get_cached_or_generate_ai(payload.code, system_prompt, is_fix=False, db=db)
+            return {"test_code": ai_reply}
+        except HTTPException as he:
+            raise he
+        except Exception as e:
+            return {"error": f"API Error: {str(e)}"}
+    finally:
+        db.close()
+
 if __name__ == "__main__":
     print("--- Starting TimeCodeSecurity Web Server ---")
     uvicorn.run("app:app", host="127.0.0.1", port=8000, reload=True)

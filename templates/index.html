@@ -137,19 +137,35 @@
                 </div>
                 <div id="scanResult" class="bg-[#0a0d14] text-gray-300 font-mono text-sm p-6 rounded-xl border border-gray-700/80 whitespace-pre-wrap leading-relaxed shadow-inner overflow-x-auto"></div>
                 
-                <button id="fixCodeBtn" class="mt-6 w-full bg-gradient-to-r from-green-500 to-emerald-600 hover:from-green-400 hover:to-emerald-500 text-white font-bold py-3 px-4 rounded-xl shadow-lg transition-all duration-300 flex justify-center items-center gap-2">
-                    <svg class="w-5 h-5" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M10 20l4-16m4 4l4 4-4 4M6 16l-4-4 4-4"></path></svg>
-                    Generate Secure Code (PRO)
-                </button>
+                <div class="mt-6 flex flex-col sm:flex-row gap-4">
+                    <button id="fixCodeBtn" class="flex-1 w-full bg-gradient-to-r from-green-500 to-emerald-600 hover:from-green-400 hover:to-emerald-500 text-white font-bold py-3 px-4 rounded-xl shadow-lg transition-all duration-300 flex justify-center items-center gap-2">
+                        <svg class="w-5 h-5" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M10 20l4-16m4 4l4 4-4 4M6 16l-4-4 4-4"></path></svg>
+                        Generate Secure Code (PRO)
+                    </button>
+                    <button id="generateTestBtn" class="flex-1 w-full bg-gradient-to-r from-blue-600 to-indigo-600 hover:from-blue-500 hover:to-indigo-500 text-white font-bold py-3 px-4 rounded-xl shadow-lg transition-all duration-300 flex justify-center items-center gap-2">
+                        <svg class="w-5 h-5" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M9 12l2 2 4-4m6 2a9 9 0 11-18 0 9 9 0 0118 0z"></path></svg>
+                        Generate Security Test (PRO)
+                    </button>
+                </div>
                 
                 <div id="fixedCodeContainer" class="mt-6 hidden">
                     <div class="flex justify-between items-center mb-2">
-                        <h4 class="text-sm font-bold text-emerald-400">Secure Remediated Code</h4>
+                        <h4 class="text-green-400 font-bold flex items-center gap-2"><svg class="w-4 h-4" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M5 13l4 4L19 7"></path></svg> Remediated Code</h4>
                         <button id="copyFixedCodeBtn" class="text-xs bg-gray-800 hover:bg-gray-700 text-gray-300 px-3 py-1 rounded border border-gray-600 transition-colors">
                             Copy Code
                         </button>
                     </div>
                     <pre><code id="fixedCodeResult" class="block bg-[#0d1117] text-green-400 font-mono text-sm p-4 rounded-lg border border-gray-700/80 overflow-x-auto whitespace-pre-wrap"></code></pre>
+                </div>
+
+                <div id="testCodeContainer" class="mt-6 hidden">
+                    <div class="flex justify-between items-center mb-2">
+                        <h4 class="text-blue-400 font-bold flex items-center gap-2"><svg class="w-4 h-4" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M9 12l2 2 4-4m6 2a9 9 0 11-18 0 9 9 0 0118 0z"></path></svg> Security Unit Test</h4>
+                        <button id="copyTestCodeBtn" class="text-xs bg-gray-800 hover:bg-gray-700 text-gray-300 px-3 py-1 rounded border border-gray-600 transition-colors">
+                            Copy Test
+                        </button>
+                    </div>
+                    <pre><code id="testCodeResult" class="block bg-[#0d1117] text-blue-400 font-mono text-sm p-4 rounded-lg border border-gray-700/80 overflow-x-auto whitespace-pre-wrap"></code></pre>
                 </div>
             </div>
 
@@ -240,8 +256,14 @@
 
     async function fetchPlan() {
         try {
-            const res = await fetch('/api/me', { headers: { 'Authorization': `Bearer ${token}` } });
-            if (!res.ok) throw new Error("Auth failed");
+            const currentToken = localStorage.getItem('token');
+            const res = await fetch('/api/me', { headers: { 'Authorization': 'Bearer ' + currentToken } });
+            if (res.status === 401 || res.status === 403) {
+                localStorage.removeItem('token');
+                window.location.href = '/login';
+                return;
+            }
+            if (!res.ok) return;
             const data = await res.json();
             isPremium = data.is_premium;
             scanCount = data.scan_count;
@@ -267,8 +289,7 @@
                 upgradePromptBtn.classList.remove('hidden');
             }
         } catch (e) {
-            localStorage.removeItem('token');
-            window.location.href = '/login';
+            console.error("Network or parsing error", e);
         }
     }
     fetchPlan();
@@ -546,6 +567,67 @@
             copyFixedCodeBtn.textContent = "Copied!";
             setTimeout(() => {
                 copyFixedCodeBtn.textContent = originalText;
+            }, 2000);
+        });
+    });
+
+    const generateTestBtn = document.getElementById('generateTestBtn');
+    const testCodeContainer = document.getElementById('testCodeContainer');
+    const testCodeResult = document.getElementById('testCodeResult');
+    const copyTestCodeBtn = document.getElementById('copyTestCodeBtn');
+
+    generateTestBtn.addEventListener('click', async () => {
+        if (!isPremium) {
+            upgradePromptBtn.click();
+            return;
+        }
+
+        const code = codeInput.value.trim();
+        if (!code) {
+            alert("No code to analyze.");
+            return;
+        }
+
+        generateTestBtn.disabled = true;
+        const originalText = generateTestBtn.innerHTML;
+        generateTestBtn.innerHTML = "Generating Test...";
+        testCodeContainer.classList.add('hidden');
+
+        try {
+            const res = await fetch('/api/generate-test', {
+                method: 'POST',
+                headers: { 
+                    'Content-Type': 'application/json',
+                    'Authorization': `Bearer ${token}` 
+                },
+                body: JSON.stringify({ code: code })
+            });
+            const data = await res.json();
+            
+            if (data.error || data.detail) {
+                alert("Failed to generate test: " + (data.error || data.detail));
+            } else {
+                let cleanCode = data.test_code;
+                if (cleanCode.startsWith('```')) {
+                    cleanCode = cleanCode.replace(/^```[a-z]*\n/, '').replace(/\n```$/, '');
+                }
+                testCodeResult.textContent = cleanCode;
+                testCodeContainer.classList.remove('hidden');
+            }
+        } catch (e) {
+            alert("Network error.");
+        } finally {
+            generateTestBtn.disabled = false;
+            generateTestBtn.innerHTML = originalText;
+        }
+    });
+
+    copyTestCodeBtn.addEventListener('click', () => {
+        navigator.clipboard.writeText(testCodeResult.textContent).then(() => {
+            const originalText = copyTestCodeBtn.textContent;
+            copyTestCodeBtn.textContent = "Copied!";
+            setTimeout(() => {
+                copyTestCodeBtn.textContent = originalText;
             }, 2000);
         });
     });
