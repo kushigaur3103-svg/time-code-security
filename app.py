@@ -20,6 +20,9 @@ import openai
 import cohere
 import secrets
 import re
+import razorpay
+
+razorpay_client = razorpay.Client(auth=("rzp_test_dummy_key", "dummy_secret_key"))
 
 SECRET_PATTERNS = {
     "AWS Access Keys": re.compile(r"(?i)AKIA[0-9A-Z]{16}"),
@@ -365,6 +368,53 @@ async def upgrade_plan(payload: UpgradePayload, authorization: str = Header(None
             return {"message": "Success"}
     finally:
         db.close()
+
+@app.post("/api/create-order")
+async def create_order(authorization: str = Header(None)):
+    email = await get_current_user_email(authorization)
+    amount = 49900  # 499 INR in paise
+    try:
+        order = razorpay_client.order.create({
+            "amount": amount,
+            "currency": "INR",
+            "payment_capture": "1"
+        })
+        return {"order_id": order["id"], "amount": amount}
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=str(e))
+
+class VerifyPaymentPayload(BaseModel):
+    razorpay_payment_id: str
+    razorpay_order_id: str
+    razorpay_signature: str
+
+@app.post("/api/verify-payment")
+async def verify_payment(payload: VerifyPaymentPayload, authorization: str = Header(None)):
+    email = await get_current_user_email(authorization)
+    try:
+        # Dummy verification block for testing phase
+        try:
+            # In production: razorpay_client.utility.verify_payment_signature(...)
+            pass
+        except Exception:
+            raise HTTPException(status_code=400, detail="Invalid Signature")
+            
+        db = SessionLocal()
+        try:
+            user = db.query(User).filter(User.email == email).first()
+            if user:
+                user.is_premium = True
+                db.commit()
+                return {"message": "Success"}
+            else:
+                raise HTTPException(status_code=404, detail="User not found")
+        finally:
+            db.close()
+    except HTTPException as he:
+        raise he
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=str(e))
+
 
 class SettingsPayload(BaseModel):
     webhook_url: str
