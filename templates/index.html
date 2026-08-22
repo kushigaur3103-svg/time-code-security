@@ -5,6 +5,7 @@
     <meta name="viewport" content="width=device-width, initial-scale=1.0">
     <title>TimeCodeSecurity | Enterprise AI Scanner</title>
     <script src="https://cdn.tailwindcss.com"></script>
+    <script src="https://cdn.jsdelivr.net/npm/chart.js"></script>
     <style>
         /* Custom Dark Scrollbar */
         ::-webkit-scrollbar {
@@ -67,6 +68,34 @@
             TimeCodeSecurity
         </h1>
         <p class="text-gray-400 text-xs md:text-sm tracking-[0.15em] md:tracking-[0.3em] uppercase font-semibold">Enterprise Deep Scan Interface</p>
+    </div>
+
+    <!-- Threat Intelligence Analytics -->
+    <div class="max-w-5xl w-full px-6 mb-8">
+        <div class="bg-gray-900/80 backdrop-blur-3xl border border-gray-700/60 rounded-3xl shadow-[0_0_40px_rgba(0,0,0,0.5)] p-6 md:p-8">
+            <div class="flex items-center gap-3 mb-6">
+                <svg class="w-6 h-6 text-red-500 animate-pulse" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M13 10V3L4 14h7v7l9-11h-7z"></path></svg>
+                <h2 class="text-xl md:text-2xl font-bold text-gray-100 tracking-wide">Threat Intelligence Analytics</h2>
+            </div>
+            
+            <div class="grid grid-cols-1 md:grid-cols-2 gap-8">
+                <!-- Activity Chart (Bar) -->
+                <div class="bg-[#0a0d14] rounded-2xl p-4 border border-gray-800 shadow-inner">
+                    <h3 class="text-xs text-gray-500 uppercase tracking-widest mb-4 text-center font-bold">System Activity</h3>
+                    <div class="relative h-64 w-full">
+                        <canvas id="activityChart"></canvas>
+                    </div>
+                </div>
+                
+                <!-- Severity Chart (Doughnut) -->
+                <div class="bg-[#0a0d14] rounded-2xl p-4 border border-gray-800 shadow-inner">
+                    <h3 class="text-xs text-gray-500 uppercase tracking-widest mb-4 text-center font-bold">Threat Severity Distribution</h3>
+                    <div class="relative h-64 w-full flex justify-center">
+                        <canvas id="severityChart"></canvas>
+                    </div>
+                </div>
+            </div>
+        </div>
     </div>
 
     <!-- Main Dashboard -->
@@ -361,6 +390,87 @@
         }
     }
     fetchPlan();
+
+    async function fetchAnalytics() {
+        try {
+            const res = await fetch('/api/analytics', { headers: { 'Authorization': `Bearer ${token}` } });
+            if (!res.ok) return;
+            const data = await res.json();
+            
+            const activityCtx = document.getElementById('activityChart').getContext('2d');
+            new Chart(activityCtx, {
+                type: 'bar',
+                data: {
+                    labels: ['Total Scans', 'Total Fixes'],
+                    datasets: [{
+                        label: 'Activity',
+                        data: [data.total_scans, data.total_fixes],
+                        backgroundColor: ['rgba(52, 211, 153, 0.8)', 'rgba(96, 165, 250, 0.8)'],
+                        borderColor: ['#34d399', '#60a5fa'],
+                        borderWidth: 1,
+                        borderRadius: 4
+                    }]
+                },
+                options: {
+                    responsive: true,
+                    maintainAspectRatio: false,
+                    plugins: {
+                        legend: { display: false }
+                    },
+                    scales: {
+                        y: {
+                            beginAtZero: true,
+                            grid: { color: 'rgba(255, 255, 255, 0.05)' },
+                            ticks: { color: '#9ca3af' }
+                        },
+                        x: {
+                            grid: { display: false },
+                            ticks: { color: '#9ca3af' }
+                        }
+                    }
+                }
+            });
+            
+            const severityCtx = document.getElementById('severityChart').getContext('2d');
+            new Chart(severityCtx, {
+                type: 'doughnut',
+                data: {
+                    labels: ['Critical', 'High', 'Medium', 'Low'],
+                    datasets: [{
+                        data: [
+                            data.severity_breakdown.Critical,
+                            data.severity_breakdown.High,
+                            data.severity_breakdown.Medium,
+                            data.severity_breakdown.Low
+                        ],
+                        backgroundColor: [
+                            'rgba(220, 38, 38, 0.8)',   // Crimson Red for Critical
+                            'rgba(245, 158, 11, 0.8)',  // Amber for High
+                            'rgba(252, 211, 77, 0.8)',  // Yellow for Medium
+                            'rgba(52, 211, 153, 0.8)'   // Neon Green for Low
+                        ],
+                        borderColor: '#0a0d14',
+                        borderWidth: 2
+                    }]
+                },
+                options: {
+                    responsive: true,
+                    maintainAspectRatio: false,
+                    cutout: '70%',
+                    plugins: {
+                        legend: {
+                            position: 'bottom',
+                            labels: { color: '#9ca3af', padding: 20, font: { family: 'monospace' } }
+                        }
+                    }
+                }
+            });
+            
+        } catch (e) {
+            console.error("Failed to fetch analytics", e);
+        }
+    }
+    fetchAnalytics();
     
     document.getElementById('copyApiKeyBtn').addEventListener('click', () => {
         const apiKey = document.getElementById('displayApiKey').value;

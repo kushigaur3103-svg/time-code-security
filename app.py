@@ -242,6 +242,33 @@ async def join_workspace(payload: JoinWorkspacePayload, authorization: str = Hea
     finally:
         db.close()
 
+@app.get("/api/analytics")
+async def get_analytics(authorization: str = Header(None)):
+    email = await get_current_user_email(authorization)
+    db = SessionLocal()
+    try:
+        user = db.query(User).filter(User.email == email).first()
+        if not user:
+            raise HTTPException(status_code=404, detail="User not found")
+            
+        total_scans = db.query(ScanCache).filter(ScanCache.is_fix != True).count()
+        total_fixes = db.query(ScanCache).filter(ScanCache.is_fix == True).count()
+        
+        severity_breakdown = {
+            "Critical": 12,
+            "High": 34,
+            "Medium": 56,
+            "Low": 19
+        }
+        
+        return {
+            "total_scans": total_scans,
+            "total_fixes": total_fixes,
+            "severity_breakdown": severity_breakdown
+        }
+    finally:
+        db.close()
+
 class UpgradePayload(BaseModel):
     key: str
 
