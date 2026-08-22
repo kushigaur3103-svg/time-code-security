@@ -760,7 +760,13 @@
                         });
                         const statusData = await statusRes.json();
                         
-                        if (statusData.status === 'completed') {
+                        if (!statusRes.ok || statusData.detail || (statusData.status !== 'completed' && statusData.status !== 'failed' && statusData.status !== 'pending')) {
+                            clearInterval(pollInterval);
+                            scanResult.textContent = "Error: " + (statusData.detail || "Scan failed or job not found.");
+                            scanResult.classList.add("text-red-400");
+                            reportContainer.classList.remove('hidden');
+                            resetScanBtn();
+                        } else if (statusData.status === 'completed') {
                             clearInterval(pollInterval);
                             scanResult.textContent = statusData.report;
                             scanResult.classList.remove("text-red-400");

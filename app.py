@@ -299,6 +299,8 @@ async def audit_dependencies(payload: AuditDependenciesPayload, authorization: s
         user = db.query(User).filter(User.email == email).first()
         if not user:
             raise HTTPException(status_code=404, detail="User not found")
+        if not user.is_premium:
+            raise HTTPException(status_code=403, detail="Supply Chain Auditing is a Premium feature.")
             
         system_prompt = (
             "You are an expert security auditor. Review the provided dependency file. "
@@ -370,22 +372,6 @@ async def generate_api_key(authorization: str = Header(None)):
     finally:
         db.close()
 
-@app.post("/api/upgrade")
-async def upgrade_plan(payload: UpgradePayload, authorization: str = Header(None)):
-    email = await get_current_user_email(authorization)
-    expected_key = os.getenv("PREMIUM_LICENSE_KEY")
-    if not expected_key or payload.key != expected_key:
-        raise HTTPException(status_code=400, detail="Invalid license key")
-        
-    db = SessionLocal()
-    try:
-        user = db.query(User).filter(User.email == email).first()
-        if user:
-            user.is_premium = True
-            db.commit()
-            return {"message": "Success"}
-    finally:
-        db.close()
 
 @app.post("/api/generate-pdf")
 async def generate_pdf(payload: ReportPayload, authorization: str = Header(None)):
@@ -535,8 +521,9 @@ def background_scan_task(job_id: str, email: str, redacted_code: str, system_pro
     try:
         ai_reply = get_cached_or_generate_ai(redacted_code, system_prompt, is_fix=False, db=db, existing_job_id=job_id)
         
-        if secrets_found:
-            ai_reply = "🚨 **CRITICAL SECURITY VIOLATION:** Hardcoded secrets/passwords were detected and successfully redacted before AI analysis to prevent data leakage. \n\n" + ai_reply
+        warning_str = "🚨 **CRITICAL SECURITY VIOLATION:** Hardcoded secrets/passwords were detected and successfully redacted before AI analysis to prevent data leakage. \n\n"
+        if secrets_found and warning_str not in ai_reply:
+            ai_reply = warning_str + ai_reply
             pending_job = db.query(ScanCache).filter(ScanCache.job_id == job_id).first()
             if pending_job:
                 pending_job.report_text = ai_reply
@@ -544,15 +531,12 @@ def background_scan_task(job_id: str, email: str, redacted_code: str, system_pro
 
         user = db.query(User).filter(User.email == email).first()
         if user and user.webhook_url:
-            import threading
-            def send_webhook(url, text):
-                try:
-                    import requests
-                    payload = {"content": "🚨 **TimeCodeSecurity Alert** 🚨\n\n**Vulnerability Detected!**\n" + text[:1500]}
-                    requests.post(url, json=payload, timeout=5)
-                except:
-                    pass
-            threading.Thread(target=send_webhook, args=(user.webhook_url, ai_reply)).start()
+            try:
+                import requests
+                payload = {"content": "🚨 **TimeCodeSecurity Alert** 🚨\n\n**Vulnerability Detected!**\n" + ai_reply[:1500]}
+                requests.post(user.webhook_url, json=payload, timeout=5)
+            except:
+                pass
             
     except Exception as e:
         pending_job = db.query(ScanCache).filter(ScanCache.job_id == job_id).first()
@@ -621,6 +605,9 @@ async def scan_code(payload: CodePayload, background_tasks: BackgroundTasks, aut
             new_job = ScanCache(job_id=job_id, code_hash=code_hash, status="pending", is_fix=False)
             db.add(new_job)
             
+            user.scan_count += 1
+            db.commit()
+            
             background_tasks.add_task(
                 background_scan_task,
                 job_id,
@@ -629,9 +616,6 @@ async def scan_code(payload: CodePayload, background_tasks: BackgroundTasks, aut
                 system_prompt,
                 secrets_found
             )
-            
-            user.scan_count += 1
-            db.commit()
             
             return {"job_id": job_id, "status": "pending"}
         except HTTPException as he:
@@ -768,8 +752,9 @@ async def cicd_scan(payload: CICDScanPayload, x_api_key: str = Header(None)):
 
         ai_reply = get_cached_or_generate_ai(redacted_code, system_prompt, is_fix=False, db=db)
         
-        if secrets_found:
-            ai_reply = "🚨 **CRITICAL SECURITY VIOLATION:** Hardcoded secrets/passwords were detected and successfully redacted before AI analysis to prevent data leakage. \n\n" + ai_reply
+        warning_str = "🚨 **CRITICAL SECURITY VIOLATION:** Hardcoded secrets/passwords were detected and successfully redacted before AI analysis to prevent data leakage. \n\n"
+        if secrets_found and warning_str not in ai_reply:
+            ai_reply = warning_str + ai_reply
 
         user.scan_count += 1
         db.commit()
