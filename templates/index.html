@@ -6,7 +6,7 @@
     <title>TimeCodeSecurity | Enterprise AI Scanner</title>
     <script src="https://cdn.tailwindcss.com"></script>
     <script src="https://cdn.jsdelivr.net/npm/chart.js" crossorigin="anonymous" referrerpolicy="no-referrer"></script>
-    <script src="https://checkout.razorpay.com/v1/checkout.js"></script>
+    <script src="https://app.lemonsqueezy.com/js/lemon.js" defer></script>
     <style>
         /* Custom Dark Scrollbar */
         ::-webkit-scrollbar {
@@ -758,61 +758,35 @@
         if (isPremium) return;
         try {
             const token = localStorage.getItem('token');
-            const res = await fetch('/api/create-order', {
+            const res = await fetch('/api/checkout', {
                 method: 'POST',
                 headers: { 'Authorization': `Bearer ${token}` }
             });
             const data = await res.json();
             if (!res.ok) {
-                alert("Could not create order: " + (data.detail || data.error));
+                alert("Could not initiate checkout: " + (data.detail || data.error));
                 return;
             }
             
-            const options = {
-                key: "rzp_test_dummy_key", 
-                amount: data.amount,
-                currency: "INR",
-                name: "TimeCodeSecurity",
-                description: "PRO Plan Upgrade",
-                order_id: data.order_id,
-                handler: async function (response) {
-                    const verifyRes = await fetch('/api/verify-payment', {
-                        method: 'POST',
-                        headers: { 
-                            'Content-Type': 'application/json',
-                            'Authorization': `Bearer ${token}` 
-                        },
-                        body: JSON.stringify({
-                            razorpay_payment_id: response.razorpay_payment_id,
-                            razorpay_order_id: response.razorpay_order_id,
-                            razorpay_signature: response.razorpay_signature || "dummy"
-                        })
-                    });
-                    const verifyData = await verifyRes.json();
-                    if (verifyRes.ok) {
-                        alert("Welcome to PRO!");
+            // Initialize and open Lemon Squeezy overlay natively
+            window.createLemonSqueezy();
+            LemonSqueezy.Url.Open(data.checkout_url);
+            
+            // Mock local upgrade success for overlay demo purposes
+            LemonSqueezy.Setup({
+                eventHandler: async (event) => {
+                    if (event.event === 'Checkout.Success') {
+                        await fetch('/api/verify-payment', {
+                            method: 'POST',
+                            headers: { 'Authorization': `Bearer ${token}` }
+                        });
+                        alert("Welcome to PRO! Subscription active.");
                         window.location.reload();
-                    } else {
-                        alert("Payment verification failed: " + (verifyData.detail || "Error"));
                     }
-                },
-                theme: { color: "#eab308" }
-            };
-            
-            // Bypass Razorpay crash if dummy key is active
-            if (options.key === "rzp_test_dummy_key") {
-                options.handler({
-                    razorpay_payment_id: "pay_dummy_" + Math.random().toString(36).substring(7),
-                    razorpay_order_id: options.order_id,
-                    razorpay_signature: "dummy_signature"
-                });
-                return;
-            }
-            
-            const rzp = new Razorpay(options);
-            rzp.open();
+                }
+            });
         } catch(e) {
-            alert("Error initiating payment.");
+            alert("Error initiating checkout.");
         }
     }
 

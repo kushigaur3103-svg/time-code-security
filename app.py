@@ -424,54 +424,36 @@ async def upgrade_plan(payload: UpgradePayload, authorization: str = Header(None
     finally:
         db.close()
 
-@app.post("/api/create-order")
-async def create_order(authorization: str = Header(None)):
+@app.post("/api/checkout")
+async def create_checkout(authorization: str = Header(None)):
     email = await get_current_user_email(authorization)
-    amount = 49900  # 499 INR in paise
     try:
-        order = razorpay_client.order.create({
-            "amount": amount,
-            "currency": "INR",
-            "payment_capture": "1"
-        })
-        return {"order_id": order["id"], "amount": amount}
+        lemon_api_key = os.environ.get("LEMON_API_KEY")
+        if not lemon_api_key:
+            print("[!] Warning: LEMON_API_KEY missing, using dummy checkout URL")
+            return {"checkout_url": "https://timecodesecurity.lemonsqueezy.com/buy/dummy-pro-plan"}
+            
+        # In production, we'd make a request to Lemon Squeezy API to generate a custom checkout URL
+        # For now, return a placeholder URL that works with Lemon.js overlay
+        return {"checkout_url": "https://timecodesecurity.lemonsqueezy.com/buy/pro-plan"}
     except Exception as e:
-        if "Authentication failed" in str(e) or "rzp_test_dummy_key" in str(razorpay_client.auth):
-            return {"order_id": "order_dummy_" + secrets.token_hex(6), "amount": amount}
         raise HTTPException(status_code=500, detail=str(e))
-
-class VerifyPaymentPayload(BaseModel):
-    razorpay_payment_id: str
-    razorpay_order_id: str
-    razorpay_signature: str
 
 @app.post("/api/verify-payment")
-async def verify_payment(payload: VerifyPaymentPayload, authorization: str = Header(None)):
+async def verify_payment(authorization: str = Header(None)):
+    # Lemon Squeezy uses webhooks for real verification, but for this demo overlay we'll mock success
     email = await get_current_user_email(authorization)
+    db = SessionLocal()
     try:
-        # Dummy verification block for testing phase
-        try:
-            # In production: razorpay_client.utility.verify_payment_signature(...)
-            pass
-        except Exception:
-            raise HTTPException(status_code=400, detail="Invalid Signature")
-            
-        db = SessionLocal()
-        try:
-            user = db.query(User).filter(User.email == email).first()
-            if user:
-                user.is_premium = True
-                db.commit()
-                return {"message": "Success"}
-            else:
-                raise HTTPException(status_code=404, detail="User not found")
-        finally:
-            db.close()
-    except HTTPException as he:
-        raise he
+        user = db.query(User).filter(User.email == email).first()
+        if user:
+            user.is_premium = True
+            db.commit()
+            return {"message": "Success"}
     except Exception as e:
         raise HTTPException(status_code=500, detail=str(e))
-
+    finally:
+        db.close()
 
 class SettingsPayload(BaseModel):
     webhook_url: str
