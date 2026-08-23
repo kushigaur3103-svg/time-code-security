@@ -435,8 +435,8 @@ async def upgrade_plan(payload: UpgradePayload, authorization: str = Header(None
 async def create_checkout(authorization: str = Header(None)):
     email = await get_current_user_email(authorization)
     try:
-        CHECKOUT_URL = os.environ.get("LEMON_CHECKOUT_URL", "https://timecodesecurity.lemonsqueezy.com/checkout/buy/d41592c8-fa47-41e3-b8a6-cef3e0f275b6")
-        return {"checkout_url": CHECKOUT_URL}
+        checkout_url = "https://timecodesecurity.lemonsqueezy.com/checkout/buy/d41592c8-fa47-41e3-b8a6-cef3e0f275b6"
+        return JSONResponse({"checkout_url": checkout_url})
     except Exception as e:
         raise HTTPException(status_code=500, detail=str(e))
 
