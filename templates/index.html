@@ -461,7 +461,7 @@
         // Prevent infinite loops or frozen UI by silently catching errors
         return true; 
     };
-    window.addEventListener('unhandledrejection', function(event) {
+    window?.addEventListener('unhandledrejection', function(event) {
         console.error("[PROMISE CRASH PREVENTED]", event.reason);
         event.preventDefault();
     });
@@ -685,11 +685,11 @@
     }
     fetchVault();
 
-    document.getElementById('vaultSearchInput').addEventListener('focus', (e) => {
+    document.getElementById('vaultSearchInput')?.addEventListener('focus', (e) => {
         requireEnterprise(e);
     });
 
-    document.getElementById('vaultSearchInput').addEventListener('input', (e) => {
+    document.getElementById('vaultSearchInput')?.addEventListener('input', (e) => {
         if (!requireEnterprise(e)) return;
         const keyword = e.target.value.toLowerCase();
         const filtered = vaultData.filter(entry => 
@@ -699,7 +699,7 @@
         renderVault(filtered);
     });
     
-    document.getElementById('copyApiKeyBtn').addEventListener('click', () => {
+    document.getElementById('copyApiKeyBtn')?.addEventListener('click', () => {
         const apiKey = document.getElementById('displayApiKey').value;
         if (apiKey && apiKey !== 'Loading...') {
             navigator.clipboard.writeText(apiKey);
@@ -707,7 +707,7 @@
         }
     });
 
-    document.getElementById('createOrgBtn').addEventListener('click', async () => {
+    document.getElementById('createOrgBtn')?.addEventListener('click', async () => {
         const name = document.getElementById('createOrgInput').value.trim();
         if (!name) return alert("Enter an organization name.");
         
@@ -728,7 +728,7 @@
         }
     });
 
-    document.getElementById('joinOrgBtn').addEventListener('click', async () => {
+    document.getElementById('joinOrgBtn')?.addEventListener('click', async () => {
         const invite = document.getElementById('joinOrgInput').value.trim();
         if (!invite) return alert("Enter an invite code.");
         
@@ -749,7 +749,7 @@
         }
     });
 
-    document.getElementById('copyInviteBtn').addEventListener('click', () => {
+    document.getElementById('copyInviteBtn')?.addEventListener('click', () => {
         const code = document.getElementById('displayInviteCode').value;
         if (code) {
             navigator.clipboard.writeText(code);
@@ -757,7 +757,7 @@
         }
     });
     
-    document.getElementById('saveIntegrationBtn').addEventListener('click', async (e) => {
+    document.getElementById('saveIntegrationBtn')?.addEventListener('click', async (e) => {
         if (!requireEnterprise(e)) return;
         const webhook_url = document.getElementById('webhookUrlInput').value.trim();
         const btn = document.getElementById('saveIntegrationBtn');
@@ -782,7 +782,7 @@
         }
     });
 
-    document.getElementById('devApiBtn').addEventListener('click', async (e) => {
+    document.getElementById('devApiBtn')?.addEventListener('click', async (e) => {
         const btn = e.currentTarget;
         const originalText = btn.innerHTML;
         
@@ -865,15 +865,15 @@
         }
     }
 
-    upgradePromptBtn.addEventListener('click', () => {
+    upgradePromptBtn?.addEventListener('click', () => {
         document.getElementById('upgradeModal').classList.remove('hidden');
     });
     
-    document.getElementById('closeModalBtn').addEventListener('click', () => {
+    document.getElementById('closeModalBtn')?.addEventListener('click', () => {
         document.getElementById('upgradeModal').classList.add('hidden');
     });
 
-    document.getElementById('submitKeyBtn').addEventListener('click', async () => {
+    document.getElementById('submitKeyBtn')?.addEventListener('click', async () => {
         const keyInput = document.getElementById('licenseKeyInput');
         const key = keyInput.value.trim();
         if (!key) return;
@@ -908,7 +908,7 @@
         }
     });
 
-    scanBtn.addEventListener('click', async () => {
+    scanBtn?.addEventListener('click', async () => {
         const code = codeInput.value.trim();
         if (!code) {
             alert("Please enter some code to scan!");
@@ -1008,7 +1008,7 @@
 
     const downloadPdfBtn = document.getElementById('downloadPdfBtn');
     
-    downloadPdfBtn.addEventListener('click', async (e) => {
+    downloadPdfBtn?.addEventListener('click', async (e) => {
         if (!requireEnterprise(e)) return;
         
         const reportText = scanResult.textContent;
@@ -1052,7 +1052,7 @@
         }
     });
 
-    document.getElementById('fileUpload').addEventListener('change', function(e) {
+    document.getElementById('fileUpload')?.addEventListener('change', function(e) {
         const file = e.target.files[0];
         if (!file) return;
         
@@ -1068,7 +1068,7 @@
     const fixedCodeResult = document.getElementById('fixedCodeResult');
     const copyFixedCodeBtn = document.getElementById('copyFixedCodeBtn');
 
-    fixCodeBtn.addEventListener('click', async () => {
+    fixCodeBtn?.addEventListener('click', async () => {
         if (!isPremium) {
             upgradePromptBtn.click();
             return;
@@ -1115,7 +1115,7 @@
         }
     });
 
-    copyFixedCodeBtn.addEventListener('click', () => {
+    copyFixedCodeBtn?.addEventListener('click', () => {
         navigator.clipboard.writeText(fixedCodeResult.textContent).then(() => {
             const originalText = copyFixedCodeBtn.textContent;
             copyFixedCodeBtn.textContent = "Copied!";
@@ -1130,7 +1130,7 @@
     const testCodeResult = document.getElementById('testCodeResult');
     const copyTestCodeBtn = document.getElementById('copyTestCodeBtn');
 
-    generateTestBtn.addEventListener('click', async () => {
+    generateTestBtn?.addEventListener('click', async () => {
         if (!isPremium) {
             upgradePromptBtn.click();
             return;
@@ -1176,7 +1176,7 @@
         }
     });
 
-    copyTestCodeBtn.addEventListener('click', () => {
+    copyTestCodeBtn?.addEventListener('click', () => {
         navigator.clipboard.writeText(testCodeResult.textContent).then(() => {
             const originalText = copyTestCodeBtn.textContent;
             copyTestCodeBtn.textContent = "Copied!";
@@ -1186,7 +1186,7 @@
         });
     });
 
-    document.getElementById('logoutBtn').addEventListener('click', () => {
+    document.getElementById('logoutBtn')?.addEventListener('click', () => {
         localStorage.removeItem('token');
         window.location.href = '/login';
     });
@@ -1197,7 +1197,7 @@
     const dependencyReportContainer = document.getElementById('dependencyReportContainer');
     const dependencyResult = document.getElementById('dependencyResult');
 
-    scanDependenciesBtn.addEventListener('click', async () => {
+    scanDependenciesBtn?.addEventListener('click', async () => {
         const content = dependencyInput.value.trim();
         const fileType = dependencyFileType.value;
         
