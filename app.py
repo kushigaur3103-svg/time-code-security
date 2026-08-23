@@ -20,12 +20,7 @@ import openai
 import cohere
 import secrets
 import re
-try:
-    import razorpay
-    razorpay_client = razorpay.Client(auth=("rzp_test_dummy_key", "dummy_secret_key"))
-except ImportError as e:
-    razorpay_client = None
-    print(f"[!] Warning: Razorpay import failed ({e}). Payments will be disabled, but server will start.")
+
 
 try:
     from rag_engine.vector_db import CodeContextEngine
@@ -164,6 +159,7 @@ class AuthPayload(BaseModel):
 class CodePayload(BaseModel):
     code: str
 
+@app.head("/")
 @app.get("/")
 async def home(request: Request):
     return templates.TemplateResponse(request=request, name="landing.html")
