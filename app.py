@@ -89,6 +89,7 @@ class User(Base):
     email = Column(String, unique=True, index=True, nullable=False)
     password_hash = Column(String, nullable=False)
     is_premium = Column(Boolean, default=False)
+    plan_tier = Column(String, default="developer")
     scan_count = Column(Integer, default=0)
     api_key = Column(String, unique=True, index=True, nullable=True)
     webhook_url = Column(String, nullable=True)
@@ -128,6 +129,13 @@ from sqlalchemy import text
 try:
     with engine.connect() as conn:
         conn.execute(text("ALTER TABLE scan_cache ADD COLUMN user_id INTEGER REFERENCES users(id)"))
+        conn.commit()
+except Exception:
+    pass
+
+try:
+    with engine.connect() as conn:
+        conn.execute(text("ALTER TABLE users ADD COLUMN plan_tier VARCHAR DEFAULT 'developer'"))
         conn.commit()
 except Exception:
     pass
@@ -271,6 +279,7 @@ async def get_me(authorization: str = Header(None)):
         return {
             "email": user.email, 
             "is_premium": user.is_premium, 
+            "plan_tier": user.plan_tier or "free",
             "scan_count": user.scan_count, 
             "api_key": user.api_key, 
             "webhook_url": user.webhook_url,

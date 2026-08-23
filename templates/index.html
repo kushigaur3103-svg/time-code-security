@@ -510,9 +510,10 @@
             if (!res.ok) return;
             const data = await res.json();
             isPremium = data.is_premium;
+            isEnterprise = (data.plan_tier === 'enterprise');
             scanCount = data.scan_count;
             userApiKey = data.api_key;
-            
+
             if (data.webhook_url) {
                 document.getElementById('webhookUrlInput').value = data.webhook_url;
             }
@@ -537,8 +538,8 @@
             planBadge.classList.remove('hidden');
             planBadge.classList.add('flex');
             
-            if (isPremium) {
-                planText.textContent = "PRO PLAN: UNLIMITED";
+            if (data.plan_tier === 'enterprise') {
+                planText.textContent = "ENTERPRISE SOC-2";
                 planText.className = "text-xs text-yellow-400 font-mono tracking-wide font-bold";
                 planBadge.className = "flex items-center gap-2 bg-yellow-900/20 border border-yellow-800/50 px-3 py-1.5 rounded-full";
                 document.getElementById('devApiBtn').classList.remove('hidden');
@@ -547,10 +548,25 @@
                 upgradePromptBtn.classList.add('bg-green-900/40', 'border', 'border-green-500', 'text-green-400', 'cursor-default');
                 upgradePromptBtn.textContent = "PRO Active";
                 upgradePromptBtn.disabled = true;
+            } else if (data.plan_tier === 'developer') {
+                planText.textContent = "DEVELOPER PRO";
+                planText.className = "text-xs text-blue-400 font-mono tracking-wide font-bold";
+                planBadge.className = "flex items-center gap-2 bg-blue-900/20 border border-blue-800/50 px-3 py-1.5 rounded-full";
+                document.getElementById('devApiBtn').classList.remove('hidden');
+                
+                upgradePromptBtn.classList.remove('hidden', 'bg-gradient-to-r', 'from-yellow-500', 'to-orange-500', 'hover:from-yellow-400', 'hover:to-orange-400', 'text-black');
+                upgradePromptBtn.classList.add('bg-green-900/40', 'border', 'border-green-500', 'text-green-400', 'cursor-default');
+                upgradePromptBtn.textContent = "PRO Active";
+                upgradePromptBtn.disabled = true;
             } else {
                 planText.textContent = `FREE PLAN: ${scanCount}/5 SCANS`;
-                upgradePromptBtn.classList.remove('hidden');
-                upgradePromptBtn.textContent = "Upgrade to PRO (₹499/mo)";
+                planText.className = "text-xs text-gray-400 font-mono tracking-wide";
+                planBadge.className = "flex items-center gap-2 bg-gray-900/20 border border-gray-800/50 px-3 py-1.5 rounded-full";
+                
+                upgradePromptBtn.classList.remove('hidden', 'bg-green-900/40', 'border-green-500', 'text-green-400');
+                upgradePromptBtn.classList.add('bg-gradient-to-r', 'from-yellow-500', 'to-orange-500', 'hover:from-yellow-400', 'hover:to-orange-400', 'text-black');
+                upgradePromptBtn.disabled = false;
+                upgradePromptBtn.textContent = "Upgrade Plan";
             }
         } catch (e) {
             console.error("Network or parsing error", e);
