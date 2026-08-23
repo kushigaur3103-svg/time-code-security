@@ -330,33 +330,56 @@
     </div>
 
     <!-- Upgrade Modal -->
-    <div id="upgradeModal" class="hidden fixed inset-0 z-50 flex items-center justify-center bg-black/80 backdrop-blur-sm">
-        <div class="bg-[#0a0d14] border border-gray-700/80 rounded-2xl p-8 max-w-md w-full shadow-2xl relative">
+    <div id="upgradeModal" class="hidden fixed inset-0 z-50 flex items-center justify-center bg-black/80 backdrop-blur-sm p-4 overflow-y-auto">
+        <div class="bg-[#0a0d14] border border-gray-700/80 rounded-2xl p-6 md:p-8 max-w-4xl w-full shadow-2xl relative my-8">
             <div class="flex justify-between items-center mb-6">
-                <h2 class="text-2xl font-bold text-transparent bg-clip-text bg-gradient-to-r from-yellow-400 to-orange-500">Upgrade to PRO</h2>
+                <h2 class="text-2xl md:text-3xl font-bold text-transparent bg-clip-text bg-gradient-to-r from-yellow-400 to-orange-500">Choose Your Plan</h2>
                 <button id="closeModalBtn" class="text-gray-400 hover:text-white transition-colors">
                     <svg class="w-6 h-6" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M6 18L18 6M6 6l12 12"></path></svg>
                 </button>
             </div>
             
-            <div class="space-y-4 mb-6">
-                <div class="bg-gray-800/50 p-4 rounded-lg border border-gray-700">
-                    <h3 class="text-lg font-bold text-gray-300">Free Plan: 5 Scans, Basic On-Screen Report</h3>
+            <div class="grid grid-cols-1 md:grid-cols-2 gap-6 mb-6">
+                <!-- Developer PRO Plan -->
+                <div class="bg-gray-800/40 p-6 rounded-xl border border-gray-700 hover:border-blue-500 transition-colors flex flex-col h-full">
+                    <h3 class="text-xl font-bold text-blue-400 mb-2">Developer PRO</h3>
+                    <div class="mb-4">
+                        <span class="text-3xl font-bold text-white">$59</span><span class="text-gray-400">/month</span>
+                        <div class="text-sm mt-2 bg-blue-900/30 inline-block px-3 py-1.5 rounded text-blue-300">
+                            Indian Developers: <span class="font-bold text-base">₹599</span> <span class="line-through text-gray-500 text-xs ml-1">₹999</span>
+                        </div>
+                    </div>
+                    <ul class="space-y-3 mb-8 flex-grow text-gray-300 text-sm">
+                        <li class="flex items-center"><svg class="w-5 h-5 mr-2 text-blue-400" fill="currentColor" viewBox="0 0 20 20"><path fill-rule="evenodd" d="M16.707 5.293a1 1 0 010 1.414l-8 8a1 1 0 01-1.414 0l-4-4a1 1 0 011.414-1.414L8 12.586l7.293-7.293a1 1 0 011.414 0z" clip-rule="evenodd"></path></svg>Unlimited AI Scans</li>
+                        <li class="flex items-center"><svg class="w-5 h-5 mr-2 text-blue-400" fill="currentColor" viewBox="0 0 20 20"><path fill-rule="evenodd" d="M16.707 5.293a1 1 0 010 1.414l-8 8a1 1 0 01-1.414 0l-4-4a1 1 0 011.414-1.414L8 12.586l7.293-7.293a1 1 0 011.414 0z" clip-rule="evenodd"></path></svg>1-Click Fixes</li>
+                        <li class="flex items-center"><svg class="w-5 h-5 mr-2 text-blue-400" fill="currentColor" viewBox="0 0 20 20"><path fill-rule="evenodd" d="M16.707 5.293a1 1 0 010 1.414l-8 8a1 1 0 01-1.414 0l-4-4a1 1 0 011.414-1.414L8 12.586l7.293-7.293a1 1 0 011.414 0z" clip-rule="evenodd"></path></svg>Basic Support</li>
+                    </ul>
+                    <button class="w-full bg-blue-600 hover:bg-blue-500 text-white font-bold py-3 px-4 rounded-lg shadow-lg transition-all" onclick="alert('Starting free trial...')">Start Free Trial</button>
                 </div>
-                <div class="bg-yellow-900/20 p-4 rounded-lg border border-yellow-800/50">
-                    <h3 class="text-lg font-bold text-yellow-400">PRO Plan: Unlimited Scans, Deep AI Analysis, PDF Export, Auto-Fix, Self-Healing PR Bot, SOC-2 Compliance, Whole-Repo RAG Context & <span class="text-green-400">Developer API Key (VS Code Integration)</span></h3>
-                    <div class="mt-2 text-xl font-bold text-white">$19/mo <span class="text-sm font-normal text-gray-400 line-through ml-2">$49/mo</span></div><div class="text-sm text-green-400 mt-1">Special Indian Developer Pricing: ₹499/mo</div>
+
+                <!-- Enterprise SOC-2 Plan -->
+                <div class="bg-yellow-900/10 p-6 rounded-xl border-2 border-yellow-500/50 hover:border-yellow-400 transition-colors relative flex flex-col h-full shadow-[0_0_20px_rgba(234,179,8,0.15)]">
+                    <div class="absolute -top-3 left-1/2 transform -translate-x-1/2 bg-gradient-to-r from-yellow-500 to-orange-500 text-black text-xs font-bold px-3 py-1 rounded-full">
+                        MOST POPULAR
+                    </div>
+                    <h3 class="text-xl font-bold text-yellow-400 mb-2">Enterprise SOC-2</h3>
+                    <div class="mb-4">
+                        <span class="text-3xl font-bold text-white">$499</span><span class="text-gray-400">/month</span>
+                    </div>
+                    <ul class="space-y-3 mb-8 flex-grow text-gray-300 text-sm">
+                        <li class="flex items-center"><svg class="w-5 h-5 mr-2 text-yellow-400" fill="currentColor" viewBox="0 0 20 20"><path fill-rule="evenodd" d="M16.707 5.293a1 1 0 010 1.414l-8 8a1 1 0 01-1.414 0l-4-4a1 1 0 011.414-1.414L8 12.586l7.293-7.293a1 1 0 011.414 0z" clip-rule="evenodd"></path></svg>Everything in Developer</li>
+                        <li class="flex items-center"><svg class="w-5 h-5 mr-2 text-yellow-400" fill="currentColor" viewBox="0 0 20 20"><path fill-rule="evenodd" d="M16.707 5.293a1 1 0 010 1.414l-8 8a1 1 0 01-1.414 0l-4-4a1 1 0 011.414-1.414L8 12.586l7.293-7.293a1 1 0 011.414 0z" clip-rule="evenodd"></path></svg>CI/CD Webhooks</li>
+                        <li class="flex items-center"><svg class="w-5 h-5 mr-2 text-yellow-400" fill="currentColor" viewBox="0 0 20 20"><path fill-rule="evenodd" d="M16.707 5.293a1 1 0 010 1.414l-8 8a1 1 0 01-1.414 0l-4-4a1 1 0 011.414-1.414L8 12.586l7.293-7.293a1 1 0 011.414 0z" clip-rule="evenodd"></path></svg>Team Vault</li>
+                        <li class="flex items-center"><svg class="w-5 h-5 mr-2 text-yellow-400" fill="currentColor" viewBox="0 0 20 20"><path fill-rule="evenodd" d="M16.707 5.293a1 1 0 010 1.414l-8 8a1 1 0 01-1.414 0l-4-4a1 1 0 011.414-1.414L8 12.586l7.293-7.293a1 1 0 011.414 0z" clip-rule="evenodd"></path></svg>Threat Analytics</li>
+                        <li class="flex items-center"><svg class="w-5 h-5 mr-2 text-yellow-400" fill="currentColor" viewBox="0 0 20 20"><path fill-rule="evenodd" d="M16.707 5.293a1 1 0 010 1.414l-8 8a1 1 0 01-1.414 0l-4-4a1 1 0 011.414-1.414L8 12.586l7.293-7.293a1 1 0 011.414 0z" clip-rule="evenodd"></path></svg>SOC-2/GDPR Reports</li>
+                    </ul>
+                    <button id="upgradeEnterpriseBtn" class="w-full bg-gradient-to-r from-yellow-500 to-orange-500 hover:from-yellow-400 hover:to-orange-400 text-black font-bold py-3 px-4 rounded-lg shadow-lg transition-all" onclick="initiatePayment()">Upgrade to Enterprise</button>
                 </div>
             </div>
 
-            <div class="mb-4">
-                <label for="licenseKeyInput" class="block text-gray-400 text-sm mb-2">Premium Key</label>
-                <input type="text" id="licenseKeyInput" class="w-full bg-[#0d1117] text-white p-3 rounded-lg border border-gray-700 focus:outline-none focus:border-yellow-500 transition-colors" placeholder="Enter license key...">
+            <div class="pt-4 border-t border-gray-800 text-center text-xs text-gray-500">
+                Secured by Lemon Squeezy. Cancel anytime.
             </div>
-            
-            <button id="submitKeyBtn" class="w-full bg-gradient-to-r from-yellow-500 to-orange-500 hover:from-yellow-400 hover:to-orange-400 text-black font-bold py-3 px-4 rounded-lg shadow-lg transition-all mt-2">
-                Unlock PRO
-            </button>
         </div>
     </div>
     
