@@ -101,12 +101,15 @@ class ScanCache(Base):
     __tablename__ = "scan_cache"
     
     id = Column(Integer, primary_key=True, index=True)
+    user_id = Column(Integer, ForeignKey("users.id"), nullable=True)
     code_hash = Column(String, index=True, nullable=False)
     report_text = Column(Text, nullable=True) # made nullable for pending jobs
     is_fix = Column(Boolean, default=False)
     status = Column(String, default="completed")
     job_id = Column(String, unique=True, index=True, nullable=True)
     created_at = Column(DateTime, default=datetime.utcnow)
+    
+    user = relationship("User", backref="scans")
 
 class CodeVault(Base):
     __tablename__ = "code_vault"
@@ -120,6 +123,14 @@ class CodeVault(Base):
     organization = relationship("Organization", backref="vaults")
 
 Base.metadata.create_all(bind=engine)
+
+from sqlalchemy import text
+try:
+    with engine.connect() as conn:
+        conn.execute(text("ALTER TABLE scan_cache ADD COLUMN user_id INTEGER REFERENCES users(id)"))
+        conn.commit()
+except Exception:
+    pass
 
 app = FastAPI(title="TimeCodeSecurity Enterprise API")
 
@@ -330,15 +341,15 @@ async def get_analytics(authorization: str = Header(None)):
         if not user:
             raise HTTPException(status_code=404, detail="User not found")
             
-        total_scans = db.query(ScanCache).filter(ScanCache.is_fix != True).count()
-        total_fixes = db.query(ScanCache).filter(ScanCache.is_fix == True).count()
+        total_scans = db.query(ScanCache).filter(ScanCache.user_id == user.id, ScanCache.is_fix != True).count()
+        total_fixes = db.query(ScanCache).filter(ScanCache.user_id == user.id, ScanCache.is_fix == True).count()
         
         critical_count = 0
         high_count = 0
         medium_count = 0
         low_count = 0
         
-        all_reports = db.query(ScanCache.report_text).filter(ScanCache.is_fix != True).all()
+        all_reports = db.query(ScanCache.report_text).filter(ScanCache.user_id == user.id, ScanCache.is_fix != True).all()
         for (report,) in all_reports:
             if not report: continue
             text = report.lower()
@@ -513,7 +524,7 @@ async def generate_pdf(payload: ReportPayload, authorization: str = Header(None)
     
     return Response(content=pdf_output, media_type="application/pdf", headers={"Content-Disposition": "attachment; filename=report.pdf"})
 
-def get_cached_or_generate_ai(payload_code: str, system_prompt: str, is_fix: bool, db, existing_job_id: str = None):
+def get_cached_or_generate_ai(payload_code: str, system_prompt: str, is_fix: bool, db, existing_job_id: str = None, user_id: int = None):
     code_hash = hashlib.sha256(f"{payload_code}_{system_prompt}".encode('utf-8')).hexdigest()
     cached = db.query(ScanCache).filter(ScanCache.code_hash == code_hash, ScanCache.is_fix == is_fix, ScanCache.status == 'completed').first()
     if cached:
@@ -622,7 +633,7 @@ def get_cached_or_generate_ai(payload_code: str, system_prompt: str, is_fix: boo
             pending_job.status = 'completed'
             db.commit()
     else:
-        new_cache = ScanCache(code_hash=code_hash, report_text=ai_reply, is_fix=is_fix, status='completed')
+        new_cache = ScanCache(code_hash=code_hash, report_text=ai_reply, is_fix=is_fix, status='completed', user_id=user_id)
         db.add(new_cache)
         db.commit()
     
@@ -708,7 +719,7 @@ async def scan_code(payload: CodePayload, background_tasks: BackgroundTasks, aut
             job_id = str(uuid.uuid4())
             code_hash = hashlib.sha256(f"{redacted_code}_{system_prompt}".encode('utf-8')).hexdigest()
             
-            new_job = ScanCache(job_id=job_id, code_hash=code_hash, status="pending", is_fix=False, report_text="AI Scan in progress...")
+            new_job = ScanCache(job_id=job_id, code_hash=code_hash, status="pending", is_fix=False, report_text="AI Scan in progress...", user_id=user.id)
             db.add(new_job)
             
             user.scan_count += 1
@@ -768,7 +779,7 @@ async def fix_code(payload: CodePayload, authorization: str = Header(None)):
         
         try:
             redacted_code, _ = apply_zero_leak_redaction(payload.code)
-            ai_reply = get_cached_or_generate_ai(redacted_code, system_prompt, is_fix=True, db=db)
+            ai_reply = get_cached_or_generate_ai(redacted_code, system_prompt, is_fix=True, db=db, user_id=user.id)
             
             if user.org_id:
                 new_vault = CodeVault(
