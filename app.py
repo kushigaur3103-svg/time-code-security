@@ -431,11 +431,18 @@ async def upgrade_plan(payload: UpgradePayload, authorization: str = Header(None
     finally:
         db.close()
 
+class CheckoutPayload(BaseModel):
+    plan: str
+
 @app.post("/api/checkout")
-async def create_checkout(authorization: str = Header(None)):
+async def create_checkout(payload: CheckoutPayload, authorization: str = Header(None)):
     email = await get_current_user_email(authorization)
     try:
-        checkout_url = "https://timecodesecurity.lemonsqueezy.com/checkout/buy/d41592c8-fa47-41e3-b8a6-cef3e0f275b6"
+        if payload.plan == "developer":
+            checkout_url = "https://timecodesecurity.lemonsqueezy.com/checkout/buy/3c098864-5a17-4120-8873-37192daaa6c6"
+        else:
+            checkout_url = "https://timecodesecurity.lemonsqueezy.com/checkout/buy/d41592c8-fa47-41e3-b8a6-cef3e0f275b6"
+            
         return JSONResponse({"checkout_url": checkout_url})
     except Exception as e:
         raise HTTPException(status_code=500, detail=str(e))

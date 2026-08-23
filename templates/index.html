@@ -354,7 +354,7 @@
                         <li class="flex items-center"><svg class="w-5 h-5 mr-2 text-blue-400" fill="currentColor" viewBox="0 0 20 20"><path fill-rule="evenodd" d="M16.707 5.293a1 1 0 010 1.414l-8 8a1 1 0 01-1.414 0l-4-4a1 1 0 011.414-1.414L8 12.586l7.293-7.293a1 1 0 011.414 0z" clip-rule="evenodd"></path></svg>1-Click Fixes</li>
                         <li class="flex items-center"><svg class="w-5 h-5 mr-2 text-blue-400" fill="currentColor" viewBox="0 0 20 20"><path fill-rule="evenodd" d="M16.707 5.293a1 1 0 010 1.414l-8 8a1 1 0 01-1.414 0l-4-4a1 1 0 011.414-1.414L8 12.586l7.293-7.293a1 1 0 011.414 0z" clip-rule="evenodd"></path></svg>Basic Support</li>
                     </ul>
-                    <button class="w-full bg-blue-600 hover:bg-blue-500 text-white font-bold py-3 px-4 rounded-lg shadow-lg transition-all" onclick="alert('Starting free trial...')">Start Free Trial</button>
+                    <button class="w-full bg-blue-600 hover:bg-blue-500 text-white font-bold py-3 px-4 rounded-lg shadow-lg transition-all" onclick="initiatePayment('developer')">Upgrade to Developer PRO</button>
                 </div>
 
                 <!-- Enterprise SOC-2 Plan -->
@@ -373,7 +373,7 @@
                         <li class="flex items-center"><svg class="w-5 h-5 mr-2 text-yellow-400" fill="currentColor" viewBox="0 0 20 20"><path fill-rule="evenodd" d="M16.707 5.293a1 1 0 010 1.414l-8 8a1 1 0 01-1.414 0l-4-4a1 1 0 011.414-1.414L8 12.586l7.293-7.293a1 1 0 011.414 0z" clip-rule="evenodd"></path></svg>Threat Analytics</li>
                         <li class="flex items-center"><svg class="w-5 h-5 mr-2 text-yellow-400" fill="currentColor" viewBox="0 0 20 20"><path fill-rule="evenodd" d="M16.707 5.293a1 1 0 010 1.414l-8 8a1 1 0 01-1.414 0l-4-4a1 1 0 011.414-1.414L8 12.586l7.293-7.293a1 1 0 011.414 0z" clip-rule="evenodd"></path></svg>SOC-2/GDPR Reports</li>
                     </ul>
-                    <button id="upgradeEnterpriseBtn" class="w-full bg-gradient-to-r from-yellow-500 to-orange-500 hover:from-yellow-400 hover:to-orange-400 text-black font-bold py-3 px-4 rounded-lg shadow-lg transition-all" onclick="initiatePayment()">Upgrade to Enterprise</button>
+                    <button id="upgradeEnterpriseBtn" class="w-full bg-gradient-to-r from-yellow-500 to-orange-500 hover:from-yellow-400 hover:to-orange-400 text-black font-bold py-3 px-4 rounded-lg shadow-lg transition-all" onclick="initiatePayment('enterprise')">Upgrade to Enterprise</button>
                 </div>
             </div>
 
@@ -777,13 +777,17 @@
         }
     });
 
-    async function initiatePayment() {
+    async function initiatePayment(planType) {
         if (isPremium) return;
         try {
             const token = localStorage.getItem('token');
             const res = await fetch('/api/checkout', {
                 method: 'POST',
-                headers: { 'Authorization': `Bearer ${token}` }
+                headers: { 
+                    'Authorization': `Bearer ${token}`,
+                    'Content-Type': 'application/json'
+                },
+                body: JSON.stringify({ plan: planType })
             });
             const data = await res.json();
             if (!res.ok) {
