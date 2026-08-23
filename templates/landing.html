@@ -205,5 +205,11 @@
         </div>
     </footer>
 
+<script>
+    // If the user is already authenticated, skip the marketing page and go straight to the SaaS dashboard
+    if (localStorage.getItem('token')) {
+        window.location.href = '/dashboard';
+    }
+</script>
 </body>
 </html>

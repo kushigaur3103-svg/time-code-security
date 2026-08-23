@@ -163,7 +163,7 @@
                     </h3>
                     <button id="downloadPdfBtn" class="bg-gradient-to-r from-blue-600 to-purple-600 hover:from-blue-500 hover:to-purple-500 text-white text-sm font-bold py-2 px-4 rounded shadow-lg transition-all flex items-center gap-2">
                         <svg xmlns="http://www.w3.org/2000/svg" class="h-4 w-4" fill="none" viewBox="0 0 24 24" stroke="currentColor"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M4 16v1a3 3 0 003 3h10a3 3 0 003-3v-1m-4-4l-4 4m0 0l-4-4m4 4V4" /></svg>
-                        Download PDF Report
+                        Download PDF Report <span class="text-[10px] bg-yellow-500/20 text-yellow-300 px-2 py-0.5 rounded-full ml-2 border border-yellow-500/30">🔒 Enterprise</span>
                     </button>
                 </div>
                 <div id="scanResult" class="bg-[#0a0d14] text-gray-300 font-mono text-sm p-6 rounded-xl border border-gray-700/80 whitespace-pre-wrap leading-relaxed shadow-inner overflow-x-auto"></div>
@@ -231,7 +231,7 @@
         <div class="mt-8 bg-gray-900/70 backdrop-blur-2xl border border-gray-700/50 rounded-2xl p-6 shadow-2xl w-full">
             <h2 class="text-lg font-bold text-gray-200 mb-4 flex items-center gap-2">
                 <svg class="w-5 h-5 text-purple-400" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M13 10V3L4 14h7v7l9-11h-7z"></path></svg>
-                Enterprise Integrations
+                Enterprise Integrations <span class="text-xs bg-yellow-900/50 text-yellow-400 border border-yellow-700/50 px-2 py-0.5 rounded-full flex items-center gap-1"><span class="text-[10px]">🔒</span> Enterprise Only</span>
             </h2>
             <div class="flex flex-col sm:flex-row gap-4 items-end">
                 <div class="flex-1 w-full">
@@ -315,7 +315,7 @@
         <div class="mt-8 bg-gray-900/70 backdrop-blur-2xl border border-gray-700/50 rounded-2xl p-6 shadow-2xl w-full">
             <h2 class="text-lg font-bold text-gray-200 mb-4 flex items-center gap-2">
                 <svg class="w-5 h-5 text-indigo-400" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M19 11H5m14 0a2 2 0 012 2v6a2 2 0 01-2 2H5a2 2 0 01-2-2v-6a2 2 0 012-2m14 0V9a2 2 0 00-2-2M5 11V9a2 2 0 012-2m0 0V5a2 2 0 012-2h6a2 2 0 012 2v2M7 7h10"></path></svg>
-                Company Code Vault
+                Company Code Vault <span class="text-xs bg-yellow-900/50 text-yellow-400 border border-yellow-700/50 px-2 py-0.5 rounded-full flex items-center gap-1"><span class="text-[10px]">🔒</span> Enterprise Only</span>
             </h2>
             <div class="mb-4">
                 <input type="text" id="vaultSearchInput" class="w-full bg-[#0d1117] text-gray-300 p-3 rounded-lg border border-gray-700 focus:outline-none focus:border-indigo-500 transition-colors font-mono text-sm" placeholder="Search knowledge base...">
@@ -489,6 +489,17 @@
     const upgradePromptBtn = document.getElementById('upgradePromptBtn');
     
     let isPremium = false;
+    let isEnterprise = false; // Mock flag: In a real app this would be fetched from /api/me (e.g. data.plan === 'enterprise')
+
+    function requireEnterprise(e) {
+        if (!isEnterprise) {
+            if (e) e.preventDefault();
+            document.getElementById('upgradeModal').classList.remove('hidden');
+            showToast("This feature requires the Enterprise SOC-2 plan.", "error");
+            return false;
+        }
+        return true;
+    }
     let scanCount = 0;
     let userApiKey = null;
 
@@ -630,6 +641,7 @@
     
     let vaultData = [];
     async function fetchVault() {
+        if (!isEnterprise) return;
         try {
             const res = await fetch('/api/vault', { headers: { 'Authorization': `Bearer ${token}` } });
             if (!res.ok) return;
@@ -673,7 +685,12 @@
     }
     fetchVault();
 
+    document.getElementById('vaultSearchInput').addEventListener('focus', (e) => {
+        requireEnterprise(e);
+    });
+
     document.getElementById('vaultSearchInput').addEventListener('input', (e) => {
+        if (!requireEnterprise(e)) return;
         const keyword = e.target.value.toLowerCase();
         const filtered = vaultData.filter(entry => 
             entry.vulnerable_code.toLowerCase().includes(keyword) || 
@@ -740,7 +757,8 @@
         }
     });
     
-    document.getElementById('saveIntegrationBtn').addEventListener('click', async () => {
+    document.getElementById('saveIntegrationBtn').addEventListener('click', async (e) => {
+        if (!requireEnterprise(e)) return;
         const webhook_url = document.getElementById('webhookUrlInput').value.trim();
         const btn = document.getElementById('saveIntegrationBtn');
         const oldText = btn.innerHTML;
@@ -847,7 +865,9 @@
         }
     }
 
-    upgradePromptBtn.addEventListener('click', initiatePayment);
+    upgradePromptBtn.addEventListener('click', () => {
+        document.getElementById('upgradeModal').classList.remove('hidden');
+    });
     
     document.getElementById('closeModalBtn').addEventListener('click', () => {
         document.getElementById('upgradeModal').classList.add('hidden');
@@ -988,11 +1008,8 @@
 
     const downloadPdfBtn = document.getElementById('downloadPdfBtn');
     
-    downloadPdfBtn.addEventListener('click', async () => {
-        if (!isPremium) {
-            upgradePromptBtn.click();
-            return;
-        }
+    downloadPdfBtn.addEventListener('click', async (e) => {
+        if (!requireEnterprise(e)) return;
         
         const reportText = scanResult.textContent;
         if (!reportText || reportText.startsWith("Error:") || reportText.startsWith("System Failure:")) {
