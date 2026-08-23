@@ -129,44 +129,59 @@
             <div class="text-center mb-16">
                 <h2 class="text-4xl font-black mb-4">Simple Pricing. <br/><span class="text-blue-500">Unbeatable Security.</span></h2>
             </div>
-            
-            <div class="grid grid-cols-1 md:grid-cols-2 gap-8 max-w-4xl mx-auto">
+                       <div class="grid grid-cols-1 md:grid-cols-3 gap-8 max-w-6xl mx-auto">
                 <!-- Free Plan -->
-                <div class="bg-[#030712] border border-gray-800 p-8 rounded-3xl">
-                    <h3 class="text-xl font-bold text-gray-400 mb-2">Free Plan</h3>
-                    <div class="text-4xl font-black mb-6">$0<span class="text-lg font-normal text-gray-500">/mo</span></div>
-                    <ul class="space-y-4 mb-8 text-gray-400">
+                <div class="bg-[#030712] border border-gray-800 p-8 rounded-3xl flex flex-col">
+                    <h3 class="text-xl font-bold text-gray-400 mb-2">Free Tier</h3>
+                    <div class="flex items-end gap-3 mb-1">
+                        <div class="text-4xl font-black">$0<span class="text-lg font-normal text-gray-500">/mo</span></div>
+                    </div>
+                    <div class="text-sm font-bold text-gray-500 mb-6 border-b border-gray-800 pb-6">No credit card required</div>
+                    
+                    <ul class="space-y-4 mb-8 text-gray-400 flex-grow">
                         <li class="flex gap-3 items-center"><svg class="w-5 h-5 text-gray-500" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M5 13l4 4L19 7"></path></svg> 5 Deep AI Scans Total</li>
                         <li class="flex gap-3 items-center"><svg class="w-5 h-5 text-gray-500" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M5 13l4 4L19 7"></path></svg> Basic On-Screen Reports</li>
+                        <li class="flex gap-3 items-center"><svg class="w-5 h-5 text-gray-500" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M5 13l4 4L19 7"></path></svg> Manual Code Fixes</li>
                         <li class="flex gap-3 items-center"><svg class="w-5 h-5 text-gray-500" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M5 13l4 4L19 7"></path></svg> Zero-Leak Redaction</li>
                     </ul>
                     <a href="/login" class="block w-full text-center bg-gray-800 hover:bg-gray-700 text-white font-bold py-3 rounded-xl transition">Start Free</a>
                 </div>
-                
-                <!-- PRO Plan -->
-                <div class="bg-gradient-to-b from-blue-900/40 to-[#030712] border border-blue-500/30 p-8 rounded-3xl relative glow">
-                    <div class="absolute top-0 right-8 transform -translate-y-1/2 bg-blue-600 text-white text-xs font-bold py-1 px-3 rounded-full uppercase tracking-wide">Most Popular</div>
-                    <h3 class="text-xl font-bold text-blue-400 mb-2">Enterprise PRO Plan</h3>
+
+                <!-- Developer PRO Plan -->
+                <div class="bg-gray-900/40 border border-blue-500/50 p-8 rounded-3xl flex flex-col hover:border-blue-400 transition-colors">
+                    <h3 class="text-xl font-bold text-blue-400 mb-2">Developer PRO</h3>
                     <div class="flex items-end gap-3 mb-1">
-                        <div class="text-4xl font-black">$499<span class="text-lg font-normal text-gray-500">/mo</span></div>
+                        <div class="text-4xl font-black">$59<span class="text-lg font-normal text-gray-500">/mo</span></div>
                     </div>
-                    <div class="text-sm font-bold text-green-400 mb-6 border-b border-gray-800 pb-6">Special Indian Pricing: ₹499/mo</div>
+                    <div class="text-sm font-bold text-blue-400 mb-6 border-b border-gray-800 pb-6">Indian Developers: ₹599/mo</div>
                     
-                    <ul class="space-y-4 mb-8 text-gray-300">
-                        <li class="flex gap-3 items-center"><svg class="w-5 h-5 text-blue-500" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M5 13l4 4L19 7"></path></svg> Unlimited Deep AI Scans</li>
+                    <ul class="space-y-4 mb-8 text-gray-300 flex-grow">
+                        <li class="flex gap-3 items-center"><svg class="w-5 h-5 text-blue-500" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M5 13l4 4L19 7"></path></svg> Unlimited AI Scans</li>
                         <li class="flex gap-3 items-center"><svg class="w-5 h-5 text-blue-500" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M5 13l4 4L19 7"></path></svg> 1-Click Secure Code Auto-Fix</li>
-                        <li class="flex gap-3 items-center"><svg class="w-5 h-5 text-blue-500" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M5 13l4 4L19 7"></path></svg> Supply Chain & Dependency Auditing</li>
-                        <li class="flex gap-3 items-center"><svg class="w-5 h-5 text-blue-500" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M5 13l4 4L19 7"></path></svg> CI/CD Pipeline API Key</li>
-                        <li class="flex gap-3 items-center"><svg class="w-5 h-5 text-blue-500" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M5 13l4 4L19 7"></path></svg> B2B Workspaces & Team Vault</li>
-                        <li class="flex gap-3 items-center"><svg class="w-5 h-5 text-blue-500" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M5 13l4 4L19 7"></path></svg> Slack/Discord Webhooks</li>
-                        <li class="flex gap-3 items-center"><svg class="w-5 h-5 text-blue-500" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M5 13l4 4L19 7"></path></svg> SOC2/GDPR Compliance Mapping</li>
-                        <li class="flex gap-3 items-center"><svg class="w-5 h-5 text-blue-500" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M5 13l4 4L19 7"></path></svg> Threat Intelligence Analytics</li>
-                        <li class="flex gap-3 items-center"><svg class="w-5 h-5 text-blue-500" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M5 13l4 4L19 7"></path></svg> Automated Defensive Testing</li>
-                        <li class="flex gap-3 items-center"><svg class="w-5 h-5 text-blue-500" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M5 13l4 4L19 7"></path></svg> Native VS Code Extension</li>
-                        <li class="flex gap-3 items-center"><svg class="w-5 h-5 text-blue-500" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M5 13l4 4L19 7"></path></svg> Self-Healing GitHub PR Bot</li>
-                        <li class="flex gap-3 items-center"><svg class="w-5 h-5 text-blue-500" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M5 13l4 4L19 7"></path></svg> Whole-Repository RAG Context</li>
+                        <li class="flex gap-3 items-center"><svg class="w-5 h-5 text-blue-500" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M5 13l4 4L19 7"></path></svg> Basic VS Code Integration</li>
+                        <li class="flex gap-3 items-center"><svg class="w-5 h-5 text-blue-500" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M5 13l4 4L19 7"></path></svg> Basic Support</li>
                     </ul>
-                    <a href="/login" class="block w-full text-center bg-blue-600 hover:bg-blue-500 text-white font-bold py-3 rounded-xl transition shadow-lg">Upgrade to PRO</a>
+                    <a href="/login" class="block w-full text-center bg-blue-600 hover:bg-blue-500 text-white font-bold py-3 rounded-xl transition shadow-lg">Start Free Trial</a>
+                </div>
+
+                <!-- Enterprise SOC-2 Plan -->
+                <div class="bg-gradient-to-b from-yellow-900/20 to-[#030712] border-2 border-yellow-500/50 p-8 rounded-3xl relative glow flex flex-col shadow-[0_0_30px_rgba(234,179,8,0.15)]">
+                    <div class="absolute top-0 left-1/2 transform -translate-x-1/2 -translate-y-1/2 bg-gradient-to-r from-yellow-500 to-orange-500 text-black text-xs font-bold py-1 px-4 rounded-full uppercase tracking-wide">Most Popular</div>
+                    <h3 class="text-xl font-bold text-yellow-400 mb-2">Enterprise SOC-2</h3>
+                    <div class="flex items-end gap-3 mb-1">
+                        <div class="text-4xl font-black text-white">$499<span class="text-lg font-normal text-gray-500">/mo</span></div>
+                    </div>
+                    <div class="text-sm font-bold text-green-400 mb-6 border-b border-gray-800 pb-6">Special Indian Pricing: ₹19,999/mo</div>
+                    
+                    <ul class="space-y-4 mb-8 text-gray-300 flex-grow text-sm">
+                        <li class="flex gap-3 items-center"><svg class="w-5 h-5 text-yellow-400" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M5 13l4 4L19 7"></path></svg> Everything in Developer</li>
+                        <li class="flex gap-3 items-center"><svg class="w-5 h-5 text-yellow-400" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M5 13l4 4L19 7"></path></svg> CI/CD Pipeline Webhooks</li>
+                        <li class="flex gap-3 items-center"><svg class="w-5 h-5 text-yellow-400" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M5 13l4 4L19 7"></path></svg> B2B Workspaces & Team Vault</li>
+                        <li class="flex gap-3 items-center"><svg class="w-5 h-5 text-yellow-400" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M5 13l4 4L19 7"></path></svg> Threat Intelligence Analytics</li>
+                        <li class="flex gap-3 items-center"><svg class="w-5 h-5 text-yellow-400" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M5 13l4 4L19 7"></path></svg> SOC-2/GDPR Compliance PDF</li>
+                        <li class="flex gap-3 items-center"><svg class="w-5 h-5 text-yellow-400" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M5 13l4 4L19 7"></path></svg> Self-Healing GitHub PR Bot</li>
+                    </ul>
+                    <a href="/login" class="block w-full text-center bg-gradient-to-r from-yellow-500 to-orange-500 hover:from-yellow-400 hover:to-orange-400 text-black font-bold py-3 rounded-xl transition shadow-lg">Upgrade to Enterprise</a>
                 </div>
             </div>
         </div>
