@@ -435,14 +435,8 @@ async def upgrade_plan(payload: UpgradePayload, authorization: str = Header(None
 async def create_checkout(authorization: str = Header(None)):
     email = await get_current_user_email(authorization)
     try:
-        lemon_api_key = os.environ.get("LEMON_API_KEY")
-        if not lemon_api_key:
-            print("[!] Warning: LEMON_API_KEY missing, using dummy checkout URL")
-            return {"checkout_url": "https://timecodesecurity.lemonsqueezy.com/buy/dummy-pro-plan"}
-            
-        # In production, we'd make a request to Lemon Squeezy API to generate a custom checkout URL
-        # For now, return a placeholder URL that works with Lemon.js overlay
-        return {"checkout_url": "https://timecodesecurity.lemonsqueezy.com/buy/pro-plan"}
+        CHECKOUT_URL = os.environ.get("LEMON_CHECKOUT_URL", "https://timecodesecurity.lemonsqueezy.com/checkout/buy/d41592c8-fa47-41e3-b8a6-cef3e0f275b6")
+        return {"checkout_url": CHECKOUT_URL}
     except Exception as e:
         raise HTTPException(status_code=500, detail=str(e))
 
