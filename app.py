@@ -102,7 +102,6 @@ class User(Base):
     org_role = Column(String, default="member", nullable=True)
 
     organization = relationship("Organization", backref="users")
-    scan_cache = relationship("ScanCache", backref="user")
 
 Base.metadata.create_all(bind=engine)
 
