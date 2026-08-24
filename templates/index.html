@@ -137,9 +137,9 @@
                     
                     <div id="qaSwitchContainer" class="hidden flex items-center gap-2 bg-purple-900/20 border border-purple-800/50 px-2 py-1 rounded shadow">
                         <span class="text-[10px] text-purple-400 font-bold tracking-wider uppercase">QA:</span>
-                        <button onclick="qaSwitch('free')" class="text-[10px] bg-gray-800 hover:bg-gray-700 text-gray-300 px-2 py-0.5 rounded transition">Free</button>
-                        <button onclick="qaSwitch('developer')" class="text-[10px] bg-blue-900 hover:bg-blue-800 text-blue-200 px-2 py-0.5 rounded transition">Dev</button>
-                        <button onclick="qaSwitch('enterprise')" class="text-[10px] bg-yellow-900 hover:bg-yellow-800 text-yellow-200 px-2 py-0.5 rounded transition">Ent</button>
+                        <button onclick="qaSwitch(event, 'free')" class="text-[10px] bg-gray-800 hover:bg-gray-700 text-gray-300 px-2 py-0.5 rounded transition">Free</button>
+                        <button onclick="qaSwitch(event, 'developer')" class="text-[10px] bg-blue-900 hover:bg-blue-800 text-blue-200 px-2 py-0.5 rounded transition">Dev</button>
+                        <button onclick="qaSwitch(event, 'enterprise')" class="text-[10px] bg-yellow-900 hover:bg-yellow-800 text-yellow-200 px-2 py-0.5 rounded transition">Ent</button>
                     </div>
 
                     <a href="#" id="manageBillingBtn" class="bg-gray-800 hover:bg-gray-700 text-gray-300 hover:text-white text-xs font-bold py-1.5 px-3 rounded-full border border-gray-700 transition-colors shadow-lg">
@@ -532,7 +532,7 @@
     });
     const token = localStorage.getItem('token');
     if (!token) {
-        window.location.href = '/login';
+        window.location.replace('/login');
     }
 
     const originalFetch = window.fetch;
@@ -540,7 +540,7 @@
         const response = await originalFetch.apply(this, arguments);
         if (response.status === 401 || response.status === 403) {
             localStorage.removeItem('token');
-            window.location.href = '/login';
+            window.location.replace('/login');
         }
         return response;
     };
@@ -977,6 +977,12 @@
         document.getElementById('upgradeModal').classList.add('hidden');
     });
 
+    document.getElementById('upgradeModal')?.addEventListener('click', (e) => {
+        if (e.target.id === 'upgradeModal') {
+            document.getElementById('upgradeModal').classList.add('hidden');
+        }
+    });
+
     document.getElementById('submitKeyBtn')?.addEventListener('click', async () => {
         const keyInput = document.getElementById('licenseKeyInput');
         const key = keyInput.value.trim();
@@ -1300,9 +1306,11 @@
         });
     });
 
-    document.getElementById('logoutBtn')?.addEventListener('click', () => {
+    document.getElementById('logoutBtn')?.addEventListener('click', (e) => {
+        e.preventDefault();
+        e.stopPropagation();
         localStorage.removeItem('token');
-        window.location.href = '/login';
+        window.location.href = '/';
     });
 
     const scanDependenciesBtn = document.getElementById('scanDependenciesBtn');
@@ -1355,7 +1363,11 @@
     });
     
     // QA Switch Function
-    async function qaSwitch(newTier) {
+    async function qaSwitch(e, newTier) {
+        if (e) {
+            e.preventDefault();
+            e.stopPropagation();
+        }
         try {
             const res = await fetch('/api/admin/qa-switch', {
                 method: 'POST',

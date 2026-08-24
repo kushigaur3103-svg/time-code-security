@@ -34,7 +34,7 @@
                 <a href="#pricing" class="hover:text-white transition">Pricing</a>
                 <a href="#customers" class="hover:text-white transition">Customers</a>
             </div>
-            <div class="flex gap-4">
+            <div id="navAuthLinks" class="flex gap-4">
                 <a href="/login" class="text-sm font-bold text-gray-300 hover:text-white py-2 px-4 transition">Login</a>
                 <a href="/login" class="text-sm font-bold bg-blue-600 hover:bg-blue-500 text-white py-2 px-5 rounded-full transition shadow-[0_0_15px_rgba(37,99,235,0.4)] hover:shadow-[0_0_25px_rgba(37,99,235,0.6)]">Start Free</a>
             </div>
@@ -58,7 +58,7 @@
                 Hackers only need to be right once. You need to be right every single time. TimeCodeSecurity is your invisible DevSecOps insurance. We catch zero-day vulnerabilities, redact live API keys, and auto-generate the exact fix inside your CI/CD pipeline—before the PR is even merged. Stop paying for post-breach panic.
             </p>
             <div class="flex flex-col sm:flex-row gap-4 w-full justify-center max-w-md mx-auto sm:max-w-none">
-                <a href="/login" class="bg-white text-black font-bold py-4 px-8 rounded-full text-lg hover:bg-gray-200 transition-all text-center">Start Scanning for Free</a>
+                <a href="/login" id="heroCtaBtn" class="bg-white text-black font-bold py-4 px-8 rounded-full text-lg hover:bg-gray-200 transition-all text-center">Start Scanning for Free</a>
                 <a href="#pricing" class="bg-gray-900 border border-gray-700 text-white font-bold py-4 px-8 rounded-full text-lg hover:bg-gray-800 transition-all text-center">View Enterprise Plans</a>
             </div>
         </div>
@@ -208,9 +208,12 @@
     </footer>
 
 <script>
-    // If the user is already authenticated, skip the marketing page and go straight to the SaaS dashboard
     if (localStorage.getItem('token')) {
-        window.location.href = '/dashboard';
+        document.getElementById('navAuthLinks').innerHTML = `
+            <a href="/dashboard" class="text-sm font-bold bg-blue-600 hover:bg-blue-500 text-white py-2 px-5 rounded-full transition shadow-[0_0_15px_rgba(37,99,235,0.4)] hover:shadow-[0_0_25px_rgba(37,99,235,0.6)]">Go to Dashboard</a>
+        `;
+        document.getElementById('heroCtaBtn').href = "/dashboard";
+        document.getElementById('heroCtaBtn').innerText = "Go to Dashboard";
     }
 </script>
 </body>

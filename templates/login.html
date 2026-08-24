@@ -96,7 +96,7 @@
             fetch('/api/me', { headers: { 'Authorization': 'Bearer ' + initialToken } })
                 .then(res => {
                     if (res.ok) {
-                        window.location.href = '/dashboard';
+                        window.location.replace('/dashboard');
                     } else {
                         localStorage.removeItem('token');
                     }
@@ -163,14 +163,11 @@
                     errorMsg.innerText = data.detail;
                     errorMsg.classList.remove('hidden');
                 } else {
+                    localStorage.setItem('token', data.token);
                     if (!isLogin) {
-                        localStorage.setItem('token', data.token);
                         alert("Account created successfully!");
-                        window.location.href = "/dashboard";
-                    } else {
-                        localStorage.setItem('token', data.token);
-                        window.location.href = "/dashboard";
                     }
+                    window.location.replace('/dashboard');
                 }
             } catch (err) {
                 errorMsg.textContent = 'Network error. Core systems offline.';
