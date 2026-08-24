@@ -1057,6 +1057,12 @@ async def generate_test(payload: CodePayload, authorization: str = Header(None))
     finally:
         db.close()
 
+@app.get("/{full_path:path}")
+async def catch_all(request: Request, full_path: str):
+    if full_path.startswith("api/"):
+        raise HTTPException(status_code=404, detail="API endpoint not found")
+    return templates.TemplateResponse(request=request, name="index.html")
+
 if __name__ == "__main__":
     import os
     port = int(os.environ.get("PORT", 10000))
