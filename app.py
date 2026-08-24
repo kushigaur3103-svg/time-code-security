@@ -90,6 +90,7 @@ class User(Base):
     password_hash = Column(String, nullable=False)
     is_premium = Column(Boolean, default=False)
     plan_tier = Column(String, default="developer")
+    trial_expires_at = Column(DateTime, nullable=True)
     scan_count = Column(Integer, default=0)
     api_key = Column(String, unique=True, index=True, nullable=True)
     webhook_url = Column(String, nullable=True)
@@ -136,6 +137,13 @@ except Exception:
 try:
     with engine.connect() as conn:
         conn.execute(text("ALTER TABLE users ADD COLUMN plan_tier VARCHAR DEFAULT 'developer'"))
+        conn.commit()
+except Exception:
+    pass
+
+try:
+    with engine.connect() as conn:
+        conn.execute(text("ALTER TABLE users ADD COLUMN trial_expires_at TIMESTAMP"))
         conn.commit()
 except Exception:
     pass
@@ -273,6 +281,23 @@ async def get_me(authorization: str = Header(None)):
             user.api_key = "tcs_" + secrets.token_hex(16)
             db.commit()
             
+        if user.email == "kushigaur3103@gmail.com":
+            user.is_premium = True
+            user.plan_tier = "enterprise"
+            user.trial_expires_at = None
+            db.commit()
+
+        days_left = None
+        if user.email == "kushigaur3103@gmail.com":
+            days_left = "Lifetime"
+        elif user.trial_expires_at:
+            delta = user.trial_expires_at - datetime.utcnow()
+            if delta.total_seconds() > 0:
+                days_left = str(max(1, delta.days)) + " Days Left"
+            else:
+                user.plan_tier = "free" # trial expired
+                db.commit()
+            
         org_name = user.organization.name if user.organization else None
         invite_code = user.organization.invite_code if user.organization else None
         
@@ -280,6 +305,7 @@ async def get_me(authorization: str = Header(None)):
             "email": user.email, 
             "is_premium": user.is_premium, 
             "plan_tier": user.plan_tier or "free",
+            "days_left": days_left,
             "scan_count": user.scan_count, 
             "api_key": user.api_key, 
             "webhook_url": user.webhook_url,
@@ -287,6 +313,28 @@ async def get_me(authorization: str = Header(None)):
             "org_role": user.org_role,
             "invite_code": invite_code
         }
+    finally:
+        db.close()
+
+class GrantTrialPayload(BaseModel):
+    target_email: str
+    plan_tier: str
+    admin_key: str
+
+@app.post("/api/admin/grant-trial")
+async def grant_trial(payload: GrantTrialPayload):
+    if payload.admin_key not in ["PRATHAM-ENT-2026", "PRATHAM-DEV-2026", "PRATHAM-MASTER-2026"]:
+        raise HTTPException(status_code=403, detail="Invalid admin key")
+    db = SessionLocal()
+    try:
+        user = db.query(User).filter(User.email == payload.target_email).first()
+        if not user:
+            raise HTTPException(status_code=404, detail="Target user not found")
+        user.plan_tier = payload.plan_tier
+        user.is_premium = True
+        user.trial_expires_at = datetime.utcnow() + timedelta(days=14)
+        db.commit()
+        return {"message": f"Granted 14-day {payload.plan_tier} trial to {payload.target_email}"}
     finally:
         db.close()
 
