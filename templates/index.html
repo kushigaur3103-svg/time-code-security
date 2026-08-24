@@ -555,19 +555,8 @@
     
     let isPremium = false;
     let isEnterprise = false;
-
-    function requireEnterprise(e) {
-        if (!isPremium) {
-            if (e) {
-                e.preventDefault();
-                e.stopPropagation();
-            }
-            document.getElementById('upgradeModal').classList.remove('hidden');
-            showToast("This feature requires the Enterprise SOC-2 plan.", "error");
-            return false;
-        }
-        return true;
-    }
+    
+    // No more global requireEnterprise
     let scanCount = 0;
     let userApiKey = null;
 
@@ -581,6 +570,11 @@
             if (data.email === 'kushigaur3103@gmail.com') {
                 const qaContainer = document.getElementById('qaSwitchContainer');
                 if (qaContainer) qaContainer.classList.remove('hidden');
+                
+                // Founder God-Mode override in case DB is somehow 'free'
+                if (data.plan_tier !== 'developer' && data.plan_tier !== 'enterprise' && data.plan_tier !== 'free') {
+                     data.plan_tier = 'enterprise';
+                }
             }
 
             isPremium = (data.plan_tier === 'enterprise' || data.plan_tier === 'developer');
@@ -790,11 +784,14 @@
     fetchVault();
 
     document.getElementById('vaultSearchInput')?.addEventListener('focus', (e) => {
-        requireEnterprise(e);
+        if (!isEnterprise) {
+            e.target.blur();
+            document.getElementById('upgradeModal').classList.remove('hidden');
+        }
     });
 
     document.getElementById('vaultSearchInput')?.addEventListener('input', (e) => {
-        if (!requireEnterprise(e)) return;
+        if (!isEnterprise) return;
         const keyword = e.target.value.toLowerCase();
         const filtered = vaultData.filter(entry => 
             entry.vulnerable_code.toLowerCase().includes(keyword) || 
@@ -862,7 +859,10 @@
     });
     
     document.getElementById('saveIntegrationBtn')?.addEventListener('click', async (e) => {
-        if (!requireEnterprise(e)) return;
+        if (!isEnterprise) {
+            document.getElementById('upgradeModal').classList.remove('hidden');
+            return;
+        }
         const webhook_url = document.getElementById('webhookUrlInput').value.trim();
         const btn = document.getElementById('saveIntegrationBtn');
         const oldText = btn.innerHTML;
@@ -1129,7 +1129,12 @@
     const downloadPdfBtn = document.getElementById('downloadPdfBtn');
     
     downloadPdfBtn?.addEventListener('click', async (e) => {
-        if (!requireEnterprise(e)) return;
+        if (!isEnterprise) {
+            e.preventDefault();
+            e.stopPropagation();
+            document.getElementById('upgradeModal').classList.remove('hidden');
+            return;
+        }
         
         const reportText = scanResult.textContent;
         if (!reportText || reportText.startsWith("Error:") || reportText.startsWith("System Failure:")) {
