@@ -102,6 +102,7 @@ class User(Base):
     org_role = Column(String, default="member", nullable=True)
 
     organization = relationship("Organization", backref="users")
+    scan_cache = relationship("ScanCache", back_populates="user")
 
 Base.metadata.create_all(bind=engine)
 
@@ -155,7 +156,7 @@ class ScanCache(Base):
     job_id = Column(String, unique=True, index=True, nullable=True)
     created_at = Column(DateTime, default=datetime.utcnow)
     
-    user = relationship("User", backref="scans")
+    user = relationship("User", back_populates="scan_cache")
 
 class CodeVault(Base):
     __tablename__ = "code_vault"
