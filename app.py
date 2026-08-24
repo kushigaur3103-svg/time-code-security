@@ -317,7 +317,7 @@ class GrantTrialPayload(BaseModel):
 
 @app.post("/api/admin/grant-trial")
 async def grant_trial(payload: GrantTrialPayload):
-    if payload.admin_key != "PRATHAM-ADMIN-777":
+    if payload.admin_key != "AYUSH-ADMIN-666":
         raise HTTPException(status_code=403, detail="Invalid admin key")
     db = SessionLocal()
     try:
