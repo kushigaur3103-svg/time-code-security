@@ -350,11 +350,6 @@ async def get_me(authorization: str = Header(None)):
         days_left = None
         if getattr(user, 'email', '').strip().lower() == "kushigaur3103@gmail.com":
             days_left = "Lifetime"
-            if getattr(user, 'plan_tier', 'free') not in ["enterprise", "developer"]:
-                user.plan_tier = "enterprise"
-                user.is_premium = True
-                plan_tier = "enterprise"
-                db.commit()
         elif trial_expires_at:
             delta = trial_expires_at - datetime.utcnow()
             if delta.total_seconds() > 0:
@@ -835,8 +830,6 @@ async def scan_code(payload: CodePayload, background_tasks: BackgroundTasks, aut
             db.commit()
 
         is_premium = user.plan_tier in ["developer", "enterprise"]
-        if getattr(user, 'email', '').strip().lower() == "kushigaur3103@gmail.com":
-            is_premium = True
             
         scan_count = user.scan_count
         

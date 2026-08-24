@@ -1026,7 +1026,7 @@
         }
         
         if (!isPremium && scanCount >= 5) {
-            alert("Free plan limit reached. Please upgrade to Premium to continue scanning.");
+            document.getElementById('upgradeModal').classList.remove('hidden');
             return;
         }
 
@@ -1383,7 +1383,9 @@
                 body: JSON.stringify({ new_tier: newTier })
             });
             if (res.ok) {
-                window.location.reload();
+                // Dynamically update UI without redirect or reload
+                await fetchPlan(); 
+                showToast(`Switched QA Tier to: ${newTier.toUpperCase()}`, "success");
             } else {
                 showToast("QA Switch failed (Not authorized)", "error");
             }
