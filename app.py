@@ -348,9 +348,9 @@ async def get_me(authorization: str = Header(None)):
             db.commit()
             
         days_left = None
-        if getattr(user, 'email', None) == "kushigaur3103@gmail.com":
+        if getattr(user, 'email', '').strip().lower() == "kushigaur3103@gmail.com":
             days_left = "Lifetime"
-            if not getattr(user, 'is_premium', False):
+            if getattr(user, 'plan_tier', 'free') not in ["enterprise", "developer"]:
                 user.plan_tier = "enterprise"
                 user.is_premium = True
                 plan_tier = "enterprise"
@@ -835,7 +835,7 @@ async def scan_code(payload: CodePayload, background_tasks: BackgroundTasks, aut
             db.commit()
 
         is_premium = user.plan_tier in ["developer", "enterprise"]
-        if getattr(user, 'email', None) == "kushigaur3103@gmail.com":
+        if getattr(user, 'email', '').strip().lower() == "kushigaur3103@gmail.com":
             is_premium = True
             
         scan_count = user.scan_count
