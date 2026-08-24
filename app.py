@@ -281,12 +281,6 @@ async def get_me(authorization: str = Header(None)):
             user.api_key = "tcs_" + secrets.token_hex(16)
             db.commit()
             
-        if user.email == "kushigaur3103@gmail.com":
-            user.is_premium = True
-            user.plan_tier = "enterprise"
-            user.trial_expires_at = None
-            db.commit()
-
         days_left = None
         if user.email == "kushigaur3103@gmail.com":
             days_left = "Lifetime"
@@ -323,7 +317,7 @@ class GrantTrialPayload(BaseModel):
 
 @app.post("/api/admin/grant-trial")
 async def grant_trial(payload: GrantTrialPayload):
-    if payload.admin_key not in ["PRATHAM-ENT-2026", "PRATHAM-DEV-2026", "PRATHAM-MASTER-2026"]:
+    if payload.admin_key != "PRATHAM-ADMIN-777":
         raise HTTPException(status_code=403, detail="Invalid admin key")
     db = SessionLocal()
     try:
@@ -331,10 +325,30 @@ async def grant_trial(payload: GrantTrialPayload):
         if not user:
             raise HTTPException(status_code=404, detail="Target user not found")
         user.plan_tier = payload.plan_tier
-        user.is_premium = True
+        user.is_premium = payload.plan_tier in ["developer", "enterprise"]
         user.trial_expires_at = datetime.utcnow() + timedelta(days=14)
         db.commit()
         return {"message": f"Granted 14-day {payload.plan_tier} trial to {payload.target_email}"}
+    finally:
+        db.close()
+
+class QASwitchPayload(BaseModel):
+    new_tier: str
+
+@app.post("/api/admin/qa-switch")
+async def qa_switch(payload: QASwitchPayload, authorization: str = Header(None)):
+    email = await get_current_user_email(authorization)
+    if email != "kushigaur3103@gmail.com":
+        raise HTTPException(status_code=403, detail="Not authorized for QA switch")
+    db = SessionLocal()
+    try:
+        user = db.query(User).filter(User.email == email).first()
+        if not user:
+            raise HTTPException(status_code=404, detail="User not found")
+        user.plan_tier = payload.new_tier
+        user.is_premium = payload.new_tier in ["developer", "enterprise"]
+        db.commit()
+        return {"message": f"QA Switch: Tier changed to {payload.new_tier}"}
     finally:
         db.close()
 

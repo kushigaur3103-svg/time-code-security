@@ -129,6 +129,14 @@
                         <span class="text-xs text-emerald-400 font-mono tracking-wide">System Online</span>
                     </div>
                     <span id="trialBadge" class="hidden bg-red-500/90 text-white font-bold px-2 py-1 rounded text-[10px] uppercase tracking-wider shadow-lg"></span>
+                    
+                    <div id="qaSwitchContainer" class="hidden flex items-center gap-2 bg-purple-900/20 border border-purple-800/50 px-2 py-1 rounded shadow">
+                        <span class="text-[10px] text-purple-400 font-bold tracking-wider uppercase">QA:</span>
+                        <button onclick="qaSwitch('free')" class="text-[10px] bg-gray-800 hover:bg-gray-700 text-gray-300 px-2 py-0.5 rounded transition">Free</button>
+                        <button onclick="qaSwitch('developer')" class="text-[10px] bg-blue-900 hover:bg-blue-800 text-blue-200 px-2 py-0.5 rounded transition">Dev</button>
+                        <button onclick="qaSwitch('enterprise')" class="text-[10px] bg-yellow-900 hover:bg-yellow-800 text-yellow-200 px-2 py-0.5 rounded transition">Ent</button>
+                    </div>
+
                     <a href="#" id="manageBillingBtn" class="bg-gray-800 hover:bg-gray-700 text-gray-300 hover:text-white text-xs font-bold py-1.5 px-3 rounded-full border border-gray-700 transition-colors shadow-lg">
                         BILLING
                     </a>
@@ -543,6 +551,12 @@
             const res = await fetch('/api/me', { headers: { 'Authorization': 'Bearer ' + currentToken } });
             if (!res.ok) return;
             const data = await res.json();
+            
+            if (data.email === 'kushigaur3103@gmail.com') {
+                const qaContainer = document.getElementById('qaSwitchContainer');
+                if (qaContainer) qaContainer.classList.remove('hidden');
+            }
+
             isPremium = data.is_premium;
             isEnterprise = (data.plan_tier === 'enterprise');
             scanCount = data.scan_count;
@@ -1297,6 +1311,28 @@
             scanDependenciesBtn.innerHTML = originalText;
         }
     });
+    
+    // QA Switch Function
+    async function qaSwitch(newTier) {
+        try {
+            const res = await fetch('/api/admin/qa-switch', {
+                method: 'POST',
+                headers: {
+                    'Content-Type': 'application/json',
+                    'Authorization': 'Bearer ' + localStorage.getItem('token')
+                },
+                body: JSON.stringify({ new_tier: newTier })
+            });
+            if (res.ok) {
+                window.location.reload();
+            } else {
+                showToast("QA Switch failed (Not authorized)", "error");
+            }
+        } catch (e) {
+            showToast("Network Error", "error");
+        }
+    }
+
     // Secret Admin Panel Logic
     let logoClickCount = 0;
     let logoClickTimer;
