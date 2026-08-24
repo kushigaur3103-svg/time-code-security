@@ -84,7 +84,7 @@ class Organization(Base):
 
 class User(Base):
     __tablename__ = "users"
-    
+
     id = Column(Integer, primary_key=True, index=True)
     email = Column(String, unique=True, index=True, nullable=False)
     password_hash = Column(String, nullable=False)
@@ -93,13 +93,56 @@ class User(Base):
     trial_expires_at = Column(DateTime, nullable=True)
     scan_count = Column(Integer, default=0)
     scans_used = Column(Integer, default=0)
+    daily_scans_used = Column(Integer, default=0)
+    monthly_scans_used = Column(Integer, default=0)
     scan_cycle_start = Column(DateTime, default=datetime.utcnow)
     api_key = Column(String, unique=True, index=True, nullable=True)
     webhook_url = Column(String, nullable=True)
     org_id = Column(Integer, ForeignKey("organization.id"), nullable=True)
     org_role = Column(String, default="member", nullable=True)
-    
+
     organization = relationship("Organization", backref="users")
+    scan_cache = relationship("ScanCache", backref="user")
+
+Base.metadata.create_all(bind=engine)
+
+# ADD SCHEMA MIGRATION BLOCKS
+from sqlalchemy import text
+with engine.begin() as conn:
+    try:
+        conn.execute(text("ALTER TABLE scan_cache ADD COLUMN user_id INTEGER REFERENCES users(id)"))
+    except Exception:
+        pass
+
+    try:
+        conn.execute(text("ALTER TABLE users ADD COLUMN plan_tier VARCHAR DEFAULT 'developer'"))
+    except Exception:
+        pass
+        
+    try:
+        conn.execute(text("ALTER TABLE users ADD COLUMN trial_expires_at TIMESTAMP"))
+    except Exception:
+        pass
+        
+    try:
+        conn.execute(text("ALTER TABLE users ADD COLUMN scans_used INTEGER DEFAULT 0"))
+    except Exception:
+        pass
+        
+    try:
+        conn.execute(text("ALTER TABLE users ADD COLUMN scan_cycle_start TIMESTAMP DEFAULT CURRENT_TIMESTAMP"))
+    except Exception:
+        pass
+
+    try:
+        conn.execute(text("ALTER TABLE users ADD COLUMN daily_scans_used INTEGER DEFAULT 0"))
+    except Exception:
+        pass
+
+    try:
+        conn.execute(text("ALTER TABLE users ADD COLUMN monthly_scans_used INTEGER DEFAULT 0"))
+    except Exception:
+        pass
 
 class ScanCache(Base):
     __tablename__ = "scan_cache"

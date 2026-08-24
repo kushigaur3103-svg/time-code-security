@@ -557,26 +557,13 @@
     let isEnterprise = false;
 
     function requireEnterprise(e) {
-        if (!isEnterprise) {
-            if (e) {
-                e.preventDefault();
-                e.stopPropagation();
-            }
-            document.getElementById('upgradeModal').classList.remove('hidden');
-            showToast("This feature requires the Enterprise SOC-2 plan.", "error");
-            return false;
-        }
-        return true;
-    }
-
-    function requireDeveloper(e) {
         if (!isPremium) {
             if (e) {
                 e.preventDefault();
                 e.stopPropagation();
             }
             document.getElementById('upgradeModal').classList.remove('hidden');
-            showToast("This feature requires the Developer PRO plan.", "error");
+            showToast("This feature requires the Enterprise SOC-2 plan.", "error");
             return false;
         }
         return true;
