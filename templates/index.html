@@ -534,8 +534,11 @@
     let isEnterprise = false; // Mock flag: In a real app this would be fetched from /api/me (e.g. data.plan === 'enterprise')
 
     function requireEnterprise(e) {
-        if (!isEnterprise) {
-            if (e) e.preventDefault();
+        if (!isPremium) {
+            if (e) {
+                e.preventDefault();
+                e.stopPropagation();
+            }
             document.getElementById('upgradeModal').classList.remove('hidden');
             showToast("This feature requires the Enterprise SOC-2 plan.", "error");
             return false;
@@ -557,7 +560,7 @@
                 if (qaContainer) qaContainer.classList.remove('hidden');
             }
 
-            isPremium = data.is_premium;
+            isPremium = (data.plan_tier === 'enterprise');
             isEnterprise = (data.plan_tier === 'enterprise');
             scanCount = data.scan_count;
             userApiKey = data.api_key;
@@ -1342,14 +1345,18 @@
     // Secret Admin Panel Logic
     let logoClickCount = 0;
     let logoClickTimer;
-    document.getElementById('mainLogo')?.addEventListener('click', () => {
+    document.getElementById('mainLogo')?.addEventListener('click', (e) => {
+        e.preventDefault();
+        e.stopPropagation();
+        
         logoClickCount++;
         clearTimeout(logoClickTimer);
+        
         if (logoClickCount >= 3) {
             document.getElementById('adminModal').classList.remove('hidden');
             logoClickCount = 0;
         } else {
-            logoClickTimer = setTimeout(() => { logoClickCount = 0; }, 1000);
+            logoClickTimer = setTimeout(() => { logoClickCount = 0; }, 1500);
         }
     });
 
