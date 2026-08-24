@@ -293,13 +293,23 @@ async def get_me(authorization: str = Header(None)):
         user = db.query(User).filter(User.email == email).first()
         if not user:
             raise HTTPException(status_code=404, detail="User not found")
-        if not user.api_key:
+        scans_used = getattr(user, 'scans_used', 0)
+        scan_cycle_start = getattr(user, 'scan_cycle_start', None)
+        scan_count = getattr(user, 'scan_count', 0)
+        webhook_url = getattr(user, 'webhook_url', None)
+        api_key = getattr(user, 'api_key', None)
+        trial_expires_at = getattr(user, 'trial_expires_at', None)
+        plan_tier = getattr(user, 'plan_tier', 'free')
+
+        if not api_key:
             user.api_key = "tcs_" + secrets.token_hex(16)
+            api_key = user.api_key
             db.commit()
 
-        if user.scan_cycle_start:
-            if (datetime.utcnow() - user.scan_cycle_start).days >= 30:
+        if scan_cycle_start:
+            if (datetime.utcnow() - scan_cycle_start).days >= 30:
                 user.scans_used = 0
+                scans_used = 0
                 user.scan_cycle_start = datetime.utcnow()
                 db.commit()
         else:
@@ -307,30 +317,31 @@ async def get_me(authorization: str = Header(None)):
             db.commit()
             
         days_left = None
-        if user.email == "kushigaur3103@gmail.com":
+        if getattr(user, 'email', None) == "kushigaur3103@gmail.com":
             days_left = "Lifetime"
-        elif user.trial_expires_at:
-            delta = user.trial_expires_at - datetime.utcnow()
+        elif trial_expires_at:
+            delta = trial_expires_at - datetime.utcnow()
             if delta.total_seconds() > 0:
                 days_left = str(max(1, delta.days)) + " Days Left"
             else:
                 user.plan_tier = "free" # trial expired
+                plan_tier = "free"
                 db.commit()
             
-        org_name = user.organization.name if user.organization else None
-        invite_code = user.organization.invite_code if user.organization else None
+        org_name = user.organization.name if getattr(user, 'organization', None) else None
+        invite_code = user.organization.invite_code if getattr(user, 'organization', None) else None
         
         return {
-            "email": user.email, 
-            "is_premium": user.is_premium, 
-            "plan_tier": user.plan_tier or "free",
+            "email": getattr(user, 'email', None), 
+            "is_premium": getattr(user, 'is_premium', False), 
+            "plan_tier": plan_tier or "free",
             "days_left": days_left,
-            "scan_count": user.scan_count,
-            "scans_used": user.scans_used,
-            "api_key": user.api_key, 
-            "webhook_url": user.webhook_url,
+            "scan_count": scan_count,
+            "scans_used": scans_used,
+            "api_key": api_key, 
+            "webhook_url": webhook_url,
             "org_name": org_name,
-            "org_role": user.org_role,
+            "org_role": getattr(user, 'org_role', 'member'),
             "invite_code": invite_code
         }
     finally:

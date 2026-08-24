@@ -554,16 +554,29 @@
     const upgradePromptBtn = document.getElementById('upgradePromptBtn');
     
     let isPremium = false;
-    let isEnterprise = false; // Mock flag: In a real app this would be fetched from /api/me (e.g. data.plan === 'enterprise')
+    let isEnterprise = false;
 
     function requireEnterprise(e) {
-        if (!isPremium) {
+        if (!isEnterprise) {
             if (e) {
                 e.preventDefault();
                 e.stopPropagation();
             }
             document.getElementById('upgradeModal').classList.remove('hidden');
             showToast("This feature requires the Enterprise SOC-2 plan.", "error");
+            return false;
+        }
+        return true;
+    }
+
+    function requireDeveloper(e) {
+        if (!isPremium) {
+            if (e) {
+                e.preventDefault();
+                e.stopPropagation();
+            }
+            document.getElementById('upgradeModal').classList.remove('hidden');
+            showToast("This feature requires the Developer PRO plan.", "error");
             return false;
         }
         return true;
