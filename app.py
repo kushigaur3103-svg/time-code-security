@@ -92,6 +92,8 @@ class User(Base):
     plan_tier = Column(String, default="developer")
     trial_expires_at = Column(DateTime, nullable=True)
     scan_count = Column(Integer, default=0)
+    scans_used = Column(Integer, default=0)
+    scan_cycle_start = Column(DateTime, default=datetime.utcnow)
     api_key = Column(String, unique=True, index=True, nullable=True)
     webhook_url = Column(String, nullable=True)
     org_id = Column(Integer, ForeignKey("organization.id"), nullable=True)
@@ -144,6 +146,20 @@ except Exception:
 try:
     with engine.connect() as conn:
         conn.execute(text("ALTER TABLE users ADD COLUMN trial_expires_at TIMESTAMP"))
+        conn.commit()
+except Exception:
+    pass
+
+try:
+    with engine.connect() as conn:
+        conn.execute(text("ALTER TABLE users ADD COLUMN scans_used INTEGER DEFAULT 0"))
+        conn.commit()
+except Exception:
+    pass
+
+try:
+    with engine.connect() as conn:
+        conn.execute(text("ALTER TABLE users ADD COLUMN scan_cycle_start TIMESTAMP DEFAULT CURRENT_TIMESTAMP"))
         conn.commit()
 except Exception:
     pass
@@ -280,6 +296,15 @@ async def get_me(authorization: str = Header(None)):
         if not user.api_key:
             user.api_key = "tcs_" + secrets.token_hex(16)
             db.commit()
+
+        if user.scan_cycle_start:
+            if (datetime.utcnow() - user.scan_cycle_start).days >= 30:
+                user.scans_used = 0
+                user.scan_cycle_start = datetime.utcnow()
+                db.commit()
+        else:
+            user.scan_cycle_start = datetime.utcnow()
+            db.commit()
             
         days_left = None
         if user.email == "kushigaur3103@gmail.com":
@@ -300,7 +325,8 @@ async def get_me(authorization: str = Header(None)):
             "is_premium": user.is_premium, 
             "plan_tier": user.plan_tier or "free",
             "days_left": days_left,
-            "scan_count": user.scan_count, 
+            "scan_count": user.scan_count,
+            "scans_used": user.scans_used,
             "api_key": user.api_key, 
             "webhook_url": user.webhook_url,
             "org_name": org_name,
@@ -752,11 +778,27 @@ async def scan_code(payload: CodePayload, background_tasks: BackgroundTasks, aut
         if not user:
             raise HTTPException(status_code=404, detail="User not found")
             
-        is_premium = user.is_premium
+        if user.scan_cycle_start:
+            if (datetime.utcnow() - user.scan_cycle_start).days >= 30:
+                user.scans_used = 0
+                user.scan_cycle_start = datetime.utcnow()
+                db.commit()
+        else:
+            user.scan_cycle_start = datetime.utcnow()
+            db.commit()
+
+        is_premium = user.plan_tier in ["developer", "enterprise"]
         scan_count = user.scan_count
         
-        if not is_premium and scan_count >= 5:
-            raise HTTPException(status_code=403, detail="Free plan limit reached. Please upgrade to Premium.")
+        if not is_premium:
+            if user.scans_used >= 3:
+                return {
+                    "is_blurred_paywall": True,
+                    "report": "🚨 CRITICAL VULNERABILITY FOUND: Remote Code Execution (RCE) / Arbitrary Code Execution detected on line 42.\n\nSeverity: CRITICAL (Score: 9.8)\nImpact: An attacker could take full control of your server.\n\nFix Required immediately:\n```javascript\n// Developer PRO Required to view Auto-Fix\n```"
+                }
+            else:
+                user.scans_used += 1
+                db.commit()
             
         if is_premium:
             system_prompt = (

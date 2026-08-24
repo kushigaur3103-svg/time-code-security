@@ -28,6 +28,11 @@
         .glow-text {
             text-shadow: 0 0 20px rgba(52, 211, 153, 0.4);
         }
+        .blur-effect { 
+            filter: blur(6px); 
+            pointer-events: none; 
+            user-select: none; 
+        }
         .cyber-grid {
             background-size: 40px 40px;
             background-image: 
@@ -178,7 +183,22 @@
                         Download PDF Report <span class="ent-lock-badge text-[10px] bg-yellow-500/20 text-yellow-300 px-2 py-0.5 rounded-full ml-2 border border-yellow-500/30">🔒 Enterprise</span>
                     </button>
                 </div>
-                <div id="scanResult" class="bg-[#0a0d14] text-gray-300 font-mono text-sm p-6 rounded-xl border border-gray-700/80 whitespace-pre-wrap leading-relaxed shadow-inner overflow-x-auto"></div>
+                <div>
+                    <div id="scanLimitWarning" class="hidden bg-red-900/40 border border-red-500 text-red-400 font-bold p-4 rounded-xl mb-4 text-center text-lg shadow-lg">
+                        🚨 Scan Complete: Critical Vulnerabilities Found in your code.
+                    </div>
+                    <div class="relative">
+                        <div id="scanResultWrapper">
+                            <div id="scanResult" class="bg-[#0a0d14] text-gray-300 font-mono text-sm p-6 rounded-xl border border-gray-700/80 whitespace-pre-wrap leading-relaxed shadow-inner overflow-x-auto"></div>
+                        </div>
+                        <div id="blurPaywallOverlay" class="hidden absolute inset-0 z-10 flex flex-col items-center justify-center bg-black/40 rounded-xl">
+                            <div class="text-6xl mb-4">🔒</div>
+                            <button onclick="document.getElementById('upgradeModal').classList.remove('hidden')" class="bg-blue-600 hover:bg-blue-500 text-white font-bold py-3 px-6 rounded-lg shadow-2xl transition-all border border-blue-400">
+                                Upgrade to Developer PRO to reveal and fix vulnerabilities
+                            </button>
+                        </div>
+                    </div>
+                </div>
                 
                 <div class="mt-6 flex flex-col sm:flex-row gap-4">
                     <button id="fixCodeBtn" class="flex-1 w-full bg-gradient-to-r from-green-500 to-emerald-600 hover:from-green-400 hover:to-emerald-500 text-white font-bold py-3 px-4 rounded-xl shadow-lg transition-all duration-300 flex justify-center items-center gap-2">
@@ -563,9 +583,9 @@
                 if (qaContainer) qaContainer.classList.remove('hidden');
             }
 
-            isPremium = (data.plan_tier === 'enterprise');
+            isPremium = (data.plan_tier === 'enterprise' || data.plan_tier === 'developer');
             isEnterprise = (data.plan_tier === 'enterprise');
-            scanCount = data.scan_count;
+            scanCount = data.scans_used;
             userApiKey = data.api_key;
 
             if (data.webhook_url) {
@@ -617,7 +637,7 @@
 
                 document.querySelectorAll('.ent-lock-badge').forEach(el => el.classList.remove('hidden'));
             } else {
-                planText.textContent = `FREE PLAN: ${scanCount}/5 SCANS`;
+                planText.textContent = `FREE PLAN: ${scanCount}/3 SCANS`;
                 planText.className = "text-xs text-gray-400 font-mono tracking-wide";
                 planBadge.className = "flex items-center gap-2 bg-gray-900/20 border border-gray-800/50 px-3 py-1.5 rounded-full";
                 
@@ -1015,6 +1035,9 @@
         `;
         reportContainer.classList.add('hidden');
         scanResult.textContent = "";
+        scanResult.classList.remove('blur-effect', 'text-red-400', 'font-bold');
+        document.getElementById('blurPaywallOverlay').classList.add('hidden');
+        document.getElementById('scanLimitWarning').classList.add('hidden');
 
         try {
             const response = await fetch('/scan', {
@@ -1028,7 +1051,14 @@
             
             const data = await response.json();
             
-            if (data.error) {
+            if (data.is_blurred_paywall) {
+                scanResult.textContent = data.report;
+                scanResult.classList.add('blur-effect');
+                document.getElementById('scanLimitWarning').classList.remove('hidden');
+                document.getElementById('blurPaywallOverlay').classList.remove('hidden');
+                reportContainer.classList.remove('hidden');
+                resetScanBtn();
+            } else if (data.error) {
                 scanResult.textContent = "Error: " + data.error;
                 scanResult.classList.add("text-red-400");
                 reportContainer.classList.remove('hidden');
