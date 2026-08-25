@@ -477,7 +477,14 @@
             </div>
             
             <!-- God-Mode API Key Input -->
-            <div class="mt-4 pt-4 border-t border-gray-700 text-center"><input type="text" id="adminKeyInput" placeholder="Enter API Key..." class="bg-gray-800 text-white text-xs p-1 rounded border border-gray-600"><button onclick="activateGodMode()" class="ml-2 text-xs bg-purple-600 hover:bg-purple-500 text-white px-2 py-1 rounded">Unlock</button></div>
+            <div class="mt-4 pt-4 border-t border-gray-700 text-center flex flex-col items-center gap-3">
+                <input type="text" id="adminKeyInput" placeholder="Enter API Key (AYUSH-ADMIN-666)" class="bg-gray-900 text-white text-sm p-2 rounded border border-gray-600 w-full max-w-xs text-center font-mono">
+                <div class="flex gap-2 justify-center">
+                    <button onclick="activateGodMode('free')" class="text-xs bg-gray-700 hover:bg-gray-600 text-white px-3 py-1.5 rounded transition">Simulate Free</button>
+                    <button onclick="activateGodMode('developer')" class="text-xs bg-blue-700 hover:bg-blue-600 text-white px-3 py-1.5 rounded transition">Simulate Dev</button>
+                    <button onclick="activateGodMode('enterprise')" class="text-xs bg-yellow-700 hover:bg-yellow-600 text-white px-3 py-1.5 rounded transition">Simulate Ent</button>
+                </div>
+            </div>
         </div>
     </div>
     
@@ -563,34 +570,62 @@
     let scanCount = 0;
     let userApiKey = null;
 
-    function activateGodMode() {
+    function updateSubtitle(tier) {
+        const subEl = document.getElementById('app-subtitle');
+        if (!subEl) return;
+        if (tier === 'enterprise') {
+            subEl.innerText = 'ENTERPRISE SOC-2 INTERFACE';
+            subEl.className = 'text-yellow-400 text-xs tracking-widest uppercase mt-1';
+        } else if (tier === 'developer') {
+            subEl.innerText = 'DEVELOPER PRO INTERFACE';
+            subEl.className = 'text-blue-400 text-xs tracking-widest uppercase mt-1';
+        } else {
+            subEl.innerText = 'FREE TIER INTERFACE';
+            subEl.className = 'text-gray-400 text-xs tracking-widest uppercase mt-1';
+        }
+    }
+
+    function activateGodMode(targetTier) {
         const key = document.getElementById('adminKeyInput').value;
         if (key === 'AYUSH-ADMIN-666') {
-            isPremium = true;
-            isEnterprise = true;
-            
-            // Update UI
-            const subtitleEl = document.getElementById('app-subtitle');
-            if (subtitleEl) subtitleEl.textContent = 'ENTERPRISE SOC-2 INTERFACE';
+            isPremium = (targetTier === 'enterprise' || targetTier === 'developer');
+            isEnterprise = (targetTier === 'enterprise');
+            updateSubtitle(targetTier);
             
             const planText = document.getElementById('planText');
             const planBadge = document.getElementById('planBadge');
             const upgradePromptBtn = document.getElementById('upgradePromptBtn');
             
-            if(planText) {
-                planText.textContent = "ENTERPRISE SOC-2 (GOD MODE)";
-                planText.className = "text-xs text-yellow-400 font-mono tracking-wide font-bold";
-                planBadge.className = "flex items-center gap-2 bg-yellow-900/20 border border-yellow-800/50 px-3 py-1.5 rounded-full";
+            if (targetTier === 'enterprise') {
+                if(planText) {
+                    planText.textContent = "ENTERPRISE SOC-2 (GOD MODE)";
+                    planText.className = "text-xs text-yellow-400 font-mono tracking-wide font-bold";
+                    planBadge.className = "flex items-center gap-2 bg-yellow-900/20 border border-yellow-800/50 px-3 py-1.5 rounded-full";
+                }
+                if(upgradePromptBtn) upgradePromptBtn.classList.add('hidden');
+                document.querySelectorAll('.ent-lock-badge').forEach(el => el.classList.add('hidden'));
+            } else if (targetTier === 'developer') {
+                if(planText) {
+                    planText.textContent = "DEVELOPER PRO (GOD MODE)";
+                    planText.className = "text-xs text-blue-400 font-mono tracking-wide font-bold";
+                    planBadge.className = "flex items-center gap-2 bg-blue-900/20 border border-blue-800/50 px-3 py-1.5 rounded-full";
+                }
+                if(upgradePromptBtn) upgradePromptBtn.classList.add('hidden');
+                document.querySelectorAll('.ent-lock-badge').forEach(el => el.classList.remove('hidden'));
+            } else {
+                if(planText) {
+                    planText.textContent = "FREE PLAN (GOD MODE)";
+                    planText.className = "text-xs text-gray-400 font-mono tracking-wide font-bold";
+                    planBadge.className = "flex items-center gap-2 bg-gray-800 border border-gray-700 px-3 py-1.5 rounded-full";
+                }
+                if(upgradePromptBtn) upgradePromptBtn.classList.remove('hidden');
+                document.querySelectorAll('.ent-lock-badge').forEach(el => el.classList.remove('hidden'));
             }
-            if(upgradePromptBtn) {
-                upgradePromptBtn.classList.add('hidden');
-            }
-            document.querySelectorAll('.ent-lock-badge').forEach(el => el.classList.add('hidden'));
             
             document.getElementById('upgradeModal').classList.add('hidden');
-            alert('God Mode Activated! All systems unlocked.');
+            alert('God Mode: Successfully switched to ' + targetTier.toUpperCase());
         } else {
-            alert('Invalid Key.');
+            alert('Access Denied: Invalid API Key.');
         }
     }
 
@@ -614,12 +649,7 @@
             isPremium = (data.plan_tier === 'enterprise' || data.plan_tier === 'developer');
             isEnterprise = (data.plan_tier === 'enterprise');
             
-            const subtitleEl = document.getElementById('app-subtitle');
-            if (subtitleEl) {
-                if (data.plan_tier === 'free') subtitleEl.textContent = 'FREE TIER INTERFACE';
-                else if (data.plan_tier === 'developer') subtitleEl.textContent = 'DEVELOPER PRO INTERFACE';
-                else if (data.plan_tier === 'enterprise') subtitleEl.textContent = 'ENTERPRISE SOC-2 INTERFACE';
-            }
+            updateSubtitle(data.plan_tier);
             
             scanCount = data.scans_used;
             userApiKey = data.api_key;
