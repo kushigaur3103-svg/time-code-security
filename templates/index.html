@@ -626,10 +626,6 @@
             if (data.email === 'kushigaur3103@gmail.com') {
                 const qaContainer = document.getElementById('qaSwitchContainer');
                 if (qaContainer) qaContainer.classList.remove('hidden');
-                
-                // Founder: always enterprise, never free
-                data.plan_tier = data.plan_tier === 'enterprise' ? 'enterprise' : 
-                                 data.plan_tier === 'developer' ? 'developer' : 'enterprise';
             }
 
             isPremium = (data.plan_tier === 'enterprise' || data.plan_tier === 'developer');

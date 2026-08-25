@@ -315,13 +315,7 @@ async def get_me(authorization: str = Header(None)):
         is_founder = getattr(user, 'email', '').strip().lower() == "kushigaur3103@gmail.com"
         
         if is_founder:
-            # Founder account: permanent enterprise, never downgrade
             days_left = "Lifetime"
-            if plan_tier not in ("developer", "enterprise"):
-                user.plan_tier = "enterprise"
-                user.is_premium = True
-                plan_tier = "enterprise"
-                db.commit()
         elif trial_expires_at:
             delta = trial_expires_at - datetime.utcnow()
             if delta.total_seconds() > 0:
