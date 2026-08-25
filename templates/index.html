@@ -430,29 +430,9 @@
                 </button>
             </div>
             
-            <div class="grid grid-cols-1 md:grid-cols-2 gap-6 mb-6">
-                <!-- Developer PRO Plan -->
-                <div class="bg-gray-800/40 p-6 rounded-xl border border-gray-700 hover:border-blue-500 transition-colors flex flex-col h-full">
-                    <h3 class="text-xl font-bold text-blue-400 mb-2">Developer PRO</h3>
-                    <div class="mb-4">
-                        <span class="text-3xl font-bold text-white">$59</span><span class="text-gray-400">/month</span>
-                        <div class="text-sm mt-2 bg-blue-900/30 inline-block px-3 py-1.5 rounded text-blue-300">
-                            Indian Developers: <span class="font-bold text-base">₹599</span> <span class="line-through text-gray-500 text-xs ml-1">₹999</span>
-                        </div>
-                    </div>
-                    <ul class="space-y-3 mb-8 flex-grow text-gray-300 text-sm">
-                        <li class="flex items-center"><svg class="w-5 h-5 mr-2 text-blue-400" fill="currentColor" viewBox="0 0 20 20"><path fill-rule="evenodd" d="M16.707 5.293a1 1 0 010 1.414l-8 8a1 1 0 01-1.414 0l-4-4a1 1 0 011.414-1.414L8 12.586l7.293-7.293a1 1 0 011.414 0z" clip-rule="evenodd"></path></svg>Unlimited AI Scans</li>
-                        <li class="flex items-center"><svg class="w-5 h-5 mr-2 text-blue-400" fill="currentColor" viewBox="0 0 20 20"><path fill-rule="evenodd" d="M16.707 5.293a1 1 0 010 1.414l-8 8a1 1 0 01-1.414 0l-4-4a1 1 0 011.414-1.414L8 12.586l7.293-7.293a1 1 0 011.414 0z" clip-rule="evenodd"></path></svg>1-Click Auto-Fixes</li>
-                        <li class="flex items-center"><svg class="w-5 h-5 mr-2 text-blue-400" fill="currentColor" viewBox="0 0 20 20"><path fill-rule="evenodd" d="M16.707 5.293a1 1 0 010 1.414l-8 8a1 1 0 01-1.414 0l-4-4a1 1 0 011.414-1.414L8 12.586l7.293-7.293a1 1 0 011.414 0z" clip-rule="evenodd"></path></svg>VS Code Extension Access</li>
-                        <li class="flex items-center"><svg class="w-5 h-5 mr-2 text-blue-400" fill="currentColor" viewBox="0 0 20 20"><path fill-rule="evenodd" d="M16.707 5.293a1 1 0 010 1.414l-8 8a1 1 0 01-1.414 0l-4-4a1 1 0 011.414-1.414L8 12.586l7.293-7.293a1 1 0 011.414 0z" clip-rule="evenodd"></path></svg>Real-time Vulnerability Alerts</li>
-                        <li class="flex items-center"><svg class="w-5 h-5 mr-2 text-blue-400" fill="currentColor" viewBox="0 0 20 20"><path fill-rule="evenodd" d="M16.707 5.293a1 1 0 010 1.414l-8 8a1 1 0 01-1.414 0l-4-4a1 1 0 011.414-1.414L8 12.586l7.293-7.293a1 1 0 011.414 0z" clip-rule="evenodd"></path></svg>API Key Secret Detection</li>
-                        <li class="flex items-center"><svg class="w-5 h-5 mr-2 text-blue-400" fill="currentColor" viewBox="0 0 20 20"><path fill-rule="evenodd" d="M16.707 5.293a1 1 0 010 1.414l-8 8a1 1 0 01-1.414 0l-4-4a1 1 0 011.414-1.414L8 12.586l7.293-7.293a1 1 0 011.414 0z" clip-rule="evenodd"></path></svg>Priority Email Support</li>
-                    </ul>
-                    <button class="w-full bg-blue-600 hover:bg-blue-500 text-white font-bold py-3 px-4 rounded-lg shadow-lg transition-all" onclick="initiatePayment('developer')">Buy PRO Immediately ($59)</button>
-                </div>
-
+            <div class="flex flex-col items-center justify-center mb-6">
                 <!-- Enterprise SOC-2 Plan -->
-                <div class="bg-yellow-900/10 p-6 rounded-xl border-2 border-yellow-500/50 hover:border-yellow-400 transition-colors relative flex flex-col h-full shadow-[0_0_20px_rgba(234,179,8,0.15)]">
+                <div class="bg-yellow-900/10 p-6 rounded-xl border-2 border-yellow-500/50 hover:border-yellow-400 transition-colors relative flex flex-col h-full shadow-[0_0_20px_rgba(234,179,8,0.15)] max-w-md w-full">
                     <div class="absolute -top-3 left-1/2 transform -translate-x-1/2 bg-gradient-to-r from-yellow-500 to-orange-500 text-black text-xs font-bold px-3 py-1 rounded-full">
                         MOST POPULAR
                     </div>
@@ -472,6 +452,13 @@
                 </div>
             </div>
 
+            <div class="mt-6 pt-4 border-t border-gray-800 text-center">
+                <p class="text-sm text-gray-400 font-mono tracking-wide">
+                    👨‍💻 Are you an individual coder? <br>
+                    <span class="text-blue-400 font-bold">Get the Developer App on Google Play Store</span>
+                </p>
+            </div>
+
             <div class="pt-4 border-t border-gray-800 text-center text-xs text-gray-500">
                 Secured by Lemon Squeezy. Cancel anytime.
             </div>
@@ -481,7 +468,7 @@
                 <input type="text" id="adminKeyInput" placeholder="Enter API Key" class="bg-gray-900 text-white text-sm p-2 rounded border border-gray-600 w-full max-w-xs text-center font-mono">
                 <div class="flex gap-2 justify-center">
                     <button onclick="activateGodMode('free')" class="text-xs bg-gray-700 hover:bg-gray-600 text-white px-3 py-1.5 rounded transition">Simulate Free</button>
-                    <button onclick="activateGodMode('developer')" class="text-xs bg-blue-700 hover:bg-blue-600 text-white px-3 py-1.5 rounded transition">Simulate Dev</button>
+
                     <button onclick="activateGodMode('enterprise')" class="text-xs bg-yellow-700 hover:bg-yellow-600 text-white px-3 py-1.5 rounded transition">Simulate Ent</button>
                 </div>
             </div>
