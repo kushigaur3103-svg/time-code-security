@@ -640,10 +640,9 @@
                 const qaContainer = document.getElementById('qaSwitchContainer');
                 if (qaContainer) qaContainer.classList.remove('hidden');
                 
-                // Founder God-Mode override in case DB is somehow 'free'
-                if (data.plan_tier !== 'developer' && data.plan_tier !== 'enterprise' && data.plan_tier !== 'free') {
-                     data.plan_tier = 'enterprise';
-                }
+                // Founder: always enterprise, never free
+                data.plan_tier = data.plan_tier === 'enterprise' ? 'enterprise' : 
+                                 data.plan_tier === 'developer' ? 'developer' : 'enterprise';
             }
 
             isPremium = (data.plan_tier === 'enterprise' || data.plan_tier === 'developer');

@@ -312,14 +312,22 @@ async def get_me(authorization: str = Header(None)):
             db.commit()
             
         days_left = None
-        if getattr(user, 'email', '').strip().lower() == "kushigaur3103@gmail.com":
+        is_founder = getattr(user, 'email', '').strip().lower() == "kushigaur3103@gmail.com"
+        
+        if is_founder:
+            # Founder account: permanent enterprise, never downgrade
             days_left = "Lifetime"
+            if plan_tier not in ("developer", "enterprise"):
+                user.plan_tier = "enterprise"
+                user.is_premium = True
+                plan_tier = "enterprise"
+                db.commit()
         elif trial_expires_at:
             delta = trial_expires_at - datetime.utcnow()
             if delta.total_seconds() > 0:
                 days_left = str(max(1, delta.days)) + " Days Left"
             else:
-                user.plan_tier = "free" # trial expired
+                user.plan_tier = "free"  # trial expired
                 user.is_premium = False
                 user.trial_expires_at = None
                 plan_tier = "free"
