@@ -89,7 +89,7 @@ class User(Base):
     email = Column(String, unique=True, index=True, nullable=False)
     password_hash = Column(String, nullable=False)
     is_premium = Column(Boolean, default=False)
-    plan_tier = Column(String, default="developer")
+    plan_tier = Column(String, default="free")
     trial_expires_at = Column(DateTime, nullable=True)
     scan_count = Column(Integer, default=0)
     scans_used = Column(Integer, default=0)
@@ -159,42 +159,6 @@ class CodeVault(Base):
 
 Base.metadata.create_all(bind=engine)
 
-from sqlalchemy import text
-try:
-    with engine.connect() as conn:
-        conn.execute(text("ALTER TABLE scan_cache ADD COLUMN user_id INTEGER REFERENCES users(id)"))
-        conn.commit()
-except Exception:
-    pass
-
-try:
-    with engine.connect() as conn:
-        conn.execute(text("ALTER TABLE users ADD COLUMN plan_tier VARCHAR DEFAULT 'developer'"))
-        conn.commit()
-except Exception:
-    pass
-
-try:
-    with engine.connect() as conn:
-        conn.execute(text("ALTER TABLE users ADD COLUMN trial_expires_at TIMESTAMP"))
-        conn.commit()
-except Exception:
-    pass
-
-try:
-    with engine.connect() as conn:
-        conn.execute(text("ALTER TABLE users ADD COLUMN scans_used INTEGER DEFAULT 0"))
-        conn.commit()
-except Exception:
-    pass
-
-try:
-    with engine.connect() as conn:
-        conn.execute(text("ALTER TABLE users ADD COLUMN scan_cycle_start TIMESTAMP DEFAULT CURRENT_TIMESTAMP"))
-        conn.commit()
-except Exception:
-    pass
-
 app = FastAPI(title="TimeCodeSecurity Enterprise API")
 
 from fastapi.responses import JSONResponse
@@ -224,7 +188,7 @@ async def ultimate_global_exception_handler(request: Request, exc: Exception):
 templates = Jinja2Templates(directory="templates")
 
 pwd_context = CryptContext(schemes=["bcrypt"], deprecated="auto")
-SECRET_KEY = "super_secret_enterprise_key_change_me_in_prod"
+SECRET_KEY = os.getenv("JWT_SECRET_KEY", "fallback_dev_key_only_change_in_prod")
 
 class AuthPayload(BaseModel):
     email: str
@@ -356,6 +320,7 @@ async def get_me(authorization: str = Header(None)):
                 days_left = str(max(1, delta.days)) + " Days Left"
             else:
                 user.plan_tier = "free" # trial expired
+                user.is_premium = False
                 user.trial_expires_at = None
                 plan_tier = "free"
                 db.commit()
@@ -761,7 +726,7 @@ def get_cached_or_generate_ai(payload_code: str, system_prompt: str, is_fix: boo
         or_keys = [k.strip() for k in or_keys_str.split(",") if k.strip()]
         for key in or_keys:
             try:
-                client = openai.OpenAI(base_url="https://openrouter.ai/api/v1", api_key=key)
+                client = openai.OpenAI(base_url="https://openrouter.ai/api/v1", api_key=key, timeout=10.0)
                 response = client.chat.completions.create(
                     model="meta-llama/llama-3-8b-instruct",
                     messages=[
@@ -779,7 +744,7 @@ def get_cached_or_generate_ai(payload_code: str, system_prompt: str, is_fix: boo
         cohere_keys = [k.strip() for k in cohere_keys_str.split(",") if k.strip()]
         for key in cohere_keys:
             try:
-                co = cohere.Client(key)
+                co = cohere.Client(key, timeout=10)
                 response = co.chat(
                     message=prompt,
                     preamble=system_prompt,
