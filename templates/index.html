@@ -448,8 +448,7 @@
                         <li class="flex items-center"><svg class="w-5 h-5 mr-2 text-blue-400" fill="currentColor" viewBox="0 0 20 20"><path fill-rule="evenodd" d="M16.707 5.293a1 1 0 010 1.414l-8 8a1 1 0 01-1.414 0l-4-4a1 1 0 011.414-1.414L8 12.586l7.293-7.293a1 1 0 011.414 0z" clip-rule="evenodd"></path></svg>API Key Secret Detection</li>
                         <li class="flex items-center"><svg class="w-5 h-5 mr-2 text-blue-400" fill="currentColor" viewBox="0 0 20 20"><path fill-rule="evenodd" d="M16.707 5.293a1 1 0 010 1.414l-8 8a1 1 0 01-1.414 0l-4-4a1 1 0 011.414-1.414L8 12.586l7.293-7.293a1 1 0 011.414 0z" clip-rule="evenodd"></path></svg>Priority Email Support</li>
                     </ul>
-                    <button class="w-full bg-green-600 hover:bg-green-500 text-white font-bold py-3 px-4 rounded-lg shadow-lg transition-all mb-3" onclick="startSelfServeTrial()">Start 14-Day Free Trial</button>
-                    <button class="w-full bg-blue-900/50 hover:bg-blue-800 text-blue-300 font-bold py-2 px-4 rounded-lg transition-all border border-blue-700/50" onclick="initiatePayment('developer')">Buy PRO Immediately ($59)</button>
+                    <button class="w-full bg-blue-600 hover:bg-blue-500 text-white font-bold py-3 px-4 rounded-lg shadow-lg transition-all" onclick="initiatePayment('developer')">Buy PRO Immediately ($59)</button>
                 </div>
 
                 <!-- Enterprise SOC-2 Plan -->
@@ -1001,24 +1000,6 @@
             }, 2000);
         }
     });
-
-    async function startSelfServeTrial() {
-        try {
-            const res = await fetch('/api/start-trial', {
-                method: 'POST',
-                headers: { 'Authorization': 'Bearer ' + localStorage.getItem('token') }
-            });
-            const data = await res.json();
-            if (res.ok) {
-                alert("Success: " + data.message);
-                window.location.reload();
-            } else {
-                alert("Trial Activation Failed: " + (data.error || "Unknown error"));
-            }
-        } catch (e) {
-            alert("Network error activating trial.");
-        }
-    }
 
     async function initiatePayment(planType) {
         if (isPremium) return;
