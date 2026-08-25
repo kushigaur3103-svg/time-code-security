@@ -1118,14 +1118,26 @@
         document.getElementById('scanLimitWarning').classList.add('hidden');
 
         try {
+            const controller = new AbortController();
+            const timeoutId = setTimeout(() => controller.abort(), 15000);
+
             const response = await fetch('/scan', {
                 method: 'POST',
                 headers: { 
                     'Content-Type': 'application/json',
                     'Authorization': `Bearer ${token}`
                 },
-                body: JSON.stringify({ code: code })
+                body: JSON.stringify({ code: code }),
+                signal: controller.signal
             });
+            
+            clearTimeout(timeoutId);
+            
+            if (response.status === 504) {
+                showToast("Scan timed out. Please try again.", "error");
+                resetScanBtn();
+                return;
+            }
             
             const data = await response.json();
             
@@ -1181,9 +1193,13 @@
                 }, 2000);
             }
         } catch (error) {
-            scanResult.textContent = "System Failure: Could not reach the backend.";
-            scanResult.classList.add("text-red-400");
-            reportContainer.classList.remove('hidden');
+            if (error.name === 'AbortError') {
+                showToast("Scan timed out. Please try again.", "error");
+            } else {
+                scanResult.textContent = "System Failure: Could not reach the backend.";
+                scanResult.classList.add("text-red-400");
+                reportContainer.classList.remove('hidden');
+            }
             resetScanBtn();
         }
         

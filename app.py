@@ -704,13 +704,16 @@ def get_cached_or_generate_ai(payload_code: str, system_prompt: str, is_fix: boo
             "Content-Type": "application/json"
         }
         try:
-            response = requests.post(url, headers=headers, json=groq_payload)
+            response = requests.post(url, headers=headers, json=groq_payload, timeout=10)
             if response.status_code == 429:
                 last_error = "Rate Limit 429"
                 continue
             response.raise_for_status()
             ai_reply = response.json()['choices'][0]['message']['content']
             break
+        except requests.exceptions.Timeout:
+            from fastapi.responses import JSONResponse
+            return JSONResponse(status_code=504, content={"error": "SCAN_TIMEOUT", "message": "The AI scanning engine took too long to respond. Please try again."})
         except Exception as e:
             last_error = str(e)
             continue
