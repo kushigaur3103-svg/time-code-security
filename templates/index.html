@@ -417,12 +417,6 @@
                     <button id="closeAdminModalBtn" class="flex-1 bg-gray-800 hover:bg-gray-700 text-white font-bold py-3 rounded-xl transition">Cancel</button>
                     <button id="grantTrialBtn" class="flex-1 bg-red-600 hover:bg-red-500 text-white font-bold py-3 rounded-xl transition shadow-[0_0_15px_rgba(239,68,68,0.4)]">Grant Trial</button>
                 </div>
-                <div class="pt-4 mt-4 border-t border-red-900/50 flex gap-2 justify-center">
-                    <span class="text-xs text-gray-500 font-bold self-center uppercase mr-2">UI Test:</span>
-                    <button onclick="activateGodMode('free')" class="text-xs bg-gray-700 hover:bg-gray-600 text-white px-3 py-1.5 rounded transition">Simulate Free</button>
-                    <button onclick="activateGodMode('developer')" class="text-xs bg-blue-700 hover:bg-blue-600 text-white px-3 py-1.5 rounded transition">Simulate Dev</button>
-                    <button onclick="activateGodMode('enterprise')" class="text-xs bg-yellow-700 hover:bg-yellow-600 text-white px-3 py-1.5 rounded transition">Simulate Ent</button>
-                </div>
             </div>
         </div>
     </div>
@@ -482,6 +476,15 @@
                 Secured by Lemon Squeezy. Cancel anytime.
             </div>
             
+            <!-- God-Mode API Key Input -->
+            <div class="mt-4 pt-4 border-t border-gray-700 text-center flex flex-col items-center gap-3">
+                <input type="text" id="adminKeyInput" placeholder="Enter API Key (AYUSH-ADMIN-666)" class="bg-gray-900 text-white text-sm p-2 rounded border border-gray-600 w-full max-w-xs text-center font-mono">
+                <div class="flex gap-2 justify-center">
+                    <button onclick="activateGodMode('free')" class="text-xs bg-gray-700 hover:bg-gray-600 text-white px-3 py-1.5 rounded transition">Simulate Free</button>
+                    <button onclick="activateGodMode('developer')" class="text-xs bg-blue-700 hover:bg-blue-600 text-white px-3 py-1.5 rounded transition">Simulate Dev</button>
+                    <button onclick="activateGodMode('enterprise')" class="text-xs bg-yellow-700 hover:bg-yellow-600 text-white px-3 py-1.5 rounded transition">Simulate Ent</button>
+                </div>
+            </div>
         </div>
     </div>
     
@@ -583,7 +586,7 @@
     }
 
     function activateGodMode(targetTier) {
-        const key = document.getElementById('adminKey').value;
+        const key = document.getElementById('adminKeyInput').value;
         if (key === 'AYUSH-ADMIN-666') {
             isPremium = (targetTier === 'enterprise' || targetTier === 'developer');
             isEnterprise = (targetTier === 'enterprise');
@@ -619,7 +622,7 @@
                 document.querySelectorAll('.ent-lock-badge').forEach(el => el.classList.remove('hidden'));
             }
             
-            document.getElementById('adminModal').classList.add('hidden');
+            document.getElementById('upgradeModal').classList.add('hidden');
             alert('God Mode: Successfully switched to ' + targetTier.toUpperCase());
         } else {
             alert('Access Denied: Invalid API Key.');
