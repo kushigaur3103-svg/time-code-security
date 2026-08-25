@@ -356,6 +356,7 @@ async def get_me(authorization: str = Header(None)):
                 days_left = str(max(1, delta.days)) + " Days Left"
             else:
                 user.plan_tier = "free" # trial expired
+                user.trial_expires_at = None
                 plan_tier = "free"
                 db.commit()
             
@@ -552,6 +553,29 @@ async def audit_dependencies(payload: AuditDependenciesPayload, authorization: s
 
 class UpgradePayload(BaseModel):
     key: str
+
+@app.post("/api/start-trial")
+async def start_trial(authorization: str = Header(None)):
+    email = await get_current_user_email(authorization)
+    db = SessionLocal()
+    try:
+        user = db.query(User).filter(User.email == email).first()
+        if not user:
+            raise HTTPException(status_code=404, detail="User not found")
+            
+        if user.plan_tier != 'free':
+            return {"error": "You are already on a premium plan."}
+            
+        if user.trial_expires_at is not None:
+            return {"error": "Trial already used"}
+            
+        user.plan_tier = 'developer'
+        user.trial_expires_at = datetime.utcnow() + timedelta(days=14)
+        db.commit()
+        
+        return {"success": True, "message": "14-Day Developer PRO Trial activated!"}
+    finally:
+        db.close()
 
 @app.post("/api/upgrade")
 async def upgrade_plan(payload: UpgradePayload, authorization: str = Header(None)):
