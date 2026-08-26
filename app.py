@@ -323,10 +323,11 @@ async def get_me(authorization: str = Header(None)):
         if is_founder:
             days_left = "Lifetime"
         elif trial_expires_at:
-            if getattr(user, 'created_at', None):
+            try:
                 days_active = (datetime.utcnow() - user.created_at).days
-            else:
-                days_active = 0  # Fallback if created_at is missing for some old rows
+            except (TypeError, AttributeError):
+                # Fallback for old records or string dates
+                days_active = 0
             
             days_left_num = max(0, 14 - days_active)
             
