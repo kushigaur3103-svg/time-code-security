@@ -326,14 +326,28 @@ async def get_me(authorization: str = Header(None)):
         if is_founder:
             days_left = "Lifetime"
         elif trial_expires_at:
-            try:
-                days_active = (datetime.utcnow() - user.created_at).days
-            except (TypeError, AttributeError):
-                # Fallback for old records or string dates
-                days_active = 0
+            def _calc_days():
+                import datetime
+
+                days_left = 14 # Default fallback
+                if hasattr(user, 'created_at') and user.created_at:
+                    created = user.created_at
+
+                    # Handle SQLite returning a string for legacy records
+                    if isinstance(created, str):
+                        try:
+                            clean_str = created.split(".")[0]
+                            created = datetime.datetime.strptime(clean_str, "%Y-%m-%d %H:%M:%S")
+                        except ValueError:
+                            created = datetime.datetime.utcnow()
+
+                    if isinstance(created, datetime.datetime):
+                        days_active = (datetime.datetime.utcnow() - created).days
+                        days_left = max(0, 14 - days_active)
+                return days_left
             
-            days_left_num = max(0, 14 - days_active)
-            
+            days_left_num = _calc_days()
+
             if days_left_num > 0:
                 days_left = str(days_left_num) + " Days Left"
             else:
