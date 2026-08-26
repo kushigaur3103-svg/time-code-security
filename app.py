@@ -892,13 +892,14 @@ async def get_scan_status(job_id: str, authorization: str = Header(None)):
         db.close()
 
 @app.post("/api/fix-code")
-async def fix_code(payload: CodePayload, authorization: str = Header(None)):
+async def fix_code(payload: CodePayload, request: Request, authorization: str = Header(None)):
     email = await get_current_user_email(authorization)
     db = SessionLocal()
+    master_key = request.headers.get("X-Master-Key")
     try:
         user = db.query(User).filter(User.email == email).first()
-        if not user or (not user.is_premium and user.email != 'kushigaur3103@gmail.com'):
-            raise HTTPException(status_code=403, detail="Premium feature only")
+        if not user.is_premium and master_key != "AYUSH-ADMIN-666":
+            raise HTTPException(status_code=403, detail="PRO Feature Only")
             
         system_prompt = (
             "You are a senior cybersecurity engineer. Fix the provided vulnerable code. "
@@ -1042,13 +1043,14 @@ async def cicd_scan(payload: CICDScanPayload, x_api_key: str = Header(None)):
         db.close()
 
 @app.post("/api/generate-test")
-async def generate_test(payload: CodePayload, authorization: str = Header(None)):
+async def generate_test(payload: CodePayload, request: Request, authorization: str = Header(None)):
     email = await get_current_user_email(authorization)
     db = SessionLocal()
+    master_key = request.headers.get("X-Master-Key")
     try:
         user = db.query(User).filter(User.email == email).first()
-        if not user or (not user.is_premium and user.email != 'kushigaur3103@gmail.com'):
-            raise HTTPException(status_code=403, detail="Premium feature only")
+        if not user.is_premium and master_key != "AYUSH-ADMIN-666":
+            raise HTTPException(status_code=403, detail="PRO Feature Only")
             
         system_prompt = (
             "You are a senior DevSecOps engineer. Generate a defensive Unit Test (e.g., PyTest or Jest) "
