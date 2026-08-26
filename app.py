@@ -207,10 +207,31 @@ async def home(request: Request):
 
 @app.get("/dashboard")
 async def dashboard(request: Request):
-    days_left_str = "14 DAYS LEFT"  # Fallback for Jinja
-    # The actual precise days_left is fetched via JS /api/me and JWT auth, 
-    # but we inject a context variable here to satisfy the template engine.
-    return templates.TemplateResponse("index.html", {"request": request, "days_left": days_left_str})
+    user = None
+    import datetime
+    days_left = 14
+    if user and hasattr(user, 'created_at') and user.created_at:
+        created = user.created_at
+        if isinstance(created, str):
+            try:
+                clean_str = created.split(".")[0]
+                created = datetime.datetime.strptime(clean_str, "%Y-%m-%d %H:%M:%S")
+            except ValueError:
+                created = datetime.datetime.utcnow()
+        if isinstance(created, datetime.datetime):
+            days_active = (datetime.datetime.utcnow() - created).days
+            days_left = max(0, 14 - days_active)
+
+    # CRITICAL: Ensure days_left is explicitly an integer. NO TRAILING COMMAS!
+    context = {
+        "request": request,
+        "days_left": int(days_left)
+    }
+    # If your template needs the 'user' object, add it safely:
+    if user:
+        context["user"] = user
+
+    return templates.TemplateResponse("index.html", context)
 
 @app.get("/login")
 async def login_page(request: Request):
