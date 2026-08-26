@@ -231,7 +231,7 @@ async def dashboard(request: Request):
     if user:
         context["user"] = user
 
-    return templates.TemplateResponse("index.html", context)
+    return templates.TemplateResponse(request=request, name="index.html", context=context)
 
 @app.get("/login")
 async def login_page(request: Request):
@@ -1131,7 +1131,7 @@ async def generate_test(payload: CodePayload, request: Request, authorization: s
 async def catch_all(request: Request, full_path: str):
     if full_path.startswith("api/"):
         raise HTTPException(status_code=404, detail="API endpoint not found")
-    return templates.TemplateResponse("index.html", {"request": request, "days_left": "14 DAYS LEFT"})
+    return templates.TemplateResponse(request=request, name="index.html", context={"request": request, "days_left": "14 DAYS LEFT"})
 
 if __name__ == "__main__":
     import os
