@@ -308,11 +308,14 @@ async def get_me(authorization: str = Header(None)):
             db.commit()
 
         if scan_cycle_start:
-            if (datetime.utcnow() - scan_cycle_start).days >= 30:
-                user.scans_used = 0
-                scans_used = 0
-                user.scan_cycle_start = datetime.utcnow()
-                db.commit()
+            try:
+                if (datetime.utcnow() - scan_cycle_start).days >= 30:
+                    user.scans_used = 0
+                    scans_used = 0
+                    user.scan_cycle_start = datetime.utcnow()
+                    db.commit()
+            except TypeError:
+                pass  # Ignore string parse errors for legacy records
         else:
             user.scan_cycle_start = datetime.utcnow()
             db.commit()
@@ -805,10 +808,13 @@ async def scan_code(payload: CodePayload, background_tasks: BackgroundTasks, aut
             raise HTTPException(status_code=404, detail="User not found")
             
         if user.scan_cycle_start:
-            if (datetime.utcnow() - user.scan_cycle_start).days >= 30:
-                user.scans_used = 0
-                user.scan_cycle_start = datetime.utcnow()
-                db.commit()
+            try:
+                if (datetime.utcnow() - user.scan_cycle_start).days >= 30:
+                    user.scans_used = 0
+                    user.scan_cycle_start = datetime.utcnow()
+                    db.commit()
+            except TypeError:
+                pass
         else:
             user.scan_cycle_start = datetime.utcnow()
             db.commit()
