@@ -5,7 +5,7 @@ from sqlalchemy.orm import sessionmaker
 # Connect to the exact same database provisioned by our Docker Compose file
 SQLALCHEMY_DATABASE_URL = "postgresql://ai_agent:secure_password@db:5432/code_security"
 
-engine = create_engine(SQLALCHEMY_DATABASE_URL)
+engine = create_engine(SQLALCHEMY_DATABASE_URL, pool_pre_ping=True, pool_recycle=1800)
 SessionLocal = sessionmaker(autocommit=False, autoflush=False, bind=engine)
 
 Base = declarative_base()
