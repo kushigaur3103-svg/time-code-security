@@ -100,6 +100,7 @@ class User(Base):
     webhook_url = Column(String, nullable=True)
     org_id = Column(Integer, ForeignKey("organization.id"), nullable=True)
     org_role = Column(String, default="member", nullable=True)
+    created_at = Column(DateTime, default=datetime.utcnow)
 
     organization = relationship("Organization", backref="users")
     scan_cache = relationship("ScanCache", back_populates="user")
@@ -126,6 +127,8 @@ with engine.begin() as conn:
             conn.execute(text("ALTER TABLE users ADD COLUMN daily_scans_used INTEGER DEFAULT 0"))
         if 'monthly_scans_used' not in columns:
             conn.execute(text("ALTER TABLE users ADD COLUMN monthly_scans_used INTEGER DEFAULT 0"))
+        if 'created_at' not in columns:
+            conn.execute(text("ALTER TABLE users ADD COLUMN created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP"))
             
     if inspector.has_table('scan_cache'):
         columns = [col['name'] for col in inspector.get_columns('scan_cache')]
@@ -317,9 +320,15 @@ async def get_me(authorization: str = Header(None)):
         if is_founder:
             days_left = "Lifetime"
         elif trial_expires_at:
-            delta = trial_expires_at - datetime.utcnow()
-            if delta.total_seconds() > 0:
-                days_left = str(max(1, delta.days)) + " Days Left"
+            if getattr(user, 'created_at', None):
+                days_active = (datetime.utcnow() - user.created_at).days
+            else:
+                days_active = 0  # Fallback if created_at is missing for some old rows
+            
+            days_left_num = max(0, 14 - days_active)
+            
+            if days_left_num > 0:
+                days_left = str(days_left_num) + " Days Left"
             else:
                 user.plan_tier = "free"  # trial expired
                 user.is_premium = False
