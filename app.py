@@ -64,7 +64,7 @@ DATABASE_URL = os.getenv("DATABASE_URL")
 try:
     if not DATABASE_URL:
         raise ValueError("DATABASE_URL missing")
-    engine = create_engine(DATABASE_URL)
+    engine = create_engine(DATABASE_URL, pool_pre_ping=True, pool_recycle=1800)
 except Exception as e:
     print(f"[!] Warning: PostgreSQL connection failed or missing ({e}). Falling back to SQLite.")
     DATABASE_URL = "sqlite:///./sql_app.db"
