@@ -963,34 +963,38 @@
     }
 
     async function activateGodMode(targetTier) {
-        const key = document.getElementById('adminKeyInput').value.trim();
-        if (key === 'AYUSH-ADMIN-666' || key.toLowerCase() === 'ayush-admin-666') {
-            try {
-                const currentToken = localStorage.getItem('token');
-                const res = await fetch('/api/upgrade', {
-                    method: 'POST',
-                    headers: {
-                        'Content-Type': 'application/json',
-                        'Authorization': `Bearer ${currentToken}`
-                    },
-                    body: JSON.stringify({ key: 'AYUSH-ADMIN-666' })
-                });
-                if (res.ok) {
-                    await fetchPlan();
-                    document.getElementById('upgradeModal').classList.add('hidden');
+        const key = (document.getElementById('adminKeyInput')?.value || '').trim();
+        if (key !== 'AYUSH-ADMIN-666' && key.toLowerCase() !== 'ayush-admin-666') {
+            alert('Access Denied: Invalid Master Key.');
+            return;
+        }
+        try {
+            const currentToken = localStorage.getItem('token');
+            const res = await fetch('/api/admin/qa-switch', {
+                method: 'POST',
+                headers: {
+                    'Content-Type': 'application/json',
+                    'Authorization': `Bearer ${currentToken}`
+                },
+                body: JSON.stringify({ new_tier: targetTier, admin_key: key })
+            });
+            const data = await res.json();
+            if (res.ok) {
+                await fetchPlan();
+                document.getElementById('upgradeModal').classList.add('hidden');
+                if (targetTier === 'enterprise') {
                     alert('Enterprise SOC-2 Lifetime Access Unlocked!');
-                    return;
+                } else if (targetTier === 'free') {
+                    alert('Successfully Switched to Free Tier (Simulated Expired Trial)!');
+                } else {
+                    alert(`Switched to ${targetTier.toUpperCase()}`);
                 }
-            } catch(e) {
-                console.error("God Mode error", e);
+            } else {
+                alert('QA Switch Error: ' + (data.detail || 'Failed to switch'));
             }
-            isPremium = (targetTier === 'enterprise' || targetTier === 'developer');
-            isEnterprise = (targetTier === 'enterprise');
-            updateSubtitle(targetTier);
-            document.getElementById('upgradeModal').classList.add('hidden');
-            alert('Switched to ' + targetTier.toUpperCase());
-        } else {
-            alert('Access Denied: Invalid API Key.');
+        } catch(e) {
+            console.error("God Mode error", e);
+            alert('Network error while applying key.');
         }
     }
 
@@ -1001,9 +1005,9 @@
             if (!res.ok) return;
             const data = await res.json();
             
-            if (data.email === 'kushigaur3103@gmail.com') {
-                const qaContainer = document.getElementById('qaSwitchContainer');
-                if (qaContainer) qaContainer.classList.remove('hidden');
+            const qaContainer = document.getElementById('qaSwitchContainer');
+            if (qaContainer && data.days_left && data.days_left.toLowerCase().includes('lifetime')) {
+                qaContainer.classList.remove('hidden');
             }
 
             isPremium = (data.plan_tier === 'enterprise' || data.plan_tier === 'developer');
@@ -2098,14 +2102,13 @@ jobs:
                     'Content-Type': 'application/json',
                     'Authorization': 'Bearer ' + localStorage.getItem('token')
                 },
-                body: JSON.stringify({ new_tier: newTier })
+                body: JSON.stringify({ new_tier: newTier, admin_key: 'AYUSH-ADMIN-666' })
             });
             if (res.ok) {
-                // Dynamically update UI without redirect or reload
                 await fetchPlan(); 
-                showToast(`Switched QA Tier to: ${newTier.toUpperCase()}`, "success");
+                showToast(`Switched Tier to: ${newTier.toUpperCase()}`, "success");
             } else {
-                showToast("QA Switch failed (Not authorized)", "error");
+                showToast("QA Switch failed: Access Denied", "error");
             }
         } catch (e) {
             showToast("Network Error", "error");

@@ -472,32 +472,42 @@ async def get_me(authorization: str = Header(None)):
             user.scan_cycle_start = datetime.utcnow()
             db.commit()
             
-        days_left = None
-        is_founder = getattr(user, 'email', '').strip().lower() == "kushigaur3103@gmail.com"
-        
-        if is_founder or (getattr(user, 'plan_tier', '') == 'enterprise' and getattr(user, 'trial_expires_at', None) is None):
+        if getattr(user, 'plan_tier', '') == 'free':
+            days_left = "0 Days Left"
+            plan_tier = "free"
+            user.is_premium = False
+        elif getattr(user, 'trial_expires_at', None) and user.trial_expires_at > datetime(2090, 1, 1):
             days_left = "Lifetime"
             plan_tier = "enterprise"
-            user.plan_tier = "enterprise"
             user.is_premium = True
-            db.commit()
-        else:
-            days_active = safe_calculate_days_active(getattr(user, 'created_at', None))
-
-            if days_active <= 14:
-                days_left_num = max(0, 14 - days_active)
-                days_left = f"{days_left_num} Days Left"
-                plan_tier = "enterprise"
-                user.plan_tier = "enterprise"
+        elif getattr(user, 'trial_expires_at', None):
+            now = datetime.utcnow()
+            if now < user.trial_expires_at:
+                remaining_seconds = (user.trial_expires_at - now).total_seconds()
+                remaining_days = max(1, int(remaining_seconds // 86400) + 1)
+                days_left = f"{remaining_days} Days Left"
+                plan_tier = user.plan_tier or "enterprise"
                 user.is_premium = True
-                db.commit()
             else:
                 days_left = "0 Days Left"
                 plan_tier = "free"
                 user.plan_tier = "free"
                 user.is_premium = False
-                user.trial_expires_at = None
-                db.commit()
+        else:
+            days_active = safe_calculate_days_active(getattr(user, 'created_at', None))
+            if days_active < 14:
+                days_left_num = max(0, 14 - days_active)
+                days_left = f"{days_left_num} Days Left"
+                plan_tier = "enterprise"
+                user.plan_tier = "enterprise"
+                user.is_premium = True
+                user.trial_expires_at = datetime.utcnow() + timedelta(days=days_left_num)
+            else:
+                days_left = "0 Days Left"
+                plan_tier = "free"
+                user.plan_tier = "free"
+                user.is_premium = False
+        db.commit()
             
         org_name = user.organization.name if getattr(user, 'organization', None) else None
         invite_code = user.organization.invite_code if getattr(user, 'organization', None) else None
@@ -678,21 +688,39 @@ async def grant_trial(payload: GrantTrialPayload):
 
 class QASwitchPayload(BaseModel):
     new_tier: str
+    admin_key: Optional[str] = "AYUSH-ADMIN-666"
 
 @app.post("/api/admin/qa-switch")
 async def qa_switch(payload: QASwitchPayload, authorization: str = Header(None)):
     email = await get_current_user_email(authorization)
-    if email != "kushigaur3103@gmail.com":
-        raise HTTPException(status_code=403, detail="Not authorized for QA switch")
+    clean_key = (payload.admin_key or "").strip()
+    if clean_key not in ["AYUSH-ADMIN-666", "ayush-admin-666"]:
+        raise HTTPException(status_code=403, detail="Access Denied: Invalid Master Key")
     db = SessionLocal()
     try:
         user = db.query(User).filter(User.email == email).first()
         if not user:
             raise HTTPException(status_code=404, detail="User not found")
-        user.plan_tier = payload.new_tier
-        user.is_premium = payload.new_tier in ["developer", "enterprise"]
+        
+        target = payload.new_tier.lower()
+        if target == "free":
+            user.plan_tier = "free"
+            user.is_premium = False
+            user.trial_expires_at = datetime.utcnow() - timedelta(days=1)
+        elif target == "enterprise":
+            user.plan_tier = "enterprise"
+            user.is_premium = True
+            user.trial_expires_at = datetime(2099, 1, 1) # Lifetime Access
+        elif target == "trial":
+            user.plan_tier = "enterprise"
+            user.is_premium = True
+            user.trial_expires_at = datetime.utcnow() + timedelta(days=14)
+        else:
+            user.plan_tier = target
+            user.is_premium = target in ["developer", "enterprise"]
+
         db.commit()
-        return {"message": f"QA Switch: Tier changed to {payload.new_tier}"}
+        return {"status": "success", "message": f"QA Switch: Tier changed to {user.plan_tier.upper()}", "plan_tier": user.plan_tier}
     finally:
         db.close()
 
