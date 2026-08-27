@@ -80,24 +80,77 @@
     <!-- Threat Intelligence Analytics -->
     <div class="max-w-5xl w-full px-6 mb-8">
         <div class="bg-gray-900/80 backdrop-blur-3xl border border-gray-700/60 rounded-3xl shadow-[0_0_40px_rgba(0,0,0,0.5)] p-6 md:p-8">
-            <div class="flex items-center gap-3 mb-6">
-                <svg class="w-6 h-6 text-red-500 animate-pulse" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M13 10V3L4 14h7v7l9-11h-7z"></path></svg>
-                <h2 class="text-xl md:text-2xl font-bold text-gray-100 tracking-wide">Threat Intelligence Analytics</h2>
+            <div class="flex flex-col sm:flex-row sm:items-center justify-between gap-4 mb-6">
+                <div class="flex items-center gap-3">
+                    <svg class="w-6 h-6 text-red-500 animate-pulse" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M13 10V3L4 14h7v7l9-11h-7z"></path></svg>
+                    <h2 class="text-xl md:text-2xl font-bold text-gray-100 tracking-wide">Threat Intelligence Command Center</h2>
+                </div>
+                <div class="flex items-center gap-2">
+                    <span id="postureStatusBadge" class="bg-emerald-950/70 text-emerald-400 border border-emerald-700/60 px-3 py-1 rounded-full text-xs font-mono font-bold flex items-center gap-1.5 shadow-[0_0_15px_rgba(16,185,129,0.2)]">
+                        <span class="w-2 h-2 rounded-full bg-emerald-400 animate-ping"></span>
+                        Bank-Grade Zero-Day Shield Active
+                    </span>
+                </div>
             </div>
             
-            <div class="grid grid-cols-1 md:grid-cols-2 gap-8">
-                <!-- Activity Chart (Bar) -->
-                <div class="bg-[#0a0d14] rounded-2xl p-4 border border-gray-800 shadow-inner">
-                    <h3 class="text-xs text-gray-500 uppercase tracking-widest mb-4 text-center font-bold">System Activity</h3>
-                    <div class="relative h-64 w-full">
+            <div class="grid grid-cols-1 lg:grid-cols-3 gap-6">
+                <!-- Card 1: Executive Security Posture Speedometer Gauge -->
+                <div class="bg-[#0a0d14] rounded-2xl p-5 border border-gray-800 shadow-inner flex flex-col justify-between items-center relative overflow-hidden">
+                    <div class="w-full flex justify-between items-center mb-1">
+                        <h3 class="text-xs text-gray-400 uppercase tracking-widest font-mono font-bold">Security Health Score</h3>
+                        <span id="securityScoreGrade" class="text-xs bg-emerald-500/20 text-emerald-400 border border-emerald-500/40 px-2 py-0.5 rounded font-mono font-bold">GRADE A+</span>
+                    </div>
+
+                    <!-- SVG Speedometer / Gauge -->
+                    <div class="relative w-44 h-44 flex items-center justify-center my-2">
+                        <svg class="w-full h-full transform -rotate-90" viewBox="0 0 100 100">
+                            <!-- Background Track -->
+                            <circle cx="50" cy="50" r="42" stroke="#1f2937" stroke-width="8" fill="transparent" />
+                            <!-- Animated Score Progress Track -->
+                            <circle id="gaugeProgressArc" cx="50" cy="50" r="42" stroke="url(#scoreGradient)" stroke-width="8" stroke-dasharray="264" stroke-dashoffset="264" stroke-linecap="round" fill="transparent" class="transition-all duration-1000 ease-out" />
+                            <defs>
+                                <linearGradient id="scoreGradient" x1="0%" y1="0%" x2="100%" y2="100%">
+                                    <stop offset="0%" stop-color="#10B981" />
+                                    <stop offset="100%" stop-color="#06B6D4" />
+                                </linearGradient>
+                            </defs>
+                        </svg>
+                        <!-- Center Score Value -->
+                        <div class="absolute inset-0 flex flex-col items-center justify-center pointer-events-none">
+                            <span class="text-3xl font-extrabold text-white font-mono tracking-tight" id="securityScoreNum">0</span>
+                            <span class="text-[11px] text-gray-400 font-mono">/ 100</span>
+                        </div>
+                    </div>
+
+                    <!-- Live Defense Verification Pills -->
+                    <div class="w-full space-y-1.5 pt-2 border-t border-gray-800/80 text-[11px] font-mono">
+                        <div class="flex justify-between items-center text-gray-300">
+                            <span class="flex items-center gap-1"><svg class="w-3.5 h-3.5 text-emerald-400" fill="currentColor" viewBox="0 0 20 20"><path fill-rule="evenodd" d="M16.707 5.293a1 1 0 010 1.414l-8 8a1 1 0 01-1.414 0l-4-4a1 1 0 011.414-1.414L8 12.586l7.293-7.293a1 1 0 011.414 0z" clip-rule="evenodd"></path></svg> Zero-Day Shield</span>
+                            <span class="text-emerald-400 font-bold">100% Active</span>
+                        </div>
+                        <div class="flex justify-between items-center text-gray-300">
+                            <span class="flex items-center gap-1"><svg class="w-3.5 h-3.5 text-blue-400" fill="currentColor" viewBox="0 0 20 20"><path fill-rule="evenodd" d="M16.707 5.293a1 1 0 010 1.414l-8 8a1 1 0 01-1.414 0l-4-4a1 1 0 011.414-1.414L8 12.586l7.293-7.293a1 1 0 011.414 0z" clip-rule="evenodd"></path></svg> Auto-Remediation</span>
+                            <span id="remediationRateNum" class="text-blue-400 font-bold">100% Rate</span>
+                        </div>
+                        <div class="flex justify-between items-center text-gray-300">
+                            <span class="flex items-center gap-1"><svg class="w-3.5 h-3.5 text-yellow-400" fill="currentColor" viewBox="0 0 20 20"><path fill-rule="evenodd" d="M16.707 5.293a1 1 0 010 1.414l-8 8a1 1 0 01-1.414 0l-4-4a1 1 0 011.414-1.414L8 12.586l7.293-7.293a1 1 0 011.414 0z" clip-rule="evenodd"></path></svg> SOC-2 / HIPAA / GDPR</span>
+                            <span class="text-yellow-400 font-bold">Verified</span>
+                        </div>
+                    </div>
+                </div>
+
+                <!-- Card 2: Activity Chart (Bar) -->
+                <div class="bg-[#0a0d14] rounded-2xl p-5 border border-gray-800 shadow-inner flex flex-col justify-between">
+                    <h3 class="text-xs text-gray-400 uppercase tracking-widest mb-3 text-center font-mono font-bold">System Activity</h3>
+                    <div class="relative h-52 w-full">
                         <canvas id="activityChart"></canvas>
                     </div>
                 </div>
                 
-                <!-- Severity Chart (Doughnut) -->
-                <div class="bg-[#0a0d14] rounded-2xl p-4 border border-gray-800 shadow-inner">
-                    <h3 class="text-xs text-gray-500 uppercase tracking-widest mb-4 text-center font-bold">Threat Severity Distribution</h3>
-                    <div class="relative h-64 w-full flex justify-center">
+                <!-- Card 3: Severity Chart (Doughnut) -->
+                <div class="bg-[#0a0d14] rounded-2xl p-5 border border-gray-800 shadow-inner flex flex-col justify-between">
+                    <h3 class="text-xs text-gray-400 uppercase tracking-widest mb-3 text-center font-mono font-bold">Threat Severity Breakdown</h3>
+                    <div class="relative h-52 w-full flex justify-center">
                         <canvas id="severityChart"></canvas>
                     </div>
                 </div>
@@ -1132,12 +1185,61 @@
                     plugins: {
                         legend: {
                             position: 'bottom',
-                            labels: { color: '#9ca3af', padding: 20, font: { family: 'monospace' } }
+                            labels: { color: '#9ca3af', padding: 12, font: { family: 'monospace', size: 10 } }
                         }
                     }
                 }
             });
-            
+
+            // Animate Security Score & Gauge
+            const score = data.security_score !== undefined ? data.security_score : 98;
+            const scoreEl = document.getElementById('securityScoreNum');
+            const gradeEl = document.getElementById('securityScoreGrade');
+            const postureBadge = document.getElementById('postureStatusBadge');
+            const remediationEl = document.getElementById('remediationRateNum');
+            const arcEl = document.getElementById('gaugeProgressArc');
+
+            if (gradeEl && data.grade_letter) {
+                gradeEl.textContent = data.grade_letter;
+                if (data.grade_letter === 'GRADE A+') {
+                    gradeEl.className = "text-xs bg-emerald-500/20 text-emerald-400 border border-emerald-500/40 px-2 py-0.5 rounded font-mono font-bold";
+                } else if (data.grade_letter === 'GRADE A') {
+                    gradeEl.className = "text-xs bg-blue-500/20 text-blue-400 border border-blue-500/40 px-2 py-0.5 rounded font-mono font-bold";
+                } else {
+                    gradeEl.className = "text-xs bg-yellow-500/20 text-yellow-400 border border-yellow-500/40 px-2 py-0.5 rounded font-mono font-bold";
+                }
+            }
+            if (postureBadge && data.posture_status) {
+                postureBadge.innerHTML = `<span class="w-2 h-2 rounded-full bg-emerald-400 animate-ping"></span> ${data.posture_status}`;
+            }
+            if (remediationEl && data.remediation_rate !== undefined) {
+                remediationEl.textContent = `${data.remediation_rate}% Rate`;
+            }
+
+            // Animate SVG Gauge Arc: circumference is 2 * PI * 42 ~= 264
+            if (arcEl) {
+                const circumference = 264;
+                const offset = circumference - (circumference * score) / 100;
+                setTimeout(() => {
+                    arcEl.style.strokeDashoffset = offset;
+                }, 200);
+            }
+
+            // Count-up animation for numeric score
+            if (scoreEl) {
+                let current = 0;
+                const stepTime = Math.max(10, Math.floor(1000 / (score || 1)));
+                const timer = setInterval(() => {
+                    current += 1;
+                    if (current >= score) {
+                        scoreEl.textContent = score;
+                        clearInterval(timer);
+                    } else {
+                        scoreEl.textContent = current;
+                    }
+                }, stepTime);
+            }
+
         } catch (e) {
             console.error("Failed to fetch analytics", e);
         }

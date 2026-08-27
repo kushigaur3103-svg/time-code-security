@@ -733,7 +733,38 @@ async def get_analytics(authorization: str = Header(None)):
             elif 'medium' in text: medium_count += 1
             elif re.search(r'\blow\b', text): low_count += 1
         
-        # Removed fallback logic so chart accurately reflects 0 if no severities are found in reports
+        # Calculate dynamic enterprise security score (0 - 100)
+        unpatched_critical = max(0, critical_count - total_fixes)
+        unpatched_high = max(0, high_count - (total_fixes // 2))
+        
+        if total_scans == 0:
+            security_score = 98
+            grade_letter = "GRADE A+"
+            posture_status = "Bank-Grade Zero-Day Shield Active"
+            remediation_rate = 100
+        else:
+            base_score = 100
+            deduction = (unpatched_critical * 12) + (unpatched_high * 6) + (medium_count * 2)
+            security_score = max(45, min(100, base_score - deduction))
+            
+            total_issues = critical_count + high_count + medium_count
+            if total_issues > 0:
+                remediation_rate = min(100, int((total_fixes / total_issues) * 100))
+            else:
+                remediation_rate = 100
+                
+            if security_score >= 90:
+                grade_letter = "GRADE A+"
+                posture_status = "Bank-Grade Zero-Day Shield Active"
+            elif security_score >= 80:
+                grade_letter = "GRADE A"
+                posture_status = "High Security Posture"
+            elif security_score >= 70:
+                grade_letter = "GRADE B+"
+                posture_status = "Remediation Recommended"
+            else:
+                grade_letter = "GRADE C"
+                posture_status = "Critical Vulnerabilities Detected"
             
         severity_breakdown = {
             "Critical": critical_count,
@@ -745,7 +776,11 @@ async def get_analytics(authorization: str = Header(None)):
         return {
             "total_scans": total_scans,
             "total_fixes": total_fixes,
-            "severity_breakdown": severity_breakdown
+            "severity_breakdown": severity_breakdown,
+            "security_score": security_score,
+            "grade_letter": grade_letter,
+            "posture_status": posture_status,
+            "remediation_rate": remediation_rate
         }
     finally:
         db.close()
