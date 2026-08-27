@@ -1115,80 +1115,93 @@
     }
     fetchPlan();
 
+    let activityChartInstance = null;
+    let severityChartInstance = null;
+
     async function fetchAnalytics() {
         try {
             const res = await fetch('/api/analytics', { headers: { 'Authorization': `Bearer ${token}` } });
             if (!res.ok) return;
             const data = await res.json();
             
-            const activityCtx = document.getElementById('activityChart').getContext('2d');
-            new Chart(activityCtx, {
-                type: 'bar',
-                data: {
-                    labels: ['Total Scans', 'Total Fixes'],
-                    datasets: [{
-                        label: 'Activity',
-                        data: [data.total_scans, data.total_fixes],
-                        backgroundColor: ['rgba(52, 211, 153, 0.8)', 'rgba(96, 165, 250, 0.8)'],
-                        borderColor: ['#34d399', '#60a5fa'],
-                        borderWidth: 1,
-                        borderRadius: 4
-                    }]
-                },
-                options: {
-                    responsive: true,
-                    maintainAspectRatio: false,
-                    plugins: {
-                        legend: { display: false }
+            const activityCtx = document.getElementById('activityChart')?.getContext('2d');
+            if (activityCtx) {
+                if (activityChartInstance) {
+                    activityChartInstance.destroy();
+                }
+                activityChartInstance = new Chart(activityCtx, {
+                    type: 'bar',
+                    data: {
+                        labels: ['Total Scans', 'Total Fixes'],
+                        datasets: [{
+                            label: 'Activity',
+                            data: [data.total_scans, data.total_fixes],
+                            backgroundColor: ['rgba(52, 211, 153, 0.8)', 'rgba(96, 165, 250, 0.8)'],
+                            borderColor: ['#34d399', '#60a5fa'],
+                            borderWidth: 1,
+                            borderRadius: 4
+                        }]
                     },
-                    scales: {
-                        y: {
-                            beginAtZero: true,
-                            grid: { color: 'rgba(255, 255, 255, 0.05)' },
-                            ticks: { color: '#9ca3af' }
+                    options: {
+                        responsive: true,
+                        maintainAspectRatio: false,
+                        plugins: {
+                            legend: { display: false }
                         },
-                        x: {
-                            grid: { display: false },
-                            ticks: { color: '#9ca3af' }
+                        scales: {
+                            y: {
+                                beginAtZero: true,
+                                grid: { color: 'rgba(255, 255, 255, 0.05)' },
+                                ticks: { color: '#9ca3af' }
+                            },
+                            x: {
+                                grid: { display: false },
+                                ticks: { color: '#9ca3af' }
+                            }
                         }
                     }
-                }
-            });
+                });
+            }
             
-            const severityCtx = document.getElementById('severityChart').getContext('2d');
-            new Chart(severityCtx, {
-                type: 'doughnut',
-                data: {
-                    labels: ['Critical', 'High', 'Medium', 'Low'],
-                    datasets: [{
-                        data: [
-                            data.severity_breakdown.Critical,
-                            data.severity_breakdown.High,
-                            data.severity_breakdown.Medium,
-                            data.severity_breakdown.Low
-                        ],
-                        backgroundColor: [
-                            'rgba(220, 38, 38, 0.8)',   // Crimson Red for Critical
-                            'rgba(245, 158, 11, 0.8)',  // Amber for High
-                            'rgba(252, 211, 77, 0.8)',  // Yellow for Medium
-                            'rgba(52, 211, 153, 0.8)'   // Neon Green for Low
-                        ],
-                        borderColor: '#0a0d14',
-                        borderWidth: 2
-                    }]
-                },
-                options: {
-                    responsive: true,
-                    maintainAspectRatio: false,
-                    cutout: '70%',
-                    plugins: {
-                        legend: {
-                            position: 'bottom',
-                            labels: { color: '#9ca3af', padding: 12, font: { family: 'monospace', size: 10 } }
+            const severityCtx = document.getElementById('severityChart')?.getContext('2d');
+            if (severityCtx) {
+                if (severityChartInstance) {
+                    severityChartInstance.destroy();
+                }
+                severityChartInstance = new Chart(severityCtx, {
+                    type: 'doughnut',
+                    data: {
+                        labels: ['Critical', 'High', 'Medium', 'Low'],
+                        datasets: [{
+                            data: [
+                                data.severity_breakdown.Critical,
+                                data.severity_breakdown.High,
+                                data.severity_breakdown.Medium,
+                                data.severity_breakdown.Low
+                            ],
+                            backgroundColor: [
+                                'rgba(220, 38, 38, 0.8)',   // Crimson Red for Critical
+                                'rgba(245, 158, 11, 0.8)',  // Amber for High
+                                'rgba(252, 211, 77, 0.8)',  // Yellow for Medium
+                                'rgba(52, 211, 153, 0.8)'   // Neon Green for Low
+                            ],
+                            borderColor: '#0a0d14',
+                            borderWidth: 2
+                        }]
+                    },
+                    options: {
+                        responsive: true,
+                        maintainAspectRatio: false,
+                        cutout: '70%',
+                        plugins: {
+                            legend: {
+                                position: 'bottom',
+                                labels: { color: '#9ca3af', padding: 12, font: { family: 'monospace', size: 10 } }
+                            }
                         }
                     }
-                }
-            });
+                });
+            }
 
             // Animate Security Score & Gauge
             const score = data.security_score !== undefined ? data.security_score : 98;
@@ -1778,6 +1791,7 @@ jobs:
                             scanResult.textContent = statusData.report;
                             scanResult.classList.remove("text-red-400");
                             await fetchPlan();
+                            await fetchAnalytics();
                             reportContainer.classList.remove('hidden');
                             resetScanBtn();
                         } else if (statusData.status === 'failed') {
@@ -1923,6 +1937,8 @@ jobs:
                 fixedCodeResult.textContent = cleanCode;
                 fixedCodeContainer.classList.remove('hidden');
                 await fetchVault();
+                await fetchAnalytics();
+                await fetchPlan();
             }
         } catch (e) {
             alert("Network error.");

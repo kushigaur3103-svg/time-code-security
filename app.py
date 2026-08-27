@@ -30,31 +30,46 @@ except Exception as e:
     print(f"RAG Load Error: {e}")
 
 SECRET_PATTERNS = {
-    "AWS Access Keys": re.compile(r"(?i)AKIA[0-9A-Z]{16}"),
-    "Stripe Secrets": re.compile(r"(?i)sk_live_[0-9a-zA-Z]{24,}"),
-    "Generic Tokens": re.compile(r"(?i)(?:password|secret|api_key|token|auth)[\s=:]+['\"]([^'\"]+)['\"]")
+    "AWS Access Keys": re.compile(r"(?i)\b(AKIA|ABIA|ACCA|ASIA)[0-9A-Z]{16}\b"),
+    "Stripe Secrets": re.compile(r"\b(?:sk|rk)_(?:live|test)_[0-9a-zA-Z]{24,}\b"),
+    "GitHub Tokens": re.compile(r"\b(?:ghp|gho|ghu|ghs|ghr)_[0-9a-zA-Z]{36,}\b|\bgithub_pat_[0-9a-zA-Z_]{80,}\b"),
+    "OpenAI Keys": re.compile(r"\bsk-[a-zA-Z0-9_-]{20,}\b"),
+    "Slack Tokens": re.compile(r"\bxox[baprs]-[0-9a-zA-Z]{10,}-[0-9a-zA-Z]{10,}\b"),
+    "Private Keys": re.compile(r"-----BEGIN (?:RSA |EC |DSA |OPENSSH )?PRIVATE KEY-----[\s\S]*?-----END (?:RSA |EC |DSA |OPENSSH )?PRIVATE KEY-----"),
+    "Generic Tokens": re.compile(r"(?i)(?:password|secret|api_key|apikey|auth_token|bearer|access_token|private_key)[\s=:]+['\"]([^'\"]{6,})['\"]")
 }
 
+MAX_CODE_LENGTH = 500_000
+
+def validate_code_payload(code: str) -> str:
+    if not code or not code.strip():
+        raise HTTPException(status_code=400, detail="Target source code cannot be empty.")
+    if len(code) > MAX_CODE_LENGTH:
+        raise HTTPException(
+            status_code=413, 
+            detail=f"Code payload too large ({len(code):,} characters). Maximum allowable length is {MAX_CODE_LENGTH:,} characters (500KB limit)."
+        )
+    return code
+
 def apply_zero_leak_redaction(code: str):
+    if not code:
+        return "", False
     secrets_found = False
     redacted_code = code
     
-    if SECRET_PATTERNS["AWS Access Keys"].search(redacted_code):
-        secrets_found = True
-        redacted_code = SECRET_PATTERNS["AWS Access Keys"].sub("***REDACTED_BY_TIMECODESECURITY***", redacted_code)
-        
-    if SECRET_PATTERNS["Stripe Secrets"].search(redacted_code):
-        secrets_found = True
-        redacted_code = SECRET_PATTERNS["Stripe Secrets"].sub("***REDACTED_BY_TIMECODESECURITY***", redacted_code)
-        
-    def replace_generic(match):
-        full_match = match.group(0)
-        secret_val = match.group(1)
-        return full_match.replace(secret_val, "***REDACTED_BY_TIMECODESECURITY***")
-        
-    if SECRET_PATTERNS["Generic Tokens"].search(redacted_code):
-        secrets_found = True
-        redacted_code = SECRET_PATTERNS["Generic Tokens"].sub(replace_generic, redacted_code)
+    for name, pattern in SECRET_PATTERNS.items():
+        if name == "Generic Tokens":
+            def replace_generic(match):
+                full_match = match.group(0)
+                secret_val = match.group(1)
+                return full_match.replace(secret_val, "***REDACTED_BY_TIMECODESECURITY***")
+            if pattern.search(redacted_code):
+                secrets_found = True
+                redacted_code = pattern.sub(replace_generic, redacted_code)
+        else:
+            if pattern.search(redacted_code):
+                secrets_found = True
+                redacted_code = pattern.sub("***REDACTED_BY_TIMECODESECURITY***", redacted_code)
         
     return redacted_code, secrets_found
 
@@ -174,6 +189,28 @@ class APIKey(Base):
 Base.metadata.create_all(bind=engine)
 
 app = FastAPI(title="TimeCodeSecurity Enterprise API")
+
+from fastapi.middleware.cors import CORSMiddleware
+from starlette.middleware.base import BaseHTTPMiddleware
+
+app.add_middleware(
+    CORSMiddleware,
+    allow_origins=["*"],
+    allow_credentials=True,
+    allow_methods=["*"],
+    allow_headers=["*"],
+)
+
+class SecurityHeadersMiddleware(BaseHTTPMiddleware):
+    async def dispatch(self, request: Request, call_next):
+        response = await call_next(request)
+        response.headers["X-Frame-Options"] = "SAMEORIGIN"
+        response.headers["X-Content-Type-Options"] = "nosniff"
+        response.headers["X-XSS-Protection"] = "1; mode=block"
+        response.headers["Referrer-Policy"] = "strict-origin-when-cross-origin"
+        return response
+
+app.add_middleware(SecurityHeadersMiddleware)
 
 from fastapi.responses import JSONResponse
 import traceback
@@ -795,6 +832,7 @@ class AuditDependenciesPayload(BaseModel):
 @app.post("/api/audit-dependencies")
 async def audit_dependencies(payload: AuditDependenciesPayload, authorization: str = Header(None)):
     email = await get_current_user_email(authorization)
+    valid_content = validate_code_payload(payload.content)
     db = SessionLocal()
     try:
         user = db.query(User).filter(User.email == email).first()
@@ -810,7 +848,7 @@ async def audit_dependencies(payload: AuditDependenciesPayload, authorization: s
             "without any extra explanations."
         )
         
-        code_input = f"File Type: {payload.file_type}\n\n{payload.content}"
+        code_input = f"File Type: {payload.file_type}\n\n{valid_content}"
         
         try:
             ai_reply = get_cached_or_generate_ai(code_input, system_prompt, is_fix=False, db=db)
@@ -1090,6 +1128,7 @@ def background_scan_task(job_id: str, email: str, redacted_code: str, system_pro
 @app.post("/scan")
 async def scan_code(payload: CodePayload, background_tasks: BackgroundTasks, authorization: str = Header(None)):
     email = await get_current_user_email(authorization)
+    valid_code = validate_code_payload(payload.code)
     
     db = SessionLocal()
     try:
@@ -1135,7 +1174,7 @@ async def scan_code(payload: CodePayload, background_tasks: BackgroundTasks, aut
             # ====== GOD-MODE RAG CONTEXT INJECTION ======
             if rag_engine_instance:
                 try:
-                    context_files = rag_engine_instance.retrieve_context("default_repo", payload.code, top_k=2)
+                    context_files = rag_engine_instance.retrieve_context("default_repo", valid_code, top_k=2)
                     if context_files:
                         context_str = "\n".join([f"--- File: {f['filename']} ---\n{f['content']}" for f in context_files])
                         system_prompt += (
@@ -1151,7 +1190,7 @@ async def scan_code(payload: CodePayload, background_tasks: BackgroundTasks, aut
             )
     
         try:
-            redacted_code, secrets_found = apply_zero_leak_redaction(payload.code)
+            redacted_code, secrets_found = apply_zero_leak_redaction(valid_code)
 
             job_id = str(uuid.uuid4())
             code_hash = hashlib.sha256(f"{redacted_code}_{system_prompt}".encode('utf-8')).hexdigest()
@@ -1203,10 +1242,13 @@ async def get_scan_status(job_id: str, authorization: str = Header(None)):
 @app.post("/api/fix-code")
 async def fix_code(payload: CodePayload, request: Request, authorization: str = Header(None)):
     email = await get_current_user_email(authorization)
+    valid_code = validate_code_payload(payload.code)
     db = SessionLocal()
     master_key = request.headers.get("X-Master-Key")
     try:
         user = db.query(User).filter(User.email == email).first()
+        if not user:
+            raise HTTPException(status_code=404, detail="User not found")
         if not user.is_premium and master_key != "AYUSH-ADMIN-666":
             raise HTTPException(status_code=403, detail="PRO Feature Only")
             
@@ -1216,7 +1258,7 @@ async def fix_code(payload: CodePayload, request: Request, authorization: str = 
         )
         
         try:
-            redacted_code, _ = apply_zero_leak_redaction(payload.code)
+            redacted_code, _ = apply_zero_leak_redaction(valid_code)
             ai_reply = get_cached_or_generate_ai(redacted_code, system_prompt, is_fix=True, db=db, user_id=user.id)
             
             if user.org_id:
@@ -1291,6 +1333,7 @@ async def cicd_scan(payload: CICDScanPayload, x_api_key: str = Header(None)):
     if not x_api_key:
         raise HTTPException(status_code=401, detail="X-API-Key header missing")
         
+    valid_code = validate_code_payload(payload.code)
     db = SessionLocal()
     try:
         user = db.query(User).filter(User.api_key == x_api_key).first()
@@ -1313,7 +1356,7 @@ async def cicd_scan(payload: CICDScanPayload, x_api_key: str = Header(None)):
             "You must explicitly state at the end of the response: 'Upgrade to PRO for deep vulnerability analysis and remediation code.'"
         )
 
-        redacted_code, secrets_found = apply_zero_leak_redaction(payload.code)
+        redacted_code, secrets_found = apply_zero_leak_redaction(valid_code)
 
         # ====== GOD-MODE RAG CONTEXT INJECTION ======
         if rag_engine_instance and user.is_premium:
@@ -1412,10 +1455,13 @@ jobs:
 @app.post("/api/generate-test")
 async def generate_test(payload: CodePayload, request: Request, authorization: str = Header(None)):
     email = await get_current_user_email(authorization)
+    valid_code = validate_code_payload(payload.code)
     db = SessionLocal()
     master_key = request.headers.get("X-Master-Key")
     try:
         user = db.query(User).filter(User.email == email).first()
+        if not user:
+            raise HTTPException(status_code=404, detail="User not found")
         if not user.is_premium and master_key != "AYUSH-ADMIN-666":
             raise HTTPException(status_code=403, detail="PRO Feature Only")
             
@@ -1426,7 +1472,7 @@ async def generate_test(payload: CodePayload, request: Request, authorization: s
         )
         
         try:
-            redacted_code, _ = apply_zero_leak_redaction(payload.code)
+            redacted_code, _ = apply_zero_leak_redaction(valid_code)
             ai_reply = get_cached_or_generate_ai(redacted_code, system_prompt, is_fix=False, db=db)
             
             user.scan_count += 1
