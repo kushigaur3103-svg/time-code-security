@@ -173,6 +173,17 @@
                         <span class="text-xs text-yellow-400 font-mono tracking-wide font-bold" id="planText">ENTERPRISE TRIAL</span>
                     </div>
 
+                    <!-- Glowing Countdown / Days Left Badge -->
+                    <div id="trialBadgeContainer" class="flex items-center gap-2 bg-yellow-900/30 border border-yellow-500/40 px-3 py-1.5 rounded-full shadow-[0_0_15px_rgba(234,179,8,0.2)]">
+                        <span class="relative flex h-2 w-2">
+                            <span class="animate-ping absolute inline-flex h-full w-full rounded-full bg-yellow-400 opacity-75"></span>
+                            <span class="relative inline-flex rounded-full h-2 w-2 bg-yellow-400"></span>
+                        </span>
+                        <span id="trialBadge" class="text-xs text-yellow-400 font-mono font-bold uppercase tracking-wider">
+                            {% if days_left is defined %}{{ days_left }} DAYS LEFT{% else %}13 DAYS LEFT{% endif %}
+                        </span>
+                    </div>
+
                     <div class="flex items-center gap-2 bg-emerald-900/20 border border-emerald-800/50 px-3 py-1.5 rounded-full shadow-[0_0_10px_rgba(16,185,129,0.2)]">
                         <span class="relative flex h-2.5 w-2.5">
                           <span class="animate-ping absolute inline-flex h-full w-full rounded-full bg-emerald-400 opacity-75"></span>
@@ -180,18 +191,17 @@
                         </span>
                         <span class="text-xs text-emerald-400 font-mono tracking-wide">System Online</span>
                     </div>
-                    <span id="trialBadge" class="hidden bg-yellow-500/90 text-black font-bold px-2 py-1 rounded text-[10px] uppercase tracking-wider shadow-lg"></span>
                     
                     <div id="qaSwitchContainer" class="hidden flex items-center gap-2 bg-purple-900/20 border border-purple-800/50 px-2 py-1 rounded shadow">
                         <span class="text-[10px] text-purple-400 font-bold tracking-wider uppercase">QA:</span>
-                        <button onclick="qaSwitch(event, 'free')" class="text-[10px] bg-gray-800 hover:bg-gray-700 text-gray-300 px-2 py-0.5 rounded transition">Free</button>
-                        <button onclick="qaSwitch(event, 'enterprise')" class="text-[10px] bg-yellow-900 hover:bg-yellow-800 text-yellow-200 px-2 py-0.5 rounded transition">Ent</button>
+                        <button onclick="qaSwitch(event, 'free')" class="text-[10px] bg-gray-800 hover:bg-gray-700 text-gray-300 px-2 py-0.5 rounded transition cursor-pointer">Free</button>
+                        <button onclick="qaSwitch(event, 'enterprise')" class="text-[10px] bg-yellow-900 hover:bg-yellow-800 text-yellow-200 px-2 py-0.5 rounded transition cursor-pointer">Ent</button>
                     </div>
 
-                    <button onclick="document.getElementById('upgradeModal').classList.remove('hidden')" id="upgradePromptBtn" class="bg-gradient-to-r from-yellow-500 to-orange-500 hover:from-yellow-400 hover:to-orange-400 text-black text-xs font-bold py-1.5 px-3 rounded-full shadow-lg transition-all">
+                    <button onclick="document.getElementById('upgradeModal').classList.remove('hidden')" id="upgradePromptBtn" class="bg-gradient-to-r from-yellow-500 to-orange-500 hover:from-yellow-400 hover:to-orange-400 text-black text-xs font-bold py-1.5 px-3 rounded-full shadow-lg transition-all cursor-pointer">
                         UPGRADE
                     </button>
-                    <a href="/logout" id="logoutBtn" class="bg-red-900/30 hover:bg-red-800/50 text-red-400 hover:text-red-300 text-xs font-bold py-1.5 px-3 rounded-full border border-red-800/50 hover:border-red-600 transition-all shadow-lg flex items-center gap-1.5 cursor-pointer">
+                    <a href="/logout" id="logoutBtn" onclick="try{localStorage.clear();sessionStorage.clear();}catch(e){};window.location.href='/logout';" class="bg-red-900/30 hover:bg-red-800/50 text-red-400 hover:text-red-300 text-xs font-bold py-1.5 px-3 rounded-full border border-red-800/50 hover:border-red-600 transition-all shadow-lg flex items-center gap-1.5 cursor-pointer">
                         <svg class="w-3.5 h-3.5" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M17 16l4-4m0 0l-4-4m4 4H7m6 4v1a3 3 0 01-3 3H6a3 3 0 01-3-3V7a3 3 0 013-3h4a3 3 0 013 3v1"></path></svg>
                         LOGOUT
                     </a>
@@ -1026,13 +1036,28 @@
             planBadge.classList.remove('hidden');
             planBadge.classList.add('flex');
             
+            const trialBadge = document.getElementById('trialBadge');
+            const trialBadgeContainer = document.getElementById('trialBadgeContainer');
+
             if (data.plan_tier === 'enterprise') {
                 const isLifetime = data.days_left && data.days_left.toLowerCase().includes('lifetime');
                 if (isLifetime) {
                     planText.textContent = "ENTERPRISE SOC-2 PRO (LIFETIME)";
+                    if (trialBadge) trialBadge.textContent = "LIFETIME ACCESS";
+                    if (trialBadgeContainer) {
+                        trialBadgeContainer.className = "flex items-center gap-2 bg-emerald-900/30 border border-emerald-500/40 px-3 py-1.5 rounded-full shadow-[0_0_15px_rgba(16,185,129,0.2)]";
+                        trialBadge.className = "text-xs text-emerald-400 font-mono font-bold uppercase tracking-wider";
+                        trialBadgeContainer.classList.remove('hidden');
+                    }
                 } else {
-                    const daysText = data.days_left ? ` (${data.days_left.toUpperCase()})` : '';
-                    planText.textContent = `ENTERPRISE TRIAL${daysText}`;
+                    const daysText = data.days_left ? data.days_left : '13 DAYS LEFT';
+                    planText.textContent = "ENTERPRISE TRIAL";
+                    if (trialBadge) trialBadge.textContent = daysText.toUpperCase();
+                    if (trialBadgeContainer) {
+                        trialBadgeContainer.className = "flex items-center gap-2 bg-yellow-900/30 border border-yellow-500/40 px-3 py-1.5 rounded-full shadow-[0_0_15px_rgba(234,179,8,0.2)]";
+                        trialBadge.className = "text-xs text-yellow-400 font-mono font-bold uppercase tracking-wider";
+                        trialBadgeContainer.classList.remove('hidden');
+                    }
                 }
                 planText.className = "text-xs text-yellow-400 font-mono tracking-wide font-bold";
                 planBadge.className = "flex items-center gap-2 bg-yellow-900/20 border border-yellow-800/50 px-3 py-1.5 rounded-full shadow-[0_0_15px_rgba(234,179,8,0.1)]";
@@ -1054,8 +1079,12 @@
                 planText.className = "text-xs text-gray-400 font-mono tracking-wide font-bold";
                 planBadge.className = "flex items-center gap-2 bg-gray-800/50 border border-gray-700/50 px-3 py-1.5 rounded-full";
                 
+                if (trialBadgeContainer) {
+                    trialBadgeContainer.classList.add('hidden');
+                }
+
                 if (upgradePromptBtn) {
-                    upgradePromptBtn.className = "bg-gradient-to-r from-yellow-500 to-orange-500 hover:from-yellow-400 hover:to-orange-400 text-black text-xs font-bold py-1.5 px-3 rounded-full shadow-lg transition-all";
+                    upgradePromptBtn.className = "bg-gradient-to-r from-yellow-500 to-orange-500 hover:from-yellow-400 hover:to-orange-400 text-black text-xs font-bold py-1.5 px-3 rounded-full shadow-lg transition-all cursor-pointer";
                     upgradePromptBtn.disabled = false;
                     upgradePromptBtn.textContent = "UPGRADE";
                 }
@@ -1067,25 +1096,6 @@
                 const listEl = document.getElementById('apiKeysList');
                 if (listEl) {
                     listEl.innerHTML = '<div class="p-4 bg-[#0a0d14] rounded-xl border border-gray-700/50 text-center"><p class="text-gray-400 text-sm">🔒 Trial Expired. Upgrade to Enterprise to unlock.</p></div>';
-                }
-            }
-            
-            if (data.days_left && data.plan_tier === 'enterprise') {
-                const trialBadge = document.getElementById('trialBadge');
-                if (trialBadge) {
-                    trialBadge.classList.remove('hidden');
-                    if (data.days_left.toLowerCase().includes('lifetime')) {
-                        trialBadge.textContent = 'LIFETIME ACCESS';
-                        trialBadge.className = 'bg-emerald-400 text-black font-bold px-2.5 py-1 rounded text-[10px] uppercase tracking-wider shadow-lg';
-                    } else {
-                        trialBadge.textContent = data.days_left;
-                        trialBadge.className = 'bg-yellow-500/90 text-black font-bold px-2 py-1 rounded text-[10px] uppercase tracking-wider shadow-lg';
-                    }
-                }
-            } else {
-                const trialBadge = document.getElementById('trialBadge');
-                if (trialBadge) {
-                    trialBadge.classList.add('hidden');
                 }
             }
 
