@@ -880,38 +880,66 @@
     
 <script>
     // ==========================================
-    // BILLION-DOLLAR ENTERPRISE TOAST SYSTEM
+    // ULTIMATE BULLETPROOF GLOBAL JS SHIELD
     // ==========================================
-    function showToast(message, type="success") {
-        const container = document.getElementById('toast-container');
-        if (!container) return;
-        const toast = document.createElement('div');
-        const bgColor = type === 'success' ? 'bg-emerald-500' : (type === 'error' ? 'bg-rose-500' : 'bg-gray-800');
-        toast.className = `min-w-[280px] pointer-events-auto p-4 rounded-xl shadow-2xl text-white text-sm font-semibold tracking-wide transition-all duration-300 transform translate-x-full opacity-0 flex items-center justify-between ${bgColor} border border-white/10 backdrop-blur-md`;
-        
-        const icon = type === 'success' ? '<svg class="w-5 h-5 mr-3 flex-shrink-0" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2.5" d="M5 13l4 4L19 7"></path></svg>' : (type === 'error' ? '<svg class="w-5 h-5 mr-3 flex-shrink-0" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2.5" d="M6 18L18 6M6 6l12 12"></path></svg>' : '');
-        
-        toast.innerHTML = `<div class="flex items-center">${icon} <span>${message}</span></div> <button onclick="this.parentElement.remove()" class="text-white/60 hover:text-white transition-colors ml-4 focus:outline-none">&times;</button>`;
-        
-        container.appendChild(toast);
-        
-        requestAnimationFrame(() => {
+    window.onerror = function(message, source, lineno, colno, error) {
+        console.error('[CRITICAL UI CRASH PREVENTED]', message, error);
+        return true; 
+    };
+    window.addEventListener('unhandledrejection', function(event) {
+        console.error('[PROMISE CRASH PREVENTED]', event.reason);
+        event.preventDefault();
+    });
+
+    // ==========================================
+    // BULLETPROOF ENTERPRISE TOAST SYSTEM
+    // ==========================================
+    function showToast(message, type = 'success') {
+        if (!message) return;
+        try {
+            let container = document.getElementById('toast-container');
+            if (!container) {
+                container = document.createElement('div');
+                container.id = 'toast-container';
+                container.className = 'fixed top-5 right-5 z-[100] flex flex-col gap-3 pointer-events-none';
+                document.body.appendChild(container);
+            }
+            const toast = document.createElement('div');
+            const bgColor = type === 'success' ? 'bg-emerald-500' : (type === 'error' ? 'bg-rose-500' : 'bg-gray-800');
+            toast.className = `min-w-[280px] pointer-events-auto p-4 rounded-xl shadow-2xl text-white text-sm font-semibold tracking-wide transition-all duration-300 transform translate-x-full opacity-0 flex items-center justify-between ${bgColor} border border-white/10 backdrop-blur-md`;
+            
+            const icon = type === 'success' 
+                ? '<svg class="w-5 h-5 mr-3 flex-shrink-0" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2.5" d="M5 13l4 4L19 7"></path></svg>' 
+                : (type === 'error' ? '<svg class="w-5 h-5 mr-3 flex-shrink-0" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2.5" d="M6 18L18 6M6 6l12 12"></path></svg>' : '');
+            
+            toast.innerHTML = `<div class="flex items-center">${icon} <span>${message}</span></div> <button onclick="this.parentElement.remove()" class="text-white/60 hover:text-white transition-colors ml-4 focus:outline-none cursor-pointer">&times;</button>`;
+            
+            container.appendChild(toast);
+            
             requestAnimationFrame(() => {
-                toast.classList.remove('translate-x-full', 'opacity-0');
+                requestAnimationFrame(() => {
+                    toast.classList.remove('translate-x-full', 'opacity-0');
+                });
             });
-        });
-        
-        setTimeout(() => {
-            toast.classList.add('translate-x-full', 'opacity-0');
-            setTimeout(() => toast.remove(), 300);
-        }, 4000);
+            
+            setTimeout(() => {
+                if (toast && toast.parentElement) {
+                    toast.classList.add('translate-x-full', 'opacity-0');
+                    setTimeout(() => {
+                        if (toast && toast.parentElement) toast.remove();
+                    }, 300);
+                }
+            }, 4000);
+        } catch (err) {
+            console.error('Toast error:', err);
+        }
     }
     
-    // Globally override primitive alert
+    // Globally override alert with non-blocking toast
     window.alert = function(msg) {
         if (!msg) return;
         const lowerMsg = String(msg).toLowerCase();
-        if (lowerMsg.includes('error') || lowerMsg.includes('fail') || lowerMsg.includes('limit') || lowerMsg.includes('no code') || lowerMsg.includes('please')) {
+        if (lowerMsg.includes('error') || lowerMsg.includes('fail') || lowerMsg.includes('limit') || lowerMsg.includes('denied') || lowerMsg.includes('no code') || lowerMsg.includes('please')) {
             showToast(msg, 'error');
         } else {
             showToast(msg, 'success');
@@ -919,17 +947,8 @@
     };
 
     // ==========================================
-    // ULTIMATE BULLET-PROOF GLOBAL JS SHIELD
+    // AUTHENTICATION & FETCH INTERCEPTOR
     // ==========================================
-    window.onerror = function(message, source, lineno, colno, error) {
-        console.error("[CRITICAL UI CRASH PREVENTED]", message, error);
-        // Prevent infinite loops or frozen UI by silently catching errors
-        return true; 
-    };
-    window?.addEventListener('unhandledrejection', function(event) {
-        console.error("[PROMISE CRASH PREVENTED]", event.reason);
-        event.preventDefault();
-    });
     const token = localStorage.getItem('token');
     if (!token) {
         window.location.replace('/login');
@@ -937,29 +956,28 @@
 
     const originalFetch = window.fetch;
     window.fetch = async function() {
-        const response = await originalFetch.apply(this, arguments);
-        if (response.status === 401) {
-            localStorage.removeItem('token');
-            window.location.replace('/login');
+        try {
+            const response = await originalFetch.apply(this, arguments);
+            if (response && response.status === 401) {
+                localStorage.removeItem('token');
+                window.location.replace('/login');
+            }
+            return response;
+        } catch (fetchErr) {
+            throw fetchErr;
         }
-        return response;
     };
 
-    const scanBtn = document.getElementById('scanBtn');
-    const codeInput = document.getElementById('codeInput');
-    const reportContainer = document.getElementById('reportContainer');
-    const scanResult = document.getElementById('scanResult');
-    const planBadge = document.getElementById('planBadge');
-    const planText = document.getElementById('planText');
-    const upgradePromptBtn = document.getElementById('upgradePromptBtn');
-    
+    // Global State
     let isPremium = false;
     let isEnterprise = false;
-    
-    // No more global requireEnterprise
     let scanCount = 0;
     let userApiKey = null;
+    let vaultData = [];
+    let activityChartInstance = null;
+    let severityChartInstance = null;
 
+    // Subtitle helper
     function updateSubtitle(tier) {
         const subEl = document.getElementById('app-subtitle');
         if (!subEl) return;
@@ -975,6 +993,7 @@
         }
     }
 
+    // Eye Password Reveal Toggle
     function toggleAdminKeyVisibility() {
         const input = document.getElementById('adminKeyInput');
         const eyeIcon = document.getElementById('adminKeyEyeIcon');
@@ -982,20 +1001,23 @@
         if (!input) return;
         if (input.type === 'password') {
             input.type = 'text';
-            eyeIcon?.classList.add('hidden');
-            eyeSlashIcon?.classList.remove('hidden');
+            if (eyeIcon) eyeIcon.classList.add('hidden');
+            if (eyeSlashIcon) eyeSlashIcon.classList.remove('hidden');
         } else {
             input.type = 'password';
-            eyeIcon?.classList.remove('hidden');
-            eyeSlashIcon?.classList.add('hidden');
+            if (eyeIcon) eyeIcon.classList.remove('hidden');
+            if (eyeSlashIcon) eyeSlashIcon.classList.add('hidden');
         }
     }
 
+    // Master Key God Mode Switcher
     async function activateGodMode(targetTier) {
-        const rawKey = (document.getElementById('adminKeyInput')?.value || '').trim();
+        const input = document.getElementById('adminKeyInput');
+        const rawKey = (input?.value || '').trim();
         const key = rawKey.toUpperCase().replace(/\s+/g, '').replace(/_/g, '-');
+        
         if (key !== 'AYUSH-ADMIN-666') {
-            alert('Access Denied: Invalid Master Key.');
+            showToast('Access Denied: Invalid Master Key.', 'error');
             return;
         }
         try {
@@ -1011,26 +1033,29 @@
             const data = await res.json();
             if (res.ok) {
                 await fetchPlan();
-                document.getElementById('upgradeModal').classList.add('hidden');
+                const upgradeModal = document.getElementById('upgradeModal');
+                if (upgradeModal) upgradeModal.classList.add('hidden');
                 if (targetTier === 'enterprise') {
-                    alert('Enterprise SOC-2 Lifetime Access Unlocked!');
+                    showToast('Enterprise SOC-2 Lifetime Access Unlocked!', 'success');
                 } else if (targetTier === 'free') {
-                    alert('Successfully Switched to Free Tier (Simulated Expired Trial)!');
+                    showToast('Successfully Switched to Free Tier (Simulated Expired Trial)!', 'success');
                 } else {
-                    alert(`Switched to ${targetTier.toUpperCase()}`);
+                    showToast(`Switched to ${targetTier.toUpperCase()}`, 'success');
                 }
             } else {
-                alert('QA Switch Error: ' + (data.detail || 'Failed to switch'));
+                showToast('QA Switch Error: ' + (data.detail || 'Failed to switch'), 'error');
             }
         } catch(e) {
-            console.error("God Mode error", e);
-            alert('Network error while applying key.');
+            console.error('God Mode error', e);
+            showToast('Network error while applying key.', 'error');
         }
     }
 
+    // Fetch Plan & User Info
     async function fetchPlan() {
         try {
             const currentToken = localStorage.getItem('token');
+            if (!currentToken) return;
             const res = await fetch('/api/me', { headers: { 'Authorization': 'Bearer ' + currentToken } });
             if (!res.ok) return;
             const data = await res.json();
@@ -1045,59 +1070,71 @@
             
             updateSubtitle(data.plan_tier);
             
-            scanCount = data.scans_used;
+            scanCount = data.scans_used || 0;
             userApiKey = data.api_key;
 
-            if (data.webhook_url) {
-                document.getElementById('webhookUrlInput').value = data.webhook_url;
+            const webhookInput = document.getElementById('webhookUrlInput');
+            if (webhookInput && data.webhook_url) {
+                webhookInput.value = data.webhook_url;
             }
 
-            
+            const wsNoOrg = document.getElementById('workspaceNoOrg');
+            const wsHasOrg = document.getElementById('workspaceHasOrg');
+            const dispOrgName = document.getElementById('displayOrgName');
+            const dispOrgRole = document.getElementById('displayOrgRole');
+            const adminInviteSection = document.getElementById('adminInviteSection');
+            const dispInviteCode = document.getElementById('displayInviteCode');
+
             if (data.org_name) {
-                document.getElementById('workspaceNoOrg').classList.add('hidden');
-                document.getElementById('workspaceHasOrg').classList.remove('hidden');
-                document.getElementById('displayOrgName').textContent = data.org_name;
-                document.getElementById('displayOrgRole').textContent = data.org_role;
-                if (data.org_role === 'admin') {
-                    document.getElementById('adminInviteSection').classList.remove('hidden');
-                    document.getElementById('displayInviteCode').value = data.invite_code;
+                if (wsNoOrg) wsNoOrg.classList.add('hidden');
+                if (wsHasOrg) wsHasOrg.classList.remove('hidden');
+                if (dispOrgName) dispOrgName.textContent = data.org_name;
+                if (dispOrgRole) dispOrgRole.textContent = data.org_role;
+                if (data.org_role === 'admin' && adminInviteSection) {
+                    adminInviteSection.classList.remove('hidden');
+                    if (dispInviteCode) dispInviteCode.value = data.invite_code;
                 }
             } else {
-                document.getElementById('workspaceNoOrg').classList.remove('hidden');
-                document.getElementById('workspaceHasOrg').classList.add('hidden');
+                if (wsNoOrg) wsNoOrg.classList.remove('hidden');
+                if (wsHasOrg) wsHasOrg.classList.add('hidden');
             }
             
-            planBadge.classList.remove('hidden');
-            planBadge.classList.add('flex');
-            
+            const planBadge = document.getElementById('planBadge');
+            const planText = document.getElementById('planText');
+            const upgradePromptBtn = document.getElementById('upgradePromptBtn');
             const trialBadge = document.getElementById('trialBadge');
             const trialBadgeContainer = document.getElementById('trialBadgeContainer');
 
+            if (planBadge) {
+                planBadge.classList.remove('hidden');
+                planBadge.classList.add('flex');
+            }
+            
             if (data.plan_tier === 'enterprise') {
                 const isLifetime = data.days_left && data.days_left.toLowerCase().includes('lifetime');
                 if (isLifetime) {
-                    planText.textContent = "ENTERPRISE SOC-2 PRO (LIFETIME)";
-                    if (trialBadge) trialBadge.textContent = "LIFETIME ACCESS";
+                    if (planText) planText.textContent = 'ENTERPRISE SOC-2 PRO (LIFETIME)';
+                    if (trialBadge) trialBadge.textContent = 'LIFETIME ACCESS';
                     if (trialBadgeContainer) {
-                        trialBadgeContainer.className = "flex items-center gap-2 bg-emerald-900/30 border border-emerald-500/40 px-3 py-1.5 rounded-full shadow-[0_0_15px_rgba(16,185,129,0.2)]";
-                        trialBadge.className = "text-xs text-emerald-400 font-mono font-bold uppercase tracking-wider";
+                        trialBadgeContainer.className = 'flex items-center gap-2 bg-emerald-900/30 border border-emerald-500/40 px-3 py-1.5 rounded-full shadow-[0_0_15px_rgba(16,185,129,0.2)]';
+                        trialBadge.className = 'text-xs text-emerald-400 font-mono font-bold uppercase tracking-wider';
                         trialBadgeContainer.classList.remove('hidden');
                     }
                 } else {
                     const daysText = data.days_left ? data.days_left : '13 DAYS LEFT';
-                    planText.textContent = "ENTERPRISE TRIAL";
+                    if (planText) planText.textContent = 'ENTERPRISE TRIAL';
                     if (trialBadge) trialBadge.textContent = daysText.toUpperCase();
                     if (trialBadgeContainer) {
-                        trialBadgeContainer.className = "flex items-center gap-2 bg-yellow-900/30 border border-yellow-500/40 px-3 py-1.5 rounded-full shadow-[0_0_15px_rgba(234,179,8,0.2)]";
-                        trialBadge.className = "text-xs text-yellow-400 font-mono font-bold uppercase tracking-wider";
+                        trialBadgeContainer.className = 'flex items-center gap-2 bg-yellow-900/30 border border-yellow-500/40 px-3 py-1.5 rounded-full shadow-[0_0_15px_rgba(234,179,8,0.2)]';
+                        trialBadge.className = 'text-xs text-yellow-400 font-mono font-bold uppercase tracking-wider';
                         trialBadgeContainer.classList.remove('hidden');
                     }
                 }
-                planText.className = "text-xs text-yellow-400 font-mono tracking-wide font-bold";
-                planBadge.className = "flex items-center gap-2 bg-yellow-900/20 border border-yellow-800/50 px-3 py-1.5 rounded-full shadow-[0_0_15px_rgba(234,179,8,0.1)]";
+                if (planText) planText.className = 'text-xs text-yellow-400 font-mono tracking-wide font-bold';
+                if (planBadge) planBadge.className = 'flex items-center gap-2 bg-yellow-900/20 border border-yellow-800/50 px-3 py-1.5 rounded-full shadow-[0_0_15px_rgba(234,179,8,0.1)]';
 
                 if (upgradePromptBtn) {
-                    upgradePromptBtn.className = "bg-green-900/40 border border-green-500/60 text-green-400 text-xs font-bold py-1.5 px-3 rounded-full flex items-center gap-1.5 cursor-default";
+                    upgradePromptBtn.className = 'bg-green-900/40 border border-green-500/60 text-green-400 text-xs font-bold py-1.5 px-3 rounded-full flex items-center gap-1.5 cursor-default';
                     upgradePromptBtn.innerHTML = '<span class="w-1.5 h-1.5 rounded-full bg-green-400 animate-pulse"></span> ENTERPRISE ACTIVE';
                     upgradePromptBtn.disabled = true;
                 }
@@ -1106,21 +1143,25 @@
                 document.getElementById('generateApiKeyBtn')?.classList.remove('opacity-50', 'pointer-events-none');
                 document.querySelectorAll('.ent-lock-badge').forEach(el => el.classList.add('hidden'));
 
-                loadApiKeys();
-                fetchVault();
+                await loadApiKeys();
+                await fetchVault();
             } else {
-                planText.textContent = "FREE TIER";
-                planText.className = "text-xs text-gray-400 font-mono tracking-wide font-bold";
-                planBadge.className = "flex items-center gap-2 bg-gray-800/50 border border-gray-700/50 px-3 py-1.5 rounded-full";
+                if (planText) {
+                    planText.textContent = 'FREE TIER';
+                    planText.className = 'text-xs text-gray-400 font-mono tracking-wide font-bold';
+                }
+                if (planBadge) {
+                    planBadge.className = 'flex items-center gap-2 bg-gray-800/50 border border-gray-700/50 px-3 py-1.5 rounded-full';
+                }
                 
                 if (trialBadgeContainer) {
                     trialBadgeContainer.classList.add('hidden');
                 }
 
                 if (upgradePromptBtn) {
-                    upgradePromptBtn.className = "bg-gradient-to-r from-yellow-500 to-orange-500 hover:from-yellow-400 hover:to-orange-400 text-black text-xs font-bold py-1.5 px-3 rounded-full shadow-lg transition-all cursor-pointer";
+                    upgradePromptBtn.className = 'bg-gradient-to-r from-yellow-500 to-orange-500 hover:from-yellow-400 hover:to-orange-400 text-black text-xs font-bold py-1.5 px-3 rounded-full shadow-lg transition-all cursor-pointer';
                     upgradePromptBtn.disabled = false;
-                    upgradePromptBtn.textContent = "UPGRADE";
+                    upgradePromptBtn.textContent = 'UPGRADE';
                 }
 
                 document.getElementById('apiKeyLockBanner')?.classList.remove('hidden');
@@ -1152,17 +1193,16 @@
                 htmlEl.value = `<a href="${homeUrl}"><img src="${badgeUrl}" alt="TimeCodeSecurity Grade A+" /></a>`;
             }
         } catch (e) {
-            console.error("Network or parsing error", e);
+            console.error('Network or parsing error in fetchPlan', e);
         }
     }
-    fetchPlan();
 
-    let activityChartInstance = null;
-    let severityChartInstance = null;
-
+    // Analytics Chart Engine
     async function fetchAnalytics() {
         try {
-            const res = await fetch('/api/analytics', { headers: { 'Authorization': `Bearer ${token}` } });
+            const currentToken = localStorage.getItem('token');
+            if (!currentToken) return;
+            const res = await fetch('/api/analytics', { headers: { 'Authorization': `Bearer ${currentToken}` } });
             if (!res.ok) return;
             const data = await res.json();
             
@@ -1177,7 +1217,7 @@
                         labels: ['Total Scans', 'Total Fixes'],
                         datasets: [{
                             label: 'Activity',
-                            data: [data.total_scans, data.total_fixes],
+                            data: [data.total_scans || 0, data.total_fixes || 0],
                             backgroundColor: ['rgba(52, 211, 153, 0.8)', 'rgba(96, 165, 250, 0.8)'],
                             borderColor: ['#34d399', '#60a5fa'],
                             borderWidth: 1,
@@ -1210,22 +1250,23 @@
                 if (severityChartInstance) {
                     severityChartInstance.destroy();
                 }
+                const breakdown = data.severity_breakdown || { Critical: 0, High: 0, Medium: 0, Low: 0 };
                 severityChartInstance = new Chart(severityCtx, {
                     type: 'doughnut',
                     data: {
                         labels: ['Critical', 'High', 'Medium', 'Low'],
                         datasets: [{
                             data: [
-                                data.severity_breakdown.Critical,
-                                data.severity_breakdown.High,
-                                data.severity_breakdown.Medium,
-                                data.severity_breakdown.Low
+                                breakdown.Critical || 0,
+                                breakdown.High || 0,
+                                breakdown.Medium || 0,
+                                breakdown.Low || 0
                             ],
                             backgroundColor: [
-                                'rgba(220, 38, 38, 0.8)',   // Crimson Red for Critical
-                                'rgba(245, 158, 11, 0.8)',  // Amber for High
-                                'rgba(252, 211, 77, 0.8)',  // Yellow for Medium
-                                'rgba(52, 211, 153, 0.8)'   // Neon Green for Low
+                                'rgba(220, 38, 38, 0.8)',
+                                'rgba(245, 158, 11, 0.8)',
+                                'rgba(252, 211, 77, 0.8)',
+                                'rgba(52, 211, 153, 0.8)'
                             ],
                             borderColor: '#0a0d14',
                             borderWidth: 2
@@ -1256,11 +1297,11 @@
             if (gradeEl && data.grade_letter) {
                 gradeEl.textContent = data.grade_letter;
                 if (data.grade_letter === 'GRADE A+') {
-                    gradeEl.className = "text-xs bg-emerald-500/20 text-emerald-400 border border-emerald-500/40 px-2 py-0.5 rounded font-mono font-bold";
+                    gradeEl.className = 'text-xs bg-emerald-500/20 text-emerald-400 border border-emerald-500/40 px-2 py-0.5 rounded font-mono font-bold';
                 } else if (data.grade_letter === 'GRADE A') {
-                    gradeEl.className = "text-xs bg-blue-500/20 text-blue-400 border border-blue-500/40 px-2 py-0.5 rounded font-mono font-bold";
+                    gradeEl.className = 'text-xs bg-blue-500/20 text-blue-400 border border-blue-500/40 px-2 py-0.5 rounded font-mono font-bold';
                 } else {
-                    gradeEl.className = "text-xs bg-yellow-500/20 text-yellow-400 border border-yellow-500/40 px-2 py-0.5 rounded font-mono font-bold";
+                    gradeEl.className = 'text-xs bg-yellow-500/20 text-yellow-400 border border-yellow-500/40 px-2 py-0.5 rounded font-mono font-bold';
                 }
             }
             if (postureBadge && data.posture_status) {
@@ -1270,12 +1311,12 @@
                 remediationEl.textContent = `${data.remediation_rate}% Rate`;
             }
 
-            // Animate SVG Gauge Arc: circumference is 2 * PI * 42 ~= 264
+            // Animate SVG Gauge Arc
             if (arcEl) {
                 const circumference = 264;
                 const offset = circumference - (circumference * score) / 100;
                 setTimeout(() => {
-                    arcEl.style.strokeDashoffset = offset;
+                    if (arcEl) arcEl.style.strokeDashoffset = offset;
                 }, 200);
             }
 
@@ -1286,47 +1327,49 @@
                 const timer = setInterval(() => {
                     current += 1;
                     if (current >= score) {
-                        scoreEl.textContent = score;
+                        if (scoreEl) scoreEl.textContent = score;
                         clearInterval(timer);
                     } else {
-                        scoreEl.textContent = current;
+                        if (scoreEl) scoreEl.textContent = current;
                     }
                 }, stepTime);
             }
 
         } catch (e) {
-            console.error("Failed to fetch analytics", e);
+            console.error('Failed to fetch analytics', e);
         }
     }
-    fetchAnalytics();
-    
-    let vaultData = [];
+
+    // Vault Engine
     async function fetchVault() {
         if (!isEnterprise) return;
         try {
-            const res = await fetch('/api/vault', { headers: { 'Authorization': `Bearer ${token}` } });
+            const currentToken = localStorage.getItem('token');
+            if (!currentToken) return;
+            const res = await fetch('/api/vault', { headers: { 'Authorization': `Bearer ${currentToken}` } });
             if (!res.ok) return;
             vaultData = await res.json();
             renderVault(vaultData);
         } catch (e) {
-            console.error("Failed to fetch vault", e);
+            console.error('Failed to fetch vault', e);
         }
     }
     
     function renderVault(data) {
         const vaultList = document.getElementById('vaultList');
+        if (!vaultList) return;
         vaultList.innerHTML = '';
-        if (data.length === 0) {
+        if (!data || data.length === 0) {
             vaultList.innerHTML = '<p class="text-gray-500 text-sm text-center py-4">No code entries in your organization vault.</p>';
             return;
         }
         
         data.forEach(entry => {
             const div = document.createElement('div');
-            div.className = "bg-[#0a0d14] p-4 rounded-xl border border-gray-800 shadow-inner";
+            div.className = 'bg-[#0a0d14] p-4 rounded-xl border border-gray-800 shadow-inner';
             
-            const vCode = entry.vulnerable_code.replace(/&/g, "&amp;").replace(/</g, "&lt;").replace(/>/g, "&gt;").replace(/"/g, "&quot;").replace(/'/g, "&#039;");
-            const sCode = entry.secure_code.replace(/&/g, "&amp;").replace(/</g, "&lt;").replace(/>/g, "&gt;").replace(/"/g, "&quot;").replace(/'/g, "&#039;");
+            const vCode = (entry.vulnerable_code || '').replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;').replace(/"/g, '&quot;').replace(/'/g, '&#039;');
+            const sCode = (entry.secure_code || '').replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;').replace(/"/g, '&quot;').replace(/'/g, '&#039;');
             
             div.innerHTML = `
                 <p class="text-xs text-gray-500 mb-2">Saved: ${new Date(entry.created_at).toLocaleString()}</p>
@@ -1344,104 +1387,29 @@
             vaultList.appendChild(div);
         });
     }
-    fetchVault();
 
-    document.getElementById('vaultSearchInput')?.addEventListener('focus', (e) => {
-        if (!isEnterprise) {
-            e.target.blur();
-            document.getElementById('upgradeModal').classList.remove('hidden');
-        }
-    });
-
-    document.getElementById('vaultSearchInput')?.addEventListener('input', (e) => {
-        if (!isEnterprise) return;
-        const keyword = e.target.value.toLowerCase();
-        const filtered = vaultData.filter(entry => 
-            entry.vulnerable_code.toLowerCase().includes(keyword) || 
-            entry.secure_code.toLowerCase().includes(keyword)
-        );
-        renderVault(filtered);
-    });
-    
-
-    document.getElementById('createOrgBtn')?.addEventListener('click', async () => {
-        const name = document.getElementById('createOrgInput').value.trim();
-        if (!name) return alert("Enter an organization name.");
-        
-        try {
-            const res = await fetch('/api/workspaces/create', {
-                method: 'POST',
-                headers: { 'Content-Type': 'application/json', 'Authorization': `Bearer ${token}` },
-                body: JSON.stringify({ name: name })
-            });
-            const data = await res.json();
-            if (res.ok) {
-                window.location.reload();
-            } else {
-                alert("Error: " + (data.detail || data.error));
+    // Vault search listeners
+    const vaultSearchInput = document.getElementById('vaultSearchInput');
+    if (vaultSearchInput) {
+        vaultSearchInput.addEventListener('focus', (e) => {
+            if (!isEnterprise) {
+                e.target.blur();
+                document.getElementById('upgradeModal')?.classList.remove('hidden');
             }
-        } catch (e) {
-            alert("Network error.");
-        }
-    });
+        });
 
-    document.getElementById('joinOrgBtn')?.addEventListener('click', async () => {
-        const invite = document.getElementById('joinOrgInput').value.trim();
-        if (!invite) return alert("Enter an invite code.");
-        
-        try {
-            const res = await fetch('/api/workspaces/join', {
-                method: 'POST',
-                headers: { 'Content-Type': 'application/json', 'Authorization': `Bearer ${token}` },
-                body: JSON.stringify({ invite_code: invite })
-            });
-            const data = await res.json();
-            if (res.ok) {
-                window.location.reload();
-            } else {
-                alert("Error: " + (data.detail || data.error));
-            }
-        } catch (e) {
-            alert("Network error.");
-        }
-    });
+        vaultSearchInput.addEventListener('input', (e) => {
+            if (!isEnterprise) return;
+            const keyword = (e.target.value || '').toLowerCase();
+            const filtered = vaultData.filter(entry => 
+                (entry.vulnerable_code || '').toLowerCase().includes(keyword) || 
+                (entry.secure_code || '').toLowerCase().includes(keyword)
+            );
+            renderVault(filtered);
+        });
+    }
 
-    document.getElementById('copyInviteBtn')?.addEventListener('click', () => {
-        const code = document.getElementById('displayInviteCode').value;
-        if (code) {
-            navigator.clipboard.writeText(code);
-            alert("Invite code copied!");
-        }
-    });
-    
-    document.getElementById('saveIntegrationBtn')?.addEventListener('click', async (e) => {
-        if (!isEnterprise) {
-            document.getElementById('upgradeModal').classList.remove('hidden');
-            return;
-        }
-        const webhook_url = document.getElementById('webhookUrlInput').value.trim();
-        const btn = document.getElementById('saveIntegrationBtn');
-        const oldText = btn.innerHTML;
-        btn.innerHTML = "Saving...";
-        
-        try {
-            const res = await fetch('/api/settings', {
-                method: 'POST',
-                headers: { 'Content-Type': 'application/json', 'Authorization': `Bearer ${token}` },
-                body: JSON.stringify({ webhook_url })
-            });
-            if (res.ok) {
-                alert("Integration saved! You will now receive security alerts.");
-            } else {
-                alert("Failed to save integration.");
-            }
-        } catch(e) {
-            alert("Network error.");
-        } finally {
-            btn.innerHTML = oldText;
-        }
-    });
-
+    // API Key Loader
     async function loadApiKeys() {
         try {
             const currentToken = localStorage.getItem('token');
@@ -1465,7 +1433,7 @@
                 listEl.innerHTML = '';
                 data.keys.forEach(k => {
                     const row = document.createElement('div');
-                    row.className = "flex justify-between items-center bg-[#0a0d14] p-4 rounded-xl border border-gray-700/80 shadow-inner";
+                    row.className = 'flex justify-between items-center bg-[#0a0d14] p-4 rounded-xl border border-gray-700/80 shadow-inner';
                     row.innerHTML = `
                         <div>
                             <p class="font-mono text-sm text-gray-300">${k.key_string}</p>
@@ -1476,104 +1444,82 @@
                 });
             }
         } catch (e) {
-            console.error("Failed to load API keys", e);
+            console.error('Failed to load API keys', e);
         }
     }
 
-    document.getElementById('generateApiKeyBtn')?.addEventListener('click', async (e) => {
-        if (!isEnterprise && !isPremium) {
-            document.getElementById('upgradeModal')?.classList.remove('hidden');
-            showToast("Trial Expired. Upgrade to Enterprise to unlock.", "error");
-            return;
-        }
-        const btn = e.currentTarget;
-        const originalText = btn.innerHTML;
-        btn.innerHTML = '<svg class="animate-spin w-4 h-4" viewBox="0 0 24 24" fill="none"><circle class="opacity-25" cx="12" cy="12" r="10" stroke="currentColor" stroke-width="4"></circle><path class="opacity-75" fill="currentColor" d="M4 12a8 8 0 018-8V0C5.373 0 0 5.373 0 12h4zm2 5.291A7.962 7.962 0 014 12H0c0 3.042 1.135 5.824 3 7.938l3-2.647z"></path></svg> Generating...';
-        btn.disabled = true;
-        try {
-            const res = await fetch('/api/generate-key', {
-                method: 'POST',
-                headers: { 'Authorization': `Bearer ${token}` }
-            });
-            if (res.ok) {
-                const data = await res.json();
-                const listEl = document.getElementById('apiKeysList');
-                if (listEl.querySelector('p')?.textContent.includes('No API keys')) {
-                    listEl.innerHTML = '';
-                }
-                
-                const row = document.createElement('div');
-                row.className = "flex justify-between items-center bg-indigo-900/20 p-4 rounded-xl border border-indigo-500/50 mb-3";
-                row.innerHTML = `
-                    <div class="flex-1">
-                        <div class="relative group cursor-pointer inline-block w-full max-w-lg" id="newKeyWrapper_${data.key_string}">
-                            <p class="font-mono text-sm text-green-400 blur-sm select-none transition duration-300 group-hover:blur-0" id="newKeyDisplay_${data.key_string}">${data.key_string}</p>
-                            <div class="absolute inset-0 flex items-center justify-center opacity-100 group-hover:opacity-0 transition duration-300 pointer-events-none">
-                                <span class="bg-gray-900/80 text-xs text-white px-2 py-1 rounded">Hover to reveal</span>
-                            </div>
-                        </div>
-                        <p class="text-xs text-indigo-300 mt-2">Copy this key now. It won't be displayed in full again.</p>
-                    </div>
-                    <button class="bg-indigo-600 hover:bg-indigo-500 text-white font-bold px-4 py-2 rounded-lg text-sm transition-all shadow-lg copy-new-key-btn" data-key="${data.key_string}">Copy</button>
-                `;
-                listEl.prepend(row);
-                
-                row.querySelector('.copy-new-key-btn').addEventListener('click', async (ev) => {
-                    await navigator.clipboard.writeText(ev.target.dataset.key);
-                    const el = document.getElementById('newKeyDisplay_' + data.key_string);
-                    if (el) { el.classList.remove('blur-sm'); }
-                    ev.target.textContent = 'Copied!';
-                    ev.target.classList.replace('bg-indigo-600', 'bg-green-600');
-                    ev.target.classList.replace('hover:bg-indigo-500', 'hover:bg-green-500');
-                    showToast("API Key copied to clipboard", "success");
-                    setTimeout(() => loadApiKeys(), 5000);
-                });
-                showToast("New API Key generated successfully", "success");
-            } else {
-                showToast("Failed to generate API Key", "error");
+    // Generate API Key Button Listener
+    const generateApiKeyBtn = document.getElementById('generateApiKeyBtn');
+    if (generateApiKeyBtn) {
+        generateApiKeyBtn.addEventListener('click', async (e) => {
+            if (!isEnterprise && !isPremium) {
+                document.getElementById('upgradeModal')?.classList.remove('hidden');
+                showToast('Trial Expired. Upgrade to Enterprise to unlock.', 'error');
+                return;
             }
-        } catch(err) {
-            showToast("Network error while generating key", "error");
-        } finally {
-            btn.innerHTML = originalText;
-            btn.disabled = false;
-        }
-    });
+            const btn = e.currentTarget;
+            const originalText = btn.innerHTML;
+            btn.innerHTML = '<svg class="animate-spin w-4 h-4" viewBox="0 0 24 24" fill="none"><circle class="opacity-25" cx="12" cy="12" r="10" stroke="currentColor" stroke-width="4"></circle><path class="opacity-75" fill="currentColor" d="M4 12a8 8 0 018-8V0C5.373 0 0 5.373 0 12h4zm2 5.291A7.962 7.962 0 014 12H0c0 3.042 1.135 5.824 3 7.938l3-2.647z"></path></svg> Generating...';
+            btn.disabled = true;
+            try {
+                const currentToken = localStorage.getItem('token');
+                const res = await fetch('/api/generate-key', {
+                    method: 'POST',
+                    headers: { 'Authorization': `Bearer ${currentToken}` }
+                });
+                if (res.ok) {
+                    const data = await res.json();
+                    const listEl = document.getElementById('apiKeysList');
+                    if (listEl) {
+                        if (listEl.querySelector('p')?.textContent.includes('No API keys')) {
+                            listEl.innerHTML = '';
+                        }
+                        
+                        const row = document.createElement('div');
+                        row.className = 'flex justify-between items-center bg-indigo-900/20 p-4 rounded-xl border border-indigo-500/50 mb-3';
+                        row.innerHTML = `
+                            <div class="flex-1">
+                                <div class="relative group cursor-pointer inline-block w-full max-w-lg" id="newKeyWrapper_${data.key_string}">
+                                    <p class="font-mono text-sm text-green-400 blur-sm select-none transition duration-300 group-hover:blur-0" id="newKeyDisplay_${data.key_string}">${data.key_string}</p>
+                                    <div class="absolute inset-0 flex items-center justify-center opacity-100 group-hover:opacity-0 transition duration-300 pointer-events-none">
+                                        <span class="bg-gray-900/80 text-xs text-white px-2 py-1 rounded">Hover to reveal</span>
+                                    </div>
+                                </div>
+                                <p class="text-xs text-indigo-300 mt-2">Copy this key now. It won\'t be displayed in full again.</p>
+                            </div>
+                            <button class="bg-indigo-600 hover:bg-indigo-500 text-white font-bold px-4 py-2 rounded-lg text-sm transition-all shadow-lg copy-new-key-btn cursor-pointer" data-key="${data.key_string}">Copy</button>
+                        `;
+                        listEl.prepend(row);
+                        
+                        const copyBtn = row.querySelector('.copy-new-key-btn');
+                        if (copyBtn) {
+                            copyBtn.addEventListener('click', async (ev) => {
+                                await navigator.clipboard.writeText(ev.target.dataset.key);
+                                const el = document.getElementById('newKeyDisplay_' + data.key_string);
+                                if (el) { el.classList.remove('blur-sm'); }
+                                ev.target.textContent = 'Copied!';
+                                ev.target.classList.replace('bg-indigo-600', 'bg-green-600');
+                                ev.target.classList.replace('hover:bg-indigo-500', 'hover:bg-green-500');
+                                showToast('API Key copied to clipboard', 'success');
+                                setTimeout(() => loadApiKeys(), 5000);
+                            });
+                        }
+                    }
+                    showToast('New API Key generated successfully', 'success');
+                } else {
+                    const errData = await res.json().catch(() => ({}));
+                    showToast(errData.detail || 'Failed to generate API Key', 'error');
+                }
+            } catch(err) {
+                showToast('Network error while generating key', 'error');
+            } finally {
+                btn.innerHTML = originalText;
+                btn.disabled = false;
+            }
+        });
+    }
 
-    document.getElementById('copyBadgeMarkdownBtn')?.addEventListener('click', async (e) => {
-        const input = document.getElementById('badgeMarkdownSnippet');
-        if (!input || !input.value) return;
-        await navigator.clipboard.writeText(input.value);
-        const btn = e.currentTarget;
-        const originalText = btn.textContent;
-        btn.textContent = 'Copied!';
-        btn.classList.replace('text-emerald-400', 'text-white');
-        btn.classList.add('bg-emerald-600');
-        showToast("Markdown badge copied to clipboard!", "success");
-        setTimeout(() => {
-            btn.textContent = originalText;
-            btn.classList.replace('text-white', 'text-emerald-400');
-            btn.classList.remove('bg-emerald-600');
-        }, 2500);
-    });
-
-    document.getElementById('copyBadgeHtmlBtn')?.addEventListener('click', async (e) => {
-        const input = document.getElementById('badgeHtmlSnippet');
-        if (!input || !input.value) return;
-        await navigator.clipboard.writeText(input.value);
-        const btn = e.currentTarget;
-        const originalText = btn.textContent;
-        btn.textContent = 'Copied!';
-        btn.classList.replace('text-blue-400', 'text-white');
-        btn.classList.add('bg-blue-600');
-        showToast("HTML badge embed code copied to clipboard!", "success");
-        setTimeout(() => {
-            btn.textContent = originalText;
-            btn.classList.replace('text-white', 'text-blue-400');
-            btn.classList.remove('bg-blue-600');
-        }, 2500);
-    });
-
+    // CI/CD YAML Generator Helper
     function updateCicdYaml() {
         const branchSelect = document.getElementById('cicdBranchSelect');
         const policySelect = document.getElementById('cicdPolicySelect');
@@ -1585,8 +1531,8 @@
         const origin = window.location.origin;
         
         const failCommand = isStrict
-            ? "if [ \"$SEVERITY\" = \"CRITICAL\" ]; then echo '❌ Blocking PR: Critical security vulnerability detected by TimeCodeSecurity Zero-Day Shield.' && exit 1; fi"
-            : "echo 'ℹ️ Audit scan complete. No PR blocking policy configured.'";
+            ? 'if [ "$SEVERITY" = "CRITICAL" ]; then echo "❌ Blocking PR: Critical security vulnerability detected by TimeCodeSecurity Zero-Day Shield." && exit 1; fi'
+            : 'echo "ℹ️ Audit scan complete. No PR blocking policy configured."';
 
         const yaml = `name: TimeCodeSecurity Zero-Day PR Shield
 
@@ -1611,7 +1557,7 @@ jobs:
           echo "🛡️ Initiating TimeCodeSecurity Zero-Day Analysis..."
           
           # Scan modified source files
-          FILES=$(git diff --name-only origin/${branch} 2>/dev/null || find . -type f \\( -name "*.py" -o -name "*.js" -o -name "*.ts" -o -name "*.go" -o -name "*.rs" -o -name "*.java" \\) -not -path "*/.*" | head -n 10)
+          FILES=$(git diff --name-only origin/${branch} 2>/dev/null || find . -type f \( -name "*.py" -o -name "*.js" -o -name "*.ts" -o -name "*.go" -o -name "*.rs" -o -name "*.java" \) -not -path "*/.*" | head -n 10)
           
           for FILE in $FILES; do
             if [ -f "$FILE" ]; then
@@ -1641,6 +1587,43 @@ jobs:
     document.getElementById('cicdBranchSelect')?.addEventListener('change', updateCicdYaml);
     document.getElementById('cicdPolicySelect')?.addEventListener('change', updateCicdYaml);
 
+    // Badge Markdown Copy
+    document.getElementById('copyBadgeMarkdownBtn')?.addEventListener('click', async (e) => {
+        const input = document.getElementById('badgeMarkdownSnippet');
+        if (!input || !input.value) return;
+        await navigator.clipboard.writeText(input.value);
+        const btn = e.currentTarget;
+        const originalText = btn.textContent;
+        btn.textContent = 'Copied!';
+        btn.classList.replace('text-emerald-400', 'text-white');
+        btn.classList.add('bg-emerald-600');
+        showToast('Markdown badge copied to clipboard!', 'success');
+        setTimeout(() => {
+            btn.textContent = originalText;
+            btn.classList.replace('text-white', 'text-emerald-400');
+            btn.classList.remove('bg-emerald-600');
+        }, 2500);
+    });
+
+    // Badge HTML Copy
+    document.getElementById('copyBadgeHtmlBtn')?.addEventListener('click', async (e) => {
+        const input = document.getElementById('badgeHtmlSnippet');
+        if (!input || !input.value) return;
+        await navigator.clipboard.writeText(input.value);
+        const btn = e.currentTarget;
+        const originalText = btn.textContent;
+        btn.textContent = 'Copied!';
+        btn.classList.replace('text-blue-400', 'text-white');
+        btn.classList.add('bg-blue-600');
+        showToast('HTML badge embed code copied to clipboard!', 'success');
+        setTimeout(() => {
+            btn.textContent = originalText;
+            btn.classList.replace('text-white', 'text-blue-400');
+            btn.classList.remove('bg-blue-600');
+        }, 2500);
+    });
+
+    // GitHub Action Copy
     document.getElementById('copyGithubActionYamlBtn')?.addEventListener('click', async (e) => {
         const snippetEl = document.getElementById('cicdYamlSnippet');
         if (!snippetEl || !snippetEl.value) return;
@@ -1650,7 +1633,7 @@ jobs:
         btn.innerHTML = '<svg class="w-4 h-4" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M5 13l4 4L19 7"></path></svg> Copied YAML!';
         btn.classList.replace('from-indigo-600', 'from-emerald-600');
         btn.classList.replace('to-purple-600', 'to-teal-600');
-        showToast("GitHub Action workflow copied to clipboard!", "success");
+        showToast('GitHub Action workflow copied to clipboard!', 'success');
         setTimeout(() => {
             btn.innerHTML = originalHtml;
             btn.classList.replace('from-emerald-600', 'from-indigo-600');
@@ -1658,409 +1641,512 @@ jobs:
         }, 2500);
     });
 
-    updateCicdYaml();
-
-    async function initiatePayment(planType) {
-        if (isPremium) return;
+    // Workspace Create & Join
+    document.getElementById('createOrgBtn')?.addEventListener('click', async () => {
+        const nameInput = document.getElementById('createOrgInput');
+        const name = nameInput ? nameInput.value.trim() : '';
+        if (!name) return alert('Enter an organization name.');
+        
         try {
-            const token = localStorage.getItem('token');
-            const res = await fetch('/api/checkout', {
+            const currentToken = localStorage.getItem('token');
+            const res = await fetch('/api/workspaces/create', {
                 method: 'POST',
-                headers: { 
-                    'Authorization': `Bearer ${token}`,
-                    'Content-Type': 'application/json'
-                },
-                body: JSON.stringify({ plan: planType })
+                headers: { 'Content-Type': 'application/json', 'Authorization': `Bearer ${currentToken}` },
+                body: JSON.stringify({ name: name })
             });
             const data = await res.json();
-            if (!res.ok) {
-                alert("Could not initiate checkout: " + (data.detail || data.error));
-                return;
+            if (res.ok) {
+                window.location.reload();
+            } else {
+                alert('Error: ' + (data.detail || data.error));
             }
-            
-            // Initialize and open Lemon Squeezy overlay natively
-            window.createLemonSqueezy();
-            LemonSqueezy.Url.Open(data.checkout_url);
-            
-            // Mock local upgrade success for overlay demo purposes
-            LemonSqueezy.Setup({
-                eventHandler: async (event) => {
-                    if (event.event === 'Checkout.Success') {
-                        await fetch('/api/verify-payment', {
-                            method: 'POST',
-                            headers: { 'Authorization': `Bearer ${token}` }
-                        });
-                        alert("Welcome to PRO! Subscription active.");
-                        window.location.reload();
-                    }
-                }
-            });
-        } catch(e) {
-            alert("Error initiating checkout.");
+        } catch (e) {
+            alert('Network error.');
         }
-    }
+    });
 
-    upgradePromptBtn?.addEventListener('click', () => {
-        document.getElementById('upgradeModal').classList.remove('hidden');
+    document.getElementById('joinOrgBtn')?.addEventListener('click', async () => {
+        const inviteInput = document.getElementById('joinOrgInput');
+        const invite = inviteInput ? inviteInput.value.trim() : '';
+        if (!invite) return alert('Enter an invite code.');
+        
+        try {
+            const currentToken = localStorage.getItem('token');
+            const res = await fetch('/api/workspaces/join', {
+                method: 'POST',
+                headers: { 'Content-Type': 'application/json', 'Authorization': `Bearer ${currentToken}` },
+                body: JSON.stringify({ invite_code: invite })
+            });
+            const data = await res.json();
+            if (res.ok) {
+                window.location.reload();
+            } else {
+                alert('Error: ' + (data.detail || data.error));
+            }
+        } catch (e) {
+            alert('Network error.');
+        }
+    });
+
+    document.getElementById('copyInviteBtn')?.addEventListener('click', () => {
+        const codeInput = document.getElementById('displayInviteCode');
+        const code = codeInput ? codeInput.value : '';
+        if (code) {
+            navigator.clipboard.writeText(code);
+            showToast('Invite code copied!', 'success');
+        }
     });
     
+    document.getElementById('saveIntegrationBtn')?.addEventListener('click', async () => {
+        if (!isEnterprise) {
+            document.getElementById('upgradeModal')?.classList.remove('hidden');
+            return;
+        }
+        const webhookInput = document.getElementById('webhookUrlInput');
+        const webhook_url = webhookInput ? webhookInput.value.trim() : '';
+        const btn = document.getElementById('saveIntegrationBtn');
+        const oldText = btn ? btn.innerHTML : '';
+        if (btn) btn.innerHTML = 'Saving...';
+        
+        try {
+            const currentToken = localStorage.getItem('token');
+            const res = await fetch('/api/settings', {
+                method: 'POST',
+                headers: { 'Content-Type': 'application/json', 'Authorization': `Bearer ${currentToken}` },
+                body: JSON.stringify({ webhook_url })
+            });
+            if (res.ok) {
+                showToast('Integration saved! You will now receive security alerts.', 'success');
+            } else {
+                showToast('Failed to save integration.', 'error');
+            }
+        } catch(e) {
+            showToast('Network error.', 'error');
+        } finally {
+            if (btn) btn.innerHTML = oldText;
+        }
+    });
+
+    // Upgrade Modal Buttons
+    const upgradePromptBtn = document.getElementById('upgradePromptBtn');
+    if (upgradePromptBtn) {
+        upgradePromptBtn.addEventListener('click', () => {
+            document.getElementById('upgradeModal')?.classList.remove('hidden');
+        });
+    }
+    
     document.getElementById('closeModalBtn')?.addEventListener('click', () => {
-        document.getElementById('upgradeModal').classList.add('hidden');
+        document.getElementById('upgradeModal')?.classList.add('hidden');
     });
 
     document.getElementById('upgradeModal')?.addEventListener('click', (e) => {
         if (e.target.id === 'upgradeModal') {
-            document.getElementById('upgradeModal').classList.add('hidden');
+            document.getElementById('upgradeModal')?.classList.add('hidden');
         }
     });
 
     document.getElementById('submitKeyBtn')?.addEventListener('click', async () => {
         const keyInput = document.getElementById('licenseKeyInput');
-        const key = keyInput.value.trim();
+        const key = keyInput ? keyInput.value.trim() : '';
         if (!key) return;
         
         const btn = document.getElementById('submitKeyBtn');
-        const originalText = btn.innerHTML;
-        btn.disabled = true;
-        btn.innerHTML = "Verifying...";
+        const originalText = btn ? btn.innerHTML : '';
+        if (btn) {
+            btn.disabled = true;
+            btn.innerHTML = 'Verifying...';
+        }
         
         try {
+            const currentToken = localStorage.getItem('token');
             const res = await fetch('/api/upgrade', {
                 method: 'POST',
                 headers: { 
                     'Content-Type': 'application/json', 
-                    'Authorization': `Bearer ${token}` 
+                    'Authorization': `Bearer ${currentToken}` 
                 },
                 body: JSON.stringify({ key: key })
             });
             const data = await res.json();
             if (res.ok) {
-                alert("Premium Unlocked! Refreshing...");
-                window.location.reload();
+                showToast('Enterprise SOC-2 Lifetime Access Unlocked! Refreshing...', 'success');
+                setTimeout(() => window.location.reload(), 1000);
             } else {
-                alert("Upgrade Failed: " + (data.detail || data.error || "Unknown error"));
+                showToast('Upgrade Failed: ' + (data.detail || data.error || 'Unknown error'), 'error');
+                if (btn) {
+                    btn.disabled = false;
+                    btn.innerHTML = originalText;
+                }
+            }
+        } catch(e) {
+            showToast('Network error. Could not connect to server.', 'error');
+            if (btn) {
                 btn.disabled = false;
                 btn.innerHTML = originalText;
             }
-        } catch(e) {
-            alert("Network error. Could not connect to server.");
-            btn.disabled = false;
-            btn.innerHTML = originalText;
         }
     });
 
-    scanBtn?.addEventListener('click', async () => {
-        const code = codeInput.value.trim();
-        if (!code) {
-            alert("Please enter some code to scan!");
-            return;
-        }
-        
-        if (!isPremium && scanCount >= 3) {
-            document.getElementById('upgradeModal').classList.remove('hidden');
-            return;
-        }
+    // Scanner Logic
+    const scanBtn = document.getElementById('scanBtn');
+    const codeInput = document.getElementById('codeInput');
+    const reportContainer = document.getElementById('reportContainer');
+    const scanResult = document.getElementById('scanResult');
 
-        // Loading State
-        scanBtn.disabled = true;
-        scanBtn.innerHTML = `
-            <svg class="animate-spin -ml-1 mr-3 h-5 w-5 text-white" xmlns="http://www.w3.org/2000/svg" fill="none" viewBox="0 0 24 24">
-                <circle class="opacity-25" cx="12" cy="12" r="10" stroke="currentColor" stroke-width="4"></circle>
-                <path class="opacity-75" fill="currentColor" d="M4 12a8 8 0 018-8V0C5.373 0 0 5.373 0 12h4zm2 5.291A7.962 7.962 0 014 12H0c0 3.042 1.135 5.824 3 7.938l3-2.647z"></path>
-            </svg>
-            SCANNING IN BACKGROUND...
-        `;
-        reportContainer.classList.add('hidden');
-        scanResult.textContent = "";
-        scanResult.classList.remove('blur-effect', 'text-red-400', 'font-bold');
-        document.getElementById('blurPaywallOverlay').classList.add('hidden');
-        document.getElementById('scanLimitWarning').classList.add('hidden');
-
-        try {
-            const controller = new AbortController();
-            const timeoutId = setTimeout(() => controller.abort(), 15000);
-
-            const response = await fetch('/scan', {
-                method: 'POST',
-                headers: { 
-                    'Content-Type': 'application/json',
-                    'Authorization': `Bearer ${token}`
-                },
-                body: JSON.stringify({ code: code }),
-                signal: controller.signal
-            });
-            
-            clearTimeout(timeoutId);
-            
-            if (response.status === 504) {
-                showToast("Scan timed out. Please try again.", "error");
-                resetScanBtn();
+    if (scanBtn) {
+        scanBtn.addEventListener('click', async () => {
+            const code = codeInput ? codeInput.value.trim() : '';
+            if (!code) {
+                alert('Please enter some code to scan!');
                 return;
             }
             
-            const data = await response.json();
-            
-            if (data.is_blurred_paywall) {
-                scanResult.textContent = data.report;
-                scanResult.classList.add('blur-effect');
-                document.getElementById('scanLimitWarning').classList.remove('hidden');
-                document.getElementById('blurPaywallOverlay').classList.remove('hidden');
-                reportContainer.classList.remove('hidden');
-                resetScanBtn();
-            } else if (data.error) {
-                scanResult.textContent = "Error: " + data.error;
-                scanResult.classList.add("text-red-400");
-                reportContainer.classList.remove('hidden');
-                resetScanBtn();
-            } else if (data.job_id) {
-                const jobId = data.job_id;
+            if (!isPremium && scanCount >= 3) {
+                document.getElementById('upgradeModal')?.classList.remove('hidden');
+                return;
+            }
+
+            // Loading State
+            scanBtn.disabled = true;
+            scanBtn.innerHTML = `
+                <svg class="animate-spin -ml-1 mr-3 h-5 w-5 text-white" xmlns="http://www.w3.org/2000/svg" fill="none" viewBox="0 0 24 24">
+                    <circle class="opacity-25" cx="12" cy="12" r="10" stroke="currentColor" stroke-width="4"></circle>
+                    <path class="opacity-75" fill="currentColor" d="M4 12a8 8 0 018-8V0C5.373 0 0 5.373 0 12h4zm2 5.291A7.962 7.962 0 014 12H0c0 3.042 1.135 5.824 3 7.938l3-2.647z"></path>
+                </svg>
+                SCANNING IN BACKGROUND...
+            `;
+            if (reportContainer) reportContainer.classList.add('hidden');
+            if (scanResult) {
+                scanResult.textContent = '';
+                scanResult.classList.remove('blur-effect', 'text-red-400', 'font-bold');
+            }
+            document.getElementById('blurPaywallOverlay')?.classList.add('hidden');
+            document.getElementById('scanLimitWarning')?.classList.add('hidden');
+
+            try {
+                const controller = new AbortController();
+                const timeoutId = setTimeout(() => controller.abort(), 15000);
+                const currentToken = localStorage.getItem('token');
+
+                const response = await fetch('/scan', {
+                    method: 'POST',
+                    headers: { 
+                        'Content-Type': 'application/json',
+                        'Authorization': `Bearer ${currentToken}`
+                    },
+                    body: JSON.stringify({ code: code }),
+                    signal: controller.signal
+                });
                 
-                const pollInterval = setInterval(async () => {
-                    try {
-                        const statusRes = await fetch(`/api/scan/status/${jobId}`, {
-                            headers: { 'Authorization': `Bearer ${token}` }
-                        });
-                        const statusData = await statusRes.json();
-                        
-                        if (!statusRes.ok || statusData.detail || (statusData.status !== 'completed' && statusData.status !== 'failed' && statusData.status !== 'pending')) {
+                clearTimeout(timeoutId);
+                
+                if (response.status === 504) {
+                    showToast('Scan timed out. Please try again.', 'error');
+                    resetScanBtn();
+                    return;
+                }
+                
+                const data = await response.json();
+                
+                if (data.is_blurred_paywall) {
+                    if (scanResult) {
+                        scanResult.textContent = data.report;
+                        scanResult.classList.add('blur-effect');
+                    }
+                    document.getElementById('scanLimitWarning')?.classList.remove('hidden');
+                    document.getElementById('blurPaywallOverlay')?.classList.remove('hidden');
+                    if (reportContainer) reportContainer.classList.remove('hidden');
+                    resetScanBtn();
+                } else if (data.error) {
+                    if (scanResult) {
+                        scanResult.textContent = 'Error: ' + data.error;
+                        scanResult.classList.add('text-red-400');
+                    }
+                    if (reportContainer) reportContainer.classList.remove('hidden');
+                    resetScanBtn();
+                } else if (data.job_id) {
+                    const jobId = data.job_id;
+                    
+                    const pollInterval = setInterval(async () => {
+                        try {
+                            const statusRes = await fetch(`/api/scan/status/${jobId}`, {
+                                headers: { 'Authorization': `Bearer ${currentToken}` }
+                            });
+                            const statusData = await statusRes.json();
+                            
+                            if (!statusRes.ok || statusData.detail || (statusData.status !== 'completed' && statusData.status !== 'failed' && statusData.status !== 'pending')) {
+                                clearInterval(pollInterval);
+                                if (scanResult) {
+                                    scanResult.textContent = 'Error: ' + (statusData.detail || 'Scan failed or job not found.');
+                                    scanResult.classList.add('text-red-400');
+                                }
+                                if (reportContainer) reportContainer.classList.remove('hidden');
+                                resetScanBtn();
+                            } else if (statusData.status === 'completed') {
+                                clearInterval(pollInterval);
+                                if (scanResult) {
+                                    scanResult.textContent = statusData.report;
+                                    scanResult.classList.remove('text-red-400');
+                                }
+                                await fetchPlan();
+                                await fetchAnalytics();
+                                if (reportContainer) reportContainer.classList.remove('hidden');
+                                resetScanBtn();
+                            } else if (statusData.status === 'failed') {
+                                clearInterval(pollInterval);
+                                if (scanResult) {
+                                    scanResult.textContent = 'Error: ' + (statusData.report || 'Scan failed.');
+                                    scanResult.classList.add('text-red-400');
+                                }
+                                if (reportContainer) reportContainer.classList.remove('hidden');
+                                resetScanBtn();
+                            }
+                        } catch (err) {
                             clearInterval(pollInterval);
-                            scanResult.textContent = "Error: " + (statusData.detail || "Scan failed or job not found.");
-                            scanResult.classList.add("text-red-400");
-                            reportContainer.classList.remove('hidden');
-                            resetScanBtn();
-                        } else if (statusData.status === 'completed') {
-                            clearInterval(pollInterval);
-                            scanResult.textContent = statusData.report;
-                            scanResult.classList.remove("text-red-400");
-                            await fetchPlan();
-                            await fetchAnalytics();
-                            reportContainer.classList.remove('hidden');
-                            resetScanBtn();
-                        } else if (statusData.status === 'failed') {
-                            clearInterval(pollInterval);
-                            scanResult.textContent = "Error: " + (statusData.report || "Scan failed.");
-                            scanResult.classList.add("text-red-400");
-                            reportContainer.classList.remove('hidden');
+                            if (scanResult) {
+                                scanResult.textContent = 'System Failure: Polling error.';
+                                scanResult.classList.add('text-red-400');
+                            }
+                            if (reportContainer) reportContainer.classList.remove('hidden');
                             resetScanBtn();
                         }
-                    } catch (err) {
-                        clearInterval(pollInterval);
-                        scanResult.textContent = "System Failure: Polling error.";
-                        scanResult.classList.add("text-red-400");
-                        reportContainer.classList.remove('hidden');
-                        resetScanBtn();
+                    }, 2000);
+                }
+            } catch (error) {
+                if (error.name === 'AbortError') {
+                    showToast('Scan timed out. Please try again.', 'error');
+                } else {
+                    if (scanResult) {
+                        scanResult.textContent = 'System Failure: Could not reach the backend.';
+                        scanResult.classList.add('text-red-400');
                     }
-                }, 2000);
+                    if (reportContainer) reportContainer.classList.remove('hidden');
+                }
+                resetScanBtn();
             }
-        } catch (error) {
-            if (error.name === 'AbortError') {
-                showToast("Scan timed out. Please try again.", "error");
-            } else {
-                scanResult.textContent = "System Failure: Could not reach the backend.";
-                scanResult.classList.add("text-red-400");
-                reportContainer.classList.remove('hidden');
-            }
-            resetScanBtn();
-        }
-        
-        function resetScanBtn() {
-            scanBtn.disabled = false;
-            scanBtn.innerHTML = `
-                <svg xmlns="http://www.w3.org/2000/svg" class="h-6 w-6" fill="none" viewBox="0 0 24 24" stroke="currentColor">
-                    <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M9 12l2 2 4-4m5.618-4.016A11.955 11.955 0 0112 2.944a11.955 11.955 0 01-8.618 3.04A12.02 12.02 0 003 9c0 5.591 3.824 10.29 9 11.622 5.176-1.332 9-6.03 9-11.622 0-1.042-.133-2.052-.382-3.016z" />
-                </svg>
-                INITIATE DEEP SCAN
-            `;
-        }
-    });
-
-    const downloadPdfBtn = document.getElementById('downloadPdfBtn');
-    
-    downloadPdfBtn?.addEventListener('click', async (e) => {
-        if (!isEnterprise) {
-            e.preventDefault();
-            e.stopPropagation();
-            document.getElementById('upgradeModal').classList.remove('hidden');
-            return;
-        }
-        
-        const reportText = scanResult.textContent;
-        if (!reportText || reportText.startsWith("Error:") || reportText.startsWith("System Failure:")) {
-            alert("No valid report to download.");
-            return;
-        }
-        
-        downloadPdfBtn.disabled = true;
-        downloadPdfBtn.innerHTML = "Generating...";
-        
-        try {
-            const res = await fetch('/api/generate-pdf', {
-                method: 'POST',
-                headers: { 
-                    'Content-Type': 'application/json',
-                    'Authorization': `Bearer ${token}` 
-                },
-                body: JSON.stringify({ report_text: reportText })
-            });
             
-            if (res.ok) {
-                const blob = await res.blob();
-                const url = window.URL.createObjectURL(blob);
-                const a = document.createElement('a');
-                a.href = url;
-                a.download = 'TimeCodeSecurity_Report.pdf';
-                document.body.appendChild(a);
-                a.click();
-                a.remove();
-                window.URL.revokeObjectURL(url);
-            } else {
-                const err = await res.json();
-                alert("Failed to generate PDF: " + (err.detail || "Unknown error"));
+            function resetScanBtn() {
+                if (!scanBtn) return;
+                scanBtn.disabled = false;
+                scanBtn.innerHTML = `
+                    <svg xmlns="http://www.w3.org/2000/svg" class="h-6 w-6" fill="none" viewBox="0 0 24 24" stroke="currentColor">
+                        <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M9 12l2 2 4-4m5.618-4.016A11.955 11.955 0 0112 2.944a11.955 11.955 0 01-8.618 3.04A12.02 12.02 0 003 9c0 5.591 3.824 10.29 9 11.622 5.176-1.332 9-6.03 9-11.622 0-1.042-.133-2.052-.382-3.016z" />
+                    </svg>
+                    INITIATE DEEP SCAN
+                `;
             }
-        } catch (e) {
-            alert("Network error generating PDF.");
-        } finally {
-            downloadPdfBtn.disabled = false;
-            downloadPdfBtn.innerHTML = `<svg xmlns="http://www.w3.org/2000/svg" class="h-4 w-4" fill="none" viewBox="0 0 24 24" stroke="currentColor"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M4 16v1a3 3 0 003 3h10a3 3 0 003-3v-1m-4-4l-4 4m0 0l-4-4m4 4V4" /></svg> Download PDF Report`;
-        }
-    });
+        });
+    }
 
+    // PDF Download
+    const downloadPdfBtn = document.getElementById('downloadPdfBtn');
+    if (downloadPdfBtn) {
+        downloadPdfBtn.addEventListener('click', async (e) => {
+            if (!isEnterprise) {
+                e.preventDefault();
+                e.stopPropagation();
+                document.getElementById('upgradeModal')?.classList.remove('hidden');
+                return;
+            }
+            
+            const reportText = scanResult ? scanResult.textContent : '';
+            if (!reportText || reportText.startsWith('Error:') || reportText.startsWith('System Failure:')) {
+                alert('No valid report to download.');
+                return;
+            }
+            
+            downloadPdfBtn.disabled = true;
+            downloadPdfBtn.innerHTML = 'Generating...';
+            
+            try {
+                const currentToken = localStorage.getItem('token');
+                const res = await fetch('/api/generate-pdf', {
+                    method: 'POST',
+                    headers: { 
+                        'Content-Type': 'application/json',
+                        'Authorization': `Bearer ${currentToken}` 
+                    },
+                    body: JSON.stringify({ report_text: reportText })
+                });
+                
+                if (res.ok) {
+                    const blob = await res.blob();
+                    const url = window.URL.createObjectURL(blob);
+                    const a = document.createElement('a');
+                    a.href = url;
+                    a.download = 'TimeCodeSecurity_Report.pdf';
+                    document.body.appendChild(a);
+                    a.click();
+                    a.remove();
+                    window.URL.revokeObjectURL(url);
+                } else {
+                    const err = await res.json().catch(() => ({}));
+                    alert('Failed to generate PDF: ' + (err.detail || 'Unknown error'));
+                }
+            } catch (e) {
+                alert('Network error generating PDF.');
+            } finally {
+                downloadPdfBtn.disabled = false;
+                downloadPdfBtn.innerHTML = `<svg xmlns="http://www.w3.org/2000/svg" class="h-4 w-4" fill="none" viewBox="0 0 24 24" stroke="currentColor"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M4 16v1a3 3 0 003 3h10a3 3 0 003-3v-1m-4-4l-4 4m0 0l-4-4m4 4V4" /></svg> Download PDF Report`;
+            }
+        });
+    }
+
+    // File Upload
     document.getElementById('fileUpload')?.addEventListener('change', function(e) {
-        const file = e.target.files[0];
+        const file = e.target.files ? e.target.files[0] : null;
         if (!file) return;
         
         const reader = new FileReader();
         reader.onload = function(event) {
-            document.getElementById('codeInput').value = event.target.result;
+            const input = document.getElementById('codeInput');
+            if (input) input.value = event.target.result;
         };
         reader.readAsText(file);
     });
 
+    // Auto-Fix Code
     const fixCodeBtn = document.getElementById('fixCodeBtn');
     const fixedCodeContainer = document.getElementById('fixedCodeContainer');
     const fixedCodeResult = document.getElementById('fixedCodeResult');
     const copyFixedCodeBtn = document.getElementById('copyFixedCodeBtn');
 
-    fixCodeBtn?.addEventListener('click', async () => {
-        if (!isPremium) {
-            upgradePromptBtn.click();
-            return;
-        }
-
-        const code = codeInput.value.trim();
-        if (!code) {
-            alert("No code to fix.");
-            return;
-        }
-
-        fixCodeBtn.disabled = true;
-        const originalText = fixCodeBtn.innerHTML;
-        fixCodeBtn.innerHTML = "Generating Secure Code...";
-        fixedCodeContainer.classList.add('hidden');
-
-        try {
-            const res = await fetch('/api/fix-code', {
-                method: 'POST',
-                headers: { 
-                    'Content-Type': 'application/json',
-                    'Authorization': `Bearer ${token}` 
-                },
-                body: JSON.stringify({ code: code })
-            });
-            const data = await res.json();
-            
-            if (data.error || data.detail) {
-                alert("Failed to generate code: " + (data.error || data.detail));
-            } else {
-                let cleanCode = data.fixed_code;
-                if (cleanCode.startsWith('```')) {
-                    cleanCode = cleanCode.replace(/^```[a-z]*\n/, '').replace(/\n```$/, '');
-                }
-                fixedCodeResult.textContent = cleanCode;
-                fixedCodeContainer.classList.remove('hidden');
-                await fetchVault();
-                await fetchAnalytics();
-                await fetchPlan();
+    if (fixCodeBtn) {
+        fixCodeBtn.addEventListener('click', async () => {
+            if (!isPremium) {
+                document.getElementById('upgradeModal')?.classList.remove('hidden');
+                return;
             }
-        } catch (e) {
-            alert("Network error.");
-        } finally {
-            fixCodeBtn.disabled = false;
-            fixCodeBtn.innerHTML = originalText;
-        }
-    });
 
-    copyFixedCodeBtn?.addEventListener('click', () => {
-        navigator.clipboard.writeText(fixedCodeResult.textContent).then(() => {
-            const originalText = copyFixedCodeBtn.textContent;
-            copyFixedCodeBtn.textContent = "Copied!";
-            setTimeout(() => {
-                copyFixedCodeBtn.textContent = originalText;
-            }, 2000);
+            const code = codeInput ? codeInput.value.trim() : '';
+            if (!code) {
+                alert('No code to fix.');
+                return;
+            }
+
+            fixCodeBtn.disabled = true;
+            const originalText = fixCodeBtn.innerHTML;
+            fixCodeBtn.innerHTML = 'Generating Secure Code...';
+            if (fixedCodeContainer) fixedCodeContainer.classList.add('hidden');
+
+            try {
+                const currentToken = localStorage.getItem('token');
+                const res = await fetch('/api/fix-code', {
+                    method: 'POST',
+                    headers: { 
+                        'Content-Type': 'application/json',
+                        'Authorization': `Bearer ${currentToken}` 
+                    },
+                    body: JSON.stringify({ code: code })
+                });
+                const data = await res.json();
+                
+                if (data.error || data.detail) {
+                    alert('Failed to generate code: ' + (data.error || data.detail));
+                } else {
+                    let cleanCode = data.fixed_code || '';
+                    if (cleanCode.startsWith('```')) {
+                        cleanCode = cleanCode.replace(/^```[a-z]*\n/, '').replace(/\n```$/, '');
+                    }
+                    if (fixedCodeResult) fixedCodeResult.textContent = cleanCode;
+                    if (fixedCodeContainer) fixedCodeContainer.classList.remove('hidden');
+                    await fetchVault();
+                    await fetchAnalytics();
+                    await fetchPlan();
+                }
+            } catch (e) {
+                alert('Network error.');
+            } finally {
+                fixCodeBtn.disabled = false;
+                fixCodeBtn.innerHTML = originalText;
+            }
         });
-    });
+    }
 
+    if (copyFixedCodeBtn) {
+        copyFixedCodeBtn.addEventListener('click', () => {
+            const text = fixedCodeResult ? fixedCodeResult.textContent : '';
+            if (!text) return;
+            navigator.clipboard.writeText(text).then(() => {
+                const originalText = copyFixedCodeBtn.textContent;
+                copyFixedCodeBtn.textContent = 'Copied!';
+                setTimeout(() => {
+                    if (copyFixedCodeBtn) copyFixedCodeBtn.textContent = originalText;
+                }, 2000);
+            });
+        });
+    }
+
+    // Generate Defensive Test
     const generateTestBtn = document.getElementById('generateTestBtn');
     const testCodeContainer = document.getElementById('testCodeContainer');
     const testCodeResult = document.getElementById('testCodeResult');
     const copyTestCodeBtn = document.getElementById('copyTestCodeBtn');
 
-    generateTestBtn?.addEventListener('click', async () => {
-        if (!isPremium) {
-            upgradePromptBtn.click();
-            return;
-        }
-
-        const code = codeInput.value.trim();
-        if (!code) {
-            alert("No code to analyze.");
-            return;
-        }
-
-        generateTestBtn.disabled = true;
-        const originalText = generateTestBtn.innerHTML;
-        generateTestBtn.innerHTML = "Generating Test...";
-        testCodeContainer.classList.add('hidden');
-
-        try {
-            const res = await fetch('/api/generate-test', {
-                method: 'POST',
-                headers: { 
-                    'Content-Type': 'application/json',
-                    'Authorization': `Bearer ${token}` 
-                },
-                body: JSON.stringify({ code: code })
-            });
-            const data = await res.json();
-            
-            if (data.error || data.detail) {
-                alert("Failed to generate test: " + (data.error || data.detail));
-            } else {
-                let cleanCode = data.test_code;
-                if (cleanCode.startsWith('```')) {
-                    cleanCode = cleanCode.replace(/^```[a-z]*\n/, '').replace(/\n```$/, '');
-                }
-                testCodeResult.textContent = cleanCode;
-                testCodeContainer.classList.remove('hidden');
+    if (generateTestBtn) {
+        generateTestBtn.addEventListener('click', async () => {
+            if (!isPremium) {
+                document.getElementById('upgradeModal')?.classList.remove('hidden');
+                return;
             }
-        } catch (e) {
-            alert("Network error.");
-        } finally {
-            generateTestBtn.disabled = false;
-            generateTestBtn.innerHTML = originalText;
-        }
-    });
 
-    copyTestCodeBtn?.addEventListener('click', () => {
-        navigator.clipboard.writeText(testCodeResult.textContent).then(() => {
-            const originalText = copyTestCodeBtn.textContent;
-            copyTestCodeBtn.textContent = "Copied!";
-            setTimeout(() => {
-                copyTestCodeBtn.textContent = originalText;
-            }, 2000);
+            const code = codeInput ? codeInput.value.trim() : '';
+            if (!code) {
+                alert('No code to analyze.');
+                return;
+            }
+
+            generateTestBtn.disabled = true;
+            const originalText = generateTestBtn.innerHTML;
+            generateTestBtn.innerHTML = 'Generating Test...';
+            if (testCodeContainer) testCodeContainer.classList.add('hidden');
+
+            try {
+                const currentToken = localStorage.getItem('token');
+                const res = await fetch('/api/generate-test', {
+                    method: 'POST',
+                    headers: { 
+                        'Content-Type': 'application/json',
+                        'Authorization': `Bearer ${currentToken}` 
+                    },
+                    body: JSON.stringify({ code: code })
+                });
+                const data = await res.json();
+                
+                if (data.error || data.detail) {
+                    alert('Failed to generate test: ' + (data.error || data.detail));
+                } else {
+                    let cleanCode = data.test_code || '';
+                    if (cleanCode.startsWith('```')) {
+                        cleanCode = cleanCode.replace(/^```[a-z]*\n/, '').replace(/\n```$/, '');
+                    }
+                    if (testCodeResult) testCodeResult.textContent = cleanCode;
+                    if (testCodeContainer) testCodeContainer.classList.remove('hidden');
+                }
+            } catch (e) {
+                alert('Network error.');
+            } finally {
+                generateTestBtn.disabled = false;
+                generateTestBtn.innerHTML = originalText;
+            }
         });
-    });
+    }
 
+    if (copyTestCodeBtn) {
+        copyTestCodeBtn.addEventListener('click', () => {
+            const text = testCodeResult ? testCodeResult.textContent : '';
+            if (!text) return;
+            navigator.clipboard.writeText(text).then(() => {
+                const originalText = copyTestCodeBtn.textContent;
+                copyTestCodeBtn.textContent = 'Copied!';
+                setTimeout(() => {
+                    if (copyTestCodeBtn) copyTestCodeBtn.textContent = originalText;
+                }, 2000);
+            });
+        });
+    }
+
+    // Logout
     document.getElementById('logoutBtn')?.addEventListener('click', (e) => {
         e.preventDefault();
         try {
@@ -2070,54 +2156,58 @@ jobs:
         window.location.href = '/logout';
     });
 
+    // Dependency Auditor
     const scanDependenciesBtn = document.getElementById('scanDependenciesBtn');
     const dependencyInput = document.getElementById('dependencyInput');
     const dependencyFileType = document.getElementById('dependencyFileType');
     const dependencyReportContainer = document.getElementById('dependencyReportContainer');
     const dependencyResult = document.getElementById('dependencyResult');
 
-    scanDependenciesBtn?.addEventListener('click', async () => {
-        const content = dependencyInput.value.trim();
-        const fileType = dependencyFileType.value;
-        
-        if (!content) {
-            alert("Please paste dependency file content.");
-            return;
-        }
-
-        scanDependenciesBtn.disabled = true;
-        const originalText = scanDependenciesBtn.innerHTML;
-        scanDependenciesBtn.innerHTML = "Auditing Dependencies...";
-        dependencyReportContainer.classList.add('hidden');
-
-        try {
-            const res = await fetch('/api/audit-dependencies', {
-                method: 'POST',
-                headers: { 
-                    'Content-Type': 'application/json',
-                    'Authorization': `Bearer ${token}` 
-                },
-                body: JSON.stringify({ file_type: fileType, content: content })
-            });
-            const data = await res.json();
+    if (scanDependenciesBtn) {
+        scanDependenciesBtn.addEventListener('click', async () => {
+            const content = dependencyInput ? dependencyInput.value.trim() : '';
+            const fileType = dependencyFileType ? dependencyFileType.value : 'requirements.txt';
             
-            if (data.error || data.detail) {
-                alert("Audit Failed: " + (data.error || data.detail));
-            } else {
-                let cleanReport = data.report;
-                if (cleanReport.startsWith('```')) {
-                    cleanReport = cleanReport.replace(/^```[a-z]*\n/, '').replace(/\n```$/, '');
-                }
-                dependencyResult.textContent = cleanReport;
-                dependencyReportContainer.classList.remove('hidden');
+            if (!content) {
+                alert('Please paste dependency file content.');
+                return;
             }
-        } catch (e) {
-            alert("Network error.");
-        } finally {
-            scanDependenciesBtn.disabled = false;
-            scanDependenciesBtn.innerHTML = originalText;
-        }
-    });
+
+            scanDependenciesBtn.disabled = true;
+            const originalText = scanDependenciesBtn.innerHTML;
+            scanDependenciesBtn.innerHTML = 'Auditing Dependencies...';
+            if (dependencyReportContainer) dependencyReportContainer.classList.add('hidden');
+
+            try {
+                const currentToken = localStorage.getItem('token');
+                const res = await fetch('/api/audit-dependencies', {
+                    method: 'POST',
+                    headers: { 
+                        'Content-Type': 'application/json',
+                        'Authorization': `Bearer ${currentToken}` 
+                    },
+                    body: JSON.stringify({ file_type: fileType, content: content })
+                });
+                const data = await res.json();
+                
+                if (data.error || data.detail) {
+                    alert('Audit Failed: ' + (data.error || data.detail));
+                } else {
+                    let cleanReport = data.report || '';
+                    if (cleanReport.startsWith('```')) {
+                        cleanReport = cleanReport.replace(/^```[a-z]*\n/, '').replace(/\n```$/, '');
+                    }
+                    if (dependencyResult) dependencyResult.textContent = cleanReport;
+                    if (dependencyReportContainer) dependencyReportContainer.classList.remove('hidden');
+                }
+            } catch (e) {
+                alert('Network error.');
+            } finally {
+                scanDependenciesBtn.disabled = false;
+                scanDependenciesBtn.innerHTML = originalText;
+            }
+        });
+    }
     
     // QA Switch Function
     async function qaSwitch(e, newTier) {
@@ -2126,26 +2216,27 @@ jobs:
             e.stopPropagation();
         }
         try {
+            const currentToken = localStorage.getItem('token');
             const res = await fetch('/api/admin/qa-switch', {
                 method: 'POST',
                 headers: {
                     'Content-Type': 'application/json',
-                    'Authorization': 'Bearer ' + localStorage.getItem('token')
+                    'Authorization': 'Bearer ' + currentToken
                 },
                 body: JSON.stringify({ new_tier: newTier, admin_key: 'AYUSH-ADMIN-666' })
             });
             if (res.ok) {
                 await fetchPlan(); 
-                showToast(`Switched Tier to: ${newTier.toUpperCase()}`, "success");
+                showToast(`Switched Tier to: ${newTier.toUpperCase()}`, 'success');
             } else {
-                showToast("QA Switch failed: Access Denied", "error");
+                showToast('QA Switch failed: Access Denied', 'error');
             }
         } catch (e) {
-            showToast("Network Error", "error");
+            showToast('Network Error', 'error');
         }
     }
 
-    // Secret Admin Panel Logic
+    // Secret Admin Panel Triple-click
     let logoClickCount = 0;
     let logoClickTimer;
     document.getElementById('mainLogo')?.addEventListener('click', (e) => {
@@ -2156,7 +2247,7 @@ jobs:
         clearTimeout(logoClickTimer);
         
         if (logoClickCount >= 3) {
-            document.getElementById('adminModal').classList.remove('hidden');
+            document.getElementById('adminModal')?.classList.remove('hidden');
             logoClickCount = 0;
         } else {
             logoClickTimer = setTimeout(() => { logoClickCount = 0; }, 1500);
@@ -2164,16 +2255,16 @@ jobs:
     });
 
     document.getElementById('closeAdminModalBtn')?.addEventListener('click', () => {
-        document.getElementById('adminModal').classList.add('hidden');
+        document.getElementById('adminModal')?.classList.add('hidden');
     });
 
     document.getElementById('grantTrialBtn')?.addEventListener('click', async () => {
-        const targetEmail = document.getElementById('adminTargetEmail').value;
-        const planTier = document.getElementById('adminPlanTier').value;
-        const adminKey = document.getElementById('adminKey').value;
+        const targetEmail = document.getElementById('adminTargetEmail')?.value;
+        const planTier = document.getElementById('adminPlanTier')?.value;
+        const adminKey = document.getElementById('adminKey')?.value;
 
         if (!targetEmail || !adminKey) {
-            showToast("Missing fields", "error");
+            showToast('Missing fields', 'error');
             return;
         }
 
@@ -2189,30 +2280,64 @@ jobs:
             });
             const data = await res.json();
             if (res.ok) {
-                showToast("Trial granted successfully!", "success");
-                document.getElementById('adminModal').classList.add('hidden');
-                document.getElementById('adminTargetEmail').value = '';
-                document.getElementById('adminKey').value = '';
+                showToast('Trial granted successfully!', 'success');
+                document.getElementById('adminModal')?.classList.add('hidden');
+                if (document.getElementById('adminTargetEmail')) document.getElementById('adminTargetEmail').value = '';
+                if (document.getElementById('adminKey')) document.getElementById('adminKey').value = '';
             } else {
-                showToast(data.detail || "Action failed", "error");
+                showToast(data.detail || 'Action failed', 'error');
             }
         } catch (e) {
-            showToast("Network error", "error");
+            showToast('Network error', 'error');
         }
     });
+
+    // CTO Modal Listeners
     document.getElementById('openCtoModalBtn')?.addEventListener('click', () => {
-        document.getElementById('ctoModal').classList.remove('hidden');
+        document.getElementById('ctoModal')?.classList.remove('hidden');
     });
 
     document.getElementById('closeCtoModalBtn')?.addEventListener('click', () => {
-        document.getElementById('ctoModal').classList.add('hidden');
+        document.getElementById('ctoModal')?.classList.add('hidden');
     });
 
     document.getElementById('ctoModal')?.addEventListener('click', (e) => {
-        if (e.target === document.getElementById('ctoModal')) {
-            document.getElementById('ctoModal').classList.add('hidden');
+        if (e.target.id === 'ctoModal') {
+            document.getElementById('ctoModal')?.classList.add('hidden');
         }
     });
+
+    // ==========================================
+    // ROBUST DASHBOARD INITIALIZATION
+    // ==========================================
+    async function initDashboard() {
+        try {
+            await fetchPlan();
+        } catch (err) {
+            console.error('[INIT] fetchPlan error:', err);
+        }
+        try {
+            await fetchAnalytics();
+        } catch (err) {
+            console.error('[INIT] fetchAnalytics error:', err);
+        }
+        try {
+            await fetchVault();
+        } catch (err) {
+            console.error('[INIT] fetchVault error:', err);
+        }
+        try {
+            updateCicdYaml();
+        } catch (err) {
+            console.error('[INIT] updateCicdYaml error:', err);
+        }
+    }
+
+    if (document.readyState === 'loading') {
+        document.addEventListener('DOMContentLoaded', initDashboard);
+    } else {
+        initDashboard();
+    }
 </script>
 </body>
 </html>
