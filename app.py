@@ -181,12 +181,29 @@ import traceback
 # ==========================================
 # ULTIMATE BULLET-PROOF GLOBAL CRASH HANDLER
 # ==========================================
+@app.exception_handler(AssertionError)
+async def assertion_error_handler(request: Request, exc: AssertionError):
+    print(f"[SECURITY SHIELD - ASSERTION CAUGHT] {exc}")
+    return JSONResponse(
+        status_code=400,
+        content={
+            "status": "error",
+            "detail": str(exc) if str(exc) else "Assertion verification failed",
+            "error_type": "AssertionError"
+        }
+    )
+
 @app.exception_handler(Exception)
 async def ultimate_global_exception_handler(request: Request, exc: Exception):
     """
     Catches EVERY unhandled exception, crash, or memory fault in the app.
     Prevents the server from dying and returns a safe, structured JSON response.
     """
+    if isinstance(exc, HTTPException):
+        return JSONResponse(
+            status_code=exc.status_code,
+            content={"status": "error", "detail": exc.detail}
+        )
     print(f"[FATAL ZERO-DAY CRASH PREVENTED] {exc}")
     traceback.print_exc()
     return JSONResponse(
@@ -198,6 +215,32 @@ async def ultimate_global_exception_handler(request: Request, exc: Exception):
             "safe_fallback": True
         }
     )
+
+def safe_calculate_days_active(created_val) -> int:
+    if not created_val:
+        return 0
+    try:
+        if isinstance(created_val, str):
+            clean_str = created_val.split(".")[0].replace("T", " ").replace("Z", "").strip()
+            try:
+                dt = datetime.strptime(clean_str, "%Y-%m-%d %H:%M:%S")
+            except Exception:
+                try:
+                    dt = datetime.strptime(clean_str, "%Y-%m-%d")
+                except Exception:
+                    return 0
+        elif isinstance(created_val, datetime):
+            dt = created_val
+        else:
+            return 0
+            
+        if dt.tzinfo is not None:
+            dt = dt.replace(tzinfo=None)
+        
+        now = datetime.utcnow()
+        return max(0, (now - dt).days)
+    except Exception:
+        return 0
 
 templates = Jinja2Templates(directory="templates")
 
@@ -218,30 +261,10 @@ async def home(request: Request):
 
 @app.get("/dashboard")
 async def dashboard(request: Request):
-    user = None
-    import datetime
-    days_left = 14
-    if user and hasattr(user, 'created_at') and user.created_at:
-        created = user.created_at
-        if isinstance(created, str):
-            try:
-                clean_str = created.split(".")[0]
-                created = datetime.datetime.strptime(clean_str, "%Y-%m-%d %H:%M:%S")
-            except ValueError:
-                created = datetime.datetime.utcnow()
-        if isinstance(created, datetime.datetime):
-            days_active = (datetime.datetime.utcnow() - created).days
-            days_left = max(0, 14 - days_active)
-
-    # CRITICAL: Ensure days_left is explicitly an integer. NO TRAILING COMMAS!
     context = {
         "request": request,
-        "days_left": int(days_left)
+        "days_left": 14
     }
-    # If your template needs the 'user' object, add it safely:
-    if user:
-        context["user"] = user
-
     return templates.TemplateResponse(request=request, name="index.html", context=context)
 
 @app.get("/login")
@@ -383,17 +406,7 @@ async def get_me(authorization: str = Header(None)):
             user.is_premium = True
             db.commit()
         else:
-            days_active = 0
-            if hasattr(user, 'created_at') and user.created_at:
-                created = user.created_at
-                if isinstance(created, str):
-                    try:
-                        clean_str = created.split(".")[0]
-                        created = datetime.strptime(clean_str, "%Y-%m-%d %H:%M:%S")
-                    except ValueError:
-                        created = datetime.utcnow()
-                if isinstance(created, datetime):
-                    days_active = (datetime.utcnow() - created).days
+            days_active = safe_calculate_days_active(getattr(user, 'created_at', None))
 
             if days_active <= 14:
                 days_left_num = max(0, 14 - days_active)
@@ -1218,7 +1231,7 @@ async def generate_test(payload: CodePayload, request: Request, authorization: s
 async def catch_all(request: Request, full_path: str):
     if full_path.startswith("api/"):
         raise HTTPException(status_code=404, detail="API endpoint not found")
-    return templates.TemplateResponse(request=request, name="index.html", context={"request": request, "days_left": "14 DAYS LEFT"})
+    return templates.TemplateResponse(request=request, name="index.html", context={"request": request, "days_left": 14})
 
 if __name__ == "__main__":
     import os
