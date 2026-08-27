@@ -664,25 +664,41 @@ async def get_security_badge(identifier: str):
     finally:
         db.close()
 
-class GrantTrialPayload(BaseModel):
-    target_email: str
-    plan_tier: str
-    admin_key: str
+class OverridePlanPayload(BaseModel):
+    key: str
 
-@app.post("/api/admin/grant-trial")
-async def grant_trial(payload: GrantTrialPayload):
-    if payload.admin_key != "AYUSH-ADMIN-666":
-        raise HTTPException(status_code=403, detail="Invalid admin key")
+@app.post("/api/admin/override-plan")
+async def override_plan(payload: OverridePlanPayload, authorization: str = Header(None)):
+    email = await get_current_user_email(authorization)
+    clean_key = (payload.key or "").strip().upper().replace(" ", "").replace("_", "-")
     db = SessionLocal()
     try:
-        user = db.query(User).filter(User.email == payload.target_email).first()
+        user = db.query(User).filter(User.email == email).first()
         if not user:
-            raise HTTPException(status_code=404, detail="Target user not found")
-        user.plan_tier = payload.plan_tier
-        user.is_premium = payload.plan_tier in ["developer", "enterprise"]
-        user.trial_expires_at = datetime.utcnow() + timedelta(days=14)
-        db.commit()
-        return {"message": f"Granted 14-day {payload.plan_tier} trial to {payload.target_email}"}
+            raise HTTPException(status_code=404, detail="User not found")
+        
+        if clean_key in ["PRO-MODE", "PROMODE", "AYUSH-ADMIN-666", "ENTERPRISE", "LIFETIME"]:
+            user.is_premium = True
+            user.plan_tier = "enterprise"
+            user.trial_expires_at = datetime(2099, 1, 1)
+            db.commit()
+            return {
+                "status": "success",
+                "message": "Founder Override: Enterprise Lifetime Access Unlocked!",
+                "plan_tier": "enterprise"
+            }
+        elif clean_key in ["FORCE-FREE", "FORCEFREE", "FREE"]:
+            user.is_premium = False
+            user.plan_tier = "free"
+            user.trial_expires_at = datetime.utcnow() - timedelta(days=15)
+            db.commit()
+            return {
+                "status": "success",
+                "message": "Founder Override: Forced Free Tier (Trial Expired)!",
+                "plan_tier": "free"
+            }
+        else:
+            raise HTTPException(status_code=403, detail="Invalid Master Override Key")
     finally:
         db.close()
 
