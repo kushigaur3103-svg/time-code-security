@@ -458,6 +458,7 @@
                         <li class="flex items-center"><svg class="w-5 h-5 mr-2 text-yellow-400 flex-shrink-0" fill="currentColor" viewBox="0 0 20 20"><path fill-rule="evenodd" d="M16.707 5.293a1 1 0 010 1.414l-8 8a1 1 0 01-1.414 0l-4-4a1 1 0 011.414-1.414L8 12.586l7.293-7.293a1 1 0 011.414 0z" clip-rule="evenodd"></path></svg>24/7 Dedicated Priority Support</li>
                     </ul>
                     <button id="upgradeEnterpriseBtn" class="w-full bg-gradient-to-r from-yellow-500 to-orange-500 hover:from-yellow-400 hover:to-orange-400 text-black font-bold py-3 px-4 rounded-lg shadow-lg transition-all" onclick="initiatePayment('enterprise')">Upgrade to Enterprise</button>
+                    <button id="openCtoModalBtn" class="mt-3 w-full bg-[#161b22] border border-yellow-500/30 text-yellow-500 font-bold py-3 px-4 rounded-lg transition-all animate-pulse shadow-[0_0_15px_rgba(234,179,8,0.2)] hover:shadow-[0_0_25px_rgba(234,179,8,0.5)] hover:border-yellow-400 hover:text-yellow-400 flex items-center justify-center gap-2">✨ See How We Solve Your Problems</button>
                 </div>
             </div>
 
@@ -1564,7 +1565,19 @@
             showToast("Network error", "error");
         }
     });
+    document.getElementById('openCtoModalBtn')?.addEventListener('click', () => {
+        document.getElementById('ctoModal').classList.remove('hidden');
+    });
 
+    document.getElementById('closeCtoModalBtn')?.addEventListener('click', () => {
+        document.getElementById('ctoModal').classList.add('hidden');
+    });
+
+    document.getElementById('ctoModal')?.addEventListener('click', (e) => {
+        if (e.target === document.getElementById('ctoModal')) {
+            document.getElementById('ctoModal').classList.add('hidden');
+        }
+    });
 </script>
 </body>
 </html>
