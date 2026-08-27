@@ -284,12 +284,44 @@ async def logout(request: Request):
     response.delete_cookie("token")
     return response
 
+DISALLOWED_EMAIL_DOMAINS = {
+    "test.com", "example.com", "dummy.com", "fake.com", "tempmail.com",
+    "trashmail.com", "mailinator.com", "10minutemail.com", "guerrillamail.com",
+    "sharklasers.com", "dispostable.com", "yopmail.com", "getairmail.com",
+    "throwawaymail.com", "fakemailgenerator.com", "mytempemail.com", "temp-mail.org"
+}
+
+EMAIL_REGEX = re.compile(r"^[a-zA-Z0-9_.+-]+@[a-zA-Z0-9-]+\.[a-zA-Z0-9-.]+$")
+
+def validate_registration_email(email_raw: str) -> str:
+    if not email_raw or not isinstance(email_raw, str):
+        raise HTTPException(status_code=400, detail="Email is required.")
+    email = email_raw.strip().lower()
+    if not EMAIL_REGEX.match(email):
+        raise HTTPException(status_code=400, detail="Invalid email format. Please enter a valid standard email address.")
+    
+    parts = email.split("@")
+    if len(parts) != 2:
+        raise HTTPException(status_code=400, detail="Invalid email address format.")
+    
+    domain = parts[1].strip()
+    if domain in DISALLOWED_EMAIL_DOMAINS or any(domain.endswith("." + d) for d in DISALLOWED_EMAIL_DOMAINS):
+        raise HTTPException(
+            status_code=400, 
+            detail=f"Registration rejected: Dummy/temporary email domain (@{domain}) is not permitted. Please use a valid email address."
+        )
+    return email
+
 @app.post("/api/signup")
 async def signup(payload: AuthPayload):
+    clean_email = validate_registration_email(payload.email)
+    if not payload.password or len(payload.password.strip()) < 6:
+        raise HTTPException(status_code=400, detail="Passcode must be at least 6 characters long.")
+
     db = SessionLocal()
     try:
-        if db.query(User).filter(User.email == payload.email).first():
-            raise HTTPException(status_code=400, detail="Operator ID already registered.")
+        if db.query(User).filter(User.email == clean_email).first():
+            raise HTTPException(status_code=400, detail="Operator ID already registered. Please sign in instead.")
             
         safe_password = payload.password[:72]
         password_hash = pwd_context.hash(safe_password)
@@ -297,7 +329,7 @@ async def signup(payload: AuthPayload):
         trial_end = datetime.utcnow() + timedelta(days=14)
         
         new_user = User(
-            email=payload.email, 
+            email=clean_email, 
             password_hash=password_hash, 
             api_key=new_api_key,
             plan_tier="enterprise",
@@ -310,7 +342,7 @@ async def signup(payload: AuthPayload):
         db.close()
         
     token = jwt.encode(
-        {"sub": payload.email, "exp": datetime.utcnow() + timedelta(hours=2)},
+        {"sub": clean_email, "exp": datetime.utcnow() + timedelta(hours=2)},
         SECRET_KEY,
         algorithm="HS256"
     )
@@ -318,18 +350,22 @@ async def signup(payload: AuthPayload):
 
 @app.post("/api/login")
 async def login(payload: AuthPayload):
+    clean_email = payload.email.strip().lower() if payload.email else ""
+    if not clean_email:
+        raise HTTPException(status_code=400, detail="Email is required.")
+
     db = SessionLocal()
     try:
-        user = db.query(User).filter(User.email == payload.email).first()
+        user = db.query(User).filter(User.email == clean_email).first()
         if not user:
-            raise HTTPException(status_code=401, detail="Please create account first")
+            raise HTTPException(status_code=401, detail="Account not found. Please sign up first.")
         if not pwd_context.verify(payload.password[:72], user.password_hash):
-            raise HTTPException(status_code=401, detail="Invalid password")
+            raise HTTPException(status_code=401, detail="Invalid password.")
     finally:
         db.close()
         
     token = jwt.encode(
-        {"sub": payload.email, "exp": datetime.utcnow() + timedelta(hours=2)},
+        {"sub": clean_email, "exp": datetime.utcnow() + timedelta(hours=2)},
         SECRET_KEY,
         algorithm="HS256"
     )
