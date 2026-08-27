@@ -346,6 +346,70 @@
                 </div>
             </div>
         </div>
+
+        <!-- 1-Click GitHub Actions CI/CD Automated PR Scanner -->
+        <div class="mt-8 bg-gray-900/70 backdrop-blur-2xl border border-gray-700/50 rounded-2xl p-6 shadow-2xl w-full">
+            <div class="flex flex-col md:flex-row md:items-center justify-between gap-4 mb-4">
+                <div>
+                    <h2 class="text-lg font-bold text-gray-200 flex items-center gap-2">
+                        <svg class="w-5 h-5 text-indigo-400" fill="currentColor" viewBox="0 0 24 24"><path fill-rule="evenodd" clip-rule="evenodd" d="M12 2C6.477 2 2 6.484 2 12.017c0 4.425 2.865 8.18 6.839 9.504.5.092.682-.217.682-.483 0-.237-.008-.868-.013-1.703-2.782.605-3.369-1.343-3.369-1.343-.454-1.158-1.11-1.466-1.11-1.466-.908-.62.069-.608.069-.608 1.003.07 1.53 1.032 1.53 1.032.892 1.53 2.341 1.088 2.91.832.092-.647.35-1.088.636-1.338-2.22-.253-4.555-1.113-4.555-4.951 0-1.093.39-1.988 1.029-2.688-.103-.253-.446-1.272.098-2.65 0 0 .84-.27 2.75 1.026A9.564 9.564 0 0112 6.844c.85.004 1.705.115 2.504.337 1.909-1.296 2.747-1.027 2.747-1.027.546 1.379.202 2.398.1 2.651.64.7 1.028 1.595 1.028 2.688 0 3.848-2.339 4.695-4.566 4.943.359.309.678.92.678 1.855 0 1.338-.012 2.419-.012 2.747 0 .268.18.58.688.482A10.019 10.019 0 0022 12.017C22 6.484 17.522 2 12 2z"/></svg>
+                        1-Click GitHub Actions CI/CD PR Scanner
+                        <span class="text-xs bg-indigo-950/60 text-indigo-400 border border-indigo-700/50 px-2 py-0.5 rounded-full flex items-center gap-1">⚡ Automated PR Gate</span>
+                    </h2>
+                    <p class="text-gray-400 text-sm mt-1">Automatically run TimeCodeSecurity AI scans on every Pull Request and block critical Zero-Day vulnerabilities before code merges.</p>
+                </div>
+                <div class="flex items-center gap-3">
+                    <button id="copyGithubActionYamlBtn" class="bg-gradient-to-r from-indigo-600 to-purple-600 hover:from-indigo-500 hover:to-purple-500 text-white font-bold py-2 px-4 rounded-lg shadow-lg transition-all text-xs flex items-center gap-2 whitespace-nowrap">
+                        <svg class="w-4 h-4" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M8 16H6a2 2 0 01-2-2V6a2 2 0 012-2h8a2 2 0 012 2v2m-6 12h8a2 2 0 002-2v-8a2 2 0 00-2-2h-8a2 2 0 00-2 2v8a2 2 0 002 2z"></path></svg>
+                        Copy Workflow YAML
+                    </button>
+                </div>
+            </div>
+
+            <!-- Workflow Configuration Options -->
+            <div class="grid grid-cols-1 sm:grid-cols-2 gap-4 bg-[#0a0d14] p-4 rounded-xl border border-gray-800 mb-4">
+                <div>
+                    <label class="block text-gray-400 text-xs font-mono uppercase mb-2">Target Branch</label>
+                    <select id="cicdBranchSelect" class="w-full bg-[#030712] text-gray-200 text-xs font-mono p-2.5 rounded-lg border border-gray-700 focus:outline-none focus:border-indigo-500">
+                        <option value="main" selected>main (Production Branch)</option>
+                        <option value="master">master</option>
+                        <option value="develop">develop / staging</option>
+                    </select>
+                </div>
+                <div>
+                    <label class="block text-gray-400 text-xs font-mono uppercase mb-2">PR Security Gate Policy</label>
+                    <select id="cicdPolicySelect" class="w-full bg-[#030712] text-gray-200 text-xs font-mono p-2.5 rounded-lg border border-gray-700 focus:outline-none focus:border-indigo-500">
+                        <option value="critical" selected>Strict: Block PR on Critical Vulnerabilities</option>
+                        <option value="audit">Audit Only: Scan & Report (Never Fail Pipeline)</option>
+                    </select>
+                </div>
+            </div>
+
+            <!-- YAML Preview Box -->
+            <div class="relative">
+                <div class="flex justify-between items-center bg-[#030712] px-4 py-2 rounded-t-xl border border-gray-800 text-xs font-mono text-gray-400">
+                    <span>.github/workflows/timecode_security.yml</span>
+                    <span class="text-emerald-400 flex items-center gap-1">● Ready to deploy</span>
+                </div>
+                <textarea id="cicdYamlSnippet" readonly rows="12" class="w-full bg-[#050914] text-indigo-300 font-mono text-xs p-4 rounded-b-xl border-x border-b border-gray-800 focus:outline-none resize-none leading-relaxed select-all">Loading workflow YAML...</textarea>
+            </div>
+
+            <!-- 3-Step Visual Onboarding Guide -->
+            <div class="grid grid-cols-1 md:grid-cols-3 gap-4 mt-4 pt-4 border-t border-gray-800">
+                <div class="p-3 bg-[#0a0d14] rounded-lg border border-gray-800 flex items-start gap-3">
+                    <span class="flex-shrink-0 w-6 h-6 rounded-full bg-indigo-900/50 text-indigo-400 border border-indigo-700/50 flex items-center justify-center text-xs font-bold font-mono">1</span>
+                    <p class="text-gray-400 text-xs leading-normal">Save file into your repo under <code class="text-indigo-300">.github/workflows/timecode_security.yml</code></p>
+                </div>
+                <div class="p-3 bg-[#0a0d14] rounded-lg border border-gray-800 flex items-start gap-3">
+                    <span class="flex-shrink-0 w-6 h-6 rounded-full bg-indigo-900/50 text-indigo-400 border border-indigo-700/50 flex items-center justify-center text-xs font-bold font-mono">2</span>
+                    <p class="text-gray-400 text-xs leading-normal">Add your API Key as a GitHub Secret named <code class="text-indigo-300">TIMECODE_API_KEY</code></p>
+                </div>
+                <div class="p-3 bg-[#0a0d14] rounded-lg border border-gray-800 flex items-start gap-3">
+                    <span class="flex-shrink-0 w-6 h-6 rounded-full bg-emerald-900/50 text-emerald-400 border border-emerald-700/50 flex items-center justify-center text-xs font-bold font-mono">3</span>
+                    <p class="text-gray-400 text-xs leading-normal">Open a PR! TimeCodeSecurity will automatically analyze code before merging.</p>
+                </div>
+            </div>
+        </div>
         
         <!-- Enterprise Workspace -->
         <div class="mt-8 bg-gray-900/70 backdrop-blur-2xl border border-gray-700/50 rounded-2xl p-6 shadow-2xl w-full">
@@ -1353,6 +1417,92 @@
             btn.classList.remove('bg-blue-600');
         }, 2500);
     });
+
+    function updateCicdYaml() {
+        const branchSelect = document.getElementById('cicdBranchSelect');
+        const policySelect = document.getElementById('cicdPolicySelect');
+        const snippetEl = document.getElementById('cicdYamlSnippet');
+        if (!snippetEl) return;
+        
+        const branch = branchSelect ? branchSelect.value : 'main';
+        const isStrict = policySelect ? policySelect.value === 'critical' : true;
+        const origin = window.location.origin;
+        
+        const failCommand = isStrict
+            ? "if [ \"$SEVERITY\" = \"CRITICAL\" ]; then echo '❌ Blocking PR: Critical security vulnerability detected by TimeCodeSecurity Zero-Day Shield.' && exit 1; fi"
+            : "echo 'ℹ️ Audit scan complete. No PR blocking policy configured.'";
+
+        const yaml = `name: TimeCodeSecurity Zero-Day PR Shield
+
+on:
+  pull_request:
+    branches: [ "${branch}" ]
+  push:
+    branches: [ "${branch}" ]
+
+jobs:
+  security-audit:
+    name: TimeCodeSecurity AI Deep Scan
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout Code
+        uses: actions/checkout@v4
+
+      - name: Run TimeCodeSecurity AI Shield
+        env:
+          TIMECODE_API_KEY: \${{ secrets.TIMECODE_API_KEY }}
+        run: |
+          echo "🛡️ Initiating TimeCodeSecurity Zero-Day Analysis..."
+          
+          # Scan modified source files
+          FILES=$(git diff --name-only origin/${branch} 2>/dev/null || find . -type f \\( -name "*.py" -o -name "*.js" -o -name "*.ts" -o -name "*.go" -o -name "*.rs" -o -name "*.java" \\) -not -path "*/.*" | head -n 10)
+          
+          for FILE in $FILES; do
+            if [ -f "$FILE" ]; then
+              echo "Scanning $FILE..."
+              PAYLOAD=$(jq -n --arg f "$FILE" --arg c "$(< $FILE)" '{"filename": $f, "code": $c}')
+              
+              RESPONSE=$(curl -s -X POST "${origin}/api/cicd/scan" \\
+                -H "Content-Type: application/json" \\
+                -H "X-API-Key: $TIMECODE_API_KEY" \\
+                -d "$PAYLOAD")
+              
+              SEVERITY=$(echo "$RESPONSE" | jq -r '.severity_level // "LOW"')
+              VULN=$(echo "$RESPONSE" | jq -r '.vulnerabilities_found // false')
+              
+              if [ "$VULN" = "true" ]; then
+                echo "⚠️ Vulnerability detected in $FILE (Severity: $SEVERITY)"
+                ${failCommand}
+              fi
+            fi
+          done
+          
+          echo "✅ TimeCodeSecurity: Code passed all zero-day defense checks!"
+`;
+        snippetEl.value = yaml;
+    }
+
+    document.getElementById('cicdBranchSelect')?.addEventListener('change', updateCicdYaml);
+    document.getElementById('cicdPolicySelect')?.addEventListener('change', updateCicdYaml);
+
+    document.getElementById('copyGithubActionYamlBtn')?.addEventListener('click', async (e) => {
+        const snippetEl = document.getElementById('cicdYamlSnippet');
+        if (!snippetEl || !snippetEl.value) return;
+        await navigator.clipboard.writeText(snippetEl.value);
+        const btn = e.currentTarget;
+        const originalHtml = btn.innerHTML;
+        btn.innerHTML = '<svg class="w-4 h-4" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M5 13l4 4L19 7"></path></svg> Copied YAML!';
+        btn.classList.replace('from-indigo-600', 'from-emerald-600');
+        btn.classList.replace('to-purple-600', 'to-teal-600');
+        showToast("GitHub Action workflow copied to clipboard!", "success");
+        setTimeout(() => {
+            btn.innerHTML = originalHtml;
+            btn.classList.replace('from-emerald-600', 'from-indigo-600');
+            btn.classList.replace('to-teal-600', 'to-purple-600');
+        }, 2500);
+    });
+
+    updateCicdYaml();
 
     async function initiatePayment(planType) {
         if (isPremium) return;

@@ -1257,6 +1257,10 @@ async def cicd_scan(payload: CICDScanPayload, x_api_key: str = Header(None)):
     try:
         user = db.query(User).filter(User.api_key == x_api_key).first()
         if not user:
+            api_entry = db.query(APIKey).filter(APIKey.key_string == x_api_key).first()
+            if api_entry:
+                user = api_entry.user
+        if not user:
             raise HTTPException(status_code=401, detail="Invalid API Key")
             
         system_prompt = (
@@ -1312,6 +1316,60 @@ async def cicd_scan(payload: CICDScanPayload, x_api_key: str = Header(None)):
         }
     finally:
         db.close()
+
+@app.get("/api/cicd/template")
+async def get_cicd_template(branch: str = "main", fail_on_critical: bool = True, origin: str = "https://timecodesecurity.onrender.com"):
+    clean_branch = branch.strip() if branch else "main"
+    fail_script = "if [ \"$SEVERITY\" = \"CRITICAL\" ]; then echo '❌ Blocking PR: Critical security vulnerability detected by TimeCodeSecurity Zero-Day Shield.' && exit 1; fi" if fail_on_critical else "echo 'ℹ️ Audit scan complete. No PR blocking policy configured.'"
+    
+    yaml_content = f"""name: TimeCodeSecurity Zero-Day PR Shield
+
+on:
+  pull_request:
+    branches: [ "{clean_branch}" ]
+  push:
+    branches: [ "{clean_branch}" ]
+
+jobs:
+  security-audit:
+    name: TimeCodeSecurity AI Deep Scan
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout Code
+        uses: actions/checkout@v4
+
+      - name: Run TimeCodeSecurity AI Shield
+        env:
+          TIMECODE_API_KEY: ${{{{ secrets.TIMECODE_API_KEY }}}}
+        run: |
+          echo "🛡️ Initiating TimeCodeSecurity Zero-Day Analysis..."
+          
+          # Scan modified source files
+          FILES=$(git diff --name-only origin/{clean_branch} 2>/dev/null || find . -type f \\( -name "*.py" -o -name "*.js" -o -name "*.ts" -o -name "*.go" -o -name "*.rs" -o -name "*.java" \\) -not -path "*/.*" | head -n 10)
+          
+          for FILE in $FILES; do
+            if [ -f "$FILE" ]; then
+              echo "Scanning $FILE..."
+              PAYLOAD=$(jq -n --arg f "$FILE" --arg c "$(< $FILE)" '{{filename: $f, code: $c}}')
+              
+              RESPONSE=$(curl -s -X POST "{origin}/api/cicd/scan" \\
+                -H "Content-Type: application/json" \\
+                -H "X-API-Key: $TIMECODE_API_KEY" \\
+                -d "$PAYLOAD")
+              
+              SEVERITY=$(echo "$RESPONSE" | jq -r '.severity_level // "LOW"')
+              VULN=$(echo "$RESPONSE" | jq -r '.vulnerabilities_found // false')
+              
+              if [ "$VULN" = "true" ]; then
+                echo "⚠️ Vulnerability detected in $FILE (Severity: $SEVERITY)"
+                {fail_script}
+              fi
+            fi
+          done
+          
+          echo "✅ TimeCodeSecurity: Code passed all zero-day defense checks!"
+"""
+    return {"status": "success", "yaml": yaml_content}
 
 @app.post("/api/generate-test")
 async def generate_test(payload: CodePayload, request: Request, authorization: str = Header(None)):
