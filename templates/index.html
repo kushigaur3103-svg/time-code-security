@@ -485,6 +485,210 @@
         </div>
     </div>
     
+    <!-- CTO Problem-Solver Modal -->
+    <div id="ctoModal" class="hidden fixed inset-0 z-[100] flex items-center justify-center bg-black/90 backdrop-blur-md p-4 overflow-y-auto pt-16 pb-16">
+        <div class="bg-[#0a0d14] border border-gray-700/80 rounded-2xl w-full max-w-5xl shadow-[0_0_60px_rgba(234,179,8,0.2)] relative flex flex-col max-h-[90vh]">
+            <button id="closeCtoModalBtn" class="absolute top-4 right-4 text-gray-400 hover:text-white transition-colors z-10 bg-gray-800/80 hover:bg-gray-700 rounded-full p-2">
+                <svg class="w-6 h-6" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M6 18L18 6M6 6l12 12"></path></svg>
+            </button>
+            <div class="p-6 sm:p-10 overflow-y-auto">
+                <div class="text-center mb-8">
+                    <div class="inline-block bg-yellow-500/10 border border-yellow-500/30 text-yellow-400 text-xs font-bold px-3 py-1 rounded-full uppercase tracking-widest mb-3">
+                        CTO &amp; Engineering Leadership Brief
+                    </div>
+                    <h2 class="text-3xl md:text-4xl font-black text-transparent bg-clip-text bg-gradient-to-r from-yellow-400 to-orange-500 mb-3">
+                        Enterprise Architecture: Problem vs. Solution
+                    </h2>
+                    <p class="text-gray-400 max-w-2xl mx-auto text-sm sm:text-base">
+                        How TimeCodeSecurity delivers bulletproof security and compliance across every phase of your software development lifecycle.
+                    </p>
+                </div>
+                
+                <div class="grid grid-cols-1 md:grid-cols-2 gap-5">
+                    <!-- 1. Unlimited AI Deep Scans -->
+                    <div class="bg-[#0d1117] p-5 rounded-xl border border-gray-800 hover:border-yellow-500/40 transition-colors flex flex-col justify-between">
+                        <div>
+                            <h3 class="text-base font-bold text-yellow-400 mb-2 flex items-center gap-2">
+                                <span class="bg-yellow-500/20 text-yellow-400 p-1.5 rounded-lg text-sm">⚡</span>
+                                Unlimited AI Deep Scans (No Daily Limits)
+                            </h3>
+                            <p class="text-xs text-gray-300 mb-2 leading-relaxed">
+                                <span class="font-bold text-red-400 uppercase text-[10px] tracking-wider border border-red-500/30 bg-red-500/10 px-1.5 py-0.5 rounded mr-1">Problem</span>
+                                Daily scan limits throttle dev velocity and block continuous repo-wide testing.
+                            </p>
+                            <p class="text-xs text-gray-300 leading-relaxed">
+                                <span class="font-bold text-green-400 uppercase text-[10px] tracking-wider border border-green-500/30 bg-green-500/10 px-1.5 py-0.5 rounded mr-1">Solution</span>
+                                Scan thousands of daily commits, massive monorepos, and complete dependency trees with zero throttling.
+                            </p>
+                        </div>
+                    </div>
+
+                    <!-- 2. Silicon Valley Grade Secure API Access -->
+                    <div class="bg-[#0d1117] p-5 rounded-xl border border-gray-800 hover:border-yellow-500/40 transition-colors flex flex-col justify-between">
+                        <div>
+                            <h3 class="text-base font-bold text-yellow-400 mb-2 flex items-center gap-2">
+                                <span class="bg-yellow-500/20 text-yellow-400 p-1.5 rounded-lg text-sm">🔑</span>
+                                Silicon Valley Grade Secure API Access
+                            </h3>
+                            <p class="text-xs text-gray-300 mb-2 leading-relaxed">
+                                <span class="font-bold text-red-400 uppercase text-[10px] tracking-wider border border-red-500/30 bg-red-500/10 px-1.5 py-0.5 rounded mr-1">Problem</span>
+                                Static, unmonitored API tokens leak easily, putting core cloud infrastructure at risk.
+                            </p>
+                            <p class="text-xs text-gray-300 leading-relaxed">
+                                <span class="font-bold text-green-400 uppercase text-[10px] tracking-wider border border-green-500/30 bg-green-500/10 px-1.5 py-0.5 rounded mr-1">Solution</span>
+                                High-entropy cryptographic keys with granular scopes, automatic rotation, and instant revocation.
+                            </p>
+                        </div>
+                    </div>
+
+                    <!-- 3. CI/CD Pipeline Webhooks -->
+                    <div class="bg-[#0d1117] p-5 rounded-xl border border-gray-800 hover:border-yellow-500/40 transition-colors flex flex-col justify-between">
+                        <div>
+                            <h3 class="text-base font-bold text-yellow-400 mb-2 flex items-center gap-2">
+                                <span class="bg-yellow-500/20 text-yellow-400 p-1.5 rounded-lg text-sm">🔄</span>
+                                CI/CD Pipeline Webhooks (GitHub, GitLab, Bitbucket)
+                            </h3>
+                            <p class="text-xs text-gray-300 mb-2 leading-relaxed">
+                                <span class="font-bold text-red-400 uppercase text-[10px] tracking-wider border border-red-500/30 bg-red-500/10 px-1.5 py-0.5 rounded mr-1">Problem</span>
+                                Manual security reviews slow down deployment and miss vulnerabilities before merge.
+                            </p>
+                            <p class="text-xs text-gray-300 leading-relaxed">
+                                <span class="font-bold text-green-400 uppercase text-[10px] tracking-wider border border-green-500/30 bg-green-500/10 px-1.5 py-0.5 rounded mr-1">Solution</span>
+                                Automate scans directly in your CI/CD pipelines. Block dangerous vulnerabilities before they reach production.
+                            </p>
+                        </div>
+                    </div>
+
+                    <!-- 4. Advanced Zero-Day Threat Shield -->
+                    <div class="bg-[#0d1117] p-5 rounded-xl border border-gray-800 hover:border-yellow-500/40 transition-colors flex flex-col justify-between">
+                        <div>
+                            <h3 class="text-base font-bold text-yellow-400 mb-2 flex items-center gap-2">
+                                <span class="bg-yellow-500/20 text-yellow-400 p-1.5 rounded-lg text-sm">🛡️</span>
+                                Advanced Zero-Day Threat Shield
+                            </h3>
+                            <p class="text-xs text-gray-300 mb-2 leading-relaxed">
+                                <span class="font-bold text-red-400 uppercase text-[10px] tracking-wider border border-red-500/30 bg-red-500/10 px-1.5 py-0.5 rounded mr-1">Problem</span>
+                                Undisclosed hacks and zero-day exploits can compromise databases and destroy companies overnight.
+                            </p>
+                            <p class="text-xs text-gray-300 leading-relaxed">
+                                <span class="font-bold text-green-400 uppercase text-[10px] tracking-wider border border-green-500/30 bg-green-500/10 px-1.5 py-0.5 rounded mr-1">Solution</span>
+                                Real-time heuristic AI shield intercepts exploit payloads and patches zero-day vulnerabilities on the fly.
+                            </p>
+                        </div>
+                    </div>
+
+                    <!-- 5. Role-Based Team Access (RBAC) & Team Vault -->
+                    <div class="bg-[#0d1117] p-5 rounded-xl border border-gray-800 hover:border-yellow-500/40 transition-colors flex flex-col justify-between">
+                        <div>
+                            <h3 class="text-base font-bold text-yellow-400 mb-2 flex items-center gap-2">
+                                <span class="bg-yellow-500/20 text-yellow-400 p-1.5 rounded-lg text-sm">👥</span>
+                                Role-Based Team Access (RBAC) &amp; Team Vault
+                            </h3>
+                            <p class="text-xs text-gray-300 mb-2 leading-relaxed">
+                                <span class="font-bold text-red-400 uppercase text-[10px] tracking-wider border border-red-500/30 bg-red-500/10 px-1.5 py-0.5 rounded mr-1">Problem</span>
+                                Unrestricted intern/contractor access exposes confidential security reports and vulnerability details.
+                            </p>
+                            <p class="text-xs text-gray-300 leading-relaxed">
+                                <span class="font-bold text-green-400 uppercase text-[10px] tracking-wider border border-green-500/30 bg-green-500/10 px-1.5 py-0.5 rounded mr-1">Solution</span>
+                                Granular organization workspace roles (Admin vs. Member). Secure encrypted Team Vault for shared remediation history.
+                            </p>
+                        </div>
+                    </div>
+
+                    <!-- 6. Real-Time Threat Analytics Dashboard -->
+                    <div class="bg-[#0d1117] p-5 rounded-xl border border-gray-800 hover:border-yellow-500/40 transition-colors flex flex-col justify-between">
+                        <div>
+                            <h3 class="text-base font-bold text-yellow-400 mb-2 flex items-center gap-2">
+                                <span class="bg-yellow-500/20 text-yellow-400 p-1.5 rounded-lg text-sm">📊</span>
+                                Real-Time Threat Analytics Dashboard
+                            </h3>
+                            <p class="text-xs text-gray-300 mb-2 leading-relaxed">
+                                <span class="font-bold text-red-400 uppercase text-[10px] tracking-wider border border-red-500/30 bg-red-500/10 px-1.5 py-0.5 rounded mr-1">Problem</span>
+                                Engineering leaders lack visibility into cross-team code security health and vulnerability trends.
+                            </p>
+                            <p class="text-xs text-gray-300 leading-relaxed">
+                                <span class="font-bold text-green-400 uppercase text-[10px] tracking-wider border border-green-500/30 bg-green-500/10 px-1.5 py-0.5 rounded mr-1">Solution</span>
+                                Live executive dashboard tracking vulnerability severities, scan frequency, and MTTR (mean time to remediate).
+                            </p>
+                        </div>
+                    </div>
+
+                    <!-- 7. Auto-Remediation & 1-Click Code Fixes -->
+                    <div class="bg-[#0d1117] p-5 rounded-xl border border-gray-800 hover:border-yellow-500/40 transition-colors flex flex-col justify-between">
+                        <div>
+                            <h3 class="text-base font-bold text-yellow-400 mb-2 flex items-center gap-2">
+                                <span class="bg-yellow-500/20 text-yellow-400 p-1.5 rounded-lg text-sm">🛠️</span>
+                                Auto-Remediation &amp; 1-Click Code Fixes
+                            </h3>
+                            <p class="text-xs text-gray-300 mb-2 leading-relaxed">
+                                <span class="font-bold text-red-400 uppercase text-[10px] tracking-wider border border-red-500/30 bg-red-500/10 px-1.5 py-0.5 rounded mr-1">Problem</span>
+                                Identifying flaws is only half the battle; writing manual patches burns valuable senior engineer hours.
+                            </p>
+                            <p class="text-xs text-gray-300 leading-relaxed">
+                                <span class="font-bold text-green-400 uppercase text-[10px] tracking-wider border border-green-500/30 bg-green-500/10 px-1.5 py-0.5 rounded mr-1">Solution</span>
+                                Intelligent AI engines generate production-grade, secure patch diffs instantly. Review, copy, or merge in seconds.
+                            </p>
+                        </div>
+                    </div>
+
+                    <!-- 8. SOC-2, HIPAA & GDPR Compliance Reports -->
+                    <div class="bg-[#0d1117] p-5 rounded-xl border border-gray-800 hover:border-yellow-500/40 transition-colors flex flex-col justify-between">
+                        <div>
+                            <h3 class="text-base font-bold text-yellow-400 mb-2 flex items-center gap-2">
+                                <span class="bg-yellow-500/20 text-yellow-400 p-1.5 rounded-lg text-sm">📋</span>
+                                SOC-2, HIPAA &amp; GDPR Compliance Reports
+                            </h3>
+                            <p class="text-xs text-gray-300 mb-2 leading-relaxed">
+                                <span class="font-bold text-red-400 uppercase text-[10px] tracking-wider border border-red-500/30 bg-red-500/10 px-1.5 py-0.5 rounded mr-1">Problem</span>
+                                Failing rigorous enterprise vendor security reviews blocks lucrative B2B SaaS enterprise contracts.
+                            </p>
+                            <p class="text-xs text-gray-300 leading-relaxed">
+                                <span class="font-bold text-green-400 uppercase text-[10px] tracking-wider border border-green-500/30 bg-green-500/10 px-1.5 py-0.5 rounded mr-1">Solution</span>
+                                1-click audit-ready PDF/JSON compliance certificates mapped to SOC-2 Type II, HIPAA, and GDPR standards.
+                            </p>
+                        </div>
+                    </div>
+
+                    <!-- 9. 24/7 Dedicated Priority Support -->
+                    <div class="bg-[#0d1117] p-5 rounded-xl border border-gray-800 hover:border-yellow-500/40 transition-colors flex flex-col justify-between">
+                        <div>
+                            <h3 class="text-base font-bold text-yellow-400 mb-2 flex items-center gap-2">
+                                <span class="bg-yellow-500/20 text-yellow-400 p-1.5 rounded-lg text-sm">📞</span>
+                                24/7 Dedicated Priority Support
+                            </h3>
+                            <p class="text-xs text-gray-300 mb-2 leading-relaxed">
+                                <span class="font-bold text-red-400 uppercase text-[10px] tracking-wider border border-red-500/30 bg-red-500/10 px-1.5 py-0.5 rounded mr-1">Problem</span>
+                                Pipeline-blocking security flags during critical release weekends leave dev teams without immediate help.
+                            </p>
+                            <p class="text-xs text-gray-300 leading-relaxed">
+                                <span class="font-bold text-green-400 uppercase text-[10px] tracking-wider border border-green-500/30 bg-green-500/10 px-1.5 py-0.5 rounded mr-1">Solution</span>
+                                Dedicated DevSecOps escalation engineers on-call 24/7 with SLA-guaranteed response times under 15 minutes.
+                            </p>
+                        </div>
+                    </div>
+
+                    <!-- 10. Special Indian Pricing -->
+                    <div class="bg-[#0d1117] p-5 rounded-xl border border-yellow-500/30 hover:border-yellow-400 transition-colors flex flex-col justify-between">
+                        <div>
+                            <h3 class="text-base font-bold text-green-400 mb-2 flex items-center gap-2">
+                                <span class="bg-green-500/20 text-green-400 p-1.5 rounded-lg text-sm">🇮🇳</span>
+                                Special Indian Pricing: ₹19,999/mo
+                            </h3>
+                            <p class="text-xs text-gray-300 mb-2 leading-relaxed">
+                                <span class="font-bold text-red-400 uppercase text-[10px] tracking-wider border border-red-500/30 bg-red-500/10 px-1.5 py-0.5 rounded mr-1">Problem</span>
+                                Global enterprise tools charge $2,000+/mo ($25,000+/yr), pricing out fast-growing Indian engineering teams.
+                            </p>
+                            <p class="text-xs text-gray-300 leading-relaxed">
+                                <span class="font-bold text-green-400 uppercase text-[10px] tracking-wider border border-green-500/30 bg-green-500/10 px-1.5 py-0.5 rounded mr-1">Solution</span>
+                                Full Silicon Valley-grade enterprise feature parity localized at ₹19,999/mo with GST invoices and local INR support.
+                            </p>
+                        </div>
+                    </div>
+                </div>
+            </div>
+        </div>
+    </div>
+    
 <script>
     // ==========================================
     // BILLION-DOLLAR ENTERPRISE TOAST SYSTEM
