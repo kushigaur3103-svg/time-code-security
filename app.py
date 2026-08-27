@@ -250,8 +250,11 @@ async def login_page(request: Request):
 
 @app.get("/logout")
 async def logout(request: Request):
-    if hasattr(request, "session"):
-        request.session.clear()
+    if "session" in request.scope:
+        try:
+            request.scope["session"].clear()
+        except Exception:
+            pass
     response = RedirectResponse(url="/", status_code=303)
     response.delete_cookie("session")
     response.delete_cookie("access_token")
