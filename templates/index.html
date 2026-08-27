@@ -304,6 +304,48 @@
                 <p class="text-gray-500 text-sm py-2">Loading keys...</p>
             </div>
         </div>
+
+        <!-- Live README Security Badge (GitHub / CI/CD) -->
+        <div class="mt-8 bg-gray-900/70 backdrop-blur-2xl border border-gray-700/50 rounded-2xl p-6 shadow-2xl w-full">
+            <div class="flex flex-col md:flex-row md:items-center justify-between gap-4 mb-4">
+                <div>
+                    <h2 class="text-lg font-bold text-gray-200 flex items-center gap-2">
+                        <svg class="w-5 h-5 text-emerald-400" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M9 12l2 2 4-4m5.618-4.016A11.955 11.955 0 0112 2.944a11.955 11.955 0 01-8.618 3.04A12.02 12.02 0 003 9c0 5.591 3.824 10.29 9 11.622 5.176-1.332 9-6.03 9-11.622 0-1.042-.133-2.052-.382-3.016z"></path></svg>
+                        Live README Security Badge
+                        <span class="text-xs bg-emerald-950/60 text-emerald-400 border border-emerald-700/50 px-2 py-0.5 rounded-full flex items-center gap-1">✨ Dynamic SVG</span>
+                    </h2>
+                    <p class="text-gray-400 text-sm mt-1">Embed this live, verifiable Zero-Day security shield into your GitHub repositories, documentation, and CI/CD pipelines.</p>
+                </div>
+                <div class="bg-[#030712] p-3 rounded-xl border border-gray-800 shadow-inner flex items-center gap-3">
+                    <span class="text-xs text-gray-500 font-mono">LIVE PREVIEW:</span>
+                    <img id="badgeLivePreview" src="/api/badge/default.svg" alt="TimeCodeSecurity Badge Preview" class="h-7 hover:scale-105 transition-transform">
+                </div>
+            </div>
+
+            <div class="grid grid-cols-1 md:grid-cols-2 gap-4 mt-4">
+                <!-- Markdown Snippet -->
+                <div class="bg-[#0a0d14] p-4 rounded-xl border border-gray-800 flex flex-col justify-between">
+                    <div>
+                        <div class="flex justify-between items-center mb-2">
+                            <span class="text-xs font-bold text-gray-300 font-mono">MARKDOWN (GitHub README)</span>
+                            <button id="copyBadgeMarkdownBtn" class="text-xs bg-gray-800 hover:bg-gray-700 text-emerald-400 px-3 py-1 rounded border border-gray-700 hover:border-emerald-500 transition-all font-mono">Copy Markdown</button>
+                        </div>
+                        <input type="text" id="badgeMarkdownSnippet" readonly class="w-full bg-[#030712] text-gray-400 text-xs font-mono p-2.5 rounded border border-gray-800 focus:outline-none select-all" value="Loading badge markdown...">
+                    </div>
+                </div>
+
+                <!-- HTML Snippet -->
+                <div class="bg-[#0a0d14] p-4 rounded-xl border border-gray-800 flex flex-col justify-between">
+                    <div>
+                        <div class="flex justify-between items-center mb-2">
+                            <span class="text-xs font-bold text-gray-300 font-mono">HTML EMBED</span>
+                            <button id="copyBadgeHtmlBtn" class="text-xs bg-gray-800 hover:bg-gray-700 text-blue-400 px-3 py-1 rounded border border-gray-700 hover:border-blue-500 transition-all font-mono">Copy HTML</button>
+                        </div>
+                        <input type="text" id="badgeHtmlSnippet" readonly class="w-full bg-[#030712] text-gray-400 text-xs font-mono p-2.5 rounded border border-gray-800 focus:outline-none select-all" value="Loading badge HTML...">
+                    </div>
+                </div>
+            </div>
+        </div>
         
         <!-- Enterprise Workspace -->
         <div class="mt-8 bg-gray-900/70 backdrop-blur-2xl border border-gray-700/50 rounded-2xl p-6 shadow-2xl w-full">
@@ -931,6 +973,25 @@
                     trialBadge.classList.add('hidden');
                 }
             }
+
+            // Update Security Badge Snippets
+            const origin = window.location.origin;
+            const badgeId = userApiKey || 'default';
+            const badgeUrl = `${origin}/api/badge/${badgeId}.svg`;
+            const homeUrl = `${origin}`;
+            
+            const badgeLivePreview = document.getElementById('badgeLivePreview');
+            if (badgeLivePreview) {
+                badgeLivePreview.src = badgeUrl;
+            }
+            const markdownEl = document.getElementById('badgeMarkdownSnippet');
+            if (markdownEl) {
+                markdownEl.value = `[![TimeCodeSecurity: Grade A+](${badgeUrl})](${homeUrl})`;
+            }
+            const htmlEl = document.getElementById('badgeHtmlSnippet');
+            if (htmlEl) {
+                htmlEl.value = `<a href="${homeUrl}"><img src="${badgeUrl}" alt="TimeCodeSecurity Grade A+" /></a>`;
+            }
         } catch (e) {
             console.error("Network or parsing error", e);
         }
@@ -1256,6 +1317,40 @@
             btn.innerHTML = originalText;
             btn.disabled = false;
         }
+    });
+
+    document.getElementById('copyBadgeMarkdownBtn')?.addEventListener('click', async (e) => {
+        const input = document.getElementById('badgeMarkdownSnippet');
+        if (!input || !input.value) return;
+        await navigator.clipboard.writeText(input.value);
+        const btn = e.currentTarget;
+        const originalText = btn.textContent;
+        btn.textContent = 'Copied!';
+        btn.classList.replace('text-emerald-400', 'text-white');
+        btn.classList.add('bg-emerald-600');
+        showToast("Markdown badge copied to clipboard!", "success");
+        setTimeout(() => {
+            btn.textContent = originalText;
+            btn.classList.replace('text-white', 'text-emerald-400');
+            btn.classList.remove('bg-emerald-600');
+        }, 2500);
+    });
+
+    document.getElementById('copyBadgeHtmlBtn')?.addEventListener('click', async (e) => {
+        const input = document.getElementById('badgeHtmlSnippet');
+        if (!input || !input.value) return;
+        await navigator.clipboard.writeText(input.value);
+        const btn = e.currentTarget;
+        const originalText = btn.textContent;
+        btn.textContent = 'Copied!';
+        btn.classList.replace('text-blue-400', 'text-white');
+        btn.classList.add('bg-blue-600');
+        showToast("HTML badge embed code copied to clipboard!", "success");
+        setTimeout(() => {
+            btn.textContent = originalText;
+            btn.classList.replace('text-white', 'text-blue-400');
+            btn.classList.remove('bg-blue-600');
+        }, 2500);
     });
 
     async function initiatePayment(planType) {

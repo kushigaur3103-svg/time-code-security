@@ -533,6 +533,87 @@ async def list_api_keys(authorization: str = Header(None)):
     finally:
         db.close()
 
+@app.get("/api/badge/{identifier}.svg")
+@app.get("/api/badge/{identifier}")
+async def get_security_badge(identifier: str):
+    """
+    Publicly accessible dynamic SVG security badge for GitHub README.md and CI/CD pipelines.
+    """
+    clean_id = identifier.replace(".svg", "").strip()
+    db = SessionLocal()
+    try:
+        user = db.query(User).filter(User.api_key == clean_id).first()
+        if not user:
+            api_key_entry = db.query(APIKey).filter(APIKey.key_string == clean_id).first()
+            if api_key_entry:
+                user = api_key_entry.user
+        if not user and clean_id.isdigit():
+            user = db.query(User).filter(User.id == int(clean_id)).first()
+            
+        grade_text = "GRADE A+"
+        status_label = "Zero-Day Shield"
+        glow_start = "#10b981"
+        glow_end = "#059669"
+        icon_color = "#10b981"
+        
+        if user:
+            critical_scans = db.query(ScanCache).filter(
+                ScanCache.user_id == user.id, 
+                ScanCache.is_fix != True,
+                ScanCache.report_text.ilike("%critical%")
+            ).count()
+            fixes_count = db.query(ScanCache).filter(
+                ScanCache.user_id == user.id, 
+                ScanCache.is_fix == True
+            ).count()
+            
+            if critical_scans > 0 and fixes_count < critical_scans:
+                grade_text = "GRADE B+"
+                status_label = "Fix in Progress"
+                glow_start = "#3b82f6"
+                glow_end = "#1d4ed8"
+                icon_color = "#60a5fa"
+            else:
+                grade_text = "GRADE A+"
+                status_label = "Zero-Day Protected"
+                glow_start = "#10b981"
+                glow_end = "#059669"
+                icon_color = "#10b981"
+
+        svg_content = f"""<svg xmlns="http://www.w3.org/2000/svg" width="220" height="28" viewBox="0 0 220 28" fill="none" role="img" aria-label="TimeCodeSecurity: {grade_text}">
+  <title>TimeCodeSecurity: {grade_text} ({status_label})</title>
+  <linearGradient id="bg" x1="0%" y1="0%" x2="100%" y2="100%">
+    <stop offset="0%" stop-color="#0f172a"/>
+    <stop offset="100%" stop-color="#030712"/>
+  </linearGradient>
+  <linearGradient id="badgeGlow" x1="0%" y1="0%" x2="100%" y2="0%">
+    <stop offset="0%" stop-color="{glow_start}"/>
+    <stop offset="100%" stop-color="{glow_end}"/>
+  </linearGradient>
+  <rect width="220" height="28" rx="6" fill="url(#bg)" stroke="#1e293b" stroke-width="1"/>
+  
+  <g transform="translate(10, 6)">
+    <path d="M8 1L2 3.5v5c0 4 3 6.5 6 7.5 3-1 6-3.5 6-7.5v-5L8 1z" fill="{icon_color}" fill-opacity="0.25" stroke="{icon_color}" stroke-width="1.3"/>
+    <path d="M5.5 8l2 2 4-4" fill="none" stroke="{icon_color}" stroke-width="1.4" stroke-linecap="round" stroke-linejoin="round"/>
+  </g>
+  
+  <text x="32" y="18" fill="#94a3b8" font-family="-apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, Helvetica, Arial, sans-serif" font-size="11" font-weight="600" letter-spacing="0.3">TimeCodeSecurity</text>
+  
+  <rect x="142" y="4" width="72" height="20" rx="4" fill="url(#badgeGlow)"/>
+  <text x="178" y="18" fill="#ffffff" font-family="-apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, Helvetica, Arial, sans-serif" font-size="10.5" font-weight="bold" text-anchor="middle" letter-spacing="0.5">{grade_text}</text>
+</svg>"""
+
+        return Response(
+            content=svg_content, 
+            media_type="image/svg+xml", 
+            headers={
+                "Cache-Control": "max-age=60, s-maxage=60, public",
+                "Content-Type": "image/svg+xml"
+            }
+        )
+    finally:
+        db.close()
+
 class GrantTrialPayload(BaseModel):
     target_email: str
     plan_tier: str
