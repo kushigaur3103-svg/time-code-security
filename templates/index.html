@@ -897,6 +897,8 @@
                 document.getElementById('apiKeyLockBanner')?.classList.add('hidden');
                 document.getElementById('generateApiKeyBtn')?.classList.remove('opacity-50', 'pointer-events-none');
                 document.querySelectorAll('.ent-lock-badge').forEach(el => el.classList.add('hidden'));
+
+                loadApiKeys();
             } else {
                 planText.textContent = "FREE TIER";
                 planText.className = "text-xs text-gray-400 font-mono tracking-wide font-bold";
@@ -910,6 +912,11 @@
                 document.getElementById('apiKeyLockBanner')?.classList.remove('hidden');
                 document.getElementById('generateApiKeyBtn')?.classList.add('opacity-50');
                 document.querySelectorAll('.ent-lock-badge').forEach(el => el.classList.remove('hidden'));
+
+                const listEl = document.getElementById('apiKeysList');
+                if (listEl) {
+                    listEl.innerHTML = '<div class="p-4 bg-[#0a0d14] rounded-xl border border-gray-700/50 text-center"><p class="text-gray-400 text-sm">🔒 Trial Expired. Upgrade to Enterprise to unlock.</p></div>';
+                }
             }
             
             if (data.days_left && data.plan_tier === 'enterprise') {
@@ -929,7 +936,6 @@
         }
     }
     fetchPlan();
-    loadApiKeys();
 
     async function fetchAnalytics() {
         try {
@@ -1155,23 +1161,22 @@
     });
 
     async function loadApiKeys() {
-        if (!isEnterprise && !isPremium) {
-            const listEl = document.getElementById('apiKeysList');
-            if (listEl) {
-                listEl.innerHTML = '<div class="p-4 bg-[#0a0d14] rounded-xl border border-gray-700/50 text-center"><p class="text-gray-400 text-sm">🔒 Trial Expired. Upgrade to Enterprise to unlock.</p></div>';
-            }
-            return;
-        }
         try {
+            const currentToken = localStorage.getItem('token');
+            if (!currentToken) return;
             const res = await fetch('/api/keys', {
-                headers: { 'Authorization': `Bearer ${token}` }
+                headers: { 'Authorization': `Bearer ${currentToken}` }
             });
+            const listEl = document.getElementById('apiKeysList');
+            if (!listEl) return;
+            
+            if (res.status === 403) {
+                listEl.innerHTML = '<div class="p-4 bg-[#0a0d14] rounded-xl border border-gray-700/50 text-center"><p class="text-gray-400 text-sm">🔒 Trial Expired. Upgrade to Enterprise to unlock.</p></div>';
+                return;
+            }
             if (res.ok) {
                 const data = await res.json();
-                const listEl = document.getElementById('apiKeysList');
-                if (!listEl) return;
-                
-                if (data.keys.length === 0) {
+                if (!data.keys || data.keys.length === 0) {
                     listEl.innerHTML = '<p class="text-gray-500 text-sm py-2">No API keys generated yet.</p>';
                     return;
                 }
