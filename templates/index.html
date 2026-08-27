@@ -650,9 +650,9 @@
                 Secured by Lemon Squeezy. Cancel anytime.
             </div>
             
-            <!-- God-Mode API Key Input -->
+            <!-- Secret Master Key Input -->
             <div class="mt-4 pt-4 border-t border-gray-700 text-center flex flex-col items-center gap-3">
-                <input type="text" id="adminKeyInput" placeholder="Enter API Key (AYUSH-ADMIN-666)" class="bg-gray-900 text-white text-sm p-2 rounded border border-gray-600 w-full max-w-xs text-center font-mono">
+                <input type="password" id="adminKeyInput" placeholder="Enter Secret Key..." class="bg-gray-900 text-white text-sm p-2 rounded border border-gray-600 w-full max-w-xs text-center font-mono focus:border-yellow-500 focus:outline-none">
                 <div class="flex gap-2 justify-center">
                     <button onclick="activateGodMode('free')" class="text-xs bg-gray-700 hover:bg-gray-600 text-white px-3 py-1.5 rounded transition cursor-pointer">Simulate Free</button>
                     <button onclick="activateGodMode('enterprise')" class="text-xs bg-yellow-700 hover:bg-yellow-600 text-white px-3 py-1.5 rounded transition cursor-pointer">Simulate Ent</button>
@@ -963,8 +963,9 @@
     }
 
     async function activateGodMode(targetTier) {
-        const key = (document.getElementById('adminKeyInput')?.value || '').trim();
-        if (key !== 'AYUSH-ADMIN-666' && key.toLowerCase() !== 'ayush-admin-666') {
+        const rawKey = (document.getElementById('adminKeyInput')?.value || '').trim();
+        const key = rawKey.toUpperCase().replace(/\s+/g, '').replace(/_/g, '-');
+        if (key !== 'AYUSH-ADMIN-666') {
             alert('Access Denied: Invalid Master Key.');
             return;
         }
@@ -976,7 +977,7 @@
                     'Content-Type': 'application/json',
                     'Authorization': `Bearer ${currentToken}`
                 },
-                body: JSON.stringify({ new_tier: targetTier, admin_key: key })
+                body: JSON.stringify({ new_tier: targetTier, admin_key: 'AYUSH-ADMIN-666' })
             });
             const data = await res.json();
             if (res.ok) {

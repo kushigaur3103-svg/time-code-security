@@ -693,8 +693,8 @@ class QASwitchPayload(BaseModel):
 @app.post("/api/admin/qa-switch")
 async def qa_switch(payload: QASwitchPayload, authorization: str = Header(None)):
     email = await get_current_user_email(authorization)
-    clean_key = (payload.admin_key or "").strip()
-    if clean_key not in ["AYUSH-ADMIN-666", "ayush-admin-666"]:
+    clean_key = (payload.admin_key or "").strip().upper().replace(" ", "").replace("_", "-")
+    if clean_key != "AYUSH-ADMIN-666":
         raise HTTPException(status_code=403, detail="Access Denied: Invalid Master Key")
     db = SessionLocal()
     try:
@@ -896,11 +896,10 @@ class UpgradePayload(BaseModel):
 @app.post("/api/upgrade")
 async def upgrade_plan(payload: UpgradePayload, authorization: str = Header(None)):
     email = await get_current_user_email(authorization)
-    clean_key = payload.key.strip() if payload.key else ""
-    expected_key = os.getenv("PREMIUM_LICENSE_KEY", "AYUSH-ADMIN-666")
+    clean_key = (payload.key or "").strip().upper().replace(" ", "").replace("_", "-")
+    expected_key = os.getenv("PREMIUM_LICENSE_KEY", "AYUSH-ADMIN-666").upper().replace(" ", "").replace("_", "-")
     
-    valid_keys = {"AYUSH-ADMIN-666", "ayush-admin-666", expected_key}
-    if clean_key not in valid_keys:
+    if clean_key not in ["AYUSH-ADMIN-666", expected_key]:
         raise HTTPException(status_code=400, detail="Invalid license key. Please check your key.")
         
     db = SessionLocal()
@@ -910,7 +909,7 @@ async def upgrade_plan(payload: UpgradePayload, authorization: str = Header(None
             raise HTTPException(status_code=404, detail="User not found")
         user.is_premium = True
         user.plan_tier = "enterprise"
-        user.trial_expires_at = None
+        user.trial_expires_at = datetime(2099, 1, 1)
         db.commit()
         return {
             "success": True, 
