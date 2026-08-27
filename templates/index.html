@@ -275,7 +275,17 @@
         </div>
             
         <!-- Developer / API Access Section -->
-        <div class="mt-8 bg-gray-900/70 backdrop-blur-2xl border border-gray-700/50 rounded-2xl p-6 shadow-2xl w-full">
+        <div id="apiKeySection" class="mt-8 bg-gray-900/70 backdrop-blur-2xl border border-gray-700/50 rounded-2xl p-6 shadow-2xl w-full relative">
+            <div id="apiKeyLockBanner" class="hidden bg-yellow-950/40 border border-yellow-700/60 rounded-xl p-4 mb-6 flex flex-col sm:flex-row items-center justify-between gap-4">
+                <div class="flex items-center gap-2">
+                    <span class="text-xl">🔒</span>
+                    <p class="text-yellow-400 font-bold text-sm">Trial Expired. Upgrade to Enterprise to unlock.</p>
+                </div>
+                <button onclick="document.getElementById('upgradeModal').classList.remove('hidden')" class="bg-gradient-to-r from-yellow-500 to-orange-500 hover:from-yellow-400 hover:to-orange-400 text-black text-xs font-bold py-2 px-4 rounded-lg shadow transition-all whitespace-nowrap">
+                    Upgrade to Enterprise
+                </button>
+            </div>
+            
             <h2 class="text-lg font-bold text-gray-200 mb-4 flex items-center gap-2">
                 <svg class="w-5 h-5 text-indigo-400" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M10 20l4-16m4 4l4 4-4 4M6 16l-4-4 4-4"></path></svg>
                 Developer / API Access <span class="ent-lock-badge text-xs bg-yellow-900/50 text-yellow-400 border border-yellow-700/50 px-2 py-0.5 rounded-full flex items-center gap-1"><span class="text-[10px]">🔒</span> Enterprise Only</span>
@@ -884,37 +894,34 @@
                 upgradePromptBtn.textContent = "ENTERPRISE ACTIVE";
                 upgradePromptBtn.disabled = true;
 
+                document.getElementById('apiKeyLockBanner')?.classList.add('hidden');
+                document.getElementById('generateApiKeyBtn')?.classList.remove('opacity-50', 'pointer-events-none');
                 document.querySelectorAll('.ent-lock-badge').forEach(el => el.classList.add('hidden'));
-            } else if (data.plan_tier === 'developer') {
-                planText.textContent = "DEVELOPER PRO";
-                planText.className = "text-xs text-blue-400 font-mono tracking-wide font-bold";
-                planBadge.className = "flex items-center gap-2 bg-blue-900/20 border border-blue-800/50 px-3 py-1.5 rounded-full";
-
-                
-                upgradePromptBtn.classList.remove('hidden', 'bg-gradient-to-r', 'from-yellow-500', 'to-orange-500', 'hover:from-yellow-400', 'hover:to-orange-400', 'text-black');
-                upgradePromptBtn.classList.add('bg-green-900/40', 'border', 'border-green-500', 'text-green-400', 'cursor-default');
-                upgradePromptBtn.textContent = "PRO Active";
-                upgradePromptBtn.disabled = true;
-
-                document.querySelectorAll('.ent-lock-badge').forEach(el => el.classList.remove('hidden'));
             } else {
-                planText.textContent = `FREE PLAN: ${scanCount}/3 SCANS`;
-                planText.className = "text-xs text-gray-400 font-mono tracking-wide";
-                planBadge.className = "flex items-center gap-2 bg-gray-900/20 border border-gray-800/50 px-3 py-1.5 rounded-full";
+                planText.textContent = "FREE TIER";
+                planText.className = "text-xs text-gray-400 font-mono tracking-wide font-bold";
+                planBadge.className = "flex items-center gap-2 bg-gray-800/50 border border-gray-700/50 px-3 py-1.5 rounded-full";
                 
                 upgradePromptBtn.classList.remove('hidden', 'bg-green-900/40', 'border-green-500', 'text-green-400');
                 upgradePromptBtn.classList.add('bg-gradient-to-r', 'from-yellow-500', 'to-orange-500', 'hover:from-yellow-400', 'hover:to-orange-400', 'text-black');
                 upgradePromptBtn.disabled = false;
                 upgradePromptBtn.textContent = "Upgrade Plan";
 
+                document.getElementById('apiKeyLockBanner')?.classList.remove('hidden');
+                document.getElementById('generateApiKeyBtn')?.classList.add('opacity-50');
                 document.querySelectorAll('.ent-lock-badge').forEach(el => el.classList.remove('hidden'));
             }
             
-            if (data.days_left) {
+            if (data.days_left && data.plan_tier === 'enterprise') {
                 const trialBadge = document.getElementById('trialBadge');
                 if (trialBadge) {
                     trialBadge.classList.remove('hidden');
                     trialBadge.textContent = data.days_left;
+                }
+            } else {
+                const trialBadge = document.getElementById('trialBadge');
+                if (trialBadge) {
+                    trialBadge.classList.add('hidden');
                 }
             }
         } catch (e) {
@@ -1148,6 +1155,13 @@
     });
 
     async function loadApiKeys() {
+        if (!isEnterprise && !isPremium) {
+            const listEl = document.getElementById('apiKeysList');
+            if (listEl) {
+                listEl.innerHTML = '<div class="p-4 bg-[#0a0d14] rounded-xl border border-gray-700/50 text-center"><p class="text-gray-400 text-sm">🔒 Trial Expired. Upgrade to Enterprise to unlock.</p></div>';
+            }
+            return;
+        }
         try {
             const res = await fetch('/api/keys', {
                 headers: { 'Authorization': `Bearer ${token}` }
@@ -1180,6 +1194,11 @@
     }
 
     document.getElementById('generateApiKeyBtn')?.addEventListener('click', async (e) => {
+        if (!isEnterprise && !isPremium) {
+            document.getElementById('upgradeModal')?.classList.remove('hidden');
+            showToast("Trial Expired. Upgrade to Enterprise to unlock.", "error");
+            return;
+        }
         const btn = e.currentTarget;
         const originalText = btn.innerHTML;
         btn.innerHTML = '<svg class="animate-spin w-4 h-4" viewBox="0 0 24 24" fill="none"><circle class="opacity-25" cx="12" cy="12" r="10" stroke="currentColor" stroke-width="4"></circle><path class="opacity-75" fill="currentColor" d="M4 12a8 8 0 018-8V0C5.373 0 0 5.373 0 12h4zm2 5.291A7.962 7.962 0 014 12H0c0 3.042 1.135 5.824 3 7.938l3-2.647z"></path></svg> Generating...';

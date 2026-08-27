@@ -375,36 +375,36 @@ async def get_me(authorization: str = Header(None)):
         
         if is_founder:
             days_left = "Lifetime"
-        elif trial_expires_at:
-            def _calc_days():
-                import datetime
+            plan_tier = "enterprise"
+            user.plan_tier = "enterprise"
+            user.is_premium = True
+            db.commit()
+        else:
+            days_active = 0
+            if hasattr(user, 'created_at') and user.created_at:
+                created = user.created_at
+                if isinstance(created, str):
+                    try:
+                        clean_str = created.split(".")[0]
+                        created = datetime.strptime(clean_str, "%Y-%m-%d %H:%M:%S")
+                    except ValueError:
+                        created = datetime.utcnow()
+                if isinstance(created, datetime):
+                    days_active = (datetime.utcnow() - created).days
 
-                days_left = 14 # Default fallback
-                if hasattr(user, 'created_at') and user.created_at:
-                    created = user.created_at
-
-                    # Handle SQLite returning a string for legacy records
-                    if isinstance(created, str):
-                        try:
-                            clean_str = created.split(".")[0]
-                            created = datetime.datetime.strptime(clean_str, "%Y-%m-%d %H:%M:%S")
-                        except ValueError:
-                            created = datetime.datetime.utcnow()
-
-                    if isinstance(created, datetime.datetime):
-                        days_active = (datetime.datetime.utcnow() - created).days
-                        days_left = max(0, 14 - days_active)
-                return days_left
-            
-            days_left_num = _calc_days()
-
-            if days_left_num > 0:
-                days_left = str(days_left_num) + " Days Left"
+            if days_active <= 14:
+                days_left_num = max(0, 14 - days_active)
+                days_left = f"{days_left_num} Days Left"
+                plan_tier = "enterprise"
+                user.plan_tier = "enterprise"
+                user.is_premium = True
+                db.commit()
             else:
-                user.plan_tier = "free"  # trial expired
+                days_left = "0 Days Left"
+                plan_tier = "free"
+                user.plan_tier = "free"
                 user.is_premium = False
                 user.trial_expires_at = None
-                plan_tier = "free"
                 db.commit()
             
         org_name = user.organization.name if getattr(user, 'organization', None) else None
@@ -435,7 +435,10 @@ async def generate_api_key(authorization: str = Header(None)):
         if not user:
             raise HTTPException(status_code=404, detail="User not found")
         
-        # Enterprise validation could go here, but allowing all for developer/enterprise parity
+        # Lock API key generation on Free Tier
+        if user.plan_tier != "enterprise" and not user.is_premium:
+            raise HTTPException(status_code=403, detail="Trial Expired. Upgrade to Enterprise to unlock.")
+        
         new_key_str = f"sk_live_{secrets.token_urlsafe(32)}"
         
         new_api_key = APIKey(
