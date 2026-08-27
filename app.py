@@ -160,6 +160,17 @@ class CodeVault(Base):
     
     organization = relationship("Organization", backref="vaults")
 
+class APIKey(Base):
+    __tablename__ = "api_keys"
+
+    id = Column(Integer, primary_key=True, index=True)
+    user_id = Column(Integer, ForeignKey("users.id"), nullable=False)
+    key_string = Column(String, unique=True, index=True, nullable=False)
+    created_at = Column(DateTime, default=datetime.utcnow)
+    last_used = Column(DateTime, nullable=True)
+
+    user = relationship("User", backref="api_keys")
+
 Base.metadata.create_all(bind=engine)
 
 app = FastAPI(title="TimeCodeSecurity Enterprise API")
@@ -393,6 +404,58 @@ async def get_me(authorization: str = Header(None)):
             "org_name": org_name,
             "org_role": getattr(user, 'org_role', 'member'),
             "invite_code": invite_code
+        }
+    finally:
+        db.close()
+
+@app.post("/api/generate-key")
+async def generate_api_key(authorization: str = Header(None)):
+    email = await get_current_user_email(authorization)
+    db = SessionLocal()
+    try:
+        user = db.query(User).filter(User.email == email).first()
+        if not user:
+            raise HTTPException(status_code=404, detail="User not found")
+        
+        # Enterprise validation could go here, but allowing all for developer/enterprise parity
+        new_key_str = f"sk_live_{secrets.token_urlsafe(32)}"
+        
+        new_api_key = APIKey(
+            user_id=user.id,
+            key_string=new_key_str
+        )
+        db.add(new_api_key)
+        db.commit()
+        db.refresh(new_api_key)
+        
+        return {
+            "success": True,
+            "message": "New API Key generated successfully",
+            "key_string": new_key_str,
+            "created_at": new_api_key.created_at.isoformat()
+        }
+    finally:
+        db.close()
+
+@app.get("/api/keys")
+async def list_api_keys(authorization: str = Header(None)):
+    email = await get_current_user_email(authorization)
+    db = SessionLocal()
+    try:
+        user = db.query(User).filter(User.email == email).first()
+        if not user:
+            raise HTTPException(status_code=404, detail="User not found")
+        
+        keys = db.query(APIKey).filter(APIKey.user_id == user.id).order_by(APIKey.created_at.desc()).all()
+        return {
+            "keys": [
+                {
+                    "id": k.id,
+                    "key_string": k.key_string[:12] + "..." + k.key_string[-4:],
+                    "created_at": k.created_at.isoformat(),
+                    "last_used": k.last_used.isoformat() if k.last_used else None
+                } for k in keys
+            ]
         }
     finally:
         db.close()

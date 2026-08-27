@@ -271,18 +271,26 @@
                     Save Integration
                 </button>
             </div>
+        </div>
             
-            <hr class="my-6 border-gray-700/50">
-            <h3 class="text-sm font-bold text-gray-200 mb-4">CI/CD Pipeline Authentication</h3>
-            <div class="flex flex-col sm:flex-row gap-4 items-end">
-                <div class="flex-1 w-full">
-                    <label class="block text-gray-400 text-xs mb-2 uppercase tracking-wide">Your API Key (X-API-Key)</label>
-                    <input type="text" id="displayApiKey" readonly class="w-full bg-[#0d1117] text-gray-400 p-3 rounded-lg border border-gray-700 font-mono text-sm" value="Loading...">
-                    <p class="text-gray-500 text-xs mt-2">Use this key in your GitHub Actions via the X-API-Key header to automate security scans.</p>
-                </div>
-                <button id="copyApiKeyBtn" class="bg-gray-800 hover:bg-gray-700 text-gray-300 font-bold py-3 px-6 rounded-lg border border-gray-600 transition-all text-sm whitespace-nowrap">
-                    Copy API Key
+        <!-- Developer / API Access Section -->
+        <div class="mt-8 bg-gray-900/70 backdrop-blur-2xl border border-gray-700/50 rounded-2xl p-6 shadow-2xl w-full">
+            <h2 class="text-lg font-bold text-gray-200 mb-4 flex items-center gap-2">
+                <svg class="w-5 h-5 text-indigo-400" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M10 20l4-16m4 4l4 4-4 4M6 16l-4-4 4-4"></path></svg>
+                Developer / API Access <span class="ent-lock-badge text-xs bg-yellow-900/50 text-yellow-400 border border-yellow-700/50 px-2 py-0.5 rounded-full flex items-center gap-1"><span class="text-[10px]">🔒</span> Enterprise Only</span>
+            </h2>
+            <p class="text-gray-400 text-sm mb-4">Generate and manage API keys for CI/CD pipeline automation and external integrations. Keys are highly secure and linked to your organization.</p>
+            
+            <div class="flex justify-between items-center mb-4">
+                <h3 class="text-sm font-bold text-gray-300">Active API Keys</h3>
+                <button id="generateApiKeyBtn" class="bg-gradient-to-r from-indigo-600 to-purple-600 hover:from-indigo-500 hover:to-purple-500 text-white font-bold py-2 px-4 rounded-lg shadow-lg transition-all text-sm flex items-center gap-2">
+                    <svg class="w-4 h-4" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M12 4v16m8-8H4"></path></svg>
+                    Generate New API Key
                 </button>
+            </div>
+            
+            <div id="apiKeysList" class="space-y-3 max-h-64 overflow-y-auto pr-2">
+                <p class="text-gray-500 text-sm py-2">Loading keys...</p>
             </div>
         </div>
         
@@ -636,9 +644,7 @@
             if (data.webhook_url) {
                 document.getElementById('webhookUrlInput').value = data.webhook_url;
             }
-            if (data.api_key) {
-                document.getElementById('displayApiKey').value = data.api_key;
-            }
+
             
             if (data.org_name) {
                 document.getElementById('workspaceNoOrg').classList.add('hidden');
@@ -706,6 +712,7 @@
         }
     }
     fetchPlan();
+    loadApiKeys();
 
     async function fetchAnalytics() {
         try {
@@ -851,13 +858,6 @@
         renderVault(filtered);
     });
     
-    document.getElementById('copyApiKeyBtn')?.addEventListener('click', () => {
-        const apiKey = document.getElementById('displayApiKey').value;
-        if (apiKey && apiKey !== 'Loading...') {
-            navigator.clipboard.writeText(apiKey);
-            alert("API Key copied to clipboard!");
-        }
-    });
 
     document.getElementById('createOrgBtn')?.addEventListener('click', async () => {
         const name = document.getElementById('createOrgInput').value.trim();
@@ -937,46 +937,90 @@
         }
     });
 
-    document.getElementById('devApiBtn')?.addEventListener('click', async (e) => {
+    async function loadApiKeys() {
+        try {
+            const res = await fetch('/api/keys', {
+                headers: { 'Authorization': `Bearer ${token}` }
+            });
+            if (res.ok) {
+                const data = await res.json();
+                const listEl = document.getElementById('apiKeysList');
+                if (!listEl) return;
+                
+                if (data.keys.length === 0) {
+                    listEl.innerHTML = '<p class="text-gray-500 text-sm py-2">No API keys generated yet.</p>';
+                    return;
+                }
+                listEl.innerHTML = '';
+                data.keys.forEach(k => {
+                    const row = document.createElement('div');
+                    row.className = "flex justify-between items-center bg-[#0a0d14] p-4 rounded-xl border border-gray-700/80 shadow-inner";
+                    row.innerHTML = `
+                        <div>
+                            <p class="font-mono text-sm text-gray-300">${k.key_string}</p>
+                            <p class="text-xs text-gray-500 mt-1">Created: ${new Date(k.created_at).toLocaleDateString()}</p>
+                        </div>
+                    `;
+                    listEl.appendChild(row);
+                });
+            }
+        } catch (e) {
+            console.error("Failed to load API keys", e);
+        }
+    }
+
+    document.getElementById('generateApiKeyBtn')?.addEventListener('click', async (e) => {
         const btn = e.currentTarget;
         const originalText = btn.innerHTML;
-        
-        async function copyAndShowToast(key) {
-            try {
-                await navigator.clipboard.writeText(key);
-                btn.innerHTML = "✅ Copied to Clipboard!";
-                btn.classList.add("text-green-400", "border-green-500");
-                setTimeout(() => {
-                    btn.innerHTML = originalText;
-                    btn.classList.remove("text-green-400", "border-green-500");
-                }, 2000);
-            } catch (err) {
-                console.error("Failed to copy", err);
-            }
-        }
-
-        if (userApiKey) {
-            await copyAndShowToast(userApiKey);
-            return;
-        }
-        
-        btn.innerHTML = '<svg class="animate-spin w-3.5 h-3.5 mr-1" viewBox="0 0 24 24" fill="none"><circle class="opacity-25" cx="12" cy="12" r="10" stroke="currentColor" stroke-width="4"></circle><path class="opacity-75" fill="currentColor" d="M4 12a8 8 0 018-8V0C5.373 0 0 5.373 0 12h4zm2 5.291A7.962 7.962 0 014 12H0c0 3.042 1.135 5.824 3 7.938l3-2.647z"></path></svg> Generating...';
+        btn.innerHTML = '<svg class="animate-spin w-4 h-4" viewBox="0 0 24 24" fill="none"><circle class="opacity-25" cx="12" cy="12" r="10" stroke="currentColor" stroke-width="4"></circle><path class="opacity-75" fill="currentColor" d="M4 12a8 8 0 018-8V0C5.373 0 0 5.373 0 12h4zm2 5.291A7.962 7.962 0 014 12H0c0 3.042 1.135 5.824 3 7.938l3-2.647z"></path></svg> Generating...';
+        btn.disabled = true;
         try {
-            const res = await fetch('/api/developer-key', {
+            const res = await fetch('/api/generate-key', {
                 method: 'POST',
                 headers: { 'Authorization': `Bearer ${token}` }
             });
-            if (!res.ok) throw new Error("Failed to generate key");
-            const data = await res.json();
-            userApiKey = data.api_key;
-            await copyAndShowToast(userApiKey);
+            if (res.ok) {
+                const data = await res.json();
+                const listEl = document.getElementById('apiKeysList');
+                if (listEl.querySelector('p')?.textContent.includes('No API keys')) {
+                    listEl.innerHTML = '';
+                }
+                
+                const row = document.createElement('div');
+                row.className = "flex justify-between items-center bg-indigo-900/20 p-4 rounded-xl border border-indigo-500/50 mb-3";
+                row.innerHTML = `
+                    <div class="flex-1">
+                        <div class="relative group cursor-pointer inline-block w-full max-w-lg" id="newKeyWrapper_${data.key_string}">
+                            <p class="font-mono text-sm text-green-400 blur-sm select-none transition duration-300 group-hover:blur-0" id="newKeyDisplay_${data.key_string}">${data.key_string}</p>
+                            <div class="absolute inset-0 flex items-center justify-center opacity-100 group-hover:opacity-0 transition duration-300 pointer-events-none">
+                                <span class="bg-gray-900/80 text-xs text-white px-2 py-1 rounded">Hover to reveal</span>
+                            </div>
+                        </div>
+                        <p class="text-xs text-indigo-300 mt-2">Copy this key now. It won't be displayed in full again.</p>
+                    </div>
+                    <button class="bg-indigo-600 hover:bg-indigo-500 text-white font-bold px-4 py-2 rounded-lg text-sm transition-all shadow-lg copy-new-key-btn" data-key="${data.key_string}">Copy</button>
+                `;
+                listEl.prepend(row);
+                
+                row.querySelector('.copy-new-key-btn').addEventListener('click', async (ev) => {
+                    await navigator.clipboard.writeText(ev.target.dataset.key);
+                    const el = document.getElementById('newKeyDisplay_' + data.key_string);
+                    if (el) { el.classList.remove('blur-sm'); }
+                    ev.target.textContent = 'Copied!';
+                    ev.target.classList.replace('bg-indigo-600', 'bg-green-600');
+                    ev.target.classList.replace('hover:bg-indigo-500', 'hover:bg-green-500');
+                    showToast("API Key copied to clipboard", "success");
+                    setTimeout(() => loadApiKeys(), 5000);
+                });
+                showToast("New API Key generated successfully", "success");
+            } else {
+                showToast("Failed to generate API Key", "error");
+            }
         } catch(err) {
-            btn.innerHTML = "❌ Error";
-            btn.classList.add("text-red-400");
-            setTimeout(() => {
-                btn.innerHTML = originalText;
-                btn.classList.remove("text-red-400");
-            }, 2000);
+            showToast("Network error while generating key", "error");
+        } finally {
+            btn.innerHTML = originalText;
+            btn.disabled = false;
         }
     });
 
