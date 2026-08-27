@@ -1450,7 +1450,7 @@ jobs:
 
       - name: Run TimeCodeSecurity AI Shield
         env:
-          TIMECODE_API_KEY: \${{ secrets.TIMECODE_API_KEY }}
+          TIMECODE_API_KEY: {% raw %}${{ secrets.TIMECODE_API_KEY }}{% endraw %}
         run: |
           echo "🛡️ Initiating TimeCodeSecurity Zero-Day Analysis..."
           
