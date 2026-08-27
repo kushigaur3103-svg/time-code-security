@@ -188,14 +188,13 @@
                     <div id="qaSwitchContainer" class="hidden flex items-center gap-2 bg-purple-900/20 border border-purple-800/50 px-2 py-1 rounded shadow">
                         <span class="text-[10px] text-purple-400 font-bold tracking-wider uppercase">QA:</span>
                         <button onclick="qaSwitch(event, 'free')" class="text-[10px] bg-gray-800 hover:bg-gray-700 text-gray-300 px-2 py-0.5 rounded transition">Free</button>
-
                         <button onclick="qaSwitch(event, 'enterprise')" class="text-[10px] bg-yellow-900 hover:bg-yellow-800 text-yellow-200 px-2 py-0.5 rounded transition">Ent</button>
                     </div>
 
-                    <button onclick="document.getElementById('upgradeModal').classList.remove('hidden')" id="manageBillingBtn" class="bg-gray-800 hover:bg-gray-700 text-gray-300 hover:text-white text-xs font-bold py-1.5 px-3 rounded-full border border-gray-700 transition-colors shadow-lg">
+                    <button onclick="document.getElementById('upgradeModal').classList.remove('hidden')" id="upgradePromptBtn" class="bg-gradient-to-r from-yellow-500 to-orange-500 hover:from-yellow-400 hover:to-orange-400 text-black text-xs font-bold py-1.5 px-3 rounded-full shadow-lg transition-all">
                         UPGRADE
                     </button>
-                    <a href="/logout" id="logoutBtn" class="bg-red-900/30 hover:bg-red-800/50 text-red-400 hover:text-red-300 text-xs font-bold py-1.5 px-3 rounded-full border border-red-800/50 hover:border-red-600 transition-all shadow-lg flex items-center gap-1.5">
+                    <a href="/logout" id="logoutBtn" class="bg-red-900/30 hover:bg-red-800/50 text-red-400 hover:text-red-300 text-xs font-bold py-1.5 px-3 rounded-full border border-red-800/50 hover:border-red-600 transition-all shadow-lg flex items-center gap-1.5 cursor-pointer">
                         <svg class="w-3.5 h-3.5" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M17 16l4-4m0 0l-4-4m4 4H7m6 4v1a3 3 0 01-3 3H6a3 3 0 01-3-3V7a3 3 0 013-3h4a3 3 0 013 3v1"></path></svg>
                         LOGOUT
                     </a>
@@ -231,7 +230,7 @@
                     </h3>
                     <button id="downloadPdfBtn" class="bg-gradient-to-r from-blue-600 to-purple-600 hover:from-blue-500 hover:to-purple-500 text-white text-sm font-bold py-2 px-4 rounded shadow-lg transition-all flex items-center gap-2">
                         <svg xmlns="http://www.w3.org/2000/svg" class="h-4 w-4" fill="none" viewBox="0 0 24 24" stroke="currentColor"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M4 16v1a3 3 0 003 3h10a3 3 0 003-3v-1m-4-4l-4 4m0 0l-4-4m4 4V4" /></svg>
-                        Download PDF Report <span class="ent-lock-badge text-[10px] bg-yellow-500/20 text-yellow-300 px-2 py-0.5 rounded-full ml-2 border border-yellow-500/30">🔒 Enterprise</span>
+                        Download PDF Report <span class="ent-lock-badge hidden text-[10px] bg-yellow-500/20 text-yellow-300 px-2 py-0.5 rounded-full ml-2 border border-yellow-500/30">🔒 Enterprise</span>
                     </button>
                 </div>
                 <div>
@@ -314,7 +313,7 @@
         <div class="mt-8 bg-gray-900/70 backdrop-blur-2xl border border-gray-700/50 rounded-2xl p-6 shadow-2xl w-full">
             <h2 class="text-lg font-bold text-gray-200 mb-4 flex items-center gap-2">
                 <svg class="w-5 h-5 text-purple-400" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M13 10V3L4 14h7v7l9-11h-7z"></path></svg>
-                Enterprise Integrations <span class="ent-lock-badge text-xs bg-yellow-900/50 text-yellow-400 border border-yellow-700/50 px-2 py-0.5 rounded-full flex items-center gap-1"><span class="text-[10px]">🔒</span> Enterprise Only</span>
+                Enterprise Integrations <span class="ent-lock-badge hidden text-xs bg-yellow-900/50 text-yellow-400 border border-yellow-700/50 px-2 py-0.5 rounded-full flex items-center gap-1"><span class="text-[10px]">🔒</span> Enterprise Only</span>
             </h2>
             <div class="flex flex-col sm:flex-row gap-4 items-end">
                 <div class="flex-1 w-full">
@@ -341,7 +340,7 @@
             
             <h2 class="text-lg font-bold text-gray-200 mb-4 flex items-center gap-2">
                 <svg class="w-5 h-5 text-indigo-400" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M10 20l4-16m4 4l4 4-4 4M6 16l-4-4 4-4"></path></svg>
-                Developer / API Access <span class="ent-lock-badge text-xs bg-yellow-900/50 text-yellow-400 border border-yellow-700/50 px-2 py-0.5 rounded-full flex items-center gap-1"><span class="text-[10px]">🔒</span> Enterprise Only</span>
+                Developer / API Access <span class="ent-lock-badge hidden text-xs bg-yellow-900/50 text-yellow-400 border border-yellow-700/50 px-2 py-0.5 rounded-full flex items-center gap-1"><span class="text-[10px]">🔒</span> Enterprise Only</span>
             </h2>
             <p class="text-gray-400 text-sm mb-4">Generate and manage API keys for CI/CD pipeline automation and external integrations. Keys are highly secure and linked to your organization.</p>
             
@@ -522,7 +521,7 @@
         <div class="mt-8 bg-gray-900/70 backdrop-blur-2xl border border-gray-700/50 rounded-2xl p-6 shadow-2xl w-full">
             <h2 class="text-lg font-bold text-gray-200 mb-4 flex items-center gap-2">
                 <svg class="w-5 h-5 text-indigo-400" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M19 11H5m14 0a2 2 0 012 2v6a2 2 0 01-2 2H5a2 2 0 01-2-2v-6a2 2 0 012-2m14 0V9a2 2 0 00-2-2M5 11V9a2 2 0 012-2m0 0V5a2 2 0 012-2h6a2 2 0 012 2v2M7 7h10"></path></svg>
-                Company Code Vault <span class="ent-lock-badge text-xs bg-yellow-900/50 text-yellow-400 border border-yellow-700/50 px-2 py-0.5 rounded-full flex items-center gap-1"><span class="text-[10px]">🔒</span> Enterprise Only</span>
+                Company Code Vault <span class="ent-lock-badge hidden text-xs bg-yellow-900/50 text-yellow-400 border border-yellow-700/50 px-2 py-0.5 rounded-full flex items-center gap-1"><span class="text-[10px]">🔒</span> Enterprise Only</span>
             </h2>
             <div class="mb-4">
                 <input type="text" id="vaultSearchInput" class="w-full bg-[#0d1117] text-gray-300 p-3 rounded-lg border border-gray-700 focus:outline-none focus:border-indigo-500 transition-colors font-mono text-sm" placeholder="Search knowledge base...">
@@ -1049,25 +1048,28 @@
                 planText.className = "text-xs text-yellow-400 font-mono tracking-wide font-bold";
                 planBadge.className = "flex items-center gap-2 bg-yellow-900/20 border border-yellow-800/50 px-3 py-1.5 rounded-full shadow-[0_0_15px_rgba(234,179,8,0.1)]";
 
-                upgradePromptBtn.classList.remove('hidden', 'bg-gradient-to-r', 'from-yellow-500', 'to-orange-500', 'hover:from-yellow-400', 'hover:to-orange-400', 'text-black');
-                upgradePromptBtn.classList.add('bg-green-900/40', 'border', 'border-green-500', 'text-green-400', 'cursor-default');
-                upgradePromptBtn.textContent = "ENTERPRISE ACTIVE";
-                upgradePromptBtn.disabled = true;
+                if (upgradePromptBtn) {
+                    upgradePromptBtn.className = "bg-green-900/40 border border-green-500/60 text-green-400 text-xs font-bold py-1.5 px-3 rounded-full flex items-center gap-1.5 cursor-default";
+                    upgradePromptBtn.innerHTML = '<span class="w-1.5 h-1.5 rounded-full bg-green-400 animate-pulse"></span> ENTERPRISE ACTIVE';
+                    upgradePromptBtn.disabled = true;
+                }
 
                 document.getElementById('apiKeyLockBanner')?.classList.add('hidden');
                 document.getElementById('generateApiKeyBtn')?.classList.remove('opacity-50', 'pointer-events-none');
                 document.querySelectorAll('.ent-lock-badge').forEach(el => el.classList.add('hidden'));
 
                 loadApiKeys();
+                fetchVault();
             } else {
                 planText.textContent = "FREE TIER";
                 planText.className = "text-xs text-gray-400 font-mono tracking-wide font-bold";
                 planBadge.className = "flex items-center gap-2 bg-gray-800/50 border border-gray-700/50 px-3 py-1.5 rounded-full";
                 
-                upgradePromptBtn.classList.remove('hidden', 'bg-green-900/40', 'border-green-500', 'text-green-400');
-                upgradePromptBtn.classList.add('bg-gradient-to-r', 'from-yellow-500', 'to-orange-500', 'hover:from-yellow-400', 'hover:to-orange-400', 'text-black');
-                upgradePromptBtn.disabled = false;
-                upgradePromptBtn.textContent = "Upgrade Plan";
+                if (upgradePromptBtn) {
+                    upgradePromptBtn.className = "bg-gradient-to-r from-yellow-500 to-orange-500 hover:from-yellow-400 hover:to-orange-400 text-black text-xs font-bold py-1.5 px-3 rounded-full shadow-lg transition-all";
+                    upgradePromptBtn.disabled = false;
+                    upgradePromptBtn.textContent = "UPGRADE";
+                }
 
                 document.getElementById('apiKeyLockBanner')?.classList.remove('hidden');
                 document.getElementById('generateApiKeyBtn')?.classList.add('opacity-50');
@@ -2005,7 +2007,11 @@ jobs:
     });
 
     document.getElementById('logoutBtn')?.addEventListener('click', (e) => {
-        localStorage.removeItem('token');
+        e.preventDefault();
+        try {
+            localStorage.clear();
+            sessionStorage.clear();
+        } catch (err) {}
         window.location.href = '/logout';
     });
 

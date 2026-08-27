@@ -278,10 +278,13 @@ async def logout(request: Request):
             request.scope["session"].clear()
         except Exception:
             pass
-    response = RedirectResponse(url="/", status_code=303)
+    response = RedirectResponse(url="/login", status_code=303)
     response.delete_cookie("session")
     response.delete_cookie("access_token")
     response.delete_cookie("token")
+    response.headers["Cache-Control"] = "no-cache, no-store, must-revalidate"
+    response.headers["Pragma"] = "no-cache"
+    response.headers["Expires"] = "0"
     return response
 
 DISALLOWED_EMAIL_DOMAINS = {
