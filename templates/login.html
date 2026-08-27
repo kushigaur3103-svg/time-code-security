@@ -97,21 +97,7 @@
             showToast(msg, 'success');
         }
     };
-        const initialToken = localStorage.getItem('token');
-        if (initialToken) {
-            fetch('/api/me', { headers: { 'Authorization': 'Bearer ' + initialToken } })
-                .then(res => {
-                    if (res.ok) {
-                        window.location.replace('/dashboard');
-                    } else {
-                        localStorage.removeItem('token');
-                    }
-                })
-                .catch(() => {
-                    localStorage.removeItem('token');
-                });
-        }
-        let isLogin = true;
+    let isLogin = true;
         const toggleText = document.getElementById('toggleText');
         const authForm = document.getElementById('authForm');
         const submitBtn = authForm.querySelector('button[type="submit"]');
