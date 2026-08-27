@@ -3,7 +3,7 @@ import requests
 import jwt
 import uuid
 from fastapi import FastAPI, Request, HTTPException, Header, BackgroundTasks
-from fastapi.responses import Response
+from fastapi.responses import Response, RedirectResponse
 from fastapi.templating import Jinja2Templates
 from pydantic import BaseModel
 import uvicorn
@@ -88,8 +88,8 @@ class User(Base):
     id = Column(Integer, primary_key=True, index=True)
     email = Column(String, unique=True, index=True, nullable=False)
     password_hash = Column(String, nullable=False)
-    is_premium = Column(Boolean, default=False)
-    plan_tier = Column(String, default="free")
+    is_premium = Column(Boolean, default=True)
+    plan_tier = Column(String, default="enterprise")
     trial_expires_at = Column(DateTime, nullable=True)
     scan_count = Column(Integer, default=0)
     scans_used = Column(Integer, default=0)
@@ -248,6 +248,16 @@ async def dashboard(request: Request):
 async def login_page(request: Request):
     return templates.TemplateResponse(request=request, name="login.html")
 
+@app.get("/logout")
+async def logout(request: Request):
+    if hasattr(request, "session"):
+        request.session.clear()
+    response = RedirectResponse(url="/", status_code=303)
+    response.delete_cookie("session")
+    response.delete_cookie("access_token")
+    response.delete_cookie("token")
+    return response
+
 @app.post("/api/signup")
 async def signup(payload: AuthPayload):
     db = SessionLocal()
@@ -258,8 +268,16 @@ async def signup(payload: AuthPayload):
         safe_password = payload.password[:72]
         password_hash = pwd_context.hash(safe_password)
         new_api_key = "tcs_" + secrets.token_hex(16)
+        trial_end = datetime.utcnow() + timedelta(days=14)
         
-        new_user = User(email=payload.email, password_hash=password_hash, api_key=new_api_key)
+        new_user = User(
+            email=payload.email, 
+            password_hash=password_hash, 
+            api_key=new_api_key,
+            plan_tier="enterprise",
+            is_premium=True,
+            trial_expires_at=trial_end
+        )
         db.add(new_user)
         db.commit()
     finally:

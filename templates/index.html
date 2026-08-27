@@ -116,8 +116,8 @@
                     Target Source Code
                 </h2>
                 <div class="flex items-center flex-wrap justify-end gap-3">
-                    <div id="planBadge" class="hidden items-center gap-2 bg-blue-900/20 border border-blue-800/50 px-3 py-1.5 rounded-full">
-                        <span class="text-xs text-blue-400 font-mono tracking-wide" id="planText">Fetching Plan...</span>
+                    <div id="planBadge" class="flex items-center gap-2 bg-yellow-900/20 border border-yellow-800/50 px-3 py-1.5 rounded-full shadow-[0_0_15px_rgba(234,179,8,0.1)]">
+                        <span class="text-xs text-yellow-400 font-mono tracking-wide font-bold" id="planText">ENTERPRISE TRIAL ({{ days_left }} DAYS LEFT)</span>
                     </div>
 
                     <button id="upgradePromptBtn" class="hidden bg-gradient-to-r from-yellow-500 to-orange-500 hover:from-yellow-400 hover:to-orange-400 text-black text-xs font-bold py-1.5 px-3 rounded-full shadow-lg transition-all">
@@ -130,7 +130,7 @@
                         </span>
                         <span class="text-xs text-emerald-400 font-mono tracking-wide">System Online</span>
                     </div>
-                    <span id="trialBadge" class="hidden bg-red-500/90 text-white font-bold px-2 py-1 rounded text-[10px] uppercase tracking-wider shadow-lg">{{ days_left }}</span>
+                    <span id="trialBadge" class="bg-yellow-500/90 text-black font-bold px-2 py-1 rounded text-[10px] uppercase tracking-wider shadow-lg">{{ days_left }} Days Left</span>
                     
                     <div id="qaSwitchContainer" class="hidden flex items-center gap-2 bg-purple-900/20 border border-purple-800/50 px-2 py-1 rounded shadow">
                         <span class="text-[10px] text-purple-400 font-bold tracking-wider uppercase">QA:</span>
@@ -142,9 +142,10 @@
                     <button onclick="document.getElementById('upgradeModal').classList.remove('hidden')" id="manageBillingBtn" class="bg-gray-800 hover:bg-gray-700 text-gray-300 hover:text-white text-xs font-bold py-1.5 px-3 rounded-full border border-gray-700 transition-colors shadow-lg">
                         UPGRADE
                     </button>
-                    <button id="logoutBtn" class="bg-gray-800 hover:bg-red-900/50 text-gray-300 hover:text-red-400 text-xs font-bold py-1.5 px-3 rounded-full border border-gray-700 hover:border-red-800 transition-colors shadow-lg">
+                    <a href="/logout" id="logoutBtn" class="bg-red-900/30 hover:bg-red-800/50 text-red-400 hover:text-red-300 text-xs font-bold py-1.5 px-3 rounded-full border border-red-800/50 hover:border-red-600 transition-all shadow-lg flex items-center gap-1.5">
+                        <svg class="w-3.5 h-3.5" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M17 16l4-4m0 0l-4-4m4 4H7m6 4v1a3 3 0 01-3 3H6a3 3 0 01-3-3V7a3 3 0 013-3h4a3 3 0 013 3v1"></path></svg>
                         LOGOUT
-                    </button>
+                    </a>
                 </div>
             </div>
             
@@ -873,14 +874,14 @@
             planBadge.classList.add('flex');
             
             if (data.plan_tier === 'enterprise') {
-                planText.textContent = "ENTERPRISE SOC-2";
+                const daysText = data.days_left ? ` (${data.days_left.toUpperCase()})` : '';
+                planText.textContent = `ENTERPRISE TRIAL${daysText}`;
                 planText.className = "text-xs text-yellow-400 font-mono tracking-wide font-bold";
-                planBadge.className = "flex items-center gap-2 bg-yellow-900/20 border border-yellow-800/50 px-3 py-1.5 rounded-full";
+                planBadge.className = "flex items-center gap-2 bg-yellow-900/20 border border-yellow-800/50 px-3 py-1.5 rounded-full shadow-[0_0_15px_rgba(234,179,8,0.1)]";
 
-                
                 upgradePromptBtn.classList.remove('hidden', 'bg-gradient-to-r', 'from-yellow-500', 'to-orange-500', 'hover:from-yellow-400', 'hover:to-orange-400', 'text-black');
                 upgradePromptBtn.classList.add('bg-green-900/40', 'border', 'border-green-500', 'text-green-400', 'cursor-default');
-                upgradePromptBtn.textContent = "PRO Active";
+                upgradePromptBtn.textContent = "ENTERPRISE ACTIVE";
                 upgradePromptBtn.disabled = true;
 
                 document.querySelectorAll('.ent-lock-badge').forEach(el => el.classList.add('hidden'));
@@ -1632,10 +1633,8 @@
     });
 
     document.getElementById('logoutBtn')?.addEventListener('click', (e) => {
-        e.preventDefault();
-        e.stopPropagation();
         localStorage.removeItem('token');
-        window.location.href = '/';
+        window.location.href = '/logout';
     });
 
     const scanDependenciesBtn = document.getElementById('scanDependenciesBtn');
