@@ -322,8 +322,8 @@
                         </div>
                         <div id="blurPaywallOverlay" class="hidden absolute inset-0 z-10 flex flex-col items-center justify-center bg-black/40 rounded-xl">
                             <div class="text-6xl mb-4">🔒</div>
-                            <button onclick="document.getElementById('upgradeModal').classList.remove('hidden')" class="bg-blue-600 hover:bg-blue-500 text-white font-bold py-3 px-6 rounded-lg shadow-2xl transition-all border border-blue-400">
-                                Upgrade to Developer PRO to reveal and fix vulnerabilities
+                            <button onclick="document.getElementById('upgradeModal').classList.remove('hidden')" class="bg-gradient-to-r from-yellow-500 to-orange-500 hover:from-yellow-400 hover:to-orange-400 text-black font-extrabold py-3 px-6 rounded-lg shadow-2xl transition-all border border-yellow-400 cursor-pointer">
+                                Upgrade to Enterprise to Auto-Fix Vulnerabilities
                             </button>
                         </div>
                     </div>
@@ -1865,12 +1865,22 @@ jobs:
                 const data = await response.json();
                 
                 if (data.is_blurred_paywall) {
-                    if (scanResult) {
-                        scanResult.textContent = data.report;
-                        scanResult.classList.add('blur-effect');
+                    const freeScansUsed = parseInt(localStorage.getItem('free_scans_used') || '0', 10);
+                    if (!isPremium && freeScansUsed > 3) {
+                        if (scanResult) {
+                            scanResult.textContent = data.report;
+                            scanResult.classList.add('blur-effect');
+                        }
+                        document.getElementById('scanLimitWarning')?.classList.remove('hidden');
+                        document.getElementById('blurPaywallOverlay')?.classList.remove('hidden');
+                    } else {
+                        if (scanResult) {
+                            scanResult.textContent = data.report || 'Scan complete: No critical security risks detected.';
+                            scanResult.classList.remove('blur-effect', 'text-red-400');
+                        }
+                        document.getElementById('scanLimitWarning')?.classList.add('hidden');
+                        document.getElementById('blurPaywallOverlay')?.classList.add('hidden');
                     }
-                    document.getElementById('scanLimitWarning')?.classList.remove('hidden');
-                    document.getElementById('blurPaywallOverlay')?.classList.remove('hidden');
                     if (reportContainer) reportContainer.classList.remove('hidden');
                     resetScanBtn();
                 } else if (data.error) {
@@ -1878,6 +1888,8 @@ jobs:
                         scanResult.textContent = 'Error: ' + data.error;
                         scanResult.classList.add('text-red-400');
                     }
+                    document.getElementById('scanLimitWarning')?.classList.add('hidden');
+                    document.getElementById('blurPaywallOverlay')?.classList.add('hidden');
                     if (reportContainer) reportContainer.classList.remove('hidden');
                     resetScanBtn();
                 } else if (data.job_id) {
@@ -1896,14 +1908,18 @@ jobs:
                                     scanResult.textContent = 'Error: ' + (statusData.detail || 'Scan failed or job not found.');
                                     scanResult.classList.add('text-red-400');
                                 }
+                                document.getElementById('scanLimitWarning')?.classList.add('hidden');
+                                document.getElementById('blurPaywallOverlay')?.classList.add('hidden');
                                 if (reportContainer) reportContainer.classList.remove('hidden');
                                 resetScanBtn();
                             } else if (statusData.status === 'completed') {
                                 clearInterval(pollInterval);
                                 if (scanResult) {
                                     scanResult.textContent = statusData.report;
-                                    scanResult.classList.remove('text-red-400');
+                                    scanResult.classList.remove('blur-effect', 'text-red-400');
                                 }
+                                document.getElementById('scanLimitWarning')?.classList.add('hidden');
+                                document.getElementById('blurPaywallOverlay')?.classList.add('hidden');
                                 await fetchPlan();
                                 await fetchAnalytics();
                                 if (reportContainer) reportContainer.classList.remove('hidden');
@@ -2318,6 +2334,11 @@ jobs:
             });
             const data = await res.json();
             if (res.ok) {
+                if (targetPlan === 'free') {
+                    localStorage.setItem('free_scans_used', '0');
+                } else {
+                    localStorage.removeItem('free_scans_used');
+                }
                 showToast(data.message || 'Plan updated successfully!', 'success');
                 document.getElementById('adminOverrideModal')?.classList.add('hidden');
                 setTimeout(() => window.location.reload(), 1000);
