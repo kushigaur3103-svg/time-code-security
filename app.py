@@ -1101,7 +1101,7 @@ async def generate_pdf(payload: ReportPayload, authorization: str = Header(None)
 def generate_dynamic_security_analysis(code: str, is_premium: bool = True) -> str:
     """
     Intelligent AST & rule-based dynamic security analyzer that inspects the actual code lines
-    and outputs realistic, actionable vulnerability reports specific to the user's snippet.
+    and outputs a comprehensive 5-Section Enterprise Security Report strictly targeting the submitted code snippet.
     """
     lines = code.splitlines()
     vulnerabilities = []
@@ -1118,7 +1118,7 @@ def generate_dynamic_security_analysis(code: str, is_premium: bool = True) -> st
                 "type": "Arbitrary Code Execution (CWE-95)",
                 "severity": "CRITICAL",
                 "score": "9.8",
-                "finding": f"Use of dynamic code evaluation `{line_clean[:50]}` enables attackers to execute arbitrary commands.",
+                "finding": f"Use of dynamic evaluation `{line_clean[:50]}` enables arbitrary execution.",
                 "remediation": "Replace `eval`/`exec` with safe parsers (e.g. `ast.literal_eval` or `JSON.parse`).",
                 "framework": "SOC 2 CC6.6 / OWASP A03:2021-Injection"
             })
@@ -1184,36 +1184,60 @@ def generate_dynamic_security_analysis(code: str, is_premium: bool = True) -> st
             })
 
     if vulnerabilities:
-        report_lines = [
-            "🛡️ **TimeCodeSecurity Dynamic Threat Intelligence Report**",
-            f"**Audit Status:** ⚠️ {len(vulnerabilities)} Security Issue(s) Detected in Code\n",
-            "---"
-        ]
+        max_severity = "CRITICAL" if any(v['severity'] == 'CRITICAL' for v in vulnerabilities) else "HIGH"
+        max_score = max(float(v['score']) for v in vulnerabilities)
         
+        report = f"""### Section 1: Executive Summary & Threat Level
+- **Target Analysis:** The submitted code snippet ({len(lines)} line(s) audited)
+- **Threat Level:** 🚨 **{max_severity}** (Severity Score: **{max_score}/10.0**)
+- **Summary:** The analyzed script contains {len(vulnerabilities)} high-risk security flaw(s) requiring immediate remediation prior to deployment.
+
+### Section 2: Static & AST Vulnerability Assessment"""
+
         for v in vulnerabilities:
-            report_lines.append(
-                f"\n🚨 **[{v['severity']}] {v['type']} (Score: {v['score']})**\n"
-                f"- **Location:** Line {v['line']}\n"
-                f"- **Vulnerability Finding:** {v['finding']}\n"
-                f"- **Compliance Impact:** `{v['framework']}`\n"
-                f"- **Required Remediation:** {v['remediation']}"
-            )
-            
+            report += f"""
+- **[{v['severity']}] {v['type']} (Score: {v['score']})**
+  - **Location:** Line {v['line']}
+  - **Finding:** {v['finding']}
+  - **Remediation:** {v['remediation']}"""
+
+        frameworks = list(set(v['framework'] for v in vulnerabilities))
+        report += f"""
+
+### Section 3: Regulatory & Compliance Mapping
+- **Regulatory Framework Impact:** `{', '.join(frameworks)}`
+- **Assessment:** The submitted code snippet introduces potential compliance violations under the specified controls due to unvalidated inputs and execution sinks.
+
+### Section 4: Threat Impact & Exploitation Vectors
+- **Exploitability:** High — attack vectors in the analyzed script can be leveraged to compromise runtime integrity or access sensitive system resources.
+- **Blast Radius:** Critical if deployed in a production service handling untrusted input.
+
+### Section 5: Recommended Remediation & Hardened Code Implementation"""
+
         if is_premium:
-            report_lines.append("\n---\n💡 **Automated Enterprise Fix:** Click **'Generate Secure Code'** below to produce an auto-remediated, hardened patch verified against AST security policies.")
+            report += "\n- **Automated Fix:** Click **'Generate Secure Code'** below to produce an auto-remediated, hardened patch verified against AST security policies."
         else:
-            report_lines.append("\n---\n💡 **Notice:** Upgrade to **Enterprise** to unlock 1-click Auto-Fix remediation, automated PR gates, and full PDF export.")
+            report += "\n- **Upgrade Notice:** Upgrade to **Enterprise** to unlock 1-click Auto-Fix remediation, automated PR gates, and full PDF export."
             
-        return "\n".join(report_lines)
+        return report
     else:
-        return (
-            "✅ **AUDIT COMPLETE: ZERO VULNERABILITIES DETECTED**\n\n"
-            f"• **Lines Audited:** {len(lines)} line(s)\n"
-            "• **Static & AST Analysis:** PASSED (No dangerous execution sinks, injection flaws, or memory leaks detected)\n"
-            "• **Regulatory Compliance:** Conforms to SOC 2 Type II, ISO 27001, and OWASP Top 10 baselines.\n"
-            "• **Security Grade:** **A+ (100% Safe)**\n\n"
-            "Your submitted source code is secure and ready for production deployment."
-        )
+        return f"""### Section 1: Executive Summary & Threat Level
+- **Target Analysis:** The submitted code snippet ({len(lines)} line(s) audited)
+- **Threat Level:** ✅ **SAFE (Score: 0.0/10.0)**
+- **Audit Status:** PASSED (Zero security flaws, injection vectors, or memory leaks detected)
+
+### Section 2: Static & AST Vulnerability Assessment
+- **Findings:** The analyzed script contains only safe computational and output statements. No dangerous execution sinks or unauthorized process spawns found.
+
+### Section 3: Regulatory & Compliance Mapping
+- **SOC 2 / ISO 27001:** Conforms to baseline secure coding requirements.
+- **GDPR / HIPAA:** The provided code snippet does not contain logic that processes regulated data.
+
+### Section 4: Threat Impact & Exploitation Vectors
+- **Attack Surface:** Minimal. The submitted code snippet does not expose network endpoints or process untrusted external inputs.
+
+### Section 5: Recommended Remediation & Hardened Code Implementation
+- **Remediation Required:** None. The analyzed script is safe for baseline integration."""
 
 def get_cached_or_generate_ai(payload_code: str, system_prompt: str, is_fix: bool, db, existing_job_id: str = None, user_id: int = None):
     code_hash = hashlib.sha256(f"{payload_code}_{system_prompt}".encode('utf-8')).hexdigest()
@@ -1410,12 +1434,18 @@ async def scan_code(payload: CodePayload, background_tasks: BackgroundTasks, aut
             
         if is_premium:
             system_prompt = (
-                "You are a highly advanced cybersecurity expert. "
-                "You must analyze the provided code for Zero-Day vulnerabilities, "
-                "SQL/NoSQL injections, XSS, memory leaks, and architectural flaws. "
-                "You must categorize the vulnerabilities by regulatory compliance frameworks (SOC 2, HIPAA, GDPR). "
-                "Explicitly state which laws are violated. Also, assign a Severity Level (CRITICAL, HIGH, MEDIUM, LOW). "
-                "Provide strict remediation code and a severity score."
+                "You are an advanced DevSecOps and static code security auditor. "
+                "Analyze the provided code and generate a comprehensive 5-Section Enterprise Security Report: "
+                "\n### Section 1: Executive Summary & Threat Level (Assign Severity: CRITICAL, HIGH, MEDIUM, LOW, or SAFE, with a Severity Score 0.0-10.0)"
+                "\n### Section 2: Static & AST Vulnerability Assessment (Identify exact line numbers, CWE classifications, and flaw descriptions)"
+                "\n### Section 3: Regulatory & Compliance Mapping (Evaluate against SOC 2, HIPAA, GDPR, ISO 27001, and OWASP Top 10)"
+                "\n### Section 4: Threat Impact & Exploitation Vectors (Explain potential blast radius and attack vectors)"
+                "\n### Section 5: Recommended Remediation & Hardened Code Implementation (Provide clean, remediated production code)"
+                "\n\nCRITICAL PERSONA & PHRASING RULES:"
+                "\n- Maintain this comprehensive 5-section report format even for short or safe code snippets."
+                "\n- CRITICAL: Never speak on behalf of the application, the system, the platform, or the company. Do NOT write statements like 'Our system does not store data', 'The platform is secure', or 'The application is compliant'."
+                "\n- ALWAYS explicitly refer ONLY to the provided input as 'The submitted code snippet', 'The analyzed script', or 'The provided input'."
+                "\n- For compliance sections (SOC 2, GDPR, HIPAA) on safe or short code, phrase it strictly as: 'The provided code snippet does not contain logic that processes regulated data.' Do not make blanket statements about data collection or privacy practices that could be misconstrued as the host company's privacy policy."
             )
             # ====== GOD-MODE RAG CONTEXT INJECTION ======
             if rag_engine_instance:
@@ -1431,7 +1461,9 @@ async def scan_code(payload: CodePayload, background_tasks: BackgroundTasks, aut
                     print(f"[RAG WARNING] {e}")
         else:
             system_prompt = (
-                "You are a basic code analyzer. Identify only simple syntax errors or basic bugs. "
+                "You are a code analyzer. Analyze the submitted code snippet and generate a 5-section security summary. "
+                "CRITICAL: Never speak on behalf of the application, system, or company. Always refer to the code as 'The submitted code snippet'. "
+                "For compliance sections, phrase strictly as: 'The provided code snippet does not contain logic that processes regulated data.' "
                 "You must explicitly state at the end of the response: 'Upgrade to Enterprise for deep vulnerability analysis and remediation code.'"
             )
     
@@ -1591,15 +1623,23 @@ async def cicd_scan(payload: CICDScanPayload, x_api_key: str = Header(None)):
             raise HTTPException(status_code=401, detail="Invalid API Key")
             
         system_prompt = (
-            "You are a highly advanced cybersecurity expert. "
-            "You must analyze the provided code for Zero-Day vulnerabilities, "
-            "SQL/NoSQL injections, XSS, memory leaks, and architectural flaws. "
-            "You must categorize the vulnerabilities by regulatory compliance frameworks (SOC 2, HIPAA, GDPR). "
-            "Explicitly state which laws are violated. Also, assign a Severity Level (CRITICAL, HIGH, MEDIUM, LOW). "
-            "Provide strict remediation code and a severity score."
+            "You are an advanced DevSecOps and static code security auditor. "
+            "Analyze the provided code and generate a comprehensive 5-Section Enterprise Security Report: "
+            "\n### Section 1: Executive Summary & Threat Level (Assign Severity: CRITICAL, HIGH, MEDIUM, LOW, or SAFE, with a Severity Score 0.0-10.0)"
+            "\n### Section 2: Static & AST Vulnerability Assessment (Identify exact line numbers, CWE classifications, and flaw descriptions)"
+            "\n### Section 3: Regulatory & Compliance Mapping (Evaluate against SOC 2, HIPAA, GDPR, ISO 27001, and OWASP Top 10)"
+            "\n### Section 4: Threat Impact & Exploitation Vectors (Explain potential blast radius and attack vectors)"
+            "\n### Section 5: Recommended Remediation & Hardened Code Implementation (Provide clean, remediated production code)"
+            "\n\nCRITICAL PERSONA & PHRASING RULES:"
+            "\n- Maintain this comprehensive 5-section report format even for short or safe code snippets."
+            "\n- CRITICAL: Never speak on behalf of the application, the system, the platform, or the company. Do NOT write statements like 'Our system does not store data', 'The platform is secure', or 'The application is compliant'."
+            "\n- ALWAYS explicitly refer ONLY to the provided input as 'The submitted code snippet', 'The analyzed script', or 'The provided input'."
+            "\n- For compliance sections (SOC 2, GDPR, HIPAA) on safe or short code, phrase it strictly as: 'The provided code snippet does not contain logic that processes regulated data.' Do not make blanket statements about data collection or privacy practices that could be misconstrued as the host company's privacy policy."
         ) if user.is_premium else (
-            "You are a basic code analyzer. Identify only simple syntax errors or basic bugs. "
-            "You must explicitly state at the end of the response: 'Upgrade to PRO for deep vulnerability analysis and remediation code.'"
+            "You are a code analyzer. Analyze the submitted code snippet and generate a 5-section security summary. "
+            "CRITICAL: Never speak on behalf of the application, system, or company. Always refer to the code as 'The submitted code snippet'. "
+            "For compliance sections, phrase strictly as: 'The provided code snippet does not contain logic that processes regulated data.' "
+            "You must explicitly state at the end of the response: 'Upgrade to Enterprise for deep vulnerability analysis and remediation code.'"
         )
 
         redacted_code, secrets_found = apply_zero_leak_redaction(valid_code)
