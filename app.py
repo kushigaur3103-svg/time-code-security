@@ -39,6 +39,38 @@ SECRET_PATTERNS = {
     "Generic Tokens": re.compile(r"(?i)(?:password|secret|api_key|apikey|auth_token|bearer|access_token|private_key)[\s=:]+['\"]([^'\"]{6,})['\"]")
 }
 
+import time
+from collections import defaultdict, deque
+
+# In-Memory Sliding Window Rate Limiter (Hardware Safe)
+RATE_LIMIT_WINDOWS = defaultdict(deque)
+
+def check_rate_limit(identifier: str, is_premium: bool, endpoint_name: str = "request"):
+    current_time = time.time()
+    window_seconds = 60
+    # Tier limits: Free = 5 req/min, Enterprise (Pro/Trial) = 30 req/min
+    max_requests = 30 if is_premium else 5
+    
+    key = f"{identifier}:{endpoint_name}"
+    queue = RATE_LIMIT_WINDOWS[key]
+    
+    # Remove timestamps older than window_seconds
+    while queue and queue[0] <= current_time - window_seconds:
+        queue.popleft()
+        
+    if len(queue) >= max_requests:
+        tier_label = "Enterprise Pro (30 req/min)" if is_premium else "Free Tier (5 req/min)"
+        detail_msg = f"Rate limit reached for {tier_label}. Please wait a moment before retrying."
+        if not is_premium:
+            detail_msg += " Upgrade to Enterprise Pro for higher throughput."
+        raise HTTPException(
+            status_code=429,
+            detail=detail_msg,
+            headers={"Retry-After": "60"}
+        )
+        
+    queue.append(current_time)
+
 MAX_CODE_LENGTH = 500_000
 
 def validate_code_payload(code: str) -> str:
@@ -536,6 +568,11 @@ async def generate_api_key(authorization: str = Header(None)):
         user = db.query(User).filter(User.email == email).first()
         if not user:
             raise HTTPException(status_code=404, detail="User not found")
+        
+        is_premium = user.plan_tier in ["developer", "enterprise"] or user.is_premium
+
+        # Check hardware-safe tier-aware rate limit (5/min Free, 30/min Pro)
+        check_rate_limit(user.email, is_premium, "generate_key")
         
         # Lock API key generation on Free Tier
         if user.plan_tier != "enterprise" and not user.is_premium:
@@ -1186,6 +1223,7 @@ def background_scan_task(job_id: str, email: str, redacted_code: str, system_pro
     finally:
         db.close()
 
+@app.post("/api/scan")
 @app.post("/scan")
 async def scan_code(payload: CodePayload, background_tasks: BackgroundTasks, authorization: str = Header(None)):
     email = await get_current_user_email(authorization)
@@ -1196,6 +1234,11 @@ async def scan_code(payload: CodePayload, background_tasks: BackgroundTasks, aut
         user = db.query(User).filter(User.email == email).first()
         if not user:
             raise HTTPException(status_code=404, detail="User not found")
+        
+        is_premium = user.plan_tier in ["developer", "enterprise"] or user.is_premium
+
+        # Check hardware-safe tier-aware rate limit (5/min Free, 30/min Pro)
+        check_rate_limit(user.email, is_premium, "scan")
             
         if user.scan_cycle_start:
             try:
@@ -1208,8 +1251,6 @@ async def scan_code(payload: CodePayload, background_tasks: BackgroundTasks, aut
         else:
             user.scan_cycle_start = datetime.utcnow()
             db.commit()
-
-        is_premium = user.plan_tier in ["developer", "enterprise"]
             
         scan_count = user.scan_count
         

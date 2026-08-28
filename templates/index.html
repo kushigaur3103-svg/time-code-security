@@ -1482,6 +1482,11 @@
                     method: 'POST',
                     headers: { 'Authorization': `Bearer ${currentToken}` }
                 });
+                if (res.status === 429) {
+                    const errData = await res.json().catch(() => ({}));
+                    showToast(errData.detail || 'Rate limit reached. Please wait before generating another key.', 'error');
+                    return;
+                }
                 if (res.ok) {
                     const data = await res.json();
                     const listEl = document.getElementById('apiKeysList');
@@ -1854,6 +1859,13 @@ jobs:
                 });
                 
                 clearTimeout(timeoutId);
+                
+                if (response.status === 429) {
+                    const errData = await response.json().catch(() => ({}));
+                    showToast(errData.detail || 'Rate limit exceeded. Free tier limit is 5 scans/min. Please wait a moment.', 'error');
+                    resetScanBtn();
+                    return;
+                }
                 
                 if (response.status === 504) {
                     showToast('Scan timed out. Please try again.', 'error');
