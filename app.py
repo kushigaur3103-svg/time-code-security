@@ -723,10 +723,16 @@ class OverridePlanPayload(BaseModel):
     target_plan: Optional[str] = "pro"
 
 @app.post("/api/admin/override-plan")
-async def override_plan(payload: OverridePlanPayload, authorization: str = Header(None)):
+async def override_plan(request: Request, authorization: str = Header(None)):
     email = await get_current_user_email(authorization)
-    raw_key = payload.admin_key or payload.key or ""
-    clean_key = raw_key.strip().upper().replace(" ", "").replace("_", "-")
+    
+    try:
+        body = await request.json()
+    except Exception:
+        body = {}
+        
+    raw_key = body.get("admin_key") or body.get("key") or ""
+    clean_key = str(raw_key).strip().upper().replace(" ", "").replace("_", "-")
     
     if clean_key not in ["AYUSH-ADMIN-666", "PRO-MODE", "PROMODE", "ENTERPRISE", "LIFETIME", "MASTER"]:
         raise HTTPException(status_code=403, detail="Invalid Master Key")
@@ -737,10 +743,11 @@ async def override_plan(payload: OverridePlanPayload, authorization: str = Heade
         if not user:
             raise HTTPException(status_code=404, detail="User not found")
         
-        target = (payload.target_plan or "pro").strip().lower()
+        target = str(body.get("target_plan") or "pro").strip().lower()
         if target in ["pro", "enterprise", "enterprise_pro", "lifetime"]:
             user.is_premium = True
             user.plan_tier = "enterprise"
+            user.created_at = datetime.utcnow()
             user.trial_expires_at = datetime(2099, 1, 1)
             db.commit()
             return {
@@ -751,6 +758,7 @@ async def override_plan(payload: OverridePlanPayload, authorization: str = Heade
         elif target in ["free", "force_free", "expired"]:
             user.is_premium = False
             user.plan_tier = "free"
+            user.created_at = datetime.utcnow() - timedelta(days=15)
             user.trial_expires_at = datetime.utcnow() - timedelta(days=15)
             db.commit()
             return {
