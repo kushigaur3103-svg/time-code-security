@@ -2,6 +2,7 @@ import os
 import requests
 import jwt
 import uuid
+from typing import Optional, List, Dict, Any, Union
 from fastapi import FastAPI, Request, HTTPException, Header, BackgroundTasks
 from fastapi.responses import Response, RedirectResponse
 from fastapi.templating import Jinja2Templates
@@ -285,6 +286,20 @@ async def ultimate_global_exception_handler(request: Request, exc: Exception):
         }
     )
 
+def parse_datetime_safe(dt_val) -> Optional[datetime]:
+    if not dt_val:
+        return None
+    if isinstance(dt_val, datetime):
+        return dt_val.replace(tzinfo=None) if dt_val.tzinfo is not None else dt_val
+    if isinstance(dt_val, str):
+        clean_str = dt_val.split(".")[0].replace("T", " ").replace("Z", "").strip()
+        for fmt in ("%Y-%m-%d %H:%M:%S", "%Y-%m-%d %H:%M", "%Y-%m-%d"):
+            try:
+                return datetime.strptime(clean_str, fmt)
+            except Exception:
+                pass
+    return None
+
 def safe_calculate_days_active(created_val) -> int:
     if not created_val:
         return 0
@@ -504,18 +519,19 @@ async def get_me(authorization: str = Header(None)):
             user.scan_cycle_start = datetime.utcnow()
             db.commit()
             
+        parsed_trial = parse_datetime_safe(getattr(user, 'trial_expires_at', None))
         if getattr(user, 'plan_tier', '') == 'free':
             days_left = "0 Days Left"
             plan_tier = "free"
             user.is_premium = False
-        elif getattr(user, 'trial_expires_at', None) and user.trial_expires_at > datetime(2090, 1, 1):
+        elif parsed_trial and parsed_trial > datetime(2090, 1, 1):
             days_left = "Lifetime"
             plan_tier = "enterprise"
             user.is_premium = True
-        elif getattr(user, 'trial_expires_at', None):
+        elif parsed_trial:
             now = datetime.utcnow()
-            if now < user.trial_expires_at:
-                remaining_seconds = (user.trial_expires_at - now).total_seconds()
+            if now < parsed_trial:
+                remaining_seconds = (parsed_trial - now).total_seconds()
                 remaining_days = max(1, int(remaining_seconds // 86400) + 1)
                 days_left = f"{remaining_days} Days Left"
                 plan_tier = user.plan_tier or "enterprise"
