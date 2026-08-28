@@ -665,40 +665,48 @@ async def get_security_badge(identifier: str):
         db.close()
 
 class OverridePlanPayload(BaseModel):
-    key: str
+    admin_key: Optional[str] = None
+    key: Optional[str] = None
+    target_plan: Optional[str] = "pro"
 
 @app.post("/api/admin/override-plan")
 async def override_plan(payload: OverridePlanPayload, authorization: str = Header(None)):
     email = await get_current_user_email(authorization)
-    clean_key = (payload.key or "").strip().upper().replace(" ", "").replace("_", "-")
+    raw_key = payload.admin_key or payload.key or ""
+    clean_key = raw_key.strip().upper().replace(" ", "").replace("_", "-")
+    
+    if clean_key not in ["AYUSH-ADMIN-666", "PRO-MODE", "PROMODE", "ENTERPRISE", "LIFETIME", "MASTER"]:
+        raise HTTPException(status_code=403, detail="Invalid Master Key")
+        
     db = SessionLocal()
     try:
         user = db.query(User).filter(User.email == email).first()
         if not user:
             raise HTTPException(status_code=404, detail="User not found")
         
-        if clean_key in ["PRO-MODE", "PROMODE", "AYUSH-ADMIN-666", "ENTERPRISE", "LIFETIME"]:
+        target = (payload.target_plan or "pro").strip().lower()
+        if target in ["pro", "enterprise", "enterprise_pro", "lifetime"]:
             user.is_premium = True
             user.plan_tier = "enterprise"
             user.trial_expires_at = datetime(2099, 1, 1)
             db.commit()
             return {
                 "status": "success",
-                "message": "Founder Override: Enterprise Lifetime Access Unlocked!",
+                "message": "Enterprise Pro (Lifetime) Activated!",
                 "plan_tier": "enterprise"
             }
-        elif clean_key in ["FORCE-FREE", "FORCEFREE", "FREE"]:
+        elif target in ["free", "force_free", "expired"]:
             user.is_premium = False
             user.plan_tier = "free"
             user.trial_expires_at = datetime.utcnow() - timedelta(days=15)
             db.commit()
             return {
                 "status": "success",
-                "message": "Founder Override: Forced Free Tier (Trial Expired)!",
+                "message": "Switched to Free Tier (Trial Expired)!",
                 "plan_tier": "free"
             }
         else:
-            raise HTTPException(status_code=403, detail="Invalid Master Override Key")
+            raise HTTPException(status_code=400, detail="Invalid target plan. Choose 'free' or 'pro'.")
     finally:
         db.close()
 

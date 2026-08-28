@@ -646,16 +646,13 @@
     <!-- Secret Founder Backdoor Modal (3-Tap Logo) -->
     <div id="adminOverrideModal" class="hidden fixed inset-0 z-[100] flex items-center justify-center bg-black/90 backdrop-blur-md p-4">
         <div class="bg-[#0a0d14] border-2 border-yellow-500/60 p-6 sm:p-8 rounded-3xl max-w-md w-full shadow-[0_0_60px_rgba(234,179,8,0.3)] relative">
-            <h2 class="text-xl sm:text-2xl font-black text-transparent bg-clip-text bg-gradient-to-r from-yellow-400 to-orange-500 mb-2 flex items-center gap-2">
+            <h2 class="text-xl sm:text-2xl font-black text-transparent bg-clip-text bg-gradient-to-r from-yellow-400 to-orange-500 mb-4 flex items-center gap-2">
                 <svg class="w-6 h-6 text-yellow-400" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M12 15v2m-6 4h12a2 2 0 002-2v-6a2 2 0 00-2-2H6a2 2 0 00-2 2v6a2 2 0 002 2zm10-10V7a4 4 0 00-8 0v4h8z"></path></svg>
-                Admin Override: Enter Premium Key
+                Admin Override
             </h2>
-            <p class="text-gray-400 text-xs mb-5 leading-relaxed">
-                Founder Console: Enter <code class="text-yellow-400 font-mono">PRO_MODE</code> or <code class="text-yellow-400 font-mono">AYUSH-ADMIN-666</code> for Lifetime Enterprise, or <code class="text-red-400 font-mono">FORCE_FREE</code> to simulate trial expiration.
-            </p>
             <div class="space-y-4">
                 <div class="relative">
-                    <input type="password" id="overrideKeyInput" class="w-full bg-[#111827] text-white p-3 pr-10 rounded-xl border border-gray-700 font-mono text-sm focus:outline-none focus:border-yellow-500 transition" placeholder="Enter Master Key (e.g. PRO_MODE)...">
+                    <input type="password" id="overrideKeyInput" class="w-full bg-[#111827] text-white p-3 pr-10 rounded-xl border border-gray-700 font-mono text-sm focus:outline-none focus:border-yellow-500 transition" placeholder="Enter Master Key...">
                     <button type="button" onclick="toggleOverrideKeyVisibility()" class="absolute inset-y-0 right-0 pr-3 flex items-center text-gray-400 hover:text-white cursor-pointer transition">
                         <svg id="overrideKeyEyeIcon" class="w-4 h-4" fill="none" stroke="currentColor" viewBox="0 0 24 24">
                             <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M15 12a3 3 0 11-6 0 3 3 0 016 0z"></path>
@@ -666,9 +663,10 @@
                         </svg>
                     </button>
                 </div>
-                <div class="pt-2 flex gap-3">
-                    <button id="closeOverrideModalBtn" onclick="document.getElementById('adminOverrideModal').classList.add('hidden')" class="flex-1 bg-gray-800 hover:bg-gray-700 text-gray-300 font-bold py-3 rounded-xl transition cursor-pointer text-sm">Cancel</button>
-                    <button id="submitOverrideBtn" class="flex-1 bg-gradient-to-r from-yellow-500 to-orange-500 hover:from-yellow-400 hover:to-orange-400 text-black font-bold py-3 rounded-xl transition shadow-[0_0_20px_rgba(234,179,8,0.4)] cursor-pointer text-sm">Apply Override</button>
+                <div class="pt-2 flex flex-col sm:flex-row gap-2.5">
+                    <button id="closeOverrideModalBtn" onclick="document.getElementById('adminOverrideModal').classList.add('hidden')" class="flex-1 bg-gray-800 hover:bg-gray-700 text-gray-300 font-bold py-2.5 px-3 rounded-xl transition cursor-pointer text-xs">Cancel</button>
+                    <button id="overrideSwitchFreeBtn" class="flex-1 bg-red-950/60 hover:bg-red-900/80 text-red-300 border border-red-800/60 font-bold py-2.5 px-3 rounded-xl transition shadow-[0_0_15px_rgba(239,68,68,0.2)] cursor-pointer text-xs whitespace-nowrap">Switch to Free</button>
+                    <button id="overrideSwitchProBtn" class="flex-1 bg-gradient-to-r from-emerald-500 to-teal-500 hover:from-emerald-400 hover:to-teal-400 text-black font-extrabold py-2.5 px-3 rounded-xl transition shadow-[0_0_20px_rgba(16,185,129,0.35)] cursor-pointer text-xs whitespace-nowrap">Switch to Enterprise Pro</button>
                 </div>
             </div>
         </div>
@@ -2287,15 +2285,17 @@ jobs:
         }
     });
 
-    document.getElementById('submitOverrideBtn')?.addEventListener('click', async () => {
+    async function handleAdminOverride(targetPlan) {
         const input = document.getElementById('overrideKeyInput');
         const key = input ? input.value.trim() : '';
         if (!key) {
-            showToast('Please enter an override key.', 'error');
+            showToast('Please enter master key.', 'error');
             return;
         }
 
-        const btn = document.getElementById('submitOverrideBtn');
+        const btn = targetPlan === 'pro' 
+            ? document.getElementById('overrideSwitchProBtn') 
+            : document.getElementById('overrideSwitchFreeBtn');
         const originalText = btn ? btn.innerHTML : '';
         if (btn) {
             btn.disabled = true;
@@ -2310,15 +2310,18 @@ jobs:
                     'Content-Type': 'application/json',
                     'Authorization': `Bearer ${currentToken}` 
                 },
-                body: JSON.stringify({ key: key })
+                body: JSON.stringify({ 
+                    admin_key: key,
+                    target_plan: targetPlan 
+                })
             });
             const data = await res.json();
             if (res.ok) {
-                showToast(data.message || 'Plan override applied successfully!', 'success');
+                showToast(data.message || 'Plan updated successfully!', 'success');
                 document.getElementById('adminOverrideModal')?.classList.add('hidden');
                 setTimeout(() => window.location.reload(), 1000);
             } else {
-                showToast(data.detail || 'Invalid override key.', 'error');
+                showToast(data.detail || 'Invalid master key.', 'error');
                 if (btn) {
                     btn.disabled = false;
                     btn.innerHTML = originalText;
@@ -2331,7 +2334,17 @@ jobs:
                 btn.innerHTML = originalText;
             }
         }
-    });
+    }
+
+    const freeOverrideBtn = document.getElementById('overrideSwitchFreeBtn');
+    if (freeOverrideBtn) {
+        freeOverrideBtn.addEventListener('click', () => handleAdminOverride('free'));
+    }
+
+    const proOverrideBtn = document.getElementById('overrideSwitchProBtn');
+    if (proOverrideBtn) {
+        proOverrideBtn.addEventListener('click', () => handleAdminOverride('pro'));
+    }
 
     // CTO Modal Listeners
     document.getElementById('openCtoModalBtn')?.addEventListener('click', () => {
