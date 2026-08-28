@@ -14,19 +14,19 @@
             height: 10px;
         }
         ::-webkit-scrollbar-track {
-            background: #0d1117; 
+            background: #090d16; 
             border-radius: 8px;
         }
         ::-webkit-scrollbar-thumb {
-            background: #30363d; 
+            background: #1f293d; 
             border-radius: 8px;
-            border: 2px solid #0d1117;
+            border: 2px solid #090d16;
         }
         ::-webkit-scrollbar-thumb:hover {
-            background: #8b949e; 
+            background: #374151; 
         }
         .glow-text {
-            text-shadow: 0 0 20px rgba(52, 211, 153, 0.4);
+            text-shadow: 0 0 25px rgba(52, 211, 153, 0.45);
         }
         .blur-effect { 
             filter: blur(6px); 
@@ -36,8 +36,8 @@
         .cyber-grid {
             background-size: 40px 40px;
             background-image: 
-                linear-gradient(to right, rgba(255,255,255,0.05) 1px, transparent 1px),
-                linear-gradient(to bottom, rgba(255,255,255,0.05) 1px, transparent 1px);
+                linear-gradient(to right, rgba(255,255,255,0.03) 1px, transparent 1px),
+                linear-gradient(to bottom, rgba(255,255,255,0.03) 1px, transparent 1px);
             mask-image: linear-gradient(to bottom, transparent, black 10%, black 90%, transparent);
             -webkit-mask-image: linear-gradient(to bottom, transparent, black 10%, black 90%, transparent);
         }
@@ -51,27 +51,99 @@
             left: 0;
             width: 100%;
             height: 2px;
-            background: rgba(52, 211, 153, 0.2);
-            box-shadow: 0 0 10px rgba(52, 211, 153, 0.5);
-            animation: scanline 8s linear infinite;
-            pointer-events: none;
-            z-index: 50;
+            background: linear-gradient(90deg, transparent, rgba(52, 211, 153, 0.3), rgba(6, 182, 212, 0.5), rgba(52, 211, 153, 0.3), transparent);
+            box-shadow: 0 0 12px rgba(52, 211, 153, 0.4);
+            animation: scanline 9s linear infinite;
+            pointer-events-none;
+            z-index: 40;
+        }
+        /* Aurora Ambient Mesh Background Animations */
+        @keyframes auroraPulseSlow {
+            0%, 100% { transform: translate(0, 0) scale(1); opacity: 0.45; }
+            50% { transform: translate(25px, -20px) scale(1.08); opacity: 0.65; }
+        }
+        @keyframes auroraPulseReverse {
+            0%, 100% { transform: translate(0, 0) scale(1); opacity: 0.35; }
+            50% { transform: translate(-25px, 15px) scale(1.12); opacity: 0.55; }
+        }
+        .aurora-mesh-1 {
+            position: fixed;
+            top: -150px;
+            left: 10%;
+            width: 650px;
+            height: 650px;
+            background: radial-gradient(circle, rgba(99, 102, 241, 0.2) 0%, rgba(16, 185, 129, 0.12) 45%, transparent 70%);
+            filter: blur(95px);
+            animation: auroraPulseSlow 16s ease-in-out infinite;
+            pointer-events-none;
+            z-index: 0;
+        }
+        .aurora-mesh-2 {
+            position: fixed;
+            top: 35%;
+            right: 5%;
+            width: 600px;
+            height: 600px;
+            background: radial-gradient(circle, rgba(16, 185, 129, 0.16) 0%, rgba(6, 182, 212, 0.1) 50%, transparent 72%);
+            filter: blur(100px);
+            animation: auroraPulseReverse 20s ease-in-out infinite;
+            pointer-events-none;
+            z-index: 0;
+        }
+        .aurora-mesh-3 {
+            position: fixed;
+            bottom: -100px;
+            left: 20%;
+            width: 550px;
+            height: 550px;
+            background: radial-gradient(circle, rgba(139, 92, 246, 0.15) 0%, rgba(16, 185, 129, 0.08) 50%, transparent 70%);
+            filter: blur(85px);
+            animation: auroraPulseSlow 18s ease-in-out infinite reverse;
+            pointer-events-none;
+            z-index: 0;
+        }
+        /* Vercel/Linear Glassmorphism Styling */
+        .glass-card {
+            background: rgba(10, 13, 20, 0.7);
+            backdrop-filter: blur(24px);
+            -webkit-backdrop-filter: blur(24px);
+            border: 1px solid rgba(255, 255, 255, 0.08);
+            box-shadow: 0 20px 50px rgba(0, 0, 0, 0.5), inset 0 1px 0 rgba(255, 255, 255, 0.06);
+        }
+        .glass-card:hover {
+            border-color: rgba(16, 185, 129, 0.3);
+            box-shadow: 0 20px 50px rgba(0, 0, 0, 0.6), 0 0 25px rgba(16, 185, 129, 0.1), inset 0 1px 0 rgba(255, 255, 255, 0.12);
+        }
+        .glass-inner {
+            background: rgba(3, 7, 18, 0.75);
+            backdrop-filter: blur(14px);
+            -webkit-backdrop-filter: blur(14px);
+            border: 1px solid rgba(255, 255, 255, 0.06);
+        }
+        .glass-inner:hover {
+            border-color: rgba(255, 255, 255, 0.12);
         }
     </style>
 </head>
-<body class="bg-[#030712] text-white font-sans min-h-screen flex flex-col items-center py-12 relative overflow-x-hidden">
+<body class="bg-[#030712] text-white font-sans min-h-screen flex flex-col items-center py-12 relative overflow-x-hidden selection:bg-emerald-500 selection:text-black">
     <div id="toast-container" class="fixed top-5 right-5 z-[100] flex flex-col gap-3 pointer-events-none"></div>
+    
+    <!-- Deep Space Aurora Background Meshes -->
+    <div class="aurora-mesh-1"></div>
+    <div class="aurora-mesh-2"></div>
+    <div class="aurora-mesh-3"></div>
+    
     <!-- Cyber Grid Background -->
-    <div class="fixed inset-0 cyber-grid z-0 pointer-events-none"></div>
+    <div class="fixed inset-0 cyber-grid z-0 pointer-events-none opacity-50"></div>
     <!-- Animated Scanline -->
     <div class="scan-line"></div>
     
-    <!-- Main Content Wrapper (z-index above grid) -->
+    <!-- Main Content Wrapper -->
     <div class="relative z-10 w-full flex flex-col items-center">
     
     <!-- Header -->
     <div class="text-center mb-10 px-2">
-        <h1 id="mainLogo" class="text-4xl md:text-6xl font-extrabold text-transparent bg-clip-text bg-gradient-to-r from-emerald-400 via-teal-400 to-cyan-500 mb-3 tracking-tight glow-text cursor-default">
+        <h1 id="mainLogo" class="text-4xl md:text-6xl font-extrabold text-transparent bg-clip-text bg-gradient-to-r from-emerald-400 via-teal-400 to-cyan-500 mb-3 tracking-tight glow-text cursor-pointer select-none transition-transform active:scale-95">
             TimeCodeSecurity
         </h1>
         <p class="text-gray-400 text-xs md:text-sm tracking-[0.15em] md:tracking-[0.3em] uppercase font-semibold"><span id="app-subtitle">ENTERPRISE DEEP SCAN INTERFACE</span></p>
@@ -79,14 +151,14 @@
 
     <!-- Threat Intelligence Analytics -->
     <div class="max-w-5xl w-full px-6 mb-8">
-        <div class="bg-gray-900/80 backdrop-blur-3xl border border-gray-700/60 rounded-3xl shadow-[0_0_40px_rgba(0,0,0,0.5)] p-6 md:p-8">
+        <div class="glass-card rounded-3xl p-6 md:p-8 transition-all duration-500">
             <div class="flex flex-col sm:flex-row sm:items-center justify-between gap-4 mb-6">
                 <div class="flex items-center gap-3">
                     <svg class="w-6 h-6 text-red-500 animate-pulse" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M13 10V3L4 14h7v7l9-11h-7z"></path></svg>
                     <h2 class="text-xl md:text-2xl font-bold text-gray-100 tracking-wide">Threat Intelligence Command Center</h2>
                 </div>
                 <div class="flex items-center gap-2">
-                    <span id="postureStatusBadge" class="bg-emerald-950/70 text-emerald-400 border border-emerald-700/60 px-3 py-1 rounded-full text-xs font-mono font-bold flex items-center gap-1.5 shadow-[0_0_15px_rgba(16,185,129,0.2)]">
+                    <span id="postureStatusBadge" class="bg-emerald-950/70 text-emerald-400 border border-emerald-500/40 px-3.5 py-1.5 rounded-full text-xs font-mono font-bold flex items-center gap-2 shadow-[0_0_15px_rgba(16,185,129,0.2)]">
                         <span class="w-2 h-2 rounded-full bg-emerald-400 animate-ping"></span>
                         Bank-Grade Zero-Day Shield Active
                     </span>
@@ -95,7 +167,7 @@
             
             <div class="grid grid-cols-1 lg:grid-cols-3 gap-6">
                 <!-- Card 1: Executive Security Posture Speedometer Gauge -->
-                <div class="bg-[#0a0d14] rounded-2xl p-5 border border-gray-800 shadow-inner flex flex-col justify-between items-center relative overflow-hidden">
+                <div class="glass-inner rounded-2xl p-5 shadow-inner flex flex-col justify-between items-center relative overflow-hidden transition-all duration-300">
                     <div class="w-full flex justify-between items-center mb-1">
                         <h3 class="text-xs text-gray-400 uppercase tracking-widest font-mono font-bold">Security Health Score</h3>
                         <span id="securityScoreGrade" class="text-xs bg-emerald-500/20 text-emerald-400 border border-emerald-500/40 px-2 py-0.5 rounded font-mono font-bold">GRADE A+</span>
@@ -123,7 +195,7 @@
                     </div>
 
                     <!-- Live Defense Verification Pills -->
-                    <div class="w-full space-y-1.5 pt-2 border-t border-gray-800/80 text-[11px] font-mono">
+                    <div class="w-full space-y-1.5 pt-2 border-t border-white/[0.08] text-[11px] font-mono">
                         <div class="flex justify-between items-center text-gray-300">
                             <span class="flex items-center gap-1"><svg class="w-3.5 h-3.5 text-emerald-400" fill="currentColor" viewBox="0 0 20 20"><path fill-rule="evenodd" d="M16.707 5.293a1 1 0 010 1.414l-8 8a1 1 0 01-1.414 0l-4-4a1 1 0 011.414-1.414L8 12.586l7.293-7.293a1 1 0 011.414 0z" clip-rule="evenodd"></path></svg> Zero-Day Shield</span>
                             <span class="text-emerald-400 font-bold">100% Active</span>
@@ -140,7 +212,7 @@
                 </div>
 
                 <!-- Card 2: Activity Chart (Bar) -->
-                <div class="bg-[#0a0d14] rounded-2xl p-5 border border-gray-800 shadow-inner flex flex-col justify-between">
+                <div class="glass-inner rounded-2xl p-5 shadow-inner flex flex-col justify-between transition-all duration-300">
                     <h3 class="text-xs text-gray-400 uppercase tracking-widest mb-3 text-center font-mono font-bold">System Activity</h3>
                     <div class="relative h-52 w-full">
                         <canvas id="activityChart"></canvas>
@@ -148,7 +220,7 @@
                 </div>
                 
                 <!-- Card 3: Severity Chart (Doughnut) -->
-                <div class="bg-[#0a0d14] rounded-2xl p-5 border border-gray-800 shadow-inner flex flex-col justify-between">
+                <div class="glass-inner rounded-2xl p-5 shadow-inner flex flex-col justify-between transition-all duration-300">
                     <h3 class="text-xs text-gray-400 uppercase tracking-widest mb-3 text-center font-mono font-bold">Threat Severity Breakdown</h3>
                     <div class="relative h-52 w-full flex justify-center">
                         <canvas id="severityChart"></canvas>
@@ -160,7 +232,7 @@
 
     <!-- Main Dashboard -->
     <div class="max-w-5xl w-full px-6">
-        <div class="bg-gray-900/70 backdrop-blur-2xl border border-gray-700/50 rounded-2xl shadow-2xl p-8 hover:shadow-[0_0_30px_rgba(16,185,129,0.15)] hover:border-gray-600/50 transition-all duration-500">
+        <div class="glass-card rounded-2xl p-8 transition-all duration-500">
             
             <!-- Input Section -->
             <div class="mb-5 flex flex-col sm:flex-row justify-between items-start sm:items-end gap-3 sm:gap-0">
@@ -210,7 +282,7 @@
             
             <div class="flex items-center gap-4 w-full mt-2 mb-2">
                 <input type="file" id="fileUpload" accept=".py,.js,.html,.css,.java,.cpp,.c,.txt" class="hidden">
-                <button id="uploadBtn" onclick="document.getElementById('fileUpload').click()" class="bg-gray-800 hover:bg-gray-700 text-gray-300 text-xs py-1.5 px-3 rounded border border-gray-700 transition-colors flex items-center gap-2">
+                <button id="uploadBtn" onclick="document.getElementById('fileUpload').click()" class="bg-[#030712]/80 hover:bg-gray-800 text-gray-300 text-xs py-1.5 px-3 rounded border border-white/10 hover:border-white/20 transition-colors flex items-center gap-2">
                     <svg xmlns="http://www.w3.org/2000/svg" class="h-4 w-4" fill="none" viewBox="0 0 24 24" stroke="currentColor">
                         <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M4 16v1a3 3 0 003 3h10a3 3 0 003-3v-1m-4-8l-4-4m0 0L8 8m4-4v12" />
                     </svg>
@@ -218,10 +290,10 @@
                 </button>
             </div>
 
-            <textarea id="codeInput" spellcheck="false" class="w-full h-[320px] bg-[#0d1117] text-emerald-400 font-mono text-sm leading-relaxed p-5 rounded-xl border border-gray-700/80 focus:outline-none focus:border-cyan-500 focus:ring-1 focus:ring-cyan-500 transition-all resize-none shadow-inner" placeholder="// Paste your code here for vulnerability analysis..."></textarea>
+            <textarea id="codeInput" spellcheck="false" class="w-full h-[320px] bg-[#030712]/85 backdrop-blur-md text-emerald-400 font-mono text-sm leading-relaxed p-5 rounded-xl border border-white/10 focus:outline-none focus:border-cyan-500 focus:ring-1 focus:ring-cyan-500 transition-all resize-none shadow-inner" placeholder="// Paste your code here for vulnerability analysis..."></textarea>
             
             <!-- Scan Button -->
-            <button id="scanBtn" class="mt-8 w-full bg-gradient-to-r from-emerald-500 to-cyan-600 hover:from-emerald-400 hover:to-cyan-500 text-white font-bold py-4 px-4 rounded-xl shadow-[0_0_20px_rgba(16,185,129,0.3)] hover:shadow-[0_0_30px_rgba(16,185,129,0.5)] transition-all duration-300 flex justify-center items-center gap-3 tracking-wide">
+            <button id="scanBtn" class="mt-8 w-full bg-gradient-to-r from-emerald-500 to-cyan-600 hover:from-emerald-400 hover:to-cyan-500 text-white font-bold py-4 px-4 rounded-xl shadow-[0_0_25px_rgba(16,185,129,0.35)] hover:shadow-[0_0_35px_rgba(16,185,129,0.55)] transition-all duration-300 flex justify-center items-center gap-3 tracking-wide cursor-pointer active:scale-[0.99]">
                 <svg xmlns="http://www.w3.org/2000/svg" class="h-6 w-6" fill="none" viewBox="0 0 24 24" stroke="currentColor">
                     <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M9 12l2 2 4-4m5.618-4.016A11.955 11.955 0 0112 2.944a11.955 11.955 0 01-8.618 3.04A12.02 12.02 0 003 9c0 5.591 3.824 10.29 9 11.622 5.176-1.332 9-6.03 9-11.622 0-1.042-.133-2.052-.382-3.016z" />
                 </svg>
@@ -246,7 +318,7 @@
                     </div>
                     <div class="relative">
                         <div id="scanResultWrapper">
-                            <div id="scanResult" class="bg-[#0a0d14] text-gray-300 font-mono text-sm p-6 rounded-xl border border-gray-700/80 whitespace-pre-wrap leading-relaxed shadow-inner overflow-x-auto"></div>
+                            <div id="scanResult" class="bg-[#030712]/90 text-gray-300 font-mono text-sm p-6 rounded-xl border border-white/10 whitespace-pre-wrap leading-relaxed shadow-inner overflow-x-auto"></div>
                         </div>
                         <div id="blurPaywallOverlay" class="hidden absolute inset-0 z-10 flex flex-col items-center justify-center bg-black/40 rounded-xl">
                             <div class="text-6xl mb-4">🔒</div>
@@ -275,7 +347,7 @@
                             Copy Code
                         </button>
                     </div>
-                    <pre><code id="fixedCodeResult" class="block bg-[#0d1117] text-green-400 font-mono text-sm p-4 rounded-lg border border-gray-700/80 overflow-x-auto whitespace-pre-wrap"></code></pre>
+                    <pre><code id="fixedCodeResult" class="block bg-[#030712]/90 text-green-400 font-mono text-sm p-4 rounded-lg border border-white/10 overflow-x-auto whitespace-pre-wrap"></code></pre>
                 </div>
 
                 <div id="testCodeContainer" class="mt-6 hidden">
@@ -285,24 +357,24 @@
                             Copy Test
                         </button>
                     </div>
-                    <pre><code id="testCodeResult" class="block bg-[#0d1117] text-blue-400 font-mono text-sm p-4 rounded-lg border border-gray-700/80 overflow-x-auto whitespace-pre-wrap"></code></pre>
+                    <pre><code id="testCodeResult" class="block bg-[#030712]/90 text-blue-400 font-mono text-sm p-4 rounded-lg border border-white/10 overflow-x-auto whitespace-pre-wrap"></code></pre>
                 </div>
             </div>
 
         </div>
 
         <!-- Supply Chain Auditor -->
-        <div class="mt-8 bg-gray-900/70 backdrop-blur-2xl border border-gray-700/50 rounded-2xl p-6 shadow-2xl w-full">
+        <div class="mt-8 glass-card rounded-2xl p-6 transition-all duration-300 w-full">
             <h2 class="text-lg font-bold text-gray-200 mb-4 flex items-center gap-2">
                 <svg class="w-5 h-5 text-orange-400" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M19 11H5m14 0a2 2 0 012 2v6a2 2 0 01-2 2H5a2 2 0 01-2-2v-6a2 2 0 012-2m14 0V9a2 2 0 00-2-2M5 11V9a2 2 0 012-2m0 0V5a2 2 0 012-2h6a2 2 0 012 2v2M7 7h10"></path></svg>
                 Supply Chain Auditor
             </h2>
             <div class="flex flex-col gap-4">
-                <select id="dependencyFileType" class="bg-[#0d1117] text-white p-3 rounded-lg border border-gray-700 focus:outline-none focus:border-orange-500 transition-colors font-mono text-sm w-full sm:w-64">
+                <select id="dependencyFileType" class="bg-[#030712]/80 text-white p-3 rounded-lg border border-white/10 focus:outline-none focus:border-orange-500 transition-colors font-mono text-sm w-full sm:w-64">
                     <option value="requirements.txt">Python (requirements.txt)</option>
                     <option value="package.json">Node.js (package.json)</option>
                 </select>
-                <textarea id="dependencyInput" spellcheck="false" class="w-full h-48 bg-[#0d1117] text-orange-400 font-mono text-sm leading-relaxed p-4 rounded-xl border border-gray-700/80 focus:outline-none focus:border-orange-500 focus:ring-1 focus:ring-orange-500 transition-all resize-none shadow-inner" placeholder="Paste your requirements.txt or package.json here..."></textarea>
+                <textarea id="dependencyInput" spellcheck="false" class="w-full h-48 bg-[#030712]/85 text-orange-400 font-mono text-sm leading-relaxed p-4 rounded-xl border border-white/10 focus:outline-none focus:border-orange-500 focus:ring-1 focus:ring-orange-500 transition-all resize-none shadow-inner" placeholder="Paste your requirements.txt or package.json here..."></textarea>
                 <button id="scanDependenciesBtn" class="bg-gradient-to-r from-orange-600 to-red-600 hover:from-orange-500 hover:to-red-500 text-white font-bold py-3 px-4 rounded-xl shadow-lg transition-all duration-300 flex justify-center items-center gap-2">
                     <svg class="w-5 h-5" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M21 21l-6-6m2-5a7 7 0 11-14 0 7 7 0 0114 0z"></path></svg>
                     Scan Dependencies
@@ -311,13 +383,13 @@
                     <div class="flex justify-between items-center mb-2">
                         <h4 class="text-orange-400 font-bold flex items-center gap-2">Audit Report</h4>
                     </div>
-                    <div id="dependencyResult" class="bg-[#0a0d14] text-gray-300 font-mono text-sm p-6 rounded-xl border border-gray-700/80 whitespace-pre-wrap leading-relaxed shadow-inner overflow-x-auto"></div>
+                    <div id="dependencyResult" class="bg-[#030712]/90 text-gray-300 font-mono text-sm p-6 rounded-xl border border-white/10 whitespace-pre-wrap leading-relaxed shadow-inner overflow-x-auto"></div>
                 </div>
             </div>
         </div>
 
         <!-- Integrations Section -->
-        <div class="mt-8 bg-gray-900/70 backdrop-blur-2xl border border-gray-700/50 rounded-2xl p-6 shadow-2xl w-full">
+        <div class="mt-8 glass-card rounded-2xl p-6 transition-all duration-300 w-full">
             <h2 class="text-lg font-bold text-gray-200 mb-4 flex items-center gap-2">
                 <svg class="w-5 h-5 text-purple-400" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M13 10V3L4 14h7v7l9-11h-7z"></path></svg>
                 Enterprise Integrations <span class="ent-lock-badge hidden text-xs bg-yellow-900/50 text-yellow-400 border border-yellow-700/50 px-2 py-0.5 rounded-full flex items-center gap-1"><span class="text-[10px]">🔒</span> Enterprise Only</span>
@@ -325,16 +397,16 @@
             <div class="flex flex-col sm:flex-row gap-4 items-end">
                 <div class="flex-1 w-full">
                     <label class="block text-gray-400 text-xs mb-2 uppercase tracking-wide">Slack/Discord Webhook URL</label>
-                    <input type="text" id="webhookUrlInput" class="w-full bg-[#0d1117] text-white p-3 rounded-lg border border-gray-700 focus:outline-none focus:border-purple-500 transition-colors font-mono text-sm" placeholder="https://hooks.slack.com/...">
+                    <input type="text" id="webhookUrlInput" class="w-full bg-[#030712]/80 text-white p-3 rounded-lg border border-white/10 focus:outline-none focus:border-purple-500 transition-colors font-mono text-sm" placeholder="https://hooks.slack.com/...">
                 </div>
-                <button id="saveIntegrationBtn" class="bg-gray-800 hover:bg-gray-700 text-purple-400 font-bold py-3 px-6 rounded-lg border border-gray-600 hover:border-purple-500 transition-all text-sm whitespace-nowrap">
+                <button id="saveIntegrationBtn" class="bg-gray-800 hover:bg-gray-700 text-purple-400 font-bold py-3 px-6 rounded-lg border border-white/10 hover:border-purple-500 transition-all text-sm whitespace-nowrap">
                     Save Integration
                 </button>
             </div>
         </div>
             
         <!-- Developer / API Access Section -->
-        <div id="apiKeySection" class="mt-8 bg-gray-900/70 backdrop-blur-2xl border border-gray-700/50 rounded-2xl p-6 shadow-2xl w-full relative">
+        <div id="apiKeySection" class="mt-8 glass-card rounded-2xl p-6 transition-all duration-300 w-full relative">
             <div id="apiKeyLockBanner" class="hidden bg-yellow-950/40 border border-yellow-700/60 rounded-xl p-4 mb-6 flex flex-col sm:flex-row items-center justify-between gap-4">
                 <div class="flex items-center gap-2">
                     <span class="text-xl">🔒</span>
@@ -365,17 +437,17 @@
         </div>
 
         <!-- Live README Security Badge (GitHub / CI/CD) -->
-        <div class="mt-8 bg-gray-900/70 backdrop-blur-2xl border border-gray-700/50 rounded-2xl p-6 shadow-2xl w-full">
+        <div class="mt-8 glass-card rounded-2xl p-6 transition-all duration-300 w-full">
             <div class="flex flex-col md:flex-row md:items-center justify-between gap-4 mb-4">
                 <div>
                     <h2 class="text-lg font-bold text-gray-200 flex items-center gap-2">
                         <svg class="w-5 h-5 text-emerald-400" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M9 12l2 2 4-4m5.618-4.016A11.955 11.955 0 0112 2.944a11.955 11.955 0 01-8.618 3.04A12.02 12.02 0 003 9c0 5.591 3.824 10.29 9 11.622 5.176-1.332 9-6.03 9-11.622 0-1.042-.133-2.052-.382-3.016z"></path></svg>
                         Live README Security Badge
-                        <span class="text-xs bg-emerald-950/60 text-emerald-400 border border-emerald-700/50 px-2 py-0.5 rounded-full flex items-center gap-1">✨ Dynamic SVG</span>
+                        <span class="text-xs bg-emerald-950/60 text-emerald-400 border border-emerald-500/40 px-2 py-0.5 rounded-full flex items-center gap-1">✨ Dynamic SVG</span>
                     </h2>
                     <p class="text-gray-400 text-sm mt-1">Embed this live, verifiable Zero-Day security shield into your GitHub repositories, documentation, and CI/CD pipelines.</p>
                 </div>
-                <div class="bg-[#030712] p-3 rounded-xl border border-gray-800 shadow-inner flex items-center gap-3">
+                <div class="glass-inner p-3 rounded-xl shadow-inner flex items-center gap-3">
                     <span class="text-xs text-gray-500 font-mono">LIVE PREVIEW:</span>
                     <img id="badgeLivePreview" src="/api/badge/default.svg" alt="TimeCodeSecurity Badge Preview" class="h-7 hover:scale-105 transition-transform">
                 </div>
@@ -383,31 +455,31 @@
 
             <div class="grid grid-cols-1 md:grid-cols-2 gap-4 mt-4">
                 <!-- Markdown Snippet -->
-                <div class="bg-[#0a0d14] p-4 rounded-xl border border-gray-800 flex flex-col justify-between">
+                <div class="glass-inner p-4 rounded-xl flex flex-col justify-between">
                     <div>
                         <div class="flex justify-between items-center mb-2">
                             <span class="text-xs font-bold text-gray-300 font-mono">MARKDOWN (GitHub README)</span>
-                            <button id="copyBadgeMarkdownBtn" class="text-xs bg-gray-800 hover:bg-gray-700 text-emerald-400 px-3 py-1 rounded border border-gray-700 hover:border-emerald-500 transition-all font-mono">Copy Markdown</button>
+                            <button id="copyBadgeMarkdownBtn" class="text-xs bg-[#030712] hover:bg-gray-800 text-emerald-400 px-3 py-1 rounded border border-white/10 hover:border-emerald-500 transition-all font-mono">Copy Markdown</button>
                         </div>
-                        <input type="text" id="badgeMarkdownSnippet" readonly class="w-full bg-[#030712] text-gray-400 text-xs font-mono p-2.5 rounded border border-gray-800 focus:outline-none select-all" value="Loading badge markdown...">
+                        <input type="text" id="badgeMarkdownSnippet" readonly class="w-full bg-[#030712] text-gray-400 text-xs font-mono p-2.5 rounded border border-white/10 focus:outline-none select-all" value="Loading badge markdown...">
                     </div>
                 </div>
 
                 <!-- HTML Snippet -->
-                <div class="bg-[#0a0d14] p-4 rounded-xl border border-gray-800 flex flex-col justify-between">
+                <div class="glass-inner p-4 rounded-xl flex flex-col justify-between">
                     <div>
                         <div class="flex justify-between items-center mb-2">
                             <span class="text-xs font-bold text-gray-300 font-mono">HTML EMBED</span>
-                            <button id="copyBadgeHtmlBtn" class="text-xs bg-gray-800 hover:bg-gray-700 text-blue-400 px-3 py-1 rounded border border-gray-700 hover:border-blue-500 transition-all font-mono">Copy HTML</button>
+                            <button id="copyBadgeHtmlBtn" class="text-xs bg-[#030712] hover:bg-gray-800 text-blue-400 px-3 py-1 rounded border border-white/10 hover:border-blue-500 transition-all font-mono">Copy HTML</button>
                         </div>
-                        <input type="text" id="badgeHtmlSnippet" readonly class="w-full bg-[#030712] text-gray-400 text-xs font-mono p-2.5 rounded border border-gray-800 focus:outline-none select-all" value="Loading badge HTML...">
+                        <input type="text" id="badgeHtmlSnippet" readonly class="w-full bg-[#030712] text-gray-400 text-xs font-mono p-2.5 rounded border border-white/10 focus:outline-none select-all" value="Loading badge HTML...">
                     </div>
                 </div>
             </div>
         </div>
 
         <!-- 1-Click GitHub Actions CI/CD Automated PR Scanner -->
-        <div class="mt-8 bg-gray-900/70 backdrop-blur-2xl border border-gray-700/50 rounded-2xl p-6 shadow-2xl w-full">
+        <div class="mt-8 glass-card rounded-2xl p-6 transition-all duration-300 w-full">
             <div class="flex flex-col md:flex-row md:items-center justify-between gap-4 mb-4">
                 <div>
                     <h2 class="text-lg font-bold text-gray-200 flex items-center gap-2">
@@ -426,10 +498,10 @@
             </div>
 
             <!-- Workflow Configuration Options -->
-            <div class="grid grid-cols-1 sm:grid-cols-2 gap-4 bg-[#0a0d14] p-4 rounded-xl border border-gray-800 mb-4">
+            <div class="grid grid-cols-1 sm:grid-cols-2 gap-4 glass-inner p-4 rounded-xl mb-4">
                 <div>
                     <label class="block text-gray-400 text-xs font-mono uppercase mb-2">Target Branch</label>
-                    <select id="cicdBranchSelect" class="w-full bg-[#030712] text-gray-200 text-xs font-mono p-2.5 rounded-lg border border-gray-700 focus:outline-none focus:border-indigo-500">
+                    <select id="cicdBranchSelect" class="w-full bg-[#030712] text-gray-200 text-xs font-mono p-2.5 rounded-lg border border-white/10 focus:outline-none focus:border-indigo-500">
                         <option value="main" selected>main (Production Branch)</option>
                         <option value="master">master</option>
                         <option value="develop">develop / staging</option>
@@ -437,7 +509,7 @@
                 </div>
                 <div>
                     <label class="block text-gray-400 text-xs font-mono uppercase mb-2">PR Security Gate Policy</label>
-                    <select id="cicdPolicySelect" class="w-full bg-[#030712] text-gray-200 text-xs font-mono p-2.5 rounded-lg border border-gray-700 focus:outline-none focus:border-indigo-500">
+                    <select id="cicdPolicySelect" class="w-full bg-[#030712] text-gray-200 text-xs font-mono p-2.5 rounded-lg border border-white/10 focus:outline-none focus:border-indigo-500">
                         <option value="critical" selected>Strict: Block PR on Critical Vulnerabilities</option>
                         <option value="audit">Audit Only: Scan & Report (Never Fail Pipeline)</option>
                     </select>
@@ -446,24 +518,24 @@
 
             <!-- YAML Preview Box -->
             <div class="relative">
-                <div class="flex justify-between items-center bg-[#030712] px-4 py-2 rounded-t-xl border border-gray-800 text-xs font-mono text-gray-400">
+                <div class="flex justify-between items-center bg-[#030712] px-4 py-2 rounded-t-xl border border-white/10 text-xs font-mono text-gray-400">
                     <span>.github/workflows/timecode_security.yml</span>
                     <span class="text-emerald-400 flex items-center gap-1">● Ready to deploy</span>
                 </div>
-                <textarea id="cicdYamlSnippet" readonly rows="12" class="w-full bg-[#050914] text-indigo-300 font-mono text-xs p-4 rounded-b-xl border-x border-b border-gray-800 focus:outline-none resize-none leading-relaxed select-all">Loading workflow YAML...</textarea>
+                <textarea id="cicdYamlSnippet" readonly rows="12" class="w-full bg-[#030712]/95 text-indigo-300 font-mono text-xs p-4 rounded-b-xl border-x border-b border-white/10 focus:outline-none resize-none leading-relaxed select-all">Loading workflow YAML...</textarea>
             </div>
 
             <!-- 3-Step Visual Onboarding Guide -->
-            <div class="grid grid-cols-1 md:grid-cols-3 gap-4 mt-4 pt-4 border-t border-gray-800">
-                <div class="p-3 bg-[#0a0d14] rounded-lg border border-gray-800 flex items-start gap-3">
+            <div class="grid grid-cols-1 md:grid-cols-3 gap-4 mt-4 pt-4 border-t border-white/[0.08]">
+                <div class="p-3 glass-inner rounded-lg flex items-start gap-3">
                     <span class="flex-shrink-0 w-6 h-6 rounded-full bg-indigo-900/50 text-indigo-400 border border-indigo-700/50 flex items-center justify-center text-xs font-bold font-mono">1</span>
                     <p class="text-gray-400 text-xs leading-normal">Save file into your repo under <code class="text-indigo-300">.github/workflows/timecode_security.yml</code></p>
                 </div>
-                <div class="p-3 bg-[#0a0d14] rounded-lg border border-gray-800 flex items-start gap-3">
+                <div class="p-3 glass-inner rounded-lg flex items-start gap-3">
                     <span class="flex-shrink-0 w-6 h-6 rounded-full bg-indigo-900/50 text-indigo-400 border border-indigo-700/50 flex items-center justify-center text-xs font-bold font-mono">2</span>
                     <p class="text-gray-400 text-xs leading-normal">Add your API Key as a GitHub Secret named <code class="text-indigo-300">TIMECODE_API_KEY</code></p>
                 </div>
-                <div class="p-3 bg-[#0a0d14] rounded-lg border border-gray-800 flex items-start gap-3">
+                <div class="p-3 glass-inner rounded-lg flex items-start gap-3">
                     <span class="flex-shrink-0 w-6 h-6 rounded-full bg-emerald-900/50 text-emerald-400 border border-emerald-700/50 flex items-center justify-center text-xs font-bold font-mono">3</span>
                     <p class="text-gray-400 text-xs leading-normal">Open a PR! TimeCodeSecurity will automatically analyze code before merging.</p>
                 </div>
@@ -471,7 +543,7 @@
         </div>
         
         <!-- Enterprise Workspace -->
-        <div class="mt-8 bg-gray-900/70 backdrop-blur-2xl border border-gray-700/50 rounded-2xl p-6 shadow-2xl w-full">
+        <div class="mt-8 glass-card rounded-2xl p-6 transition-all duration-300 w-full">
             <h2 class="text-lg font-bold text-gray-200 mb-4 flex items-center gap-2">
                 <svg class="w-5 h-5 text-blue-400" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M17 20h5v-2a3 3 0 00-5.356-1.857M17 20H7m10 0v-2c0-.656-.126-1.283-.356-1.857M7 20H2v-2a3 3 0 015.356-1.857M7 20v-2c0-.656.126-1.283.356-1.857m0 0a5.002 5.002 0 019.288 0M15 7a3 3 0 11-6 0 3 3 0 016 0zm6 3a2 2 0 11-4 0 2 2 0 014 0zM7 10a2 2 0 11-4 0 2 2 0 014 0z"></path></svg>
                 Enterprise Workspace
@@ -481,7 +553,7 @@
                 <div class="flex flex-col sm:flex-row gap-4 items-end mb-4">
                     <div class="flex-1 w-full">
                         <label class="block text-gray-400 text-xs mb-2 uppercase tracking-wide">Create Workspace</label>
-                        <input type="text" id="createOrgInput" class="w-full bg-[#0d1117] text-white p-3 rounded-lg border border-gray-700 focus:outline-none focus:border-blue-500 transition-colors font-mono text-sm" placeholder="Organization Name">
+                        <input type="text" id="createOrgInput" class="w-full bg-[#030712] text-white p-3 rounded-lg border border-white/10 focus:outline-none focus:border-blue-500 transition-colors font-mono text-sm" placeholder="Organization Name">
                     </div>
                     <button id="createOrgBtn" class="bg-blue-600 hover:bg-blue-500 text-white font-bold py-3 px-6 rounded-lg border border-blue-500 transition-all text-sm whitespace-nowrap">
                         Create Workspace
@@ -490,9 +562,9 @@
                 <div class="flex flex-col sm:flex-row gap-4 items-end">
                     <div class="flex-1 w-full">
                         <label class="block text-gray-400 text-xs mb-2 uppercase tracking-wide">Join Workspace</label>
-                        <input type="text" id="joinOrgInput" class="w-full bg-[#0d1117] text-white p-3 rounded-lg border border-gray-700 focus:outline-none focus:border-blue-500 transition-colors font-mono text-sm" placeholder="Invite Code (e.g. a1b2c3)">
+                        <input type="text" id="joinOrgInput" class="w-full bg-[#030712] text-white p-3 rounded-lg border border-white/10 focus:outline-none focus:border-blue-500 transition-colors font-mono text-sm" placeholder="Invite Code (e.g. a1b2c3)">
                     </div>
-                    <button id="joinOrgBtn" class="bg-gray-800 hover:bg-gray-700 text-blue-400 font-bold py-3 px-6 rounded-lg border border-gray-600 hover:border-blue-500 transition-all text-sm whitespace-nowrap">
+                    <button id="joinOrgBtn" class="bg-[#030712] hover:bg-gray-800 text-blue-400 font-bold py-3 px-6 rounded-lg border border-white/10 hover:border-blue-500 transition-all text-sm whitespace-nowrap">
                         Join Workspace
                     </button>
                 </div>
@@ -500,7 +572,7 @@
 
             <div id="workspaceHasOrg" class="hidden">
                 <div class="flex flex-col gap-4">
-                    <div class="flex justify-between items-center bg-[#0d1117] p-4 rounded-lg border border-gray-700">
+                    <div class="flex justify-between items-center bg-[#030712] p-4 rounded-lg border border-white/10">
                         <div>
                             <p class="text-xs text-gray-500 uppercase tracking-wide">Workspace Name</p>
                             <p id="displayOrgName" class="text-lg text-white font-bold">...</p>
@@ -514,8 +586,8 @@
                     <div id="adminInviteSection" class="hidden mt-2">
                         <label class="block text-gray-400 text-xs mb-2 uppercase tracking-wide">Invite Team (Admin Only)</label>
                         <div class="flex flex-col sm:flex-row gap-4 items-end">
-                            <input type="text" id="displayInviteCode" readonly class="w-full bg-[#0d1117] text-gray-400 p-3 rounded-lg border border-gray-700 font-mono text-sm">
-                            <button id="copyInviteBtn" class="bg-gray-800 hover:bg-gray-700 text-gray-300 font-bold py-3 px-6 rounded-lg border border-gray-600 transition-all text-sm whitespace-nowrap">
+                            <input type="text" id="displayInviteCode" readonly class="w-full bg-[#030712] text-gray-400 p-3 rounded-lg border border-white/10 font-mono text-sm">
+                            <button id="copyInviteBtn" class="bg-[#030712] hover:bg-gray-800 text-gray-300 font-bold py-3 px-6 rounded-lg border border-white/10 transition-all text-sm whitespace-nowrap">
                                 Copy Invite Code
                             </button>
                         </div>
@@ -525,13 +597,13 @@
         </div>
 
         <!-- Company Code Vault -->
-        <div class="mt-8 bg-gray-900/70 backdrop-blur-2xl border border-gray-700/50 rounded-2xl p-6 shadow-2xl w-full">
+        <div class="mt-8 glass-card rounded-2xl p-6 transition-all duration-300 w-full">
             <h2 class="text-lg font-bold text-gray-200 mb-4 flex items-center gap-2">
                 <svg class="w-5 h-5 text-indigo-400" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M19 11H5m14 0a2 2 0 012 2v6a2 2 0 01-2 2H5a2 2 0 01-2-2v-6a2 2 0 012-2m14 0V9a2 2 0 00-2-2M5 11V9a2 2 0 012-2m0 0V5a2 2 0 012-2h6a2 2 0 012 2v2M7 7h10"></path></svg>
                 Company Code Vault <span class="ent-lock-badge hidden text-xs bg-yellow-900/50 text-yellow-400 border border-yellow-700/50 px-2 py-0.5 rounded-full flex items-center gap-1"><span class="text-[10px]">🔒</span> Enterprise Only</span>
             </h2>
             <div class="mb-4">
-                <input type="text" id="vaultSearchInput" class="w-full bg-[#0d1117] text-gray-300 p-3 rounded-lg border border-gray-700 focus:outline-none focus:border-indigo-500 transition-colors font-mono text-sm" placeholder="Search knowledge base...">
+                <input type="text" id="vaultSearchInput" class="w-full bg-[#030712] text-gray-300 p-3 rounded-lg border border-white/10 focus:outline-none focus:border-indigo-500 transition-colors font-mono text-sm" placeholder="Search knowledge base...">
             </div>
             <div id="vaultList" class="flex flex-col gap-6 max-h-96 overflow-y-auto pr-2">
                 <!-- Vault items injected here -->
@@ -543,7 +615,7 @@
     </div>
 
     <!-- Enterprise Security Footer -->
-    <footer class="mt-20 border-t border-gray-800 bg-[#06080a] py-12 px-6">
+    <footer class="mt-20 border-t border-white/[0.08] bg-[#05070c]/80 backdrop-blur-xl py-12 px-6 w-full">
         <div class="max-w-7xl mx-auto grid grid-cols-1 md:grid-cols-3 gap-8">
             <div>
                 <h3 class="text-xl font-bold text-transparent bg-clip-text bg-gradient-to-r from-green-400 to-blue-500 mb-4 tracking-tight">TimeCodeSecurity</h3>
@@ -566,7 +638,7 @@
                 </ul>
             </div>
         </div>
-        <div class="mt-12 text-center text-xs text-gray-600 border-t border-gray-800 pt-8">
+        <div class="mt-12 text-center text-xs text-gray-600 border-t border-white/[0.06] pt-8">
             &copy; 2026 TimeCodeSecurity Inc. All rights reserved. We never store your source code.
         </div>
     </footer>
@@ -603,45 +675,82 @@
     </div>
     <!-- Upgrade Modal -->
     <div id="upgradeModal" class="hidden fixed inset-0 z-50 flex justify-center items-start bg-black/80 backdrop-blur-sm p-4 sm:p-6 md:p-10 overflow-y-auto">
-        <div class="bg-[#0a0d14] border border-gray-700/80 rounded-2xl p-6 md:p-8 max-w-4xl w-full shadow-2xl relative my-auto my-8">
-            <div class="flex justify-between items-center mb-6">
-                <h2 class="text-2xl md:text-3xl font-bold text-transparent bg-clip-text bg-gradient-to-r from-yellow-400 to-orange-500">Choose Your Plan</h2>
-                <button id="closeModalBtn" onclick="document.getElementById('upgradeModal').classList.add('hidden')" class="text-gray-400 hover:text-white transition-colors cursor-pointer p-2 rounded-lg hover:bg-gray-800">
-                    <svg class="w-6 h-6" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M6 18L18 6M6 6l12 12"></path></svg>
-                </button>
-            </div>
-            
-            <div class="flex flex-col items-center justify-center mb-6">
-                <!-- Enterprise SOC-2 Plan -->
-                <div class="bg-yellow-900/10 p-6 rounded-xl border-2 border-yellow-500/50 hover:border-yellow-400 transition-colors relative flex flex-col h-full shadow-[0_0_20px_rgba(234,179,8,0.15)] max-w-md w-full">
-                    <div class="absolute -top-3 left-1/2 transform -translate-x-1/2 bg-gradient-to-r from-yellow-500 to-orange-500 text-black text-xs font-bold px-3 py-1 rounded-full">
-                        MOST POPULAR
-                    </div>
-                    <h3 class="text-xl font-bold text-yellow-400 mb-2">Enterprise SOC-2</h3>
-                    <div class="mb-4">
-                        <span class="text-3xl font-bold text-white">$499</span><span class="text-gray-400">/month</span>
-                        <div class="text-sm mt-2 text-green-400">Special Indian Pricing: <span class="font-bold">₹19,999/mo</span></div>
-                    </div>
-                    <ul class="space-y-3 mb-8 flex-grow text-gray-300 text-sm">
-                        <li class="flex items-center"><svg class="w-5 h-5 mr-2 text-yellow-400 flex-shrink-0" fill="currentColor" viewBox="0 0 20 20"><path fill-rule="evenodd" d="M16.707 5.293a1 1 0 010 1.414l-8 8a1 1 0 01-1.414 0l-4-4a1 1 0 011.414-1.414L8 12.586l7.293-7.293a1 1 0 011.414 0z" clip-rule="evenodd"></path></svg>Unlimited AI Deep Scans (No daily limits)</li>
-                        <li class="flex items-center"><svg class="w-5 h-5 mr-2 text-yellow-400 flex-shrink-0" fill="currentColor" viewBox="0 0 20 20"><path fill-rule="evenodd" d="M16.707 5.293a1 1 0 010 1.414l-8 8a1 1 0 01-1.414 0l-4-4a1 1 0 011.414-1.414L8 12.586l7.293-7.293a1 1 0 011.414 0z" clip-rule="evenodd"></path></svg>Silicon Valley Grade Secure API Access</li>
-                        <li class="flex items-center"><svg class="w-5 h-5 mr-2 text-yellow-400 flex-shrink-0" fill="currentColor" viewBox="0 0 20 20"><path fill-rule="evenodd" d="M16.707 5.293a1 1 0 010 1.414l-8 8a1 1 0 01-1.414 0l-4-4a1 1 0 011.414-1.414L8 12.586l7.293-7.293a1 1 0 011.414 0z" clip-rule="evenodd"></path></svg>CI/CD Pipeline Webhooks (GitHub, GitLab, Bitbucket)</li>
-                        <li class="flex items-center"><svg class="w-5 h-5 mr-2 text-yellow-400 flex-shrink-0" fill="currentColor" viewBox="0 0 20 20"><path fill-rule="evenodd" d="M16.707 5.293a1 1 0 010 1.414l-8 8a1 1 0 01-1.414 0l-4-4a1 1 0 011.414-1.414L8 12.586l7.293-7.293a1 1 0 011.414 0z" clip-rule="evenodd"></path></svg>Advanced Zero-Day Threat Shield</li>
-                        <li class="flex items-center"><svg class="w-5 h-5 mr-2 text-yellow-400 flex-shrink-0" fill="currentColor" viewBox="0 0 20 20"><path fill-rule="evenodd" d="M16.707 5.293a1 1 0 010 1.414l-8 8a1 1 0 01-1.414 0l-4-4a1 1 0 011.414-1.414L8 12.586l7.293-7.293a1 1 0 011.414 0z" clip-rule="evenodd"></path></svg>Role-Based Team Access (RBAC) &amp; Team Vault</li>
-                        <li class="flex items-center"><svg class="w-5 h-5 mr-2 text-yellow-400 flex-shrink-0" fill="currentColor" viewBox="0 0 20 20"><path fill-rule="evenodd" d="M16.707 5.293a1 1 0 010 1.414l-8 8a1 1 0 01-1.414 0l-4-4a1 1 0 011.414-1.414L8 12.586l7.293-7.293a1 1 0 011.414 0z" clip-rule="evenodd"></path></svg>Real-Time Threat Analytics Dashboard</li>
-                        <li class="flex items-center"><svg class="w-5 h-5 mr-2 text-yellow-400 flex-shrink-0" fill="currentColor" viewBox="0 0 20 20"><path fill-rule="evenodd" d="M16.707 5.293a1 1 0 010 1.414l-8 8a1 1 0 01-1.414 0l-4-4a1 1 0 011.414-1.414L8 12.586l7.293-7.293a1 1 0 011.414 0z" clip-rule="evenodd"></path></svg>Auto-Remediation &amp; 1-Click Code Fixes</li>
-                        <li class="flex items-center"><svg class="w-5 h-5 mr-2 text-yellow-400 flex-shrink-0" fill="currentColor" viewBox="0 0 20 20"><path fill-rule="evenodd" d="M16.707 5.293a1 1 0 010 1.414l-8 8a1 1 0 01-1.414 0l-4-4a1 1 0 011.414-1.414L8 12.586l7.293-7.293a1 1 0 011.414 0z" clip-rule="evenodd"></path></svg>SOC-2, HIPAA &amp; GDPR Compliance Reports</li>
-                        <li class="flex items-center"><svg class="w-5 h-5 mr-2 text-yellow-400 flex-shrink-0" fill="currentColor" viewBox="0 0 20 20"><path fill-rule="evenodd" d="M16.707 5.293a1 1 0 010 1.414l-8 8a1 1 0 01-1.414 0l-4-4a1 1 0 011.414-1.414L8 12.586l7.293-7.293a1 1 0 011.414 0z" clip-rule="evenodd"></path></svg>24/7 Dedicated Priority Support</li>
-                        <li class="flex items-center"><svg class="w-5 h-5 mr-2 text-yellow-400 flex-shrink-0" fill="currentColor" viewBox="0 0 20 20"><path fill-rule="evenodd" d="M16.707 5.293a1 1 0 010 1.414l-8 8a1 1 0 01-1.414 0l-4-4a1 1 0 011.414-1.414L8 12.586l7.293-7.293a1 1 0 011.414 0z" clip-rule="evenodd"></path></svg>And more...</li>
-                    </ul>
-                    <a href="/login" class="bg-gradient-to-r from-yellow-500 to-orange-500 hover:from-yellow-400 hover:to-orange-400 text-black font-bold py-3 px-4 rounded-lg shadow-lg transition-all w-full text-center block">Start 14-Day Free Trial</a>
-                    <button id="openCtoModalBtn" onclick="document.getElementById('ctoModal').classList.remove('hidden')" class="mt-3 w-full bg-[#161b22] border border-yellow-500/30 text-yellow-500 font-bold py-3 px-4 rounded-lg transition-all animate-pulse shadow-[0_0_15px_rgba(234,179,8,0.2)] hover:shadow-[0_0_25px_rgba(234,179,8,0.5)] hover:border-yellow-400 hover:text-yellow-400 flex items-center justify-center gap-2 cursor-pointer">✨ See How We Solve Your Problems</button>
+        <div class="bg-gray-900 border border-gray-700 rounded-2xl w-full max-w-4xl p-6 sm:p-8 relative my-auto my-8 shadow-2xl">
+            <button id="closeModalBtn" onclick="document.getElementById('upgradeModal').classList.add('hidden')" class="absolute top-4 right-4 text-gray-400 hover:text-white transition-colors cursor-pointer">
+                <svg class="w-6 h-6" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M6 18L18 6M6 6l12 12"></path></svg>
+            </button>
+            <div class="text-center mb-6">
+                <span class="bg-gradient-to-r from-yellow-500 to-orange-500 text-black text-xs font-bold px-3 py-1 rounded-full uppercase tracking-wider">Enterprise SOC-2 Upgrade</span>
+                <h2 class="text-2xl sm:text-3xl font-extrabold text-white mt-2">Unlock Zero-Day Shield &amp; Automated PR Gates</h2>
+                <p class="text-gray-400 text-sm mt-1">Select the tier that fits your engineering team size.</p>
+                <div class="mt-4">
+                    <button id="openCtoModalBtn" onclick="document.getElementById('ctoModal').classList.remove('hidden')" class="inline-flex items-center gap-2 bg-yellow-500/10 hover:bg-yellow-500/20 border border-yellow-500/40 text-yellow-400 text-xs font-bold px-4 py-2 rounded-full transition-all cursor-pointer shadow-[0_0_15px_rgba(234,179,8,0.15)]">
+                        <svg class="w-4 h-4 text-yellow-400" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M13 16h-1v-4h-1m1-4h.01M21 12a9 9 0 11-18 0 9 9 0 0118 0z"></path></svg>
+                        <span>Why do CTOs choose TimeCodeSecurity? View Leadership Brief &rarr;</span>
+                    </button>
                 </div>
             </div>
 
-            <div class="mt-6 pt-4 border-t border-gray-800 text-center">
-                <p class="text-sm text-gray-400 font-mono tracking-wide">
-                    👨‍💻 Are you an individual coder? <br>
+            <!-- Pricing Grid -->
+            <div class="grid grid-cols-1 md:grid-cols-2 gap-6 mb-8">
+                <!-- Developer Tier -->
+                <div class="bg-gray-800/50 border border-gray-700 rounded-xl p-6 flex flex-col justify-between hover:border-gray-500 transition-colors">
+                    <div>
+                        <div class="flex justify-between items-center mb-2">
+                            <h3 class="text-lg font-bold text-white">Developer PRO</h3>
+                            <span class="text-xs bg-blue-900/50 text-blue-400 border border-blue-700/50 px-2 py-0.5 rounded">Individual</span>
+                        </div>
+                        <div class="text-2xl font-black text-white mb-4">$29 <span class="text-sm font-normal text-gray-400">/ mo</span></div>
+                        <p class="text-gray-400 text-xs mb-4">Unlimited AST deep scanning, automated AI code remediation, and PDF executive reports.</p>
+                        <ul class="text-xs text-gray-300 space-y-2 mb-6">
+                            <li class="flex items-center gap-2"><svg class="w-4 h-4 text-green-400" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M5 13l4 4L19 7"></path></svg> Unlimited AI Code Scans</li>
+                            <li class="flex items-center gap-2"><svg class="w-4 h-4 text-green-400" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M5 13l4 4L19 7"></path></svg> Automated Fix Generation</li>
+                            <li class="flex items-center gap-2"><svg class="w-4 h-4 text-green-400" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M5 13l4 4L19 7"></path></svg> Executive PDF Reports</li>
+                        </ul>
+                    </div>
+                    <button onclick="initiatePayment('developer')" class="w-full bg-blue-600 hover:bg-blue-500 text-white font-bold py-2.5 rounded-lg text-sm transition-all shadow-lg cursor-pointer">
+                        Get Developer PRO
+                    </button>
+                </div>
+
+                <!-- Enterprise Tier -->
+                <div class="bg-gradient-to-b from-yellow-950/20 to-gray-800/50 border-2 border-yellow-500/50 rounded-xl p-6 flex flex-col justify-between relative shadow-[0_0_30px_rgba(234,179,8,0.15)]">
+                    <div class="absolute -top-3 right-4 bg-yellow-500 text-black text-[10px] font-black px-2 py-0.5 rounded-full uppercase tracking-wider">Most Popular</div>
+                    <div>
+                        <div class="flex justify-between items-center mb-2">
+                            <h3 class="text-lg font-bold text-yellow-400">Enterprise SOC-2</h3>
+                            <span class="text-xs bg-yellow-900/50 text-yellow-400 border border-yellow-700/50 px-2 py-0.5 rounded">Team / Org</span>
+                        </div>
+                        <div class="text-2xl font-black text-white mb-4">$249 <span class="text-sm font-normal text-gray-400">/ mo</span></div>
+                        <p class="text-gray-400 text-xs mb-4">Complete enterprise supply-chain auditing, GitHub Actions automated PR shield, team workspaces, and Slack webhooks.</p>
+                        <ul class="text-xs text-gray-300 space-y-2 mb-6">
+                            <li class="flex items-center gap-2"><svg class="w-4 h-4 text-yellow-400" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M5 13l4 4L19 7"></path></svg> Everything in Developer PRO</li>
+                            <li class="flex items-center gap-2"><svg class="w-4 h-4 text-yellow-400" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M5 13l4 4L19 7"></path></svg> 1-Click GitHub Actions CI/CD Shield</li>
+                            <li class="flex items-center gap-2"><svg class="w-4 h-4 text-yellow-400" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M5 13l4 4L19 7"></path></svg> Supply Chain Auditor (CVE matching)</li>
+                            <li class="flex items-center gap-2"><svg class="w-4 h-4 text-yellow-400" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M5 13l4 4L19 7"></path></svg> Team Workspaces &amp; Knowledge Vault</li>
+                            <li class="flex items-center gap-2"><svg class="w-4 h-4 text-yellow-400" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M5 13l4 4L19 7"></path></svg> Slack / Discord Real-Time Alerts</li>
+                        </ul>
+                    </div>
+                    <button onclick="initiatePayment('enterprise')" class="w-full bg-gradient-to-r from-yellow-500 to-orange-500 hover:from-yellow-400 hover:to-orange-400 text-black font-bold py-2.5 rounded-lg text-sm transition-all shadow-lg cursor-pointer">
+                        Get Enterprise Plan
+                    </button>
+                </div>
+            </div>
+
+            <!-- License Key Activation -->
+            <div class="border-t border-gray-800 pt-6">
+                <h4 class="text-sm font-bold text-gray-300 mb-2">Already have an Enterprise License Key?</h4>
+                <div class="flex flex-col sm:flex-row gap-3">
+                    <input type="text" id="licenseKeyInput" placeholder="Enter license key (e.g. TCS-ENT-XXXX)" class="flex-1 bg-[#0d1117] text-white text-sm p-3 rounded-lg border border-gray-700 font-mono focus:border-yellow-500 focus:outline-none">
+                    <button id="submitKeyBtn" class="bg-gray-800 hover:bg-gray-700 text-yellow-400 font-bold px-6 py-3 rounded-lg text-sm border border-gray-600 transition-colors whitespace-nowrap cursor-pointer">
+                        Activate License
+                    </button>
+                </div>
+            </div>
+
+            <div class="mt-4 pt-4 border-t border-gray-800 text-center">
+                <p class="text-xs text-gray-400">
+                    🧑‍💻 Are you an individual coder? 
                     <span class="text-blue-400 font-bold">Get the Developer App on Google Play Store</span>
                 </p>
             </div>
@@ -686,177 +795,69 @@
                         CTO &amp; Engineering Leadership Brief
                     </div>
                     <h2 class="text-3xl md:text-4xl font-black text-transparent bg-clip-text bg-gradient-to-r from-yellow-400 to-orange-500 mb-3">
-                        Enterprise Architecture: Problem vs. Solution
+                        Why Engineering Leaders Switch to TimeCodeSecurity
                     </h2>
-                    <p class="text-gray-400 max-w-2xl mx-auto text-sm sm:text-base">
-                        How TimeCodeSecurity delivers bulletproof security and compliance across every phase of your software development lifecycle.
+                    <p class="text-gray-400 text-sm max-w-2xl mx-auto">
+                        A side-by-side technical and economic comparison for CTOs, CISOs, and Heads of Engineering.
                     </p>
                 </div>
-                
-                <div class="grid grid-cols-1 md:grid-cols-2 gap-5">
-                    <!-- 1. Unlimited AI Deep Scans -->
-                    <div class="bg-[#0d1117] p-5 rounded-xl border border-gray-800 hover:border-yellow-500/40 transition-colors flex flex-col justify-between">
+
+                <div class="grid grid-cols-1 md:grid-cols-2 gap-6 mb-8">
+                    <!-- Column 1 -->
+                    <div class="bg-[#0d1117] p-5 rounded-xl border border-red-500/30 hover:border-red-400 transition-colors flex flex-col justify-between">
+                        <div>
+                            <h3 class="text-base font-bold text-red-400 mb-2 flex items-center gap-2">
+                                <span class="bg-red-500/20 text-red-400 p-1.5 rounded-lg text-sm">🔒</span>
+                                Zero-Data Retention Guarantee
+                            </h3>
+                            <p class="text-xs text-gray-300 mb-2 leading-relaxed">
+                                <span class="font-bold text-red-400 uppercase text-[10px] tracking-wider border border-red-500/30 bg-red-500/10 px-1.5 py-0.5 rounded mr-1">Problem</span>
+                                Cloud scanners store proprietary code in their multi-tenant cloud databases, creating third-party breach risks.
+                            </p>
+                            <p class="text-xs text-gray-300 leading-relaxed">
+                                <span class="font-bold text-green-400 uppercase text-[10px] tracking-wider border border-green-500/30 bg-green-500/10 px-1.5 py-0.5 rounded mr-1">Solution</span>
+                                Ephemeral AST scanning with RAM-only processing. We never write code to disks or train models on user IP.
+                            </p>
+                        </div>
+                    </div>
+
+                    <!-- Column 2 -->
+                    <div class="bg-[#0d1117] p-5 rounded-xl border border-yellow-500/30 hover:border-yellow-400 transition-colors flex flex-col justify-between">
                         <div>
                             <h3 class="text-base font-bold text-yellow-400 mb-2 flex items-center gap-2">
                                 <span class="bg-yellow-500/20 text-yellow-400 p-1.5 rounded-lg text-sm">⚡</span>
-                                Unlimited AI Deep Scans (No Daily Limits)
+                                Sub-Second PR Blocking Gate
                             </h3>
                             <p class="text-xs text-gray-300 mb-2 leading-relaxed">
                                 <span class="font-bold text-red-400 uppercase text-[10px] tracking-wider border border-red-500/30 bg-red-500/10 px-1.5 py-0.5 rounded mr-1">Problem</span>
-                                Daily scan limits throttle dev velocity and block continuous repo-wide testing.
+                                Traditional security tools slow down CI/CD pipelines by 15-30 minutes per pull request.
                             </p>
                             <p class="text-xs text-gray-300 leading-relaxed">
                                 <span class="font-bold text-green-400 uppercase text-[10px] tracking-wider border border-green-500/30 bg-green-500/10 px-1.5 py-0.5 rounded mr-1">Solution</span>
-                                Scan thousands of daily commits, massive monorepos, and complete dependency trees with zero throttling.
+                                Sub-800ms incremental AST diff scanning that fails PRs with actionable code fixes inline.
                             </p>
                         </div>
                     </div>
 
-                    <!-- 2. Silicon Valley Grade Secure API Access -->
-                    <div class="bg-[#0d1117] p-5 rounded-xl border border-gray-800 hover:border-yellow-500/40 transition-colors flex flex-col justify-between">
+                    <!-- Column 3 -->
+                    <div class="bg-[#0d1117] p-5 rounded-xl border border-blue-500/30 hover:border-blue-400 transition-colors flex flex-col justify-between">
                         <div>
-                            <h3 class="text-base font-bold text-yellow-400 mb-2 flex items-center gap-2">
-                                <span class="bg-yellow-500/20 text-yellow-400 p-1.5 rounded-lg text-sm">🔑</span>
-                                Silicon Valley Grade Secure API Access
+                            <h3 class="text-base font-bold text-blue-400 mb-2 flex items-center gap-2">
+                                <span class="bg-blue-500/20 text-blue-400 p-1.5 rounded-lg text-sm">🛠️</span>
+                                Automated Code Remediation
                             </h3>
                             <p class="text-xs text-gray-300 mb-2 leading-relaxed">
                                 <span class="font-bold text-red-400 uppercase text-[10px] tracking-wider border border-red-500/30 bg-red-500/10 px-1.5 py-0.5 rounded mr-1">Problem</span>
-                                Static, unmonitored API tokens leak easily, putting core cloud infrastructure at risk.
+                                Tools dump 500-page PDF vulnerability lists on developers with zero code solutions.
                             </p>
                             <p class="text-xs text-gray-300 leading-relaxed">
                                 <span class="font-bold text-green-400 uppercase text-[10px] tracking-wider border border-green-500/30 bg-green-500/10 px-1.5 py-0.5 rounded mr-1">Solution</span>
-                                High-entropy cryptographic keys with granular scopes, automatic rotation, and instant revocation.
+                                1-Click drop-in rewritten secure code and unit tests verified against OWASP Top 10.
                             </p>
                         </div>
                     </div>
 
-                    <!-- 3. CI/CD Pipeline Webhooks -->
-                    <div class="bg-[#0d1117] p-5 rounded-xl border border-gray-800 hover:border-yellow-500/40 transition-colors flex flex-col justify-between">
-                        <div>
-                            <h3 class="text-base font-bold text-yellow-400 mb-2 flex items-center gap-2">
-                                <span class="bg-yellow-500/20 text-yellow-400 p-1.5 rounded-lg text-sm">🔄</span>
-                                CI/CD Pipeline Webhooks (GitHub, GitLab, Bitbucket)
-                            </h3>
-                            <p class="text-xs text-gray-300 mb-2 leading-relaxed">
-                                <span class="font-bold text-red-400 uppercase text-[10px] tracking-wider border border-red-500/30 bg-red-500/10 px-1.5 py-0.5 rounded mr-1">Problem</span>
-                                Manual security reviews slow down deployment and miss vulnerabilities before merge.
-                            </p>
-                            <p class="text-xs text-gray-300 leading-relaxed">
-                                <span class="font-bold text-green-400 uppercase text-[10px] tracking-wider border border-green-500/30 bg-green-500/10 px-1.5 py-0.5 rounded mr-1">Solution</span>
-                                Automate scans directly in your CI/CD pipelines. Block dangerous vulnerabilities before they reach production.
-                            </p>
-                        </div>
-                    </div>
-
-                    <!-- 4. Advanced Zero-Day Threat Shield -->
-                    <div class="bg-[#0d1117] p-5 rounded-xl border border-gray-800 hover:border-yellow-500/40 transition-colors flex flex-col justify-between">
-                        <div>
-                            <h3 class="text-base font-bold text-yellow-400 mb-2 flex items-center gap-2">
-                                <span class="bg-yellow-500/20 text-yellow-400 p-1.5 rounded-lg text-sm">🛡️</span>
-                                Advanced Zero-Day Threat Shield
-                            </h3>
-                            <p class="text-xs text-gray-300 mb-2 leading-relaxed">
-                                <span class="font-bold text-red-400 uppercase text-[10px] tracking-wider border border-red-500/30 bg-red-500/10 px-1.5 py-0.5 rounded mr-1">Problem</span>
-                                Undisclosed hacks and zero-day exploits can compromise databases and destroy companies overnight.
-                            </p>
-                            <p class="text-xs text-gray-300 leading-relaxed">
-                                <span class="font-bold text-green-400 uppercase text-[10px] tracking-wider border border-green-500/30 bg-green-500/10 px-1.5 py-0.5 rounded mr-1">Solution</span>
-                                Real-time heuristic AI shield intercepts exploit payloads and patches zero-day vulnerabilities on the fly.
-                            </p>
-                        </div>
-                    </div>
-
-                    <!-- 5. Role-Based Team Access (RBAC) & Team Vault -->
-                    <div class="bg-[#0d1117] p-5 rounded-xl border border-gray-800 hover:border-yellow-500/40 transition-colors flex flex-col justify-between">
-                        <div>
-                            <h3 class="text-base font-bold text-yellow-400 mb-2 flex items-center gap-2">
-                                <span class="bg-yellow-500/20 text-yellow-400 p-1.5 rounded-lg text-sm">👥</span>
-                                Role-Based Team Access (RBAC) &amp; Team Vault
-                            </h3>
-                            <p class="text-xs text-gray-300 mb-2 leading-relaxed">
-                                <span class="font-bold text-red-400 uppercase text-[10px] tracking-wider border border-red-500/30 bg-red-500/10 px-1.5 py-0.5 rounded mr-1">Problem</span>
-                                Unrestricted intern/contractor access exposes confidential security reports and vulnerability details.
-                            </p>
-                            <p class="text-xs text-gray-300 leading-relaxed">
-                                <span class="font-bold text-green-400 uppercase text-[10px] tracking-wider border border-green-500/30 bg-green-500/10 px-1.5 py-0.5 rounded mr-1">Solution</span>
-                                Granular organization workspace roles (Admin vs. Member). Secure encrypted Team Vault for shared remediation history.
-                            </p>
-                        </div>
-                    </div>
-
-                    <!-- 6. Real-Time Threat Analytics Dashboard -->
-                    <div class="bg-[#0d1117] p-5 rounded-xl border border-gray-800 hover:border-yellow-500/40 transition-colors flex flex-col justify-between">
-                        <div>
-                            <h3 class="text-base font-bold text-yellow-400 mb-2 flex items-center gap-2">
-                                <span class="bg-yellow-500/20 text-yellow-400 p-1.5 rounded-lg text-sm">📊</span>
-                                Real-Time Threat Analytics Dashboard
-                            </h3>
-                            <p class="text-xs text-gray-300 mb-2 leading-relaxed">
-                                <span class="font-bold text-red-400 uppercase text-[10px] tracking-wider border border-red-500/30 bg-red-500/10 px-1.5 py-0.5 rounded mr-1">Problem</span>
-                                Engineering leaders lack visibility into cross-team code security health and vulnerability trends.
-                            </p>
-                            <p class="text-xs text-gray-300 leading-relaxed">
-                                <span class="font-bold text-green-400 uppercase text-[10px] tracking-wider border border-green-500/30 bg-green-500/10 px-1.5 py-0.5 rounded mr-1">Solution</span>
-                                Live executive dashboard tracking vulnerability severities, scan frequency, and MTTR (mean time to remediate).
-                            </p>
-                        </div>
-                    </div>
-
-                    <!-- 7. Auto-Remediation & 1-Click Code Fixes -->
-                    <div class="bg-[#0d1117] p-5 rounded-xl border border-gray-800 hover:border-yellow-500/40 transition-colors flex flex-col justify-between">
-                        <div>
-                            <h3 class="text-base font-bold text-yellow-400 mb-2 flex items-center gap-2">
-                                <span class="bg-yellow-500/20 text-yellow-400 p-1.5 rounded-lg text-sm">🛠️</span>
-                                Auto-Remediation &amp; 1-Click Code Fixes
-                            </h3>
-                            <p class="text-xs text-gray-300 mb-2 leading-relaxed">
-                                <span class="font-bold text-red-400 uppercase text-[10px] tracking-wider border border-red-500/30 bg-red-500/10 px-1.5 py-0.5 rounded mr-1">Problem</span>
-                                Identifying flaws is only half the battle; writing manual patches burns valuable senior engineer hours.
-                            </p>
-                            <p class="text-xs text-gray-300 leading-relaxed">
-                                <span class="font-bold text-green-400 uppercase text-[10px] tracking-wider border border-green-500/30 bg-green-500/10 px-1.5 py-0.5 rounded mr-1">Solution</span>
-                                Intelligent AI engines generate production-grade, secure patch diffs instantly. Review, copy, or merge in seconds.
-                            </p>
-                        </div>
-                    </div>
-
-                    <!-- 8. SOC-2, HIPAA & GDPR Compliance Reports -->
-                    <div class="bg-[#0d1117] p-5 rounded-xl border border-gray-800 hover:border-yellow-500/40 transition-colors flex flex-col justify-between">
-                        <div>
-                            <h3 class="text-base font-bold text-yellow-400 mb-2 flex items-center gap-2">
-                                <span class="bg-yellow-500/20 text-yellow-400 p-1.5 rounded-lg text-sm">📋</span>
-                                SOC-2, HIPAA &amp; GDPR Compliance Reports
-                            </h3>
-                            <p class="text-xs text-gray-300 mb-2 leading-relaxed">
-                                <span class="font-bold text-red-400 uppercase text-[10px] tracking-wider border border-red-500/30 bg-red-500/10 px-1.5 py-0.5 rounded mr-1">Problem</span>
-                                Failing rigorous enterprise vendor security reviews blocks lucrative B2B SaaS enterprise contracts.
-                            </p>
-                            <p class="text-xs text-gray-300 leading-relaxed">
-                                <span class="font-bold text-green-400 uppercase text-[10px] tracking-wider border border-green-500/30 bg-green-500/10 px-1.5 py-0.5 rounded mr-1">Solution</span>
-                                1-click audit-ready PDF/JSON compliance certificates mapped to SOC-2 Type II, HIPAA, and GDPR standards.
-                            </p>
-                        </div>
-                    </div>
-
-                    <!-- 9. 24/7 Dedicated Priority Support -->
-                    <div class="bg-[#0d1117] p-5 rounded-xl border border-gray-800 hover:border-yellow-500/40 transition-colors flex flex-col justify-between">
-                        <div>
-                            <h3 class="text-base font-bold text-yellow-400 mb-2 flex items-center gap-2">
-                                <span class="bg-yellow-500/20 text-yellow-400 p-1.5 rounded-lg text-sm">📞</span>
-                                24/7 Dedicated Priority Support
-                            </h3>
-                            <p class="text-xs text-gray-300 mb-2 leading-relaxed">
-                                <span class="font-bold text-red-400 uppercase text-[10px] tracking-wider border border-red-500/30 bg-red-500/10 px-1.5 py-0.5 rounded mr-1">Problem</span>
-                                Pipeline-blocking security flags during critical release weekends leave dev teams without immediate help.
-                            </p>
-                            <p class="text-xs text-gray-300 leading-relaxed">
-                                <span class="font-bold text-green-400 uppercase text-[10px] tracking-wider border border-green-500/30 bg-green-500/10 px-1.5 py-0.5 rounded mr-1">Solution</span>
-                                Dedicated DevSecOps escalation engineers on-call 24/7 with SLA-guaranteed response times under 15 minutes.
-                            </p>
-                        </div>
-                    </div>
-
-                    <!-- 10. Special Indian Pricing -->
+                    <!-- Column 4 -->
                     <div class="bg-[#0d1117] p-5 rounded-xl border border-yellow-500/30 hover:border-yellow-400 transition-colors flex flex-col justify-between">
                         <div>
                             <h3 class="text-base font-bold text-green-400 mb-2 flex items-center gap-2">
