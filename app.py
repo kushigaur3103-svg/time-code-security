@@ -1219,9 +1219,11 @@ def generate_dynamic_security_analysis(code: str, is_premium: bool = True) -> st
         else:
             report += "\n- **Upgrade Notice:** Upgrade to **Enterprise** to unlock 1-click Auto-Fix remediation, automated PR gates, and full PDF export."
             
+        threat_pattern = re.compile(r'(CRITICAL|OS Command Injection|Remote Code Execution|RCE|SQL Injection|Cross-Site Scripting|XSS|CWE-\d+|High-risk|Compromise|Takeover|Arbitrary Code Execution|Vulnerability)', re.IGNORECASE)
+        report = threat_pattern.sub(r'<span style="color: #ff4d4d; font-weight: bold;">\1</span>', report)
         return report
     else:
-        return f"""### Section 1: Executive Summary & Threat Level
+        clean_report = f"""### Section 1: Executive Summary & Threat Level
 - **Target Analysis:** The submitted code snippet ({len(lines)} line(s) audited)
 - **Threat Level:** ✅ **SAFE (Score: 0.0/10.0)**
 - **Audit Status:** PASSED (Zero security flaws, injection vectors, or memory leaks detected)
@@ -1238,6 +1240,8 @@ def generate_dynamic_security_analysis(code: str, is_premium: bool = True) -> st
 
 ### Section 5: Recommended Remediation & Hardened Code Implementation
 - **Remediation Required:** None. The analyzed script is safe for baseline integration."""
+        threat_pattern = re.compile(r'(CRITICAL|OS Command Injection|Remote Code Execution|RCE|SQL Injection|Cross-Site Scripting|XSS|CWE-\d+|High-risk|Compromise|Takeover|Arbitrary Code Execution|Vulnerability)', re.IGNORECASE)
+        return threat_pattern.sub(r'<span style="color: #ff4d4d; font-weight: bold;">\1</span>', clean_report)
 
 def get_cached_or_generate_ai(payload_code: str, system_prompt: str, is_fix: bool, db, existing_job_id: str = None, user_id: int = None):
     code_hash = hashlib.sha256(f"{payload_code}_{system_prompt}".encode('utf-8')).hexdigest()
@@ -1345,6 +1349,11 @@ def get_cached_or_generate_ai(payload_code: str, system_prompt: str, is_fix: boo
         # Resilient dynamic fallback analyzer
         ai_reply = generate_dynamic_security_analysis(payload_code, is_premium=True)
             
+    # Auto-highlight critical threat terms in red
+    if ai_reply:
+        threat_pattern = re.compile(r'(CRITICAL|OS Command Injection|Remote Code Execution|RCE|SQL Injection|Cross-Site Scripting|XSS|CWE-\d+|High-risk|Compromise|Takeover|Arbitrary Code Execution|Vulnerability)', re.IGNORECASE)
+        ai_reply = threat_pattern.sub(r'<span style="color: #ff4d4d; font-weight: bold;">\1</span>', ai_reply)
+
     if existing_job_id:
         pending_job = db.query(ScanCache).filter(ScanCache.job_id == existing_job_id).first()
         if pending_job:
