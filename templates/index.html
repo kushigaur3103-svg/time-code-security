@@ -1797,14 +1797,34 @@ jobs:
 
     function formatScanReport(rawResponseText) {
         if (!rawResponseText) return '';
-        let formattedText = String(rawResponseText)
-            .replace(/&/g, "&amp;")
-            .replace(/</g, "&lt;")
-            .replace(/>/g, "&gt;");
-        formattedText = formattedText.replace(/\b(CRITICAL)\b/gi, '<span style="color: #ef4444; font-weight: 900;">$1</span>');
-        formattedText = formattedText.replace(/\b(High)\b/g, '<span style="color: #f97316; font-weight: bold;">$1</span>');
-        formattedText = formattedText.replace(/\b(OS Command Injection)\b/gi, '<span style="color: #ef4444; font-weight: bold; text-decoration: underline;">$1</span>');
-        return formattedText;
+        // 1. Strip any pre-existing raw span tags to avoid double nesting
+        let text = String(rawResponseText).replace(/<\/?span[^>]*>/gi, '');
+        
+        // 2. Escape HTML entities to prevent XSS
+        text = text
+            .replace(/&/g, '&amp;')
+            .replace(/</g, '&lt;')
+            .replace(/>/g, '&gt;');
+        
+        // 3. Convert **bold** to strong and `code` to code block styling
+        text = text.replace(/\*\*(.*?)\*\*/g, '<strong style="color: #f3f4f6; font-weight: bold;">$1</strong>');
+        text = text.replace(/`([^`]+)`/g, '<code style="padding: 2px 6px; border-radius: 4px; background: rgba(255,255,255,0.1); color: #34d399; font-family: monospace; font-size: 0.85em;">$1</code>');
+            
+        // 4. Highlight CRITICAL and dangerous exploit vectors in vibrant glowing red
+        const criticalPattern = /\b(CRITICAL|OS Command Injection|Remote Code Execution|RCE|SQL Injection|Cross-Site Scripting|XSS|CWE-\d+|High-risk|Compromise|Takeover|Arbitrary Code Execution|Arbitrary execution|Vulnerability|Vulnerabilities)\b/gi;
+        text = text.replace(criticalPattern, '<span style="color: #ef4444; font-weight: 900; text-shadow: 0 0 8px rgba(239, 68, 68, 0.45);">$1</span>');
+
+        // 5. Highlight HIGH severity in vibrant warning orange
+        text = text.replace(/\b(HIGH)\b/g, '<span style="color: #f97316; font-weight: 800;">$1</span>');
+
+        // 6. Highlight MEDIUM severity in amber
+        text = text.replace(/\b(MEDIUM)\b/g, '<span style="color: #eab308; font-weight: 700;">$1</span>');
+
+        // 7. Highlight SAFE / PASSED / A+ status in neon emerald green
+        const safePattern = /\b(SAFE|PASSED|A\+\s*\(100%\s*Safe\)|ZERO VULNERABILITIES DETECTED)\b/gi;
+        text = text.replace(safePattern, '<span style="color: #22c55e; font-weight: 800; text-shadow: 0 0 8px rgba(34, 197, 94, 0.45);">$1</span>');
+
+        return text;
     }
 
     if (scanBtn) {
