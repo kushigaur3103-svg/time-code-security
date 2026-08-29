@@ -1795,6 +1795,18 @@ jobs:
     const reportContainer = document.getElementById('reportContainer');
     const scanResult = document.getElementById('scanResult');
 
+    function formatScanReport(rawResponseText) {
+        if (!rawResponseText) return '';
+        let formattedText = String(rawResponseText)
+            .replace(/&/g, "&amp;")
+            .replace(/</g, "&lt;")
+            .replace(/>/g, "&gt;");
+        formattedText = formattedText.replace(/\b(CRITICAL)\b/gi, '<span style="color: #ef4444; font-weight: 900;">$1</span>');
+        formattedText = formattedText.replace(/\b(High)\b/g, '<span style="color: #f97316; font-weight: bold;">$1</span>');
+        formattedText = formattedText.replace(/\b(OS Command Injection)\b/gi, '<span style="color: #ef4444; font-weight: bold; text-decoration: underline;">$1</span>');
+        return formattedText;
+    }
+
     if (scanBtn) {
         scanBtn.addEventListener('click', async () => {
             const code = codeInput ? codeInput.value.trim() : '';
@@ -1826,7 +1838,7 @@ jobs:
             `;
             if (reportContainer) reportContainer.classList.add('hidden');
             if (scanResult) {
-                scanResult.textContent = '';
+                scanResult.innerHTML = '';
                 scanResult.classList.remove('blur-effect', 'text-red-400', 'font-bold');
             }
             document.getElementById('blurPaywallOverlay')?.classList.add('hidden');
@@ -1868,14 +1880,14 @@ jobs:
                     const freeScansUsed = parseInt(localStorage.getItem('free_scans_used') || '0', 10);
                     if (!isPremium && freeScansUsed > 3) {
                         if (scanResult) {
-                            scanResult.textContent = data.report;
+                            scanResult.innerHTML = formatScanReport(data.report);
                             scanResult.classList.add('blur-effect');
                         }
                         document.getElementById('scanLimitWarning')?.classList.remove('hidden');
                         document.getElementById('blurPaywallOverlay')?.classList.remove('hidden');
                     } else {
                         if (scanResult) {
-                            scanResult.textContent = data.report || 'Scan complete: No critical security risks detected.';
+                            scanResult.innerHTML = formatScanReport(data.report || 'Scan complete: No critical security risks detected.');
                             scanResult.classList.remove('blur-effect', 'text-red-400');
                         }
                         document.getElementById('scanLimitWarning')?.classList.add('hidden');
@@ -1885,7 +1897,7 @@ jobs:
                     resetScanBtn();
                 } else if (data.error) {
                     if (scanResult) {
-                        scanResult.textContent = 'Error: ' + data.error;
+                        scanResult.innerHTML = formatScanReport('Error: ' + data.error);
                         scanResult.classList.add('text-red-400');
                     }
                     document.getElementById('scanLimitWarning')?.classList.add('hidden');
@@ -1905,7 +1917,7 @@ jobs:
                             if (!statusRes.ok || statusData.detail || (statusData.status !== 'completed' && statusData.status !== 'failed' && statusData.status !== 'pending')) {
                                 clearInterval(pollInterval);
                                 if (scanResult) {
-                                    scanResult.textContent = 'Error: ' + (statusData.detail || 'Scan failed or job not found.');
+                                    scanResult.innerHTML = formatScanReport('Error: ' + (statusData.detail || 'Scan failed or job not found.'));
                                     scanResult.classList.add('text-red-400');
                                 }
                                 document.getElementById('scanLimitWarning')?.classList.add('hidden');
@@ -1915,7 +1927,7 @@ jobs:
                             } else if (statusData.status === 'completed') {
                                 clearInterval(pollInterval);
                                 if (scanResult) {
-                                    scanResult.textContent = statusData.report;
+                                    scanResult.innerHTML = formatScanReport(statusData.report);
                                     scanResult.classList.remove('blur-effect', 'text-red-400');
                                 }
                                 document.getElementById('scanLimitWarning')?.classList.add('hidden');
@@ -1927,7 +1939,7 @@ jobs:
                             } else if (statusData.status === 'failed') {
                                 clearInterval(pollInterval);
                                 if (scanResult) {
-                                    scanResult.textContent = 'Error: ' + (statusData.report || 'Scan failed.');
+                                    scanResult.innerHTML = formatScanReport('Error: ' + (statusData.report || 'Scan failed.'));
                                     scanResult.classList.add('text-red-400');
                                 }
                                 if (reportContainer) reportContainer.classList.remove('hidden');
@@ -1936,7 +1948,7 @@ jobs:
                         } catch (err) {
                             clearInterval(pollInterval);
                             if (scanResult) {
-                                scanResult.textContent = 'System Failure: Polling error.';
+                                scanResult.innerHTML = formatScanReport('System Failure: Polling error.');
                                 scanResult.classList.add('text-red-400');
                             }
                             if (reportContainer) reportContainer.classList.remove('hidden');
@@ -1949,7 +1961,7 @@ jobs:
                     showToast('Scan timed out. Please try again.', 'error');
                 } else {
                     if (scanResult) {
-                        scanResult.textContent = 'System Failure: Could not reach the backend.';
+                        scanResult.innerHTML = formatScanReport('System Failure: Could not reach the backend.');
                         scanResult.classList.add('text-red-400');
                     }
                     if (reportContainer) reportContainer.classList.remove('hidden');
