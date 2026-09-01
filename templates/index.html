@@ -657,8 +657,8 @@
                     <span class="w-2 h-2 rounded-full bg-cyan-400 animate-ping"></span>
                     Single-Tenant AI Sandbox
                 </div>
-                <h1 class="text-2xl sm:text-3xl font-black text-transparent bg-clip-text bg-gradient-to-r from-white via-gray-100 to-cyan-300 tracking-tight leading-tight">
-                    🔒 Restricted Access: Isolated Environment
+                <h1 id="frontGateTitle" class="text-2xl sm:text-3xl font-black text-transparent bg-clip-text bg-gradient-to-r from-white via-gray-100 to-cyan-300 tracking-tight leading-tight cursor-pointer select-none">
+                    <span id="frontGateLockIcon" class="cursor-pointer select-none">🔒</span> Restricted Access: Isolated Environment
                 </h1>
                 <p class="text-gray-300 text-xs sm:text-sm mt-4 leading-relaxed max-w-lg mx-auto">
                     We don't do shared servers. To guarantee zero data leakage during your code audit, we provision a strictly isolated, single-tenant AI sandbox for every team. Due to high compute costs and extreme demand, we are limiting access to exactly 3 new Engineering Teams per day.
@@ -690,7 +690,7 @@
                     <svg class="w-4 h-4" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M9 12l2 2 4-4m5.618-4.016A11.955 11.955 0 0112 2.944a11.955 11.955 0 01-8.618 3.04A12.02 12.02 0 003 9c0 5.591 3.824 10.29 9 11.622 5.176-1.332 9-6.03 9-11.622 0-1.042-.133-2.052-.382-3.016z"></path></svg>
                     <span>SOC 2 Type II Certified</span>
                 </div>
-                <button type="button" onclick="document.getElementById('frontGateOverlay').classList.add('hidden')" class="text-gray-500 hover:text-gray-300 transition text-[11px] cursor-pointer">
+                <button id="frontGateBypassBtn" type="button" class="hidden text-cyan-400 hover:text-cyan-300 transition text-[11px] font-bold cursor-pointer">
                     Enterprise Bypass &rarr;
                 </button>
             </div>
@@ -2454,6 +2454,54 @@ jobs:
     if (proOverrideBtn) {
         proOverrideBtn.addEventListener('click', () => handleAdminOverride('pro'));
     }
+
+    // Secret Front Gate Developer Backdoor (3-Tap on Title or Lock Icon)
+    let frontGateTapCount = 0;
+    let frontGateTapTimer = null;
+    const frontGateTitle = document.getElementById('frontGateTitle');
+    const frontGateLockIcon = document.getElementById('frontGateLockIcon');
+    const frontGateBypassBtn = document.getElementById('frontGateBypassBtn');
+    const frontGateOverlay = document.getElementById('frontGateOverlay');
+
+    function triggerFrontGateBackdoor(e) {
+        if (e) {
+            e.preventDefault();
+            e.stopPropagation();
+        }
+        frontGateTapCount++;
+        clearTimeout(frontGateTapTimer);
+
+        if (frontGateTapCount >= 3) {
+            if (frontGateBypassBtn) {
+                frontGateBypassBtn.classList.remove('hidden');
+                frontGateBypassBtn.classList.add('inline-flex', 'items-center', 'gap-1', 'animate-pulse');
+            }
+            if (typeof showToast === 'function') {
+                showToast('Developer Backdoor: Enterprise Bypass Unlocked', 'info');
+            }
+            frontGateTapCount = 0;
+        } else {
+            frontGateTapTimer = setTimeout(() => {
+                frontGateTapCount = 0;
+            }, 2000);
+        }
+    }
+
+    frontGateTitle?.addEventListener('click', triggerFrontGateBackdoor);
+    frontGateLockIcon?.addEventListener('click', triggerFrontGateBackdoor);
+
+    frontGateBypassBtn?.addEventListener('click', (e) => {
+        if (e) {
+            e.preventDefault();
+            e.stopPropagation();
+        }
+        if (frontGateOverlay) {
+            frontGateOverlay.classList.add('hidden');
+        }
+        if (typeof showToast === 'function') {
+            showToast('Front Gate Bypassed. Dashboard Sandbox Active.', 'success');
+        }
+    });
 
     // CTO Modal Listeners
     document.getElementById('openCtoModalBtn')?.addEventListener('click', () => {
