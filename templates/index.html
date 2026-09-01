@@ -647,14 +647,19 @@
     <!-- Front Gate VIP Access Overlay (Full-Screen Landing Overlay) -->
     <div id="frontGateOverlay" class="fixed inset-0 z-[200] flex items-center justify-center bg-[#02040a]/95 backdrop-blur-2xl p-4 sm:p-6 overflow-y-auto">
         <script>
-            // Instant VIP Magic Link (?vip=true) flash prevention
-            if (window.location.search.includes('vip=true')) {
-                const el = document.getElementById('frontGateOverlay');
-                if (el) {
-                    el.style.setProperty('display', 'none', 'important');
-                    console.log("VIP Mode Active - Gate Hidden");
+            // Instant VIP Magic Link (?vip=true) flash prevention & persistent storage
+            try {
+                if (window.location.search.includes('vip=true')) {
+                    localStorage.setItem('isVIP', 'true');
                 }
-            }
+                if (localStorage.getItem('isVIP') === 'true') {
+                    const el = document.getElementById('frontGateOverlay');
+                    if (el) {
+                        el.style.setProperty('display', 'none', 'important');
+                        console.log("VIP Mode Active - Gate Hidden");
+                    }
+                }
+            } catch (e) {}
         </script>
         <!-- Ambient Deep Space Aurora Glow -->
         <div class="absolute inset-0 overflow-hidden pointer-events-none">
@@ -2515,10 +2520,13 @@ jobs:
         }
     });
 
-    // Magic Link VIP Bypass (?vip=true)
+    // Magic Link VIP Bypass (?vip=true & persistent isVIP)
     function checkVipMagicLink() {
         try {
             if (window.location.search.includes('vip=true')) {
+                localStorage.setItem('isVIP', 'true');
+            }
+            if (localStorage.getItem('isVIP') === 'true') {
                 const overlay = document.getElementById('frontGateOverlay');
                 if (overlay) {
                     overlay.style.setProperty('display', 'none', 'important');
