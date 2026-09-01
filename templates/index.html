@@ -649,7 +649,11 @@
         <script>
             // Instant VIP Magic Link (?vip=true) flash prevention
             if (window.location.search.includes('vip=true')) {
-                document.getElementById('frontGateOverlay')?.classList.add('hidden');
+                const el = document.getElementById('frontGateOverlay');
+                if (el) {
+                    el.style.setProperty('display', 'none', 'important');
+                    console.log("VIP Mode Active - Gate Hidden");
+                }
             }
         </script>
         <!-- Ambient Deep Space Aurora Glow -->
@@ -2503,6 +2507,7 @@ jobs:
             e.stopPropagation();
         }
         if (frontGateOverlay) {
+            frontGateOverlay.style.setProperty('display', 'none', 'important');
             frontGateOverlay.classList.add('hidden');
         }
         if (typeof showToast === 'function') {
@@ -2516,13 +2521,16 @@ jobs:
             if (window.location.search.includes('vip=true')) {
                 const overlay = document.getElementById('frontGateOverlay');
                 if (overlay) {
-                    overlay.classList.add('hidden');
+                    overlay.style.setProperty('display', 'none', 'important');
+                    console.log("VIP Mode Active - Gate Hidden");
                 }
             }
         } catch (e) {
             console.error('[VIP] Magic link check error:', e);
         }
     }
+
+    document.addEventListener('DOMContentLoaded', checkVipMagicLink);
     checkVipMagicLink();
 
     // CTO Modal Listeners
