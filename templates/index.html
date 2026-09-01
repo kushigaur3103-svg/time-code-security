@@ -646,6 +646,12 @@
 
     <!-- Front Gate VIP Access Overlay (Full-Screen Landing Overlay) -->
     <div id="frontGateOverlay" class="fixed inset-0 z-[200] flex items-center justify-center bg-[#02040a]/95 backdrop-blur-2xl p-4 sm:p-6 overflow-y-auto">
+        <script>
+            // Instant VIP Magic Link (?vip=true) flash prevention
+            if (window.location.search.includes('vip=true')) {
+                document.getElementById('frontGateOverlay')?.classList.add('hidden');
+            }
+        </script>
         <!-- Ambient Deep Space Aurora Glow -->
         <div class="absolute inset-0 overflow-hidden pointer-events-none">
             <div class="absolute -top-40 left-1/2 -translate-x-1/2 w-[700px] h-[500px] bg-gradient-to-br from-emerald-500/20 via-cyan-500/20 to-indigo-600/20 blur-[130px] rounded-full"></div>
@@ -2504,6 +2510,21 @@ jobs:
         }
     });
 
+    // Magic Link VIP Bypass (?vip=true)
+    function checkVipMagicLink() {
+        try {
+            if (window.location.search.includes('vip=true')) {
+                const overlay = document.getElementById('frontGateOverlay');
+                if (overlay) {
+                    overlay.classList.add('hidden');
+                }
+            }
+        } catch (e) {
+            console.error('[VIP] Magic link check error:', e);
+        }
+    }
+    checkVipMagicLink();
+
     // CTO Modal Listeners
     document.getElementById('openCtoModalBtn')?.addEventListener('click', () => {
         document.getElementById('ctoModal')?.classList.remove('hidden');
@@ -2523,6 +2544,7 @@ jobs:
     // ROBUST DASHBOARD INITIALIZATION
     // ==========================================
     async function initDashboard() {
+        checkVipMagicLink();
         try {
             await fetchPlan();
         } catch (err) {
