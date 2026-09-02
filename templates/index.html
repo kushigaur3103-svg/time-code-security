@@ -281,25 +281,60 @@
                 </div>
             </div>
             
-            <div class="flex items-center gap-4 w-full mt-2 mb-2">
-                <input type="file" id="fileUpload" accept=".py,.js,.html,.css,.java,.cpp,.c,.txt" class="hidden">
-                <button id="uploadBtn" onclick="document.getElementById('fileUpload').click()" class="bg-[#030712]/80 hover:bg-gray-800 text-gray-300 text-xs py-1.5 px-3 rounded border border-white/10 hover:border-white/20 transition-colors flex items-center gap-2">
-                    <svg xmlns="http://www.w3.org/2000/svg" class="h-4 w-4" fill="none" viewBox="0 0 24 24" stroke="currentColor">
-                        <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M4 16v1a3 3 0 003 3h10a3 3 0 003-3v-1m-4-8l-4-4m0 0L8 8m4-4v12" />
+            <!-- Upload Box (Hidden during terminal illusion) -->
+            <div id="uploadBox" class="w-full">
+                <div class="flex items-center justify-between w-full mt-2 mb-2">
+                    <input type="file" id="fileUpload" accept=".py,.js,.html,.css,.java,.cpp,.c,.txt" class="hidden">
+                    <button id="uploadBtn" onclick="document.getElementById('fileUpload').click()" class="bg-[#030712]/80 hover:bg-gray-800 text-gray-300 text-xs py-1.5 px-3 rounded border border-white/10 hover:border-white/20 transition-colors flex items-center gap-2 cursor-pointer">
+                        <svg xmlns="http://www.w3.org/2000/svg" class="h-4 w-4 text-cyan-400" fill="none" viewBox="0 0 24 24" stroke="currentColor">
+                            <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M4 16v1a3 3 0 003 3h10a3 3 0 003-3v-1m-4-8l-4-4m0 0L8 8m4-4v12" />
+                        </svg>
+                        <span>Upload File (.py, .js, .txt)</span>
+                    </button>
+                    <span class="text-[11px] text-gray-500 font-mono">Microservice Limit: 5MB</span>
+                </div>
+
+                <!-- 5MB Limit UI Error Message -->
+                <div id="fileErrorMsg" class="hidden my-3 p-4 rounded-xl bg-red-950/60 border border-red-500/70 text-red-400 font-mono text-xs sm:text-sm leading-relaxed shadow-[0_0_25px_rgba(239,68,68,0.3)] flex items-center gap-3 animate-fade-in">
+                    <svg class="w-5 h-5 text-red-400 flex-shrink-0" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                        <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M12 9v2m0 4h.01m-6.938 4h13.856c1.54 0 2.502-1.667 1.732-3L13.732 4c-.77-1.333-2.694-1.333-3.464 0L3.34 16c-.77 1.333.192 3 1.732 3z"/>
                     </svg>
-                    Upload File (.py, .js, .txt)
+                    <span id="fileErrorText" class="font-bold">Error: File exceeds 5MB Microservice Limit. Massive monolithic codebases require Enterprise Dedicated Clusters. Contact Founder for upgrade.</span>
+                </div>
+
+                <textarea id="codeInput" spellcheck="false" class="w-full h-[320px] bg-[#030712]/85 backdrop-blur-md text-emerald-400 font-mono text-sm leading-relaxed p-5 rounded-xl border border-white/10 focus:outline-none focus:border-cyan-500 focus:ring-1 focus:ring-cyan-500 transition-all resize-none shadow-inner" placeholder="// Paste your code here for vulnerability analysis..."></textarea>
+                
+                <!-- Scan Button -->
+                <button id="scanBtn" class="mt-8 w-full bg-gradient-to-r from-emerald-500 to-cyan-600 hover:from-emerald-400 hover:to-cyan-500 text-white font-bold py-4 px-4 rounded-xl shadow-[0_0_25px_rgba(16,185,129,0.35)] hover:shadow-[0_0_35px_rgba(16,185,129,0.55)] transition-all duration-300 flex justify-center items-center gap-3 tracking-wide cursor-pointer active:scale-[0.99]">
+                    <svg xmlns="http://www.w3.org/2000/svg" class="h-6 w-6" fill="none" viewBox="0 0 24 24" stroke="currentColor">
+                        <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M9 12l2 2 4-4m5.618-4.016A11.955 11.955 0 0112 2.944a11.955 11.955 0 01-8.618 3.04A12.02 12.02 0 003 9c0 5.591 3.824 10.29 9 11.622 5.176-1.332 9-6.03 9-11.622 0-1.042-.133-2.052-.382-3.016z" />
+                    </svg>
+                    INITIATE DEEP SCAN
                 </button>
             </div>
 
-            <textarea id="codeInput" spellcheck="false" class="w-full h-[320px] bg-[#030712]/85 backdrop-blur-md text-emerald-400 font-mono text-sm leading-relaxed p-5 rounded-xl border border-white/10 focus:outline-none focus:border-cyan-500 focus:ring-1 focus:ring-cyan-500 transition-all resize-none shadow-inner" placeholder="// Paste your code here for vulnerability analysis..."></textarea>
-            
-            <!-- Scan Button -->
-            <button id="scanBtn" class="mt-8 w-full bg-gradient-to-r from-emerald-500 to-cyan-600 hover:from-emerald-400 hover:to-cyan-500 text-white font-bold py-4 px-4 rounded-xl shadow-[0_0_25px_rgba(16,185,129,0.35)] hover:shadow-[0_0_35px_rgba(16,185,129,0.55)] transition-all duration-300 flex justify-center items-center gap-3 tracking-wide cursor-pointer active:scale-[0.99]">
-                <svg xmlns="http://www.w3.org/2000/svg" class="h-6 w-6" fill="none" viewBox="0 0 24 24" stroke="currentColor">
-                    <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M9 12l2 2 4-4m5.618-4.016A11.955 11.955 0 0112 2.944a11.955 11.955 0 01-8.618 3.04A12.02 12.02 0 003 9c0 5.591 3.824 10.29 9 11.622 5.176-1.332 9-6.03 9-11.622 0-1.042-.133-2.052-.382-3.016z" />
-                </svg>
-                INITIATE DEEP SCAN
-            </button>
+            <!-- Terminal Illusion UI Block (Shown during Upload/Fetch) -->
+            <div id="terminalIllusion" class="hidden w-full my-6 bg-[#040814] border border-cyan-500/40 rounded-2xl shadow-[0_0_50px_rgba(6,182,212,0.25)] overflow-hidden animate-fade-in">
+                <div class="bg-[#090f20] border-b border-cyan-500/20 px-4 py-3 flex items-center justify-between">
+                    <div class="flex items-center gap-2">
+                        <span class="w-3 h-3 rounded-full bg-red-500/80 inline-block"></span>
+                        <span class="w-3 h-3 rounded-full bg-yellow-500/80 inline-block"></span>
+                        <span class="w-3 h-3 rounded-full bg-emerald-500/80 inline-block"></span>
+                        <span class="ml-2 text-xs font-mono text-gray-400">sandbox@timecode-security:~</span>
+                    </div>
+                    <div class="flex items-center gap-2 text-xs font-mono text-cyan-400">
+                        <span class="w-2 h-2 rounded-full bg-cyan-400 animate-pulse"></span>
+                        AST Sandbox Scanner
+                    </div>
+                </div>
+                <div class="p-6 font-mono text-sm space-y-3 min-h-[220px] flex flex-col justify-start">
+                    <div id="terminalLogs" class="space-y-2.5"></div>
+                    <div id="terminalCursor" class="inline-flex items-center gap-1 text-emerald-400 font-bold mt-2">
+                        <span>&gt;</span>
+                        <span class="w-2.5 h-4 bg-emerald-400 inline-block animate-pulse"></span>
+                    </div>
+                </div>
+            </div>
 
             <!-- Report Section (Hidden by default) -->
             <div id="reportContainer" class="mt-10 hidden animate-fade-in">
@@ -1897,7 +1932,60 @@ jobs:
         return text;
     }
 
-    // Velvet Rope Enterprise Waitlist Modal Controls
+    // ==========================================
+    // Feature 2: The Terminal Illusion
+    // ==========================================
+    const TERMINAL_LOGS = [
+        "[+] Initializing Isolated Sandbox...",
+        "[+] Checking OWASP Top 10 Patterns...",
+        "[+] Scanning for Hardcoded Secrets...",
+        "[+] Compiling Audit Report..."
+    ];
+    let terminalLogTimer = null;
+
+    function showTerminalIllusion() {
+        const uploadBox = document.getElementById('uploadBox');
+        const terminal = document.getElementById('terminalIllusion');
+        const terminalLogs = document.getElementById('terminalLogs');
+
+        if (uploadBox) uploadBox.classList.add('hidden');
+        if (terminal) terminal.classList.remove('hidden');
+        if (terminalLogs) terminalLogs.innerHTML = '';
+
+        clearInterval(terminalLogTimer);
+
+        let idx = 0;
+        function appendNextLog() {
+            if (idx < TERMINAL_LOGS.length) {
+                const line = document.createElement('div');
+                line.className = 'text-cyan-300 font-mono text-xs sm:text-sm tracking-wide flex items-center gap-2 animate-fade-in';
+                line.innerHTML = `<span class="text-emerald-400 font-bold">&gt;&gt;</span> <span>${TERMINAL_LOGS[idx]}</span>`;
+                if (terminalLogs) terminalLogs.appendChild(line);
+                idx++;
+            }
+        }
+
+        // Display first log immediately
+        appendNextLog();
+
+        // Cycle next logs with 800ms delay between each
+        terminalLogTimer = setInterval(() => {
+            if (idx < TERMINAL_LOGS.length) {
+                appendNextLog();
+            } else {
+                clearInterval(terminalLogTimer);
+            }
+        }, 800);
+    }
+
+    function hideTerminalIllusion() {
+        clearInterval(terminalLogTimer);
+        const uploadBox = document.getElementById('uploadBox');
+        const terminal = document.getElementById('terminalIllusion');
+        if (terminal) terminal.classList.add('hidden');
+        if (uploadBox) uploadBox.classList.remove('hidden');
+    }
+
     if (scanBtn) {
         scanBtn.addEventListener('click', async () => {
             const code = codeInput ? codeInput.value.trim() : '';
@@ -1905,6 +1993,21 @@ jobs:
                 alert('Please enter some code to scan!');
                 return;
             }
+
+            // Feature 1: Pre-Upload check on code size (5MB Limit)
+            const codeBlob = new Blob([code]);
+            if (codeBlob.size > 5 * 1024 * 1024) {
+                const exactError = "Error: File exceeds 5MB Microservice Limit. Massive monolithic codebases require Enterprise Dedicated Clusters. Contact Founder for upgrade.";
+                const fileErrorMsg = document.getElementById('fileErrorMsg');
+                const fileErrorText = document.getElementById('fileErrorText');
+                if (fileErrorText) fileErrorText.innerText = exactError;
+                if (fileErrorMsg) fileErrorMsg.classList.remove('hidden');
+                if (typeof showToast === 'function') showToast(exactError, 'error');
+                return; // Immediately halt process, do not send to backend
+            }
+
+            // Hide previous file error
+            document.getElementById('fileErrorMsg')?.classList.add('hidden');
             
             if (!isPremium) {
                 const freeScansUsed = parseInt(localStorage.getItem('free_scans_used') || '0', 10);
@@ -1918,7 +2021,7 @@ jobs:
                 showToast("Free Scan Used: " + newCount + "/3", "info");
             }
 
-            // Loading State
+            // Loading State & Terminal Illusion
             scanBtn.disabled = true;
             scanBtn.innerHTML = `
                 <svg class="animate-spin -ml-1 mr-3 h-5 w-5 text-white" xmlns="http://www.w3.org/2000/svg" fill="none" viewBox="0 0 24 24">
@@ -1934,6 +2037,9 @@ jobs:
             }
             document.getElementById('blurPaywallOverlay')?.classList.add('hidden');
             document.getElementById('scanLimitWarning')?.classList.add('hidden');
+
+            // Show Terminal Illusion during Upload/Fetch
+            showTerminalIllusion();
 
             try {
                 const controller = new AbortController();
@@ -2061,6 +2167,7 @@ jobs:
             }
             
             function resetScanBtn() {
+                hideTerminalIllusion();
                 if (!scanBtn) return;
                 scanBtn.disabled = false;
                 scanBtn.innerHTML = `
@@ -2127,18 +2234,74 @@ jobs:
         });
     }
 
-    // File Upload
-    document.getElementById('fileUpload')?.addEventListener('change', function(e) {
-        const file = e.target.files ? e.target.files[0] : null;
+    // ==========================================
+    // Feature 1: The 5MB Limit (Pre-Upload Check)
+    // ==========================================
+    function handleFileSelection(file) {
         if (!file) return;
-        
+
+        const fileErrorMsg = document.getElementById('fileErrorMsg');
+        const fileErrorText = document.getElementById('fileErrorText');
+        const exactError = "Error: File exceeds 5MB Microservice Limit. Massive monolithic codebases require Enterprise Dedicated Clusters. Contact Founder for upgrade.";
+
+        // Pre-Upload check: 5MB limit (5 * 1024 * 1024 bytes)
+        if (file.size > 5 * 1024 * 1024) {
+            if (fileErrorText) fileErrorText.innerText = exactError;
+            if (fileErrorMsg) fileErrorMsg.classList.remove('hidden');
+            if (typeof showToast === 'function') showToast(exactError, 'error');
+            const fileUpload = document.getElementById('fileUpload');
+            if (fileUpload) fileUpload.value = '';
+            return; // Immediately halt process, do not send to backend
+        }
+
+        // Valid file under 5MB
+        if (fileErrorMsg) fileErrorMsg.classList.add('hidden');
+
         const reader = new FileReader();
         reader.onload = function(event) {
             const input = document.getElementById('codeInput');
             if (input) input.value = event.target.result;
+
+            // Submit scan for valid file
+            if (scanBtn) {
+                scanBtn.click();
+            }
         };
         reader.readAsText(file);
-    });
+    }
+
+    // File input change
+    const fileUploadInput = document.getElementById('fileUpload');
+    if (fileUploadInput) {
+        fileUploadInput.addEventListener('change', function(e) {
+            const file = e.target.files ? e.target.files[0] : null;
+            if (!file) return;
+            handleFileSelection(file);
+        });
+    }
+
+    // Drag and Drop on Upload Box / Code Input
+    const dropZone = document.getElementById('uploadBox') || document.getElementById('codeInput');
+    if (dropZone) {
+        ['dragenter', 'dragover'].forEach(name => {
+            dropZone.addEventListener(name, (e) => {
+                e.preventDefault();
+                e.stopPropagation();
+            });
+        });
+        ['dragleave', 'drop'].forEach(name => {
+            dropZone.addEventListener(name, (e) => {
+                e.preventDefault();
+                e.stopPropagation();
+            });
+        });
+        dropZone.addEventListener('drop', (e) => {
+            const files = e.dataTransfer ? e.dataTransfer.files : null;
+            if (files && files.length > 0) {
+                handleFileSelection(files[0]);
+            }
+        });
+    }
 
     // Auto-Fix Code
     const fixCodeBtn = document.getElementById('fixCodeBtn');
