@@ -109,14 +109,25 @@ def apply_zero_leak_redaction(code: str):
 load_dotenv()
 
 DATABASE_URL = os.getenv("DATABASE_URL")
+if DATABASE_URL and DATABASE_URL.startswith("postgres://"):
+    DATABASE_URL = DATABASE_URL.replace("postgres://", "postgresql://", 1)
+
+engine = None
 try:
     if not DATABASE_URL:
         raise ValueError("DATABASE_URL missing")
-    engine = create_engine(DATABASE_URL, pool_pre_ping=True, pool_recycle=1800)
+    connect_args = {"connect_timeout": 5} if "postgres" in DATABASE_URL else {}
+    test_engine = create_engine(DATABASE_URL, pool_pre_ping=True, pool_recycle=1800, connect_args=connect_args)
+    from sqlalchemy import text
+    with test_engine.connect() as test_conn:
+        test_conn.execute(text("SELECT 1"))
+    engine = test_engine
+    print("[+] Successfully connected to PostgreSQL database.")
 except Exception as e:
-    print(f"[!] Warning: PostgreSQL connection failed or missing ({e}). Falling back to SQLite.")
+    print(f"[!] Warning: PostgreSQL connection failed or timed out ({e}). Falling back to SQLite.")
     DATABASE_URL = "sqlite:///./sql_app.db"
     engine = create_engine(DATABASE_URL, connect_args={"check_same_thread": False})
+
 SessionLocal = sessionmaker(autocommit=False, autoflush=False, bind=engine)
 Base = declarative_base()
 
@@ -153,35 +164,35 @@ class User(Base):
     organization = relationship("Organization", backref="users")
     scan_cache = relationship("ScanCache", back_populates="user")
 
-Base.metadata.create_all(bind=engine)
-
-# ADD SCHEMA MIGRATION BLOCKS
-from sqlalchemy import inspect, text
-
-inspector = inspect(engine)
-
-with engine.begin() as conn:
-    if inspector.has_table('users'):
-        columns = [col['name'] for col in inspector.get_columns('users')]
-        if 'plan_tier' not in columns:
-            conn.execute(text("ALTER TABLE users ADD COLUMN plan_tier VARCHAR DEFAULT 'developer'"))
-        if 'trial_expires_at' not in columns:
-            conn.execute(text("ALTER TABLE users ADD COLUMN trial_expires_at TIMESTAMP"))
-        if 'scans_used' not in columns:
-            conn.execute(text("ALTER TABLE users ADD COLUMN scans_used INTEGER DEFAULT 0"))
-        if 'scan_cycle_start' not in columns:
-            conn.execute(text("ALTER TABLE users ADD COLUMN scan_cycle_start TIMESTAMP DEFAULT CURRENT_TIMESTAMP"))
-        if 'daily_scans_used' not in columns:
-            conn.execute(text("ALTER TABLE users ADD COLUMN daily_scans_used INTEGER DEFAULT 0"))
-        if 'monthly_scans_used' not in columns:
-            conn.execute(text("ALTER TABLE users ADD COLUMN monthly_scans_used INTEGER DEFAULT 0"))
-        if 'created_at' not in columns:
-            conn.execute(text("ALTER TABLE users ADD COLUMN created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP"))
-            
-    if inspector.has_table('scan_cache'):
-        columns = [col['name'] for col in inspector.get_columns('scan_cache')]
-        if 'user_id' not in columns:
-            conn.execute(text("ALTER TABLE scan_cache ADD COLUMN user_id INTEGER REFERENCES users(id)"))
+# SAFE SCHEMA INITIALIZATION & MIGRATION BLOCKS
+try:
+    Base.metadata.create_all(bind=engine)
+    from sqlalchemy import inspect, text
+    inspector = inspect(engine)
+    with engine.begin() as conn:
+        if inspector.has_table('users'):
+            columns = [col['name'] for col in inspector.get_columns('users')]
+            if 'plan_tier' not in columns:
+                conn.execute(text("ALTER TABLE users ADD COLUMN plan_tier VARCHAR DEFAULT 'developer'"))
+            if 'trial_expires_at' not in columns:
+                conn.execute(text("ALTER TABLE users ADD COLUMN trial_expires_at TIMESTAMP"))
+            if 'scans_used' not in columns:
+                conn.execute(text("ALTER TABLE users ADD COLUMN scans_used INTEGER DEFAULT 0"))
+            if 'scan_cycle_start' not in columns:
+                conn.execute(text("ALTER TABLE users ADD COLUMN scan_cycle_start TIMESTAMP DEFAULT CURRENT_TIMESTAMP"))
+            if 'daily_scans_used' not in columns:
+                conn.execute(text("ALTER TABLE users ADD COLUMN daily_scans_used INTEGER DEFAULT 0"))
+            if 'monthly_scans_used' not in columns:
+                conn.execute(text("ALTER TABLE users ADD COLUMN monthly_scans_used INTEGER DEFAULT 0"))
+            if 'created_at' not in columns:
+                conn.execute(text("ALTER TABLE users ADD COLUMN created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP"))
+                
+        if inspector.has_table('scan_cache'):
+            columns = [col['name'] for col in inspector.get_columns('scan_cache')]
+            if 'user_id' not in columns:
+                conn.execute(text("ALTER TABLE scan_cache ADD COLUMN user_id INTEGER REFERENCES users(id)"))
+except Exception as e:
+    print(f"[!] Warning during DB migration/init: {e}")
 
 class ScanCache(Base):
     __tablename__ = "scan_cache"
