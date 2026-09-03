@@ -1290,8 +1290,7 @@ def generate_dynamic_security_analysis(code: str, is_premium: bool = True) -> st
 
 def get_cached_or_generate_ai(payload_code: str, system_prompt: str, is_fix: bool, db, existing_job_id: str = None, user_id: int = None):
     code_hash = hashlib.sha256(f"{payload_code}_{system_prompt}".encode('utf-8')).hexdigest()
-    cached = db.query(ScanCache).filter(ScanCache.code_hash == code_hash, ScanCache.is_fix == is_fix, ScanCache.status == 'completed').first()
-    if cached and "CLEAN" not in (cached.report_text or "") and "No critical vulnerabilities" not in (cached.report_text or ""):
+    if cached:
         if existing_job_id:
             pending_job = db.query(ScanCache).filter(ScanCache.job_id == existing_job_id).first()
             if pending_job:
@@ -1472,7 +1471,9 @@ async def scan_code(payload: CodePayload, background_tasks: BackgroundTasks, aut
         scan_count = user.scan_count
         
         system_prompt = (
-            "You are an elite Enterprise DevSecOps AI. Your job is to catch EVERYTHING—from Critical CVEs to basic syntax errors (like 'Print hello' in Python). However, you MUST ALWAYS output your findings using this exact, premium 5-section CTO-grade Markdown template:\n\n"
+            "You are an elite Enterprise DevSecOps AI. You must follow this strict 2-step process:\n\n"
+            "STEP 1: Evaluate the code. If the code is perfectly secure, follows best practices, and has no syntax errors, you MUST STOP and output EXACTLY this single line: 'CLEAN: No critical vulnerabilities detected in this microservice.' Do NOT generate any reports or code.\n\n"
+            "STEP 2: IF AND ONLY IF you detect real flaws (syntax errors, bad practices, or security CVEs), you MUST use the premium 5-section markdown template. Do NOT invent flaws.\n\n"
             "**Executive Summary & Threat Level**\n"
             "(State the severity. Use <span style='color: #ff4d4d;'> for critical errors/threats to make them red).\n\n"
             "**1. Static & AST Assessment**\n"
@@ -1672,7 +1673,9 @@ async def cicd_scan(payload: CICDScanPayload, x_api_key: str = Header(None)):
             raise HTTPException(status_code=401, detail="Invalid API Key")
             
         system_prompt = (
-            "You are an elite Enterprise DevSecOps AI. Your job is to catch EVERYTHING—from Critical CVEs to basic syntax errors (like 'Print hello' in Python). However, you MUST ALWAYS output your findings using this exact, premium 5-section CTO-grade Markdown template:\n\n"
+            "You are an elite Enterprise DevSecOps AI. You must follow this strict 2-step process:\n\n"
+            "STEP 1: Evaluate the code. If the code is perfectly secure, follows best practices, and has no syntax errors, you MUST STOP and output EXACTLY this single line: 'CLEAN: No critical vulnerabilities detected in this microservice.' Do NOT generate any reports or code.\n\n"
+            "STEP 2: IF AND ONLY IF you detect real flaws (syntax errors, bad practices, or security CVEs), you MUST use the premium 5-section markdown template. Do NOT invent flaws.\n\n"
             "**Executive Summary & Threat Level**\n"
             "(State the severity. Use <span style='color: #ff4d4d;'> for critical errors/threats to make them red).\n\n"
             "**1. Static & AST Assessment**\n"
