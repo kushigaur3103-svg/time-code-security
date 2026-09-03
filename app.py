@@ -1198,12 +1198,12 @@ def generate_dynamic_security_analysis(code: str, is_premium: bool = True) -> st
         max_severity = "CRITICAL" if any(v['severity'] == 'CRITICAL' for v in vulnerabilities) else "HIGH"
         max_score = max(float(v['score']) for v in vulnerabilities)
         
-        report = f"""### Section 1: Executive Summary & Threat Level
+        report = f"""**Executive Summary & Threat Level**
 - **Target Analysis:** The submitted code snippet ({len(lines)} line(s) audited)
-- **Threat Level:** 🚨 **{max_severity}** (Severity Score: **{max_score}/10.0**)
+- **Threat Level:** <span style='color: #ff4d4d;'>🚨 {max_severity} (Severity Score: {max_score}/10.0)</span>
 - **Summary:** The analyzed script contains {len(vulnerabilities)} high-risk security flaw(s) requiring immediate remediation prior to deployment.
 
-### Section 2: Static & AST Vulnerability Assessment"""
+**1. Static & AST Assessment**"""
 
         for v in vulnerabilities:
             report += f"""
@@ -1215,15 +1215,15 @@ def generate_dynamic_security_analysis(code: str, is_premium: bool = True) -> st
         frameworks = list(set(v['framework'] for v in vulnerabilities))
         report += f"""
 
-### Section 3: Regulatory & Compliance Mapping
+**2. Regulatory & Compliance Mapping**
 - **Regulatory Framework Impact:** `{', '.join(frameworks)}`
 - **Assessment:** The submitted code snippet introduces potential compliance violations under the specified controls due to unvalidated inputs and execution sinks.
 
-### Section 4: Threat Impact & Exploitation Vectors
+**3. Threat Impact & Exploitation Vectors**
 - **Exploitability:** High — attack vectors in the analyzed script can be leveraged to compromise runtime integrity or access sensitive system resources.
 - **Blast Radius:** Critical if deployed in a production service handling untrusted input.
 
-### Section 5: Recommended Remediation & Hardened Code Implementation"""
+**4. Recommended Remediation & Hardened Code**"""
 
         if is_premium:
             report += "\n- **Automated Fix:** Click **'Generate Secure Code'** below to produce an auto-remediated, hardened patch verified against AST security policies."
@@ -1245,48 +1245,24 @@ def generate_dynamic_security_analysis(code: str, is_premium: bool = True) -> st
 
         if syntax_issue or ("print " in code and "print(" not in code):
             fixed_snippet = code.replace("print ", "print(").rstrip() + ")" if ("print " in code and "print(" not in code) else code
-            return f"""### Section 1: Executive Summary & Threat Level
-- **Target Analysis:** The submitted code snippet
-- **Threat Level:** 🚨 **CRITICAL** (Severity Score: **9.3/10.0**)
-- **Summary:** The analyzed script contains an immediate fatal syntax/runtime error that halts automated build systems, fails microservice compilation, and breaches production availability standards.
+            return f"""**Executive Summary & Threat Level**
+<span style='color: #ff4d4d;'>🚨 CRITICAL (Severity Score: 9.3/10.0) — Syntax Error / Interpreter Failure</span>
 
-### Section 2: Static & AST Vulnerability/Syntax Assessment
-| Line | Flaw / Vulnerability Type | CWE / Classification | Severity | Impact Description |
-|---|---|---|---|---|
-| 1 | {syntax_issue or "Python 2 print statement without parentheses"} | CWE-710 / CWE-703 | CRITICAL | Interpreter rejects syntax token; immediate process termination |
+**1. Static & AST Assessment**
+- **Flaw:** {syntax_issue or "Python 2 print statement without parentheses (SyntaxError in Python 3)"}
+- **Impact:** Python interpreter halts on compilation. Automated CI/CD pipelines fail.
 
-### Section 3: Regulatory & Compliance Mapping
-- **SOC 2 Type II (CC7.1/CC7.2 - Availability):** Fatal syntax crashes prevent service build and deployment, directly violating continuous availability commitments.
-- **ISO 27001 (A.12.1 - Operational Reliability):** Code fails automated sanity checks, introducing operational disruption risks.
+**2. Regulatory & Compliance Mapping**
+- **SLA & Availability Impact:** Fatal syntax crash violates deployment availability and service continuity. N/A for data breach.
 
-### Section 4: Threat Impact & Exploitation Vectors
-- **Blast Radius:** Build and CI/CD pipelines fail on compilation. Deployment to staging/production clusters is blocked.
-- **Exploitation / Failure Vector:** Automated runners terminate with exit code 1 on parsing, causing denial of service at the deployment layer.
+**3. Threat Impact & Exploitation Vectors**
+- **Pipeline Breakdown:** Automated build systems exit with error code 1, causing denial of service at the deployment layer.
 
-### Section 5: Recommended Remediation & Hardened Code Implementation
+**4. Recommended Remediation & Hardened Code**
 ```python
-{fixed_snippet}
+<span style='color: #00ff00;'>{fixed_snippet}</span>
 ```"""
-        return f"""### Section 1: Executive Summary & Threat Level
-- **Target Analysis:** The submitted code snippet
-- **Threat Level:** ✅ **SAFE** (Severity Score: **0.0/10.0**)
-- **Summary:** The analyzed script successfully passed baseline AST parsing and contains no dangerous execution sinks.
-
-### Section 2: Static & AST Vulnerability/Syntax Assessment
-| Line | Flaw / Vulnerability Type | CWE / Classification | Severity | Impact Description |
-|---|---|---|---|---|
-| All | Baseline Code Inspection | None | SAFE | No injection vectors or unhandled syntax faults found |
-
-### Section 3: Regulatory & Compliance Mapping
-- **SOC 2 / ISO 27001:** Code structure complies with baseline syntactic and runtime availability criteria.
-
-### Section 4: Threat Impact & Exploitation Vectors
-- **Blast Radius:** Minimal. No untrusted input sinks or privileged execution detected.
-
-### Section 5: Recommended Remediation & Hardened Code Implementation
-```python
-{code}
-```"""
+        return "CLEAN: No critical vulnerabilities detected in this microservice."
 
 def get_cached_or_generate_ai(payload_code: str, system_prompt: str, is_fix: bool, db, existing_job_id: str = None, user_id: int = None):
     code_hash = hashlib.sha256(f"{payload_code}_{system_prompt}".encode('utf-8')).hexdigest()
@@ -1472,14 +1448,25 @@ async def scan_code(payload: CodePayload, background_tasks: BackgroundTasks, aut
         scan_count = user.scan_count
         
         system_prompt = (
-            "You are a ruthless, highly accurate Enterprise DevSecOps AI. You have zero tolerance for hallucination. You MUST follow these two rules:\n\n"
-            "RULE 1: IF THE CODE IS SECURE AND HAS NO SYNTAX ERRORS: You MUST output EXACTLY AND ONLY this single line: 'CLEAN: No critical vulnerabilities detected in this microservice.' Do NOT generate any markdown, do NOT write a report, do NOT output code.\n\n"
-            "RULE 2: IF THE CODE HAS FLAWS (Syntax errors, Bugs, or CVEs): You must use the 5-section markdown template below. CRITICAL: NEVER invent code that isn't there. If it is a basic syntax error, DO NOT force HIPAA/GDPR mapping; state 'N/A' or only mention SLA impact.\n\n"
-            "**Executive Summary & Threat Level** (Use <span style='color: #ff4d4d;'> for threats)\n"
-            "**1. Static & AST Assessment** (State the EXACT flaw based ONLY on the provided code)\n"
-            "**2. Regulatory & Compliance Mapping** (ONLY if the flaw actually causes a data/security breach. Otherwise state 'N/A')\n"
-            "**3. Threat Impact & Exploitation Vectors**\n"
-            "**4. Recommended Remediation & Hardened Code** (Provide exact drop-in corrected code. Highlight success concepts using <span style='color: #00ff00;'>)"
+            "You are a ruthless, highly accurate Enterprise DevSecOps AI. You have zero tolerance for hallucination. "
+            "You MUST perform a strict '3-PASS SCAN' before writing the report:\n\n"
+            "PASS 1 (Syntax/Compiler): Catch ALL missing colons, invalid Python 2 syntax (like 'Print hello'), unclosed brackets, indentation errors, and structural errors.\n"
+            "PASS 2 (Secrets): Catch ALL hardcoded API keys, tokens, passwords, database credentials, and any sanitized '***REDACTED_BY_TIMECODESECURITY***' placeholders (CWE-798).\n"
+            "PASS 3 (Vulnerabilities): Catch ALL SAST flaws (SQLi, RCE, Insecure Deserialization, Arbitrary Code Execution, Weak Crypto).\n\n"
+            "RULE 1: IF ALL 3 PASSES DETECT ZERO FLAWS (The code is 100% secure and has no syntax errors): "
+            "You MUST output EXACTLY AND ONLY this single line: 'CLEAN: No critical vulnerabilities detected in this microservice.' "
+            "Do NOT generate any markdown, do NOT write a report, do NOT output code.\n\n"
+            "RULE 2: IF ANY PASS DETECTS FLAWS: After the 3-Pass Scan, you MUST output the findings using ONLY this EXACT format. "
+            "DO NOT add 'Section 1:', 'Section 2:' prefixes. DO NOT deviate from this template:\n\n"
+            "**Executive Summary & Threat Level**\n"
+            "(State the severity. Use <span style='color: #ff4d4d;'> for threats)\n\n"
+            "**1. Static & AST Assessment**\n"
+            "(You MUST list EVERY finding from Pass 1, Pass 2, and Pass 3 here. Do not skip syntax errors or hardcoded secrets. Give technical details for each).\n\n"
+            "**2. Regulatory & Compliance Mapping**\n"
+            "(Map the actual flaws. N/A for syntax errors).\n\n"
+            "**3. Threat Impact & Exploitation Vectors**\n\n"
+            "**4. Recommended Remediation & Hardened Code**\n"
+            "(Provide the exact drop-in corrected code fixing ALL syntax, secrets, and security flaws. Highlight success concepts using <span style='color: #00ff00;'>)"
         )
 
         if not is_premium:
@@ -1512,7 +1499,7 @@ async def scan_code(payload: CodePayload, background_tasks: BackgroundTasks, aut
                 system_prompt += (
                     "\n\n[CONFIRMED HARDCODED SECRET DETECTED]\n"
                     "The pre-upload security filter detected one or more hardcoded secrets/credentials (CWE-798) and sanitized them to '***REDACTED_BY_TIMECODESECURITY***'. "
-                    "Audit this credential exposure on its line, detail the blast radius, and provide the secure runtime environment variable fix in Section 5."
+                    "Audit this credential exposure in Pass 2, detail it in '**1. Static & AST Assessment**', and provide the secure runtime environment variable fix in '**4. Recommended Remediation & Hardened Code**'."
                 )
 
             job_id = str(uuid.uuid4())
@@ -1669,14 +1656,25 @@ async def cicd_scan(payload: CICDScanPayload, x_api_key: str = Header(None)):
             raise HTTPException(status_code=401, detail="Invalid API Key")
             
         system_prompt = (
-            "You are a ruthless, highly accurate Enterprise DevSecOps AI. You have zero tolerance for hallucination. You MUST follow these two rules:\n\n"
-            "RULE 1: IF THE CODE IS SECURE AND HAS NO SYNTAX ERRORS: You MUST output EXACTLY AND ONLY this single line: 'CLEAN: No critical vulnerabilities detected in this microservice.' Do NOT generate any markdown, do NOT write a report, do NOT output code.\n\n"
-            "RULE 2: IF THE CODE HAS FLAWS (Syntax errors, Bugs, or CVEs): You must use the 5-section markdown template below. CRITICAL: NEVER invent code that isn't there. If it is a basic syntax error, DO NOT force HIPAA/GDPR mapping; state 'N/A' or only mention SLA impact.\n\n"
-            "**Executive Summary & Threat Level** (Use <span style='color: #ff4d4d;'> for threats)\n"
-            "**1. Static & AST Assessment** (State the EXACT flaw based ONLY on the provided code)\n"
-            "**2. Regulatory & Compliance Mapping** (ONLY if the flaw actually causes a data/security breach. Otherwise state 'N/A')\n"
-            "**3. Threat Impact & Exploitation Vectors**\n"
-            "**4. Recommended Remediation & Hardened Code** (Provide exact drop-in corrected code. Highlight success concepts using <span style='color: #00ff00;'>)"
+            "You are a ruthless, highly accurate Enterprise DevSecOps AI. You have zero tolerance for hallucination. "
+            "You MUST perform a strict '3-PASS SCAN' before writing the report:\n\n"
+            "PASS 1 (Syntax/Compiler): Catch ALL missing colons, invalid Python 2 syntax (like 'Print hello'), unclosed brackets, indentation errors, and structural errors.\n"
+            "PASS 2 (Secrets): Catch ALL hardcoded API keys, tokens, passwords, database credentials, and any sanitized '***REDACTED_BY_TIMECODESECURITY***' placeholders (CWE-798).\n"
+            "PASS 3 (Vulnerabilities): Catch ALL SAST flaws (SQLi, RCE, Insecure Deserialization, Arbitrary Code Execution, Weak Crypto).\n\n"
+            "RULE 1: IF ALL 3 PASSES DETECT ZERO FLAWS (The code is 100% secure and has no syntax errors): "
+            "You MUST output EXACTLY AND ONLY this single line: 'CLEAN: No critical vulnerabilities detected in this microservice.' "
+            "Do NOT generate any markdown, do NOT write a report, do NOT output code.\n\n"
+            "RULE 2: IF ANY PASS DETECTS FLAWS: After the 3-Pass Scan, you MUST output the findings using ONLY this EXACT format. "
+            "DO NOT add 'Section 1:', 'Section 2:' prefixes. DO NOT deviate from this template:\n\n"
+            "**Executive Summary & Threat Level**\n"
+            "(State the severity. Use <span style='color: #ff4d4d;'> for threats)\n\n"
+            "**1. Static & AST Assessment**\n"
+            "(You MUST list EVERY finding from Pass 1, Pass 2, and Pass 3 here. Do not skip syntax errors or hardcoded secrets. Give technical details for each).\n\n"
+            "**2. Regulatory & Compliance Mapping**\n"
+            "(Map the actual flaws. N/A for syntax errors).\n\n"
+            "**3. Threat Impact & Exploitation Vectors**\n\n"
+            "**4. Recommended Remediation & Hardened Code**\n"
+            "(Provide the exact drop-in corrected code fixing ALL syntax, secrets, and security flaws. Highlight success concepts using <span style='color: #00ff00;'>)"
         )
 
         redacted_code, secrets_found = apply_zero_leak_redaction(valid_code)
@@ -1684,7 +1682,7 @@ async def cicd_scan(payload: CICDScanPayload, x_api_key: str = Header(None)):
             system_prompt += (
                 "\n\n[CONFIRMED HARDCODED SECRET DETECTED]\n"
                 "The pre-upload security filter detected one or more hardcoded secrets/credentials (CWE-798) and sanitized them to '***REDACTED_BY_TIMECODESECURITY***'. "
-                "Audit this credential exposure on its line, detail the blast radius, and provide the secure runtime environment variable fix in Section 5."
+                "Audit this credential exposure in Pass 2, detail it in '**1. Static & AST Assessment**', and provide the secure runtime environment variable fix in '**4. Recommended Remediation & Hardened Code**'."
             )
 
         # ====== GOD-MODE RAG CONTEXT INJECTION ======
