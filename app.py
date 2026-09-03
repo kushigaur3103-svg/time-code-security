@@ -1245,18 +1245,45 @@ def generate_dynamic_security_analysis(code: str, is_premium: bool = True) -> st
 
         if syntax_issue or ("print " in code and "print(" not in code):
             fixed_snippet = code.replace("print ", "print(").rstrip() + ")" if ("print " in code and "print(" not in code) else code
-            return f"""### 1. Detailed Analysis
-- **Syntax Error / Version Incompatibility:** {syntax_issue or "Python 2 print statement without parentheses (SyntaxError in Python 3)"}
-- **Explanation:** In Python 3, `print` is a built-in function and requires parentheses. Missing parentheses cause an immediate `SyntaxError`.
+            return f"""### Section 1: Executive Summary & Threat Level
+- **Target Analysis:** The submitted code snippet
+- **Threat Level:** 🚨 **CRITICAL** (Severity Score: **9.3/10.0**)
+- **Summary:** The analyzed script contains an immediate fatal syntax/runtime error that halts automated build systems, fails microservice compilation, and breaches production availability standards.
 
-### 2. Corrected Code
+### Section 2: Static & AST Vulnerability/Syntax Assessment
+| Line | Flaw / Vulnerability Type | CWE / Classification | Severity | Impact Description |
+|---|---|---|---|---|
+| 1 | {syntax_issue or "Python 2 print statement without parentheses"} | CWE-710 / CWE-703 | CRITICAL | Interpreter rejects syntax token; immediate process termination |
+
+### Section 3: Regulatory & Compliance Mapping
+- **SOC 2 Type II (CC7.1/CC7.2 - Availability):** Fatal syntax crashes prevent service build and deployment, directly violating continuous availability commitments.
+- **ISO 27001 (A.12.1 - Operational Reliability):** Code fails automated sanity checks, introducing operational disruption risks.
+
+### Section 4: Threat Impact & Exploitation Vectors
+- **Blast Radius:** Build and CI/CD pipelines fail on compilation. Deployment to staging/production clusters is blocked.
+- **Exploitation / Failure Vector:** Automated runners terminate with exit code 1 on parsing, causing denial of service at the deployment layer.
+
+### Section 5: Recommended Remediation & Hardened Code Implementation
 ```python
 {fixed_snippet}
 ```"""
-        return f"""### 1. Detailed Analysis
-The submitted code snippet was analyzed. No critical syntax or CVE vulnerabilities detected.
+        return f"""### Section 1: Executive Summary & Threat Level
+- **Target Analysis:** The submitted code snippet
+- **Threat Level:** ✅ **SAFE** (Severity Score: **0.0/10.0**)
+- **Summary:** The analyzed script successfully passed baseline AST parsing and contains no dangerous execution sinks.
 
-### 2. Corrected Code
+### Section 2: Static & AST Vulnerability/Syntax Assessment
+| Line | Flaw / Vulnerability Type | CWE / Classification | Severity | Impact Description |
+|---|---|---|---|---|
+| All | Baseline Code Inspection | None | SAFE | No injection vectors or unhandled syntax faults found |
+
+### Section 3: Regulatory & Compliance Mapping
+- **SOC 2 / ISO 27001:** Code structure complies with baseline syntactic and runtime availability criteria.
+
+### Section 4: Threat Impact & Exploitation Vectors
+- **Blast Radius:** Minimal. No untrusted input sinks or privileged execution detected.
+
+### Section 5: Recommended Remediation & Hardened Code Implementation
 ```python
 {code}
 ```"""
@@ -1445,10 +1472,31 @@ async def scan_code(payload: CodePayload, background_tasks: BackgroundTasks, aut
         scan_count = user.scan_count
         
         system_prompt = (
-            "You are an elite Code and Syntax Analyzer. Your job is to catch EVERYTHING. "
-            "If a user inputs Print hello, immediately flag it as a Python 2 syntax error, "
-            "explain why it fails in Python 3, and output the corrected print(\"hello\") code. "
-            "Provide a beautiful Markdown report. Never output a generic clean message if there are syntax errors."
+            "You are a ruthless, corporate, and highly authoritative Enterprise Chief Information Security Officer (CISO) & Principal Code Architect. "
+            "Your mandate is to ruthlessly analyze the submitted code snippet and catch EVERYTHING: syntax errors (e.g., catching 'Print hello' as a fatal Python 2 syntax violation), "
+            "language version incompatibilities, logic bugs, bad practices, and security vulnerabilities (CVEs). "
+            "Never output a generic clean message if there are syntax or structural flaws.\n\n"
+            "You MUST wrap EVERY audit in the strict 5-section Enterprise CTO Security & Code Quality Report format in valid Markdown:\n\n"
+            "### Section 1: Executive Summary & Threat Level\n"
+            "- Target Analysis: The submitted code snippet\n"
+            "- Threat Level: Assign Severity (CRITICAL, HIGH, MEDIUM, LOW, or SAFE) and a precise Severity Score (0.0 - 10.0/10.0). Even for syntax crashes, assign appropriate HIGH/CRITICAL operational severity as it induces immediate runtime failure.\n"
+            "- Executive Summary: Authoritative C-suite executive briefing on code integrity, reliability, and deployment readiness.\n\n"
+            "### Section 2: Static & AST Vulnerability/Syntax Assessment\n"
+            "Present all findings strictly in a structured Markdown Table:\n"
+            "| Line | Flaw / Vulnerability Type | CWE / Classification | Severity | Impact Description |\n"
+            "|---|---|---|---|---|\n"
+            "Detail every syntax error, casing mismatch, missing parenthesis, and security defect.\n\n"
+            "### Section 3: Regulatory & Compliance Mapping\n"
+            "- Map against enterprise compliance frameworks: SOC 2 Type II, ISO 27001, HIPAA, GDPR, and OWASP Top 10.\n"
+            "- If the issue is a syntax error or runtime crash, explicitly detail how unhandled interpreter exceptions and build breakages violate SOC 2 Availability (Trust Services Criteria CC7.1/CC7.2) and ISO 27001 operational reliability controls.\n\n"
+            "### Section 4: Threat Impact & Exploitation Vectors\n"
+            "- Blast Radius: Detail how the flaw breaks production CI/CD pipelines, causes build failures, halts microservice deployment, or exposes attack surfaces.\n"
+            "- Exploitation / Failure Vector: Technical breakdown of how interpreter failure or vulnerability triggers denial of service or runtime compromise.\n\n"
+            "### Section 5: Recommended Remediation & Hardened Code Implementation\n"
+            "Provide the exact, drop-in corrected, and hardened production-ready code snippet.\n\n"
+            "CRITICAL RULES:\n"
+            "- Tone must remain ruthless, corporate, and highly authoritative.\n"
+            "- Always refer to the code strictly as 'The submitted code snippet' or 'The analyzed script'."
         )
 
         if not is_premium:
@@ -1481,7 +1529,7 @@ async def scan_code(payload: CodePayload, background_tasks: BackgroundTasks, aut
                 system_prompt += (
                     "\n\n[CONFIRMED HARDCODED SECRET DETECTED]\n"
                     "The pre-upload security filter detected one or more hardcoded secrets/credentials (CWE-798) and sanitized them to '***REDACTED_BY_TIMECODESECURITY***'. "
-                    "Audit this credential exposure on its line, explain the blast radius, and provide the secure fix in '2. Corrected Code'."
+                    "Audit this credential exposure on its line, detail the blast radius, and provide the secure runtime environment variable fix in Section 5."
                 )
 
             job_id = str(uuid.uuid4())
@@ -1638,10 +1686,31 @@ async def cicd_scan(payload: CICDScanPayload, x_api_key: str = Header(None)):
             raise HTTPException(status_code=401, detail="Invalid API Key")
             
         system_prompt = (
-            "You are an elite Code and Syntax Analyzer. Your job is to catch EVERYTHING. "
-            "If a user inputs Print hello, immediately flag it as a Python 2 syntax error, "
-            "explain why it fails in Python 3, and output the corrected print(\"hello\") code. "
-            "Provide a beautiful Markdown report. Never output a generic clean message if there are syntax errors."
+            "You are a ruthless, corporate, and highly authoritative Enterprise Chief Information Security Officer (CISO) & Principal Code Architect. "
+            "Your mandate is to ruthlessly analyze the submitted code snippet and catch EVERYTHING: syntax errors (e.g., catching 'Print hello' as a fatal Python 2 syntax violation), "
+            "language version incompatibilities, logic bugs, bad practices, and security vulnerabilities (CVEs). "
+            "Never output a generic clean message if there are syntax or structural flaws.\n\n"
+            "You MUST wrap EVERY audit in the strict 5-section Enterprise CTO Security & Code Quality Report format in valid Markdown:\n\n"
+            "### Section 1: Executive Summary & Threat Level\n"
+            "- Target Analysis: The submitted code snippet\n"
+            "- Threat Level: Assign Severity (CRITICAL, HIGH, MEDIUM, LOW, or SAFE) and a precise Severity Score (0.0 - 10.0/10.0). Even for syntax crashes, assign appropriate HIGH/CRITICAL operational severity as it induces immediate runtime failure.\n"
+            "- Executive Summary: Authoritative C-suite executive briefing on code integrity, reliability, and deployment readiness.\n\n"
+            "### Section 2: Static & AST Vulnerability/Syntax Assessment\n"
+            "Present all findings strictly in a structured Markdown Table:\n"
+            "| Line | Flaw / Vulnerability Type | CWE / Classification | Severity | Impact Description |\n"
+            "|---|---|---|---|---|\n"
+            "Detail every syntax error, casing mismatch, missing parenthesis, and security defect.\n\n"
+            "### Section 3: Regulatory & Compliance Mapping\n"
+            "- Map against enterprise compliance frameworks: SOC 2 Type II, ISO 27001, HIPAA, GDPR, and OWASP Top 10.\n"
+            "- If the issue is a syntax error or runtime crash, explicitly detail how unhandled interpreter exceptions and build breakages violate SOC 2 Availability (Trust Services Criteria CC7.1/CC7.2) and ISO 27001 operational reliability controls.\n\n"
+            "### Section 4: Threat Impact & Exploitation Vectors\n"
+            "- Blast Radius: Detail how the flaw breaks production CI/CD pipelines, causes build failures, halts microservice deployment, or exposes attack surfaces.\n"
+            "- Exploitation / Failure Vector: Technical breakdown of how interpreter failure or vulnerability triggers denial of service or runtime compromise.\n\n"
+            "### Section 5: Recommended Remediation & Hardened Code Implementation\n"
+            "Provide the exact, drop-in corrected, and hardened production-ready code snippet.\n\n"
+            "CRITICAL RULES:\n"
+            "- Tone must remain ruthless, corporate, and highly authoritative.\n"
+            "- Always refer to the code strictly as 'The submitted code snippet' or 'The analyzed script'."
         )
 
         redacted_code, secrets_found = apply_zero_leak_redaction(valid_code)
@@ -1649,7 +1718,7 @@ async def cicd_scan(payload: CICDScanPayload, x_api_key: str = Header(None)):
             system_prompt += (
                 "\n\n[CONFIRMED HARDCODED SECRET DETECTED]\n"
                 "The pre-upload security filter detected one or more hardcoded secrets/credentials (CWE-798) and sanitized them to '***REDACTED_BY_TIMECODESECURITY***'. "
-                "Audit this credential exposure on its line, explain the blast radius, and provide the secure fix in '2. Corrected Code'."
+                "Audit this credential exposure on its line, detail the blast radius, and provide the secure runtime environment variable fix in Section 5."
             )
 
         # ====== GOD-MODE RAG CONTEXT INJECTION ======
