@@ -836,15 +836,9 @@
                 </div>
             </div>
 
-            <div class="mt-4 pt-4 border-t border-gray-800 text-center">
-                <p class="text-xs text-gray-400">
-                    🧑‍💻 Are you an individual coder? 
-                    <span class="text-blue-400 font-bold">Get the Developer App on Google Play Store</span>
-                </p>
-            </div>
-
-            <div class="pt-4 border-t border-gray-800 text-center text-xs text-gray-500">
+            <div class="mt-4 pt-4 border-t border-gray-800 text-center text-xs text-gray-500">
                 Secured by Lemon Squeezy. Cancel anytime.
+                <div style="text-align: center; font-size: 0.75rem; color: #64748b; margin-top: 8px;">Refund Policy: Cancel anytime within 14 days of purchase for a full refund if usage is under 50 scans. Contact founder to initiate.</div>
             </div>
             
             <!-- Secret Master Key Input with Eye Toggle -->
@@ -1073,11 +1067,8 @@
         if (tier === 'enterprise') {
             subEl.innerText = 'ENTERPRISE SOC-2 INTERFACE';
             subEl.className = 'text-yellow-400 text-xs tracking-widest uppercase mt-1';
-        } else if (tier === 'developer') {
-            subEl.innerText = 'DEVELOPER PRO INTERFACE';
-            subEl.className = 'text-blue-400 text-xs tracking-widest uppercase mt-1';
         } else {
-            subEl.innerText = 'FREE TIER INTERFACE';
+            subEl.innerText = 'FREE SANDBOX INTERFACE';
             subEl.className = 'text-gray-400 text-xs tracking-widest uppercase mt-1';
         }
     }
