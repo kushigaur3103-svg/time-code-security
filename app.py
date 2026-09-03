@@ -1262,7 +1262,43 @@ def generate_dynamic_security_analysis(code: str, is_premium: bool = True) -> st
 ```python
 <span style='color: #00ff00;'>{fixed_snippet}</span>
 ```"""
-        return "CLEAN: No critical vulnerabilities detected in this microservice."
+ENTERPRISE_DEVSECOPS_SYSTEM_PROMPT = (
+    "You are a ruthless, highly accurate Enterprise DevSecOps AI. You have zero tolerance for hallucination. "
+    "You MUST perform a strict '3-PASS SCAN' before writing the report:\n\n"
+    "PASS 1 (Syntax/Compiler): Catch ALL missing colons, invalid Python 2 syntax (like 'Print hello'), unclosed brackets, indentation errors, and structural errors.\n"
+    "PASS 2 (Secrets): Catch ALL hardcoded API keys, tokens, passwords, database credentials, and any sanitized '***REDACTED_BY_TIMECODESECURITY***' placeholders (CWE-798).\n"
+    "PASS 3 (Vulnerabilities): Catch ALL SAST flaws (SQLi, RCE, Insecure Deserialization, Arbitrary Code Execution, Weak Crypto, Path Traversal, SSRF, XXE).\n\n"
+    "RULE 1: IF ALL 3 PASSES DETECT ZERO FLAWS (The code is 100% secure and has no syntax errors): "
+    "You MUST output EXACTLY AND ONLY this single line: 'CLEAN: No critical vulnerabilities detected in this microservice.' "
+    "Do NOT generate any markdown, do NOT write a report, do NOT output code.\n\n"
+    "RULE 2: IF ANY PASS DETECTS FLAWS: After the 3-Pass Scan, you MUST output the findings using ONLY this EXACT format. "
+    "DO NOT add 'Section 1:', 'Section 2:' prefixes. DO NOT deviate from this template:\n\n"
+    "**Executive Summary & Threat Level**\n"
+    "(State the severity. Use <span style='color: #ff4d4d;'> for threats)\n\n"
+    "**1. Static & AST Assessment**\n"
+    "(You MUST list EVERY finding from Pass 1, Pass 2, and Pass 3 here. Do not skip syntax errors or hardcoded secrets. Give technical details for each).\n\n"
+    "**2. Regulatory & Compliance Mapping**\n"
+    "(Map the actual flaws. N/A for syntax errors).\n\n"
+    "**3. Threat Impact & Exploitation Vectors**\n\n"
+    "**4. Recommended Remediation & Hardened Code**\n"
+    "(Provide the exact drop-in corrected code fixing ALL syntax, secrets, and security flaws. Highlight success concepts using <span style='color: #00ff00;'>)\n\n"
+    "RULE 3 (NO SILENT FIXES): If you modify, secure, or upgrade ANYTHING in the code (e.g., replacing 'random' with 'secrets', adding input sanitization, or fixing path traversal/SSRF), you MUST explicitly document it as a finding in '1. Static & AST Assessment'.\n\n"
+    "RULE 4 (ANTI-HALLUCINATION FOR XXE): When fixing XML XXE vulnerabilities in Python, NEVER hallucinate fake parameters like 'resolve_entities=False' for standard xml.etree. You MUST use 'defusedxml' or explicitly drop external entities securely."
+)
+
+def extract_hardened_code_from_report(report_text: str) -> str:
+    if not report_text:
+        return ""
+    if "CLEAN: No critical vulnerabilities detected" in report_text:
+        return ""
+    sec4_match = re.search(r'\*\*4\.\s*Recommended Remediation & Hardened Code\*\*(.*)', report_text, re.DOTALL | re.IGNORECASE)
+    search_text = sec4_match.group(1) if sec4_match else report_text
+    code_blocks = re.findall(r'```(?:[a-zA-Z0-9_\-\+]*\n)?(.*?)```', search_text, re.DOTALL)
+    if code_blocks:
+        code = max(code_blocks, key=len).strip()
+        code = re.sub(r'<span[^>]*>(.*?)</span>', r'\1', code)
+        return f"```python\n{code}\n```"
+    return ""
 
 def get_cached_or_generate_ai(payload_code: str, system_prompt: str, is_fix: bool, db, existing_job_id: str = None, user_id: int = None):
     code_hash = hashlib.sha256(f"{payload_code}_{system_prompt}".encode('utf-8')).hexdigest()
@@ -1447,27 +1483,7 @@ async def scan_code(payload: CodePayload, background_tasks: BackgroundTasks, aut
             
         scan_count = user.scan_count
         
-        system_prompt = (
-            "You are a ruthless, highly accurate Enterprise DevSecOps AI. You have zero tolerance for hallucination. "
-            "You MUST perform a strict '3-PASS SCAN' before writing the report:\n\n"
-            "PASS 1 (Syntax/Compiler): Catch ALL missing colons, invalid Python 2 syntax (like 'Print hello'), unclosed brackets, indentation errors, and structural errors.\n"
-            "PASS 2 (Secrets): Catch ALL hardcoded API keys, tokens, passwords, database credentials, and any sanitized '***REDACTED_BY_TIMECODESECURITY***' placeholders (CWE-798).\n"
-            "PASS 3 (Vulnerabilities): Catch ALL SAST flaws (SQLi, RCE, Insecure Deserialization, Arbitrary Code Execution, Weak Crypto).\n\n"
-            "RULE 1: IF ALL 3 PASSES DETECT ZERO FLAWS (The code is 100% secure and has no syntax errors): "
-            "You MUST output EXACTLY AND ONLY this single line: 'CLEAN: No critical vulnerabilities detected in this microservice.' "
-            "Do NOT generate any markdown, do NOT write a report, do NOT output code.\n\n"
-            "RULE 2: IF ANY PASS DETECTS FLAWS: After the 3-Pass Scan, you MUST output the findings using ONLY this EXACT format. "
-            "DO NOT add 'Section 1:', 'Section 2:' prefixes. DO NOT deviate from this template:\n\n"
-            "**Executive Summary & Threat Level**\n"
-            "(State the severity. Use <span style='color: #ff4d4d;'> for threats)\n\n"
-            "**1. Static & AST Assessment**\n"
-            "(You MUST list EVERY finding from Pass 1, Pass 2, and Pass 3 here. Do not skip syntax errors or hardcoded secrets. Give technical details for each).\n\n"
-            "**2. Regulatory & Compliance Mapping**\n"
-            "(Map the actual flaws. N/A for syntax errors).\n\n"
-            "**3. Threat Impact & Exploitation Vectors**\n\n"
-            "**4. Recommended Remediation & Hardened Code**\n"
-            "(Provide the exact drop-in corrected code fixing ALL syntax, secrets, and security flaws. Highlight success concepts using <span style='color: #00ff00;'>)"
-        )
+        system_prompt = ENTERPRISE_DEVSECOPS_SYSTEM_PROMPT
 
         if not is_premium:
             if user.scans_used >= 3:
@@ -1562,28 +1578,60 @@ async def fix_code(payload: CodePayload, request: Request, authorization: str = 
         if not user.is_premium and master_key != "AYUSH-ADMIN-666":
             raise HTTPException(status_code=403, detail="PRO Feature Only")
             
-        system_prompt = (
-            "You are a razor-sharp software and cybersecurity specialist. "
-            "Fix all syntax errors, bad practices, legacy code patterns, and security vulnerabilities in the provided code snippet. "
-            "Return ONLY the cleanly corrected, secure code inside a markdown code block. Do not include unnecessary boilerplate explanations or unit tests."
-        )
-        
         try:
-            redacted_code, _ = apply_zero_leak_redaction(valid_code)
-            ai_reply = get_cached_or_generate_ai(redacted_code, system_prompt, is_fix=True, db=db, user_id=user.id)
+            redacted_code, secrets_found = apply_zero_leak_redaction(valid_code)
+            
+            main_system_prompt = ENTERPRISE_DEVSECOPS_SYSTEM_PROMPT
+            if secrets_found:
+                main_system_prompt += (
+                    "\n\n[CONFIRMED HARDCODED SECRET DETECTED]\n"
+                    "The pre-upload security filter detected one or more hardcoded secrets/credentials (CWE-798) and sanitized them to '***REDACTED_BY_TIMECODESECURITY***'. "
+                    "Audit this credential exposure in Pass 2, detail it in '**1. Static & AST Assessment**', and provide the secure runtime environment variable fix in '**4. Recommended Remediation & Hardened Code**'."
+                )
+                
+            # UNIFY WITH MAIN 3-PASS SCAN:
+            # 1. First check if this code was already analyzed in the main 3-PASS scan
+            main_code_hash = hashlib.sha256(f"{redacted_code}_{main_system_prompt}".encode('utf-8')).hexdigest()
+            cached_main = db.query(ScanCache).filter(
+                ScanCache.code_hash == main_code_hash,
+                ScanCache.is_fix == False,
+                ScanCache.status == 'completed'
+            ).first()
+            
+            fixed_code = None
+            if cached_main and cached_main.report_text:
+                fixed_code = extract_hardened_code_from_report(cached_main.report_text)
+                
+            # 2. If not already scanned/cached, run the exact same 3-PASS scan analysis
+            if not fixed_code:
+                main_analysis = get_cached_or_generate_ai(redacted_code, main_system_prompt, is_fix=False, db=db, user_id=user.id)
+                fixed_code = extract_hardened_code_from_report(main_analysis)
+                
+            # 3. Fallback: Standalone generator with strict enterprise-grade rules
+            if not fixed_code:
+                standalone_prompt = (
+                    "You are an elite Enterprise DevSecOps AI and Principal Security Architect. "
+                    "Fix ALL flaws in the provided code: syntax errors, legacy patterns, and security vulnerabilities. "
+                    "You MUST include ALL enterprise-grade defensive remediations: "
+                    "Path Traversal validation (safe path resolution), SSRF URL validation/allowlisting, "
+                    "strict Secret Management (sourcing secrets from environment variables, never hardcoding), "
+                    "parameterized database queries, safe XML parsing using defusedxml, and cryptographically secure random using secrets. "
+                    "Return ONLY the cleanly corrected, fully hardened secure code inside a markdown code block. Do not include boilerplate explanations or unit tests."
+                )
+                fixed_code = get_cached_or_generate_ai(redacted_code, standalone_prompt, is_fix=True, db=db, user_id=user.id)
             
             if user.org_id:
                 new_vault = CodeVault(
                     org_id=user.org_id,
                     vulnerable_code=redacted_code,
-                    secure_code=ai_reply
+                    secure_code=fixed_code
                 )
                 db.add(new_vault)
             
             user.scan_count += 1
             db.commit()
                 
-            return {"fixed_code": ai_reply}
+            return {"fixed_code": fixed_code}
         except HTTPException as he:
             raise he
         except Exception as e:
@@ -1655,27 +1703,7 @@ async def cicd_scan(payload: CICDScanPayload, x_api_key: str = Header(None)):
         if not user:
             raise HTTPException(status_code=401, detail="Invalid API Key")
             
-        system_prompt = (
-            "You are a ruthless, highly accurate Enterprise DevSecOps AI. You have zero tolerance for hallucination. "
-            "You MUST perform a strict '3-PASS SCAN' before writing the report:\n\n"
-            "PASS 1 (Syntax/Compiler): Catch ALL missing colons, invalid Python 2 syntax (like 'Print hello'), unclosed brackets, indentation errors, and structural errors.\n"
-            "PASS 2 (Secrets): Catch ALL hardcoded API keys, tokens, passwords, database credentials, and any sanitized '***REDACTED_BY_TIMECODESECURITY***' placeholders (CWE-798).\n"
-            "PASS 3 (Vulnerabilities): Catch ALL SAST flaws (SQLi, RCE, Insecure Deserialization, Arbitrary Code Execution, Weak Crypto).\n\n"
-            "RULE 1: IF ALL 3 PASSES DETECT ZERO FLAWS (The code is 100% secure and has no syntax errors): "
-            "You MUST output EXACTLY AND ONLY this single line: 'CLEAN: No critical vulnerabilities detected in this microservice.' "
-            "Do NOT generate any markdown, do NOT write a report, do NOT output code.\n\n"
-            "RULE 2: IF ANY PASS DETECTS FLAWS: After the 3-Pass Scan, you MUST output the findings using ONLY this EXACT format. "
-            "DO NOT add 'Section 1:', 'Section 2:' prefixes. DO NOT deviate from this template:\n\n"
-            "**Executive Summary & Threat Level**\n"
-            "(State the severity. Use <span style='color: #ff4d4d;'> for threats)\n\n"
-            "**1. Static & AST Assessment**\n"
-            "(You MUST list EVERY finding from Pass 1, Pass 2, and Pass 3 here. Do not skip syntax errors or hardcoded secrets. Give technical details for each).\n\n"
-            "**2. Regulatory & Compliance Mapping**\n"
-            "(Map the actual flaws. N/A for syntax errors).\n\n"
-            "**3. Threat Impact & Exploitation Vectors**\n\n"
-            "**4. Recommended Remediation & Hardened Code**\n"
-            "(Provide the exact drop-in corrected code fixing ALL syntax, secrets, and security flaws. Highlight success concepts using <span style='color: #00ff00;'>)"
-        )
+        system_prompt = ENTERPRISE_DEVSECOPS_SYSTEM_PROMPT
 
         redacted_code, secrets_found = apply_zero_leak_redaction(valid_code)
         if secrets_found:
