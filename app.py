@@ -1264,7 +1264,7 @@ The submitted code snippet was analyzed. No critical syntax or CVE vulnerabiliti
 def get_cached_or_generate_ai(payload_code: str, system_prompt: str, is_fix: bool, db, existing_job_id: str = None, user_id: int = None):
     code_hash = hashlib.sha256(f"{payload_code}_{system_prompt}".encode('utf-8')).hexdigest()
     cached = db.query(ScanCache).filter(ScanCache.code_hash == code_hash, ScanCache.is_fix == is_fix, ScanCache.status == 'completed').first()
-    if cached:
+    if cached and "CLEAN" not in (cached.report_text or "") and "No critical vulnerabilities" not in (cached.report_text or ""):
         if existing_job_id:
             pending_job = db.query(ScanCache).filter(ScanCache.job_id == existing_job_id).first()
             if pending_job:
@@ -1366,11 +1366,6 @@ def get_cached_or_generate_ai(payload_code: str, system_prompt: str, is_fix: boo
     if ai_reply is None:
         # Resilient dynamic fallback analyzer
         ai_reply = generate_dynamic_security_analysis(payload_code, is_premium=True)
-            
-    # Auto-highlight critical threat terms in red
-    if ai_reply:
-        threat_pattern = re.compile(r'(CRITICAL|OS Command Injection|Remote Code Execution|RCE|SQL Injection|Cross-Site Scripting|XSS|CWE-\d+|High-risk|Compromise|Takeover|Arbitrary Code Execution|Vulnerability)', re.IGNORECASE)
-        ai_reply = threat_pattern.sub(r'<span style="color: #ff4d4d; font-weight: bold;">\1</span>', ai_reply)
 
     if existing_job_id:
         pending_job = db.query(ScanCache).filter(ScanCache.job_id == existing_job_id).first()
@@ -1450,7 +1445,10 @@ async def scan_code(payload: CodePayload, background_tasks: BackgroundTasks, aut
         scan_count = user.scan_count
         
         system_prompt = (
-            "You are an elite Code, Syntax, and Security Analyzer. Your job is to ruthlessly analyze the provided code snippet for ANY issues: syntax errors (like missing parentheses in Python 3 print statements), logic bugs, bad practices, and security vulnerabilities (CVEs). You must catch EVERYTHING. If the user inputs 'Print hello', you must immediately flag it as a Python 2 syntax error and provide the Python 3 fix. Format your response strictly in Markdown with two sections: '1. Detailed Analysis' and '2. Corrected Code'. Do NOT ignore simple errors. Do NOT ever default to saying the code is secure if it has syntax or structural flaws."
+            "You are an elite Code and Syntax Analyzer. Your job is to catch EVERYTHING. "
+            "If a user inputs Print hello, immediately flag it as a Python 2 syntax error, "
+            "explain why it fails in Python 3, and output the corrected print(\"hello\") code. "
+            "Provide a beautiful Markdown report. Never output a generic clean message if there are syntax errors."
         )
 
         if not is_premium:
@@ -1640,7 +1638,10 @@ async def cicd_scan(payload: CICDScanPayload, x_api_key: str = Header(None)):
             raise HTTPException(status_code=401, detail="Invalid API Key")
             
         system_prompt = (
-            "You are an elite Code, Syntax, and Security Analyzer. Your job is to ruthlessly analyze the provided code snippet for ANY issues: syntax errors (like missing parentheses in Python 3 print statements), logic bugs, bad practices, and security vulnerabilities (CVEs). You must catch EVERYTHING. If the user inputs 'Print hello', you must immediately flag it as a Python 2 syntax error and provide the Python 3 fix. Format your response strictly in Markdown with two sections: '1. Detailed Analysis' and '2. Corrected Code'. Do NOT ignore simple errors. Do NOT ever default to saying the code is secure if it has syntax or structural flaws."
+            "You are an elite Code and Syntax Analyzer. Your job is to catch EVERYTHING. "
+            "If a user inputs Print hello, immediately flag it as a Python 2 syntax error, "
+            "explain why it fails in Python 3, and output the corrected print(\"hello\") code. "
+            "Provide a beautiful Markdown report. Never output a generic clean message if there are syntax errors."
         )
 
         redacted_code, secrets_found = apply_zero_leak_redaction(valid_code)
