@@ -369,11 +369,11 @@
                 <div class="mt-6 flex flex-col sm:flex-row gap-4">
                     <button id="fixCodeBtn" class="flex-1 w-full bg-gradient-to-r from-green-500 to-emerald-600 hover:from-green-400 hover:to-emerald-500 text-white font-bold py-3 px-4 rounded-xl shadow-lg transition-all duration-300 flex justify-center items-center gap-2">
                         <svg class="w-5 h-5" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M10 20l4-16m4 4l4 4-4 4M6 16l-4-4 4-4"></path></svg>
-                        Generate Secure Code (PRO)
+                        Generate Secure Code (Enterprise)
                     </button>
                     <button id="generateTestBtn" class="flex-1 w-full bg-gradient-to-r from-blue-600 to-indigo-600 hover:from-blue-500 hover:to-indigo-500 text-white font-bold py-3 px-4 rounded-xl shadow-lg transition-all duration-300 flex justify-center items-center gap-2">
                         <svg class="w-5 h-5" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M9 12l2 2 4-4m6 2a9 9 0 11-18 0 9 9 0 0118 0z"></path></svg>
-                        Generate Security Test (PRO)
+                        Generate Security Test (Enterprise)
                     </button>
                 </div>
                 
@@ -2037,7 +2037,7 @@ jobs:
 
             try {
                 const controller = new AbortController();
-                const timeoutId = setTimeout(() => controller.abort(), 15000);
+                const timeoutId = setTimeout(() => controller.abort(), 40000);
                 const currentToken = localStorage.getItem('token');
 
                 const response = await fetch('/scan', {
@@ -2152,8 +2152,8 @@ jobs:
                     showToast('Scan timed out. Please try again.', 'error');
                 } else {
                     if (scanResult) {
-                        scanResult.innerHTML = formatScanReport('System Failure: Could not reach the backend.');
-                        scanResult.classList.add('text-red-400');
+                        scanResult.innerHTML = formatScanReport('Backend Connecting: Server is waking up or deploying updates. Please wait 10 seconds and click Initiate Deep Scan again.');
+                        scanResult.classList.add('text-amber-400');
                     }
                     if (reportContainer) reportContainer.classList.remove('hidden');
                 }
