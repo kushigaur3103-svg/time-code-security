@@ -1290,6 +1290,7 @@ def generate_dynamic_security_analysis(code: str, is_premium: bool = True) -> st
 
 def get_cached_or_generate_ai(payload_code: str, system_prompt: str, is_fix: bool, db, existing_job_id: str = None, user_id: int = None):
     code_hash = hashlib.sha256(f"{payload_code}_{system_prompt}".encode('utf-8')).hexdigest()
+    cached = db.query(ScanCache).filter(ScanCache.code_hash == code_hash, ScanCache.is_fix == is_fix, ScanCache.status == 'completed').first()
     if cached:
         if existing_job_id:
             pending_job = db.query(ScanCache).filter(ScanCache.job_id == existing_job_id).first()
