@@ -1171,15 +1171,15 @@ def generate_dynamic_security_analysis(code: str, is_premium: bool = True) -> st
             })
             
         # 5. Hardcoded Credentials / API Keys
-        elif re.search(r'(?i)(password|secret|api_key|token|auth_key)\s*=\s*["\'][^"\']{8,}["\']', line):
+        elif re.search(r'(?i)(password|secret|api_key|token|auth_key)\s*=\s*["\'][^"\']{8,}["\']', line) or "***REDACTED_BY_TIMECODESECURITY***" in line:
             vulnerabilities.append({
                 "line": idx,
                 "type": "Hardcoded Secret / Credential (CWE-798)",
-                "severity": "HIGH",
-                "score": "8.1",
+                "severity": "CRITICAL",
+                "score": "9.2",
                 "finding": f"Sensitive credential exposed in source code on line {idx}.",
                 "remediation": "Load secrets dynamically using environment variables (`os.getenv(...)`) or a secrets vault.",
-                "framework": "SOC 2 CC6.1 / HIPAA §164.312(a)(1)"
+                "framework": "SOC 2 CC6.1 / HIPAA §164.312(a)(1) / OWASP A07:2021"
             })
             
         # 6. Cryptographic Flaws / Weak Hashing
@@ -1384,8 +1384,11 @@ def background_scan_task(job_id: str, email: str, redacted_code: str, system_pro
         ai_reply = get_cached_or_generate_ai(redacted_code, system_prompt, is_fix=False, db=db, existing_job_id=job_id)
         
         warning_str = "🚨 **CRITICAL SECURITY VIOLATION:** Hardcoded secrets/passwords were detected and successfully redacted before AI analysis to prevent data leakage. \n\n"
-        if secrets_found and warning_str not in ai_reply:
-            ai_reply = warning_str + ai_reply
+        if secrets_found:
+            if ai_reply and ai_reply.strip().startswith("CLEAN:"):
+                ai_reply = generate_dynamic_security_analysis(redacted_code, is_premium=True)
+            if warning_str not in ai_reply:
+                ai_reply = warning_str + ai_reply
             pending_job = db.query(ScanCache).filter(ScanCache.job_id == job_id).first()
             if pending_job:
                 pending_job.report_text = ai_reply
@@ -1454,9 +1457,10 @@ async def scan_code(payload: CodePayload, background_tasks: BackgroundTasks, aut
             
         if is_premium:
             system_prompt = (
-                "You are an elite DevSecOps AI Auditor. You have ONE job: Find CRITICAL and HIGH severity vulnerabilities (e.g., SQLi, Hardcoded Secrets, RCE, Path Traversal). "
-                "DO NOT assume missing imports or external configurations. DO NOT invent or hallucinate vulnerabilities. Be extremely conservative. "
-                "If the provided code snippet is secure or only has minor stylistic issues, you MUST output: \"CLEAN: No critical vulnerabilities detected in this microservice.\" "
+                "You are an elite DevSecOps AI Auditor. You have ONE job: Accurately analyze the provided code for CRITICAL and HIGH severity vulnerabilities (e.g., SQLi, Hardcoded Secrets, RCE, Path Traversal, SSRF). "
+                "DO NOT assume missing imports or external configurations. DO NOT invent or hallucinate vulnerabilities. Base all findings strictly on the code logic. "
+                "ZERO-LEAK REDACTION CONTEXT: Any occurrence of '***REDACTED_BY_TIMECODESECURITY***' indicates an actual hardcoded secret, token, or credential (CWE-798: Use of Hard-coded Credentials) that was detected by our security scanner and safely masked prior to analysis. You MUST accurately audit this as a confirmed CRITICAL security vulnerability on its line, detail the credential exposure, and provide drop-in environment variable remediation in Section 5. Do NOT treat redacted secrets as secure or CLEAN. "
+                "If the provided code snippet has no detected secrets and no critical or high severity vulnerabilities, you MUST output: \"CLEAN: No critical vulnerabilities detected in this microservice.\" "
                 "Keep the report actionable, concise, and professional. Do not write unnecessary boilerplate.\n\n"
                 "If critical or high severity vulnerabilities are found, provide an actionable audit report in valid Markdown:\n"
                 "### Section 1: Executive Summary & Threat Level (Assign Severity: CRITICAL, HIGH, MEDIUM, LOW, or SAFE, with a Severity Score 0.0-10.0)\n"
@@ -1489,6 +1493,7 @@ async def scan_code(payload: CodePayload, background_tasks: BackgroundTasks, aut
             system_prompt = (
                 "You are an elite DevSecOps AI Auditor. You have ONE job: Find CRITICAL and HIGH severity vulnerabilities (e.g., SQLi, Hardcoded Secrets, RCE, Path Traversal). "
                 "DO NOT assume missing imports or external configurations. DO NOT invent or hallucinate vulnerabilities. Be extremely conservative. "
+                "ZERO-LEAK REDACTION CONTEXT: Any occurrence of '***REDACTED_BY_TIMECODESECURITY***' indicates an actual hardcoded secret (CWE-798) that was detected and redacted. You MUST audit it as a CRITICAL vulnerability. Do NOT treat it as CLEAN. "
                 "If the provided code snippet is secure or only has minor stylistic issues, you MUST output: \"CLEAN: No critical vulnerabilities detected in this microservice.\" "
                 "Keep the report actionable, concise, and professional. Do not write unnecessary boilerplate. "
                 "CRITICAL: Never speak on behalf of the application, system, or company. Always refer to the code as 'The submitted code snippet'. "
@@ -1498,6 +1503,12 @@ async def scan_code(payload: CodePayload, background_tasks: BackgroundTasks, aut
     
         try:
             redacted_code, secrets_found = apply_zero_leak_redaction(valid_code)
+            if secrets_found:
+                system_prompt += (
+                    "\n\n[CONFIRMED HARDCODED SECRET DETECTED]\n"
+                    "The pre-upload security filter detected one or more hardcoded secrets/credentials (CWE-798) and sanitized them to '***REDACTED_BY_TIMECODESECURITY***'. "
+                    "You MUST generate the complete 5-section audit report accurately identifying the exact line(s) with CWE-798, explaining the blast radius, and refactoring to runtime environment variables (os.getenv) in Section 5. DO NOT output 'CLEAN'."
+                )
 
             job_id = str(uuid.uuid4())
             code_hash = hashlib.sha256(f"{redacted_code}_{system_prompt}".encode('utf-8')).hexdigest()
@@ -1655,9 +1666,10 @@ async def cicd_scan(payload: CICDScanPayload, x_api_key: str = Header(None)):
             raise HTTPException(status_code=401, detail="Invalid API Key")
             
         system_prompt = (
-            "You are an elite DevSecOps AI Auditor. You have ONE job: Find CRITICAL and HIGH severity vulnerabilities (e.g., SQLi, Hardcoded Secrets, RCE, Path Traversal). "
-            "DO NOT assume missing imports or external configurations. DO NOT invent or hallucinate vulnerabilities. Be extremely conservative. "
-            "If the provided code snippet is secure or only has minor stylistic issues, you MUST output: \"CLEAN: No critical vulnerabilities detected in this microservice.\" "
+            "You are an elite DevSecOps AI Auditor. You have ONE job: Accurately analyze the provided code for CRITICAL and HIGH severity vulnerabilities (e.g., SQLi, Hardcoded Secrets, RCE, Path Traversal, SSRF). "
+            "DO NOT assume missing imports or external configurations. DO NOT invent or hallucinate vulnerabilities. Base all findings strictly on the code logic. "
+            "ZERO-LEAK REDACTION CONTEXT: Any occurrence of '***REDACTED_BY_TIMECODESECURITY***' indicates an actual hardcoded secret, token, or credential (CWE-798: Use of Hard-coded Credentials) that was detected by our security scanner and safely masked prior to analysis. You MUST accurately audit this as a confirmed CRITICAL security vulnerability on its line, detail the credential exposure, and provide drop-in environment variable remediation in Section 5. Do NOT treat redacted secrets as secure or CLEAN. "
+            "If the provided code snippet has no detected secrets and no critical or high severity vulnerabilities, you MUST output: \"CLEAN: No critical vulnerabilities detected in this microservice.\" "
             "Keep the report actionable, concise, and professional. Do not write unnecessary boilerplate.\n\n"
             "If critical or high severity vulnerabilities are found, provide an actionable audit report in valid Markdown:\n"
             "### Section 1: Executive Summary & Threat Level (Assign Severity: CRITICAL, HIGH, MEDIUM, LOW, or SAFE, with a Severity Score 0.0-10.0)\n"
@@ -1676,6 +1688,7 @@ async def cicd_scan(payload: CICDScanPayload, x_api_key: str = Header(None)):
         ) if user.is_premium else (
             "You are an elite DevSecOps AI Auditor. You have ONE job: Find CRITICAL and HIGH severity vulnerabilities (e.g., SQLi, Hardcoded Secrets, RCE, Path Traversal). "
             "DO NOT assume missing imports or external configurations. DO NOT invent or hallucinate vulnerabilities. Be extremely conservative. "
+            "ZERO-LEAK REDACTION CONTEXT: Any occurrence of '***REDACTED_BY_TIMECODESECURITY***' indicates an actual hardcoded secret (CWE-798) that was detected and redacted. You MUST audit it as a CRITICAL vulnerability. Do NOT treat it as CLEAN. "
             "If the provided code snippet is secure or only has minor stylistic issues, you MUST output: \"CLEAN: No critical vulnerabilities detected in this microservice.\" "
             "Keep the report actionable, concise, and professional. Do not write unnecessary boilerplate. "
             "CRITICAL: Never speak on behalf of the application, system, or company. Always refer to the code as 'The submitted code snippet'. "
@@ -1684,6 +1697,12 @@ async def cicd_scan(payload: CICDScanPayload, x_api_key: str = Header(None)):
         )
 
         redacted_code, secrets_found = apply_zero_leak_redaction(valid_code)
+        if secrets_found:
+            system_prompt += (
+                "\n\n[CONFIRMED HARDCODED SECRET DETECTED]\n"
+                "The pre-upload security filter detected one or more hardcoded secrets/credentials (CWE-798) and sanitized them to '***REDACTED_BY_TIMECODESECURITY***'. "
+                "You MUST generate the complete audit report accurately identifying the exact line(s) with CWE-798, explaining the blast radius, and refactoring to runtime environment variables (os.getenv) in Section 5. DO NOT output 'CLEAN'."
+            )
 
         # ====== GOD-MODE RAG CONTEXT INJECTION ======
         if rag_engine_instance and user.is_premium:
@@ -1701,8 +1720,11 @@ async def cicd_scan(payload: CICDScanPayload, x_api_key: str = Header(None)):
         ai_reply = get_cached_or_generate_ai(redacted_code, system_prompt, is_fix=False, db=db)
         
         warning_str = "🚨 **CRITICAL SECURITY VIOLATION:** Hardcoded secrets/passwords were detected and successfully redacted before AI analysis to prevent data leakage. \n\n"
-        if secrets_found and warning_str not in ai_reply:
-            ai_reply = warning_str + ai_reply
+        if secrets_found:
+            if ai_reply and ai_reply.strip().startswith("CLEAN:"):
+                ai_reply = generate_dynamic_security_analysis(redacted_code, is_premium=user.is_premium)
+            if warning_str not in ai_reply:
+                ai_reply = warning_str + ai_reply
 
         user.scan_count += 1
         db.commit()
