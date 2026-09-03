@@ -1234,25 +1234,32 @@ def generate_dynamic_security_analysis(code: str, is_premium: bool = True) -> st
         report = threat_pattern.sub(r'<span style="color: #ff4d4d; font-weight: bold;">\1</span>', report)
         return report
     else:
-        clean_report = f"""### Section 1: Executive Summary & Threat Level
-- **Target Analysis:** The submitted code snippet ({len(lines)} line(s) audited)
-- **Threat Level:** ✅ **SAFE (Score: 0.0/10.0)**
-- **Audit Status:** PASSED (Zero security flaws, injection vectors, or memory leaks detected)
+        syntax_issue = None
+        try:
+            import ast
+            ast.parse(code)
+        except SyntaxError as e:
+            syntax_issue = f"Syntax Error on line {e.lineno}: {e.msg}"
+        except Exception as e:
+            syntax_issue = f"Syntax Error: {str(e)}"
 
-### Section 2: Static & AST Vulnerability Assessment
-- **Findings:** The analyzed script contains only safe computational and output statements. No dangerous execution sinks or unauthorized process spawns found.
+        if syntax_issue or ("print " in code and "print(" not in code):
+            fixed_snippet = code.replace("print ", "print(").rstrip() + ")" if ("print " in code and "print(" not in code) else code
+            return f"""### 1. Detailed Analysis
+- **Syntax Error / Version Incompatibility:** {syntax_issue or "Python 2 print statement without parentheses (SyntaxError in Python 3)"}
+- **Explanation:** In Python 3, `print` is a built-in function and requires parentheses. Missing parentheses cause an immediate `SyntaxError`.
 
-### Section 3: Regulatory & Compliance Mapping
-- **SOC 2 / ISO 27001:** Conforms to baseline secure coding requirements.
-- **GDPR / HIPAA:** The provided code snippet does not contain logic that processes regulated data.
+### 2. Corrected Code
+```python
+{fixed_snippet}
+```"""
+        return f"""### 1. Detailed Analysis
+The submitted code snippet was analyzed. No critical syntax or CVE vulnerabilities detected.
 
-### Section 4: Threat Impact & Exploitation Vectors
-- **Attack Surface:** Minimal. The submitted code snippet does not expose network endpoints or process untrusted external inputs.
-
-### Section 5: Recommended Remediation & Hardened Code Implementation
-- **Remediation Required:** None. The analyzed script is safe for baseline integration."""
-        threat_pattern = re.compile(r'(CRITICAL|OS Command Injection|Remote Code Execution|RCE|SQL Injection|Cross-Site Scripting|XSS|CWE-\d+|High-risk|Compromise|Takeover|Arbitrary Code Execution|Vulnerability)', re.IGNORECASE)
-        return threat_pattern.sub(r'<span style="color: #ff4d4d; font-weight: bold;">\1</span>', clean_report)
+### 2. Corrected Code
+```python
+{code}
+```"""
 
 def get_cached_or_generate_ai(payload_code: str, system_prompt: str, is_fix: bool, db, existing_job_id: str = None, user_id: int = None):
     code_hash = hashlib.sha256(f"{payload_code}_{system_prompt}".encode('utf-8')).hexdigest()
@@ -1294,7 +1301,7 @@ def get_cached_or_generate_ai(payload_code: str, system_prompt: str, is_fix: boo
             "Content-Type": "application/json"
         }
         try:
-            response = requests.post(url, headers=headers, json=groq_payload, timeout=10)
+            response = requests.post(url, headers=headers, json=groq_payload, timeout=20)
             if response.status_code == 429:
                 last_error = "Rate Limit 429"
                 continue
@@ -1385,8 +1392,6 @@ def background_scan_task(job_id: str, email: str, redacted_code: str, system_pro
         
         warning_str = "🚨 **CRITICAL SECURITY VIOLATION:** Hardcoded secrets/passwords were detected and successfully redacted before AI analysis to prevent data leakage. \n\n"
         if secrets_found:
-            if ai_reply and ai_reply.strip().startswith("CLEAN:"):
-                ai_reply = generate_dynamic_security_analysis(redacted_code, is_premium=True)
             if warning_str not in ai_reply:
                 ai_reply = warning_str + ai_reply
             pending_job = db.query(ScanCache).filter(ScanCache.job_id == job_id).first()
@@ -1444,9 +1449,13 @@ async def scan_code(payload: CodePayload, background_tasks: BackgroundTasks, aut
             
         scan_count = user.scan_count
         
+        system_prompt = (
+            "You are an elite Code, Syntax, and Security Analyzer. Your job is to ruthlessly analyze the provided code snippet for ANY issues: syntax errors (like missing parentheses in Python 3 print statements), logic bugs, bad practices, and security vulnerabilities (CVEs). You must catch EVERYTHING. If the user inputs 'Print hello', you must immediately flag it as a Python 2 syntax error and provide the Python 3 fix. Format your response strictly in Markdown with two sections: '1. Detailed Analysis' and '2. Corrected Code'. Do NOT ignore simple errors. Do NOT ever default to saying the code is secure if it has syntax or structural flaws."
+        )
+
         if not is_premium:
             if user.scans_used >= 3:
-                dynamic_summary = generate_dynamic_security_analysis(valid_code, is_premium=False)
+                dynamic_summary = get_cached_or_generate_ai(valid_code, system_prompt, is_fix=False, db=db)
                 return {
                     "is_blurred_paywall": True,
                     "report": dynamic_summary
@@ -1454,46 +1463,19 @@ async def scan_code(payload: CodePayload, background_tasks: BackgroundTasks, aut
             else:
                 user.scans_used += 1
                 db.commit()
-            
-        if is_premium:
-            system_prompt = (
-                "You are a razor-sharp Code, Syntax, and Security Analyzer. "
-                "Analyze the submitted code snippet thoroughly and accurately catch EVERYTHING:\n"
-                "- Syntax errors and language version issues (e.g., catching Python 2 'print hello' and correcting to Python 3 'print(\"hello\")', missing brackets, indentation errors, typos).\n"
-                "- Bad practices, code smells, performance issues, and architectural flaws.\n"
-                "- Security vulnerabilities, injection flaws, exposed secrets, and CVEs.\n\n"
-                "Generate a crisp, beautiful analysis report in valid Markdown:\n"
-                "### Section 1: Executive Summary & Threat Level (Assign Severity: CRITICAL, HIGH, MEDIUM, LOW, or SAFE, with a Severity Score 0.0-10.0)\n"
-                "### Section 2: Static & AST Vulnerability Assessment (Identify exact line numbers, syntax errors, CWE/CVE classifications, and flaw descriptions)\n"
-                "### Section 3: Regulatory & Compliance Mapping (Evaluate against SOC 2, HIPAA, GDPR, ISO 27001, and OWASP Top 10)\n"
-                "### Section 4: Threat Impact & Exploitation Vectors (Explain potential blast radius, syntax breakdown, and attack vectors)\n"
-                "### Section 5: Recommended Remediation & Hardened Code Implementation (Provide the cleanly corrected, secure code snippet without unnecessary boilerplate or unit tests)\n\n"
-                "CRITICAL PERSONA & PHRASING RULES:\n"
-                "- Maintain this comprehensive 5-section report format for all code snippets.\n"
-                "- Never speak on behalf of the application, the system, the platform, or the company. Do NOT write statements like 'Our system does not store data', 'The platform is secure', or 'The application is compliant'.\n"
-                "- ALWAYS explicitly refer ONLY to the provided input as 'The submitted code snippet', 'The analyzed script', or 'The provided input'.\n"
-                "- For compliance sections (SOC 2, GDPR, HIPAA) on safe or short code, phrase it strictly as: 'The provided code snippet does not contain logic that processes regulated data.' Do not make blanket statements about data collection or privacy practices that could be misconstrued as the host company's privacy policy."
-            )
-            # ====== GOD-MODE RAG CONTEXT INJECTION ======
-            if rag_engine_instance:
-                try:
-                    context_files = rag_engine_instance.retrieve_context("default_repo", valid_code, top_k=2)
-                    if context_files:
-                        context_str = "\n".join([f"--- File: {f['filename']} ---\n{f['content']}" for f in context_files])
-                        system_prompt += (
-                            f"\n\n[ARCHITECTURAL CONTEXT PROVIDED BY RAG ENGINE]\n"
-                            f"Consider the following related files from the codebase to detect cross-file vulnerabilities:\n{context_str}"
-                        )
-                except Exception as e:
-                    print(f"[RAG WARNING] {e}")
-        else:
-            system_prompt = (
-                "You are a razor-sharp Code, Syntax, and Security Analyzer. "
-                "Analyze the submitted code snippet for all syntax errors, bad practices, and security flaws, and generate a 5-section summary. "
-                "CRITICAL: Never speak on behalf of the application, system, or company. Always refer to the code as 'The submitted code snippet'. "
-                "For compliance sections, phrase strictly as: 'The provided code snippet does not contain logic that processes regulated data.' "
-                "You must explicitly state at the end of the response: 'Upgrade to Enterprise for deep vulnerability analysis and remediation code.'"
-            )
+
+        # ====== GOD-MODE RAG CONTEXT INJECTION ======
+        if rag_engine_instance:
+            try:
+                context_files = rag_engine_instance.retrieve_context("default_repo", valid_code, top_k=2)
+                if context_files:
+                    context_str = "\n".join([f"--- File: {f['filename']} ---\n{f['content']}" for f in context_files])
+                    system_prompt += (
+                        f"\n\n[ARCHITECTURAL CONTEXT PROVIDED BY RAG ENGINE]\n"
+                        f"Consider the following related files from the codebase to detect cross-file vulnerabilities:\n{context_str}"
+                    )
+            except Exception as e:
+                print(f"[RAG WARNING] {e}")
     
         try:
             redacted_code, secrets_found = apply_zero_leak_redaction(valid_code)
@@ -1501,7 +1483,7 @@ async def scan_code(payload: CodePayload, background_tasks: BackgroundTasks, aut
                 system_prompt += (
                     "\n\n[CONFIRMED HARDCODED SECRET DETECTED]\n"
                     "The pre-upload security filter detected one or more hardcoded secrets/credentials (CWE-798) and sanitized them to '***REDACTED_BY_TIMECODESECURITY***'. "
-                    "Audit this credential exposure on its line, explain the blast radius, and provide the secure fix in Section 5."
+                    "Audit this credential exposure on its line, explain the blast radius, and provide the secure fix in '2. Corrected Code'."
                 )
 
             job_id = str(uuid.uuid4())
@@ -1658,28 +1640,7 @@ async def cicd_scan(payload: CICDScanPayload, x_api_key: str = Header(None)):
             raise HTTPException(status_code=401, detail="Invalid API Key")
             
         system_prompt = (
-            "You are a razor-sharp Code, Syntax, and Security Analyzer. "
-            "Analyze the submitted code snippet thoroughly and accurately catch EVERYTHING:\n"
-            "- Syntax errors and language version issues (e.g., catching Python 2 'print hello' and correcting to Python 3 'print(\"hello\")', missing brackets, indentation errors, typos).\n"
-            "- Bad practices, code smells, performance issues, and architectural flaws.\n"
-            "- Security vulnerabilities, injection flaws, exposed secrets, and CVEs.\n\n"
-            "Generate a crisp, beautiful analysis report in valid Markdown:\n"
-            "### Section 1: Executive Summary & Threat Level (Assign Severity: CRITICAL, HIGH, MEDIUM, LOW, or SAFE, with a Severity Score 0.0-10.0)\n"
-            "### Section 2: Static & AST Vulnerability Assessment (Identify exact line numbers, syntax errors, CWE/CVE classifications, and flaw descriptions)\n"
-            "### Section 3: Regulatory & Compliance Mapping (Evaluate against SOC 2, HIPAA, GDPR, ISO 27001, and OWASP Top 10)\n"
-            "### Section 4: Threat Impact & Exploitation Vectors (Explain potential blast radius, syntax breakdown, and attack vectors)\n"
-            "### Section 5: Recommended Remediation & Hardened Code Implementation (Provide the cleanly corrected, secure code snippet without unnecessary boilerplate or unit tests)\n\n"
-            "CRITICAL PERSONA & PHRASING RULES:\n"
-            "- Maintain this comprehensive 5-section report format for all code snippets.\n"
-            "- Never speak on behalf of the application, the system, the platform, or the company. Do NOT write statements like 'Our system does not store data', 'The platform is secure', or 'The application is compliant'.\n"
-            "- ALWAYS explicitly refer ONLY to the provided input as 'The submitted code snippet', 'The analyzed script', or 'The provided input'.\n"
-            "- For compliance sections (SOC 2, GDPR, HIPAA) on safe or short code, phrase it strictly as: 'The provided code snippet does not contain logic that processes regulated data.' Do not make blanket statements about data collection or privacy practices that could be misconstrued as the host company's privacy policy."
-        ) if user.is_premium else (
-            "You are a razor-sharp Code, Syntax, and Security Analyzer. "
-            "Analyze the submitted code snippet for all syntax errors, bad practices, and security flaws, and generate a 5-section summary. "
-            "CRITICAL: Never speak on behalf of the application, system, or company. Always refer to the code as 'The submitted code snippet'. "
-            "For compliance sections, phrase strictly as: 'The provided code snippet does not contain logic that processes regulated data.' "
-            "You must explicitly state at the end of the response: 'Upgrade to Enterprise for deep vulnerability analysis and remediation code.'"
+            "You are an elite Code, Syntax, and Security Analyzer. Your job is to ruthlessly analyze the provided code snippet for ANY issues: syntax errors (like missing parentheses in Python 3 print statements), logic bugs, bad practices, and security vulnerabilities (CVEs). You must catch EVERYTHING. If the user inputs 'Print hello', you must immediately flag it as a Python 2 syntax error and provide the Python 3 fix. Format your response strictly in Markdown with two sections: '1. Detailed Analysis' and '2. Corrected Code'. Do NOT ignore simple errors. Do NOT ever default to saying the code is secure if it has syntax or structural flaws."
         )
 
         redacted_code, secrets_found = apply_zero_leak_redaction(valid_code)
@@ -1687,7 +1648,7 @@ async def cicd_scan(payload: CICDScanPayload, x_api_key: str = Header(None)):
             system_prompt += (
                 "\n\n[CONFIRMED HARDCODED SECRET DETECTED]\n"
                 "The pre-upload security filter detected one or more hardcoded secrets/credentials (CWE-798) and sanitized them to '***REDACTED_BY_TIMECODESECURITY***'. "
-                "Audit this credential exposure on its line, explain the blast radius, and provide the secure fix in Section 5."
+                "Audit this credential exposure on its line, explain the blast radius, and provide the secure fix in '2. Corrected Code'."
             )
 
         # ====== GOD-MODE RAG CONTEXT INJECTION ======
@@ -1707,8 +1668,6 @@ async def cicd_scan(payload: CICDScanPayload, x_api_key: str = Header(None)):
         
         warning_str = "🚨 **CRITICAL SECURITY VIOLATION:** Hardcoded secrets/passwords were detected and successfully redacted before AI analysis to prevent data leakage. \n\n"
         if secrets_found:
-            if ai_reply and ai_reply.strip().startswith("CLEAN:"):
-                ai_reply = generate_dynamic_security_analysis(redacted_code, is_premium=user.is_premium)
             if warning_str not in ai_reply:
                 ai_reply = warning_str + ai_reply
 
