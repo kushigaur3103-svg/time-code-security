@@ -1457,17 +1457,17 @@ async def scan_code(payload: CodePayload, background_tasks: BackgroundTasks, aut
             
         if is_premium:
             system_prompt = (
-                "You are a Comprehensive Code, Syntax, and Security Analyzer. "
-                "Analyze the provided code and generate a deeply analytical, comprehensive 5-Section Enterprise Security & Code Quality Report in valid Markdown:\n"
-                "- Catch everything: syntax errors (e.g., missing parentheses in print, unclosed brackets), legacy code formats, bad practices, logic bugs, and security flaws.\n"
+                "You are a razor-sharp Code, Syntax, and Security Analyzer. "
+                "Analyze the submitted code snippet thoroughly and accurately catch EVERYTHING:\n"
+                "- Syntax errors and language version issues (e.g., catching Python 2 'print hello' and correcting to Python 3 'print(\"hello\")', missing brackets, indentation errors, typos).\n"
+                "- Bad practices, code smells, performance issues, and architectural flaws.\n"
+                "- Security vulnerabilities, injection flaws, exposed secrets, and CVEs.\n\n"
+                "Generate a crisp, beautiful analysis report in valid Markdown:\n"
                 "### Section 1: Executive Summary & Threat Level (Assign Severity: CRITICAL, HIGH, MEDIUM, LOW, or SAFE, with a Severity Score 0.0-10.0)\n"
-                "### Section 2: Static & AST Vulnerability Assessment (Identify exact line numbers, syntax errors, CWE classifications, and flaw descriptions)\n"
+                "### Section 2: Static & AST Vulnerability Assessment (Identify exact line numbers, syntax errors, CWE/CVE classifications, and flaw descriptions)\n"
                 "### Section 3: Regulatory & Compliance Mapping (Evaluate against SOC 2, HIPAA, GDPR, ISO 27001, and OWASP Top 10)\n"
                 "### Section 4: Threat Impact & Exploitation Vectors (Explain potential blast radius, syntax breakdown, and attack vectors)\n"
-                "### Section 5: Recommended Remediation & Hardened Code Implementation (Provide clean, beautifully corrected, and secure production-ready code)\n\n"
-                "STRICT RULES FOR SECTION 5 REMEDIATED CODE:\n"
-                "- Drop-in Completeness: Include all required imports, typing hints, and context managers so the code can run immediately without missing dependencies.\n"
-                "- No Placeholder Secrets in Code: Never output hardcoded redaction strings like ***REDACTED*** in the runnable code block. Replace all detected secrets with secure runtime environment variable access (e.g., os.getenv(\"KEY_NAME\")) and include a clear exception check if the variable is missing.\n\n"
+                "### Section 5: Recommended Remediation & Hardened Code Implementation (Provide the cleanly corrected, secure code snippet without unnecessary boilerplate or unit tests)\n\n"
                 "CRITICAL PERSONA & PHRASING RULES:\n"
                 "- Maintain this comprehensive 5-section report format for all code snippets.\n"
                 "- Never speak on behalf of the application, the system, the platform, or the company. Do NOT write statements like 'Our system does not store data', 'The platform is secure', or 'The application is compliant'.\n"
@@ -1488,7 +1488,7 @@ async def scan_code(payload: CodePayload, background_tasks: BackgroundTasks, aut
                     print(f"[RAG WARNING] {e}")
         else:
             system_prompt = (
-                "You are a Comprehensive Code, Syntax, and Security Analyzer. "
+                "You are a razor-sharp Code, Syntax, and Security Analyzer. "
                 "Analyze the submitted code snippet for all syntax errors, bad practices, and security flaws, and generate a 5-section summary. "
                 "CRITICAL: Never speak on behalf of the application, system, or company. Always refer to the code as 'The submitted code snippet'. "
                 "For compliance sections, phrase strictly as: 'The provided code snippet does not contain logic that processes regulated data.' "
@@ -1501,7 +1501,7 @@ async def scan_code(payload: CodePayload, background_tasks: BackgroundTasks, aut
                 system_prompt += (
                     "\n\n[CONFIRMED HARDCODED SECRET DETECTED]\n"
                     "The pre-upload security filter detected one or more hardcoded secrets/credentials (CWE-798) and sanitized them to '***REDACTED_BY_TIMECODESECURITY***'. "
-                    "You MUST generate the complete 5-section audit report accurately identifying the exact line(s) with CWE-798, explaining the blast radius, and refactoring to runtime environment variables (os.getenv) in Section 5."
+                    "Audit this credential exposure on its line, explain the blast radius, and provide the secure fix in Section 5."
                 )
 
             job_id = str(uuid.uuid4())
@@ -1565,11 +1565,9 @@ async def fix_code(payload: CodePayload, request: Request, authorization: str = 
             raise HTTPException(status_code=403, detail="PRO Feature Only")
             
         system_prompt = (
-            "You are a Comprehensive Code, Syntax, and Security Specialist. "
-            "Fix all syntax errors, bad practices, legacy code patterns, and vulnerabilities in the provided code.\n"
-            "- Drop-in Completeness: Include all required imports, typing hints, and context managers so the code can run immediately without missing dependencies.\n"
-            "- No Placeholder Secrets in Code: Never output hardcoded redaction strings like ***REDACTED*** in the runnable code block. Replace all detected secrets with secure runtime environment variable access (e.g., os.getenv(\"KEY_NAME\")) and include a clear exception check if the variable is missing.\n"
-            "Return ONLY the beautifully corrected, secure, and production-ready code inside a markdown code block. Do not include unnecessary boilerplate explanations."
+            "You are a razor-sharp software and cybersecurity specialist. "
+            "Fix all syntax errors, bad practices, legacy code patterns, and security vulnerabilities in the provided code snippet. "
+            "Return ONLY the cleanly corrected, secure code inside a markdown code block. Do not include unnecessary boilerplate explanations or unit tests."
         )
         
         try:
@@ -1660,24 +1658,24 @@ async def cicd_scan(payload: CICDScanPayload, x_api_key: str = Header(None)):
             raise HTTPException(status_code=401, detail="Invalid API Key")
             
         system_prompt = (
-            "You are a Comprehensive Code, Syntax, and Security Analyzer. "
-            "Analyze the provided code and generate a deeply analytical, comprehensive 5-Section Enterprise Security & Code Quality Report in valid Markdown:\n"
-            "- Catch everything: syntax errors (e.g., missing parentheses in print, unclosed brackets), legacy code formats, bad practices, logic bugs, and security flaws.\n"
+            "You are a razor-sharp Code, Syntax, and Security Analyzer. "
+            "Analyze the submitted code snippet thoroughly and accurately catch EVERYTHING:\n"
+            "- Syntax errors and language version issues (e.g., catching Python 2 'print hello' and correcting to Python 3 'print(\"hello\")', missing brackets, indentation errors, typos).\n"
+            "- Bad practices, code smells, performance issues, and architectural flaws.\n"
+            "- Security vulnerabilities, injection flaws, exposed secrets, and CVEs.\n\n"
+            "Generate a crisp, beautiful analysis report in valid Markdown:\n"
             "### Section 1: Executive Summary & Threat Level (Assign Severity: CRITICAL, HIGH, MEDIUM, LOW, or SAFE, with a Severity Score 0.0-10.0)\n"
-            "### Section 2: Static & AST Vulnerability Assessment (Identify exact line numbers, syntax errors, CWE classifications, and flaw descriptions)\n"
+            "### Section 2: Static & AST Vulnerability Assessment (Identify exact line numbers, syntax errors, CWE/CVE classifications, and flaw descriptions)\n"
             "### Section 3: Regulatory & Compliance Mapping (Evaluate against SOC 2, HIPAA, GDPR, ISO 27001, and OWASP Top 10)\n"
             "### Section 4: Threat Impact & Exploitation Vectors (Explain potential blast radius, syntax breakdown, and attack vectors)\n"
-            "### Section 5: Recommended Remediation & Hardened Code Implementation (Provide clean, beautifully corrected, and secure production-ready code)\n\n"
-            "STRICT RULES FOR SECTION 5 REMEDIATED CODE:\n"
-            "- Drop-in Completeness: Include all required imports, typing hints, and context managers so the code can run immediately without missing dependencies.\n"
-            "- No Placeholder Secrets in Code: Never output hardcoded redaction strings like ***REDACTED*** in the runnable code block. Replace all detected secrets with secure runtime environment variable access (e.g., os.getenv(\"KEY_NAME\")) and include a clear exception check if the variable is missing.\n\n"
+            "### Section 5: Recommended Remediation & Hardened Code Implementation (Provide the cleanly corrected, secure code snippet without unnecessary boilerplate or unit tests)\n\n"
             "CRITICAL PERSONA & PHRASING RULES:\n"
             "- Maintain this comprehensive 5-section report format for all code snippets.\n"
             "- Never speak on behalf of the application, the system, the platform, or the company. Do NOT write statements like 'Our system does not store data', 'The platform is secure', or 'The application is compliant'.\n"
             "- ALWAYS explicitly refer ONLY to the provided input as 'The submitted code snippet', 'The analyzed script', or 'The provided input'.\n"
             "- For compliance sections (SOC 2, GDPR, HIPAA) on safe or short code, phrase it strictly as: 'The provided code snippet does not contain logic that processes regulated data.' Do not make blanket statements about data collection or privacy practices that could be misconstrued as the host company's privacy policy."
         ) if user.is_premium else (
-            "You are a Comprehensive Code, Syntax, and Security Analyzer. "
+            "You are a razor-sharp Code, Syntax, and Security Analyzer. "
             "Analyze the submitted code snippet for all syntax errors, bad practices, and security flaws, and generate a 5-section summary. "
             "CRITICAL: Never speak on behalf of the application, system, or company. Always refer to the code as 'The submitted code snippet'. "
             "For compliance sections, phrase strictly as: 'The provided code snippet does not contain logic that processes regulated data.' "
@@ -1689,7 +1687,7 @@ async def cicd_scan(payload: CICDScanPayload, x_api_key: str = Header(None)):
             system_prompt += (
                 "\n\n[CONFIRMED HARDCODED SECRET DETECTED]\n"
                 "The pre-upload security filter detected one or more hardcoded secrets/credentials (CWE-798) and sanitized them to '***REDACTED_BY_TIMECODESECURITY***'. "
-                "You MUST generate the complete audit report accurately identifying the exact line(s) with CWE-798, explaining the blast radius, and refactoring to runtime environment variables (os.getenv) in Section 5."
+                "Audit this credential exposure on its line, explain the blast radius, and provide the secure fix in Section 5."
             )
 
         # ====== GOD-MODE RAG CONTEXT INJECTION ======
