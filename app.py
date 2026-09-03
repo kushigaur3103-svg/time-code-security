@@ -1471,7 +1471,7 @@ async def scan_code(payload: CodePayload, background_tasks: BackgroundTasks, aut
                 "STRICT RULES FOR SECTION 5 REMEDIATED CODE:\n"
                 "- Drop-in Completeness: Include all required imports, typing hints, and context managers so the code can run immediately without missing dependencies.\n"
                 "- No Placeholder Secrets in Code: Never output hardcoded redaction strings like ***REDACTED*** in the runnable code block. Replace all detected secrets with secure runtime environment variable access (e.g., os.getenv(\"KEY_NAME\")) and include a clear exception check if the variable is missing.\n"
-                "- Include Automated Defensive Unit Test: Right after the remediated code block, always provide a concise, runnable Unit Test (using standard unittest or pytest) that explicitly tests the vulnerability fix (e.g., asserts that malicious inputs raise ValueError or are safely neutralized).\n\n"
+                "- Include Automated Defensive Unit Test: Right after the remediated code block, always provide a concise, runnable Unit Test (using standard unittest or pytest) that explicitly tests the vulnerability fix (e.g., asserts that malicious inputs raise ValueError or are safely neutralized). Compute any test hashes dynamically (e.g., hashlib.sha256(b'test').hexdigest()) instead of typing repetitive string literals.\n\n"
                 "CRITICAL PERSONA & PHRASING RULES:\n"
                 "- Never speak on behalf of the application, the system, the platform, or the company. Do NOT write statements like 'Our system does not store data', 'The platform is secure', or 'The application is compliant'.\n"
                 "- ALWAYS explicitly refer ONLY to the provided input as 'The submitted code snippet', 'The analyzed script', or 'The provided input'.\n"
@@ -1574,7 +1574,7 @@ async def fix_code(payload: CodePayload, request: Request, authorization: str = 
             "You are a senior cybersecurity engineer. Fix the provided vulnerable code to strict enterprise production standards in valid Markdown.\n"
             "- Drop-in Completeness: Include all required imports, typing hints, and context managers so the code can run immediately without missing dependencies.\n"
             "- No Placeholder Secrets in Code: Never output hardcoded redaction strings like ***REDACTED*** in the runnable code block. Replace all detected secrets with secure runtime environment variable access (e.g., os.getenv(\"KEY_NAME\")) and include a clear exception check if the variable is missing.\n"
-            "- Include Automated Defensive Unit Test: Right after the remediated code block, always provide a concise, runnable Unit Test (using standard unittest or pytest) that explicitly tests the vulnerability fix (e.g., asserts that malicious inputs raise ValueError or are safely neutralized).\n"
+            "- Include Automated Defensive Unit Test: Right after the remediated code block, always provide a concise, runnable Unit Test (using standard unittest or pytest) that explicitly tests the vulnerability fix (e.g., asserts that malicious inputs raise ValueError or are safely neutralized). Compute any test hashes dynamically (e.g., hashlib.sha256(b'test').hexdigest()) instead of typing repetitive string literals.\n"
             "Return the secure, remediated code block followed immediately by the automated defensive unit test code block. Do not include unnecessary boilerplate explanations."
         )
         
@@ -1680,7 +1680,7 @@ async def cicd_scan(payload: CICDScanPayload, x_api_key: str = Header(None)):
             "STRICT RULES FOR SECTION 5 REMEDIATED CODE:\n"
             "- Drop-in Completeness: Include all required imports, typing hints, and context managers so the code can run immediately without missing dependencies.\n"
             "- No Placeholder Secrets in Code: Never output hardcoded redaction strings like ***REDACTED*** in the runnable code block. Replace all detected secrets with secure runtime environment variable access (e.g., os.getenv(\"KEY_NAME\")) and include a clear exception check if the variable is missing.\n"
-            "- Include Automated Defensive Unit Test: Right after the remediated code block, always provide a concise, runnable Unit Test (using standard unittest or pytest) that explicitly tests the vulnerability fix (e.g., asserts that malicious inputs raise ValueError or are safely neutralized).\n\n"
+            "- Include Automated Defensive Unit Test: Right after the remediated code block, always provide a concise, runnable Unit Test (using standard unittest or pytest) that explicitly tests the vulnerability fix (e.g., asserts that malicious inputs raise ValueError or are safely neutralized). Compute any test hashes dynamically (e.g., hashlib.sha256(b'test').hexdigest()) instead of typing repetitive string literals.\n\n"
             "CRITICAL PERSONA & PHRASING RULES:\n"
             "- Never speak on behalf of the application, the system, the platform, or the company. Do NOT write statements like 'Our system does not store data', 'The platform is secure', or 'The application is compliant'.\n"
             "- ALWAYS explicitly refer ONLY to the provided input as 'The submitted code snippet', 'The analyzed script', or 'The provided input'.\n"
