@@ -7,6 +7,7 @@
     <link rel="icon" type="image/svg+xml" href="data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 32 32' width='32' height='32'%3E%3Cdefs%3E%3ClinearGradient id='g' x1='0%25' y1='0%25' x2='100%25' y2='100%25'%3E%3Cstop offset='0%25' stop-color='%2310b981'/%3E%3Cstop offset='50%25' stop-color='%2306b6d4'/%3E%3Cstop offset='100%25' stop-color='%233b82f6'/%3E%3C/linearGradient%3E%3ClinearGradient id='bg' x1='0%25' y1='0%25' x2='0%25' y2='100%25'%3E%3Cstop offset='0%25' stop-color='%230e1726'/%3E%3Cstop offset='100%25' stop-color='%23030712'/%3E%3C/linearGradient%3E%3C/defs%3E%3Crect width='32' height='32' rx='8' fill='url(%23bg)'/%3E%3Crect x='0.75' y='0.75' width='30.5' height='30.5' rx='7.25' fill='none' stroke='url(%23g)' stroke-width='1.5' stroke-opacity='0.6'/%3E%3Cpath d='M16 5.5 L24 8.5 V15 C24 20 20.5 24 16 26.5 C11.5 24 8 20 8 15 V8.5 Z' fill='none' stroke='url(%23g)' stroke-width='2' stroke-linejoin='round' stroke-linecap='round'/%3E%3Cpath d='M13.5 14.5 V12.2 C13.5 10.8 14.6 9.8 16 9.8 C17.4 9.8 18.5 10.8 18.5 12.2 V14.5' fill='none' stroke='%23ffffff' stroke-width='1.6' stroke-linecap='round'/%3E%3Crect x='12.5' y='14.5' width='7' height='5.5' rx='1.5' fill='url(%23g)'/%3E%3Ccircle cx='16' cy='16.8' r='0.9' fill='%23030712'/%3E%3Cpath d='M16 17.5 V18.6' stroke='%23030712' stroke-width='0.9' stroke-linecap='round'/%3E%3C/svg%3E">
     <script src="https://cdn.tailwindcss.com"></script>
     <script src="https://cdn.jsdelivr.net/npm/chart.js" crossorigin="anonymous" referrerpolicy="no-referrer"></script>
+    <script src="https://cdnjs.cloudflare.com/ajax/libs/html2pdf.js/0.10.1/html2pdf.bundle.min.js" crossorigin="anonymous" referrerpolicy="no-referrer"></script>
     <script src="https://app.lemonsqueezy.com/js/lemon.js" defer></script>
     <style>
         /* Custom Dark Scrollbar */
@@ -2193,46 +2194,140 @@ jobs:
                 return;
             }
             
-            const reportText = scanResult ? scanResult.textContent : '';
+            const scanResult = document.getElementById('scanResult');
+            const reportText = scanResult ? scanResult.textContent.trim() : '';
             if (!reportText || reportText.startsWith('Error:') || reportText.startsWith('System Failure:')) {
-                alert('No valid report to download.');
+                if (typeof showToast === 'function') {
+                    showToast('No valid report to download.', 'error');
+                } else {
+                    alert('No valid report to download.');
+                }
                 return;
             }
             
             downloadPdfBtn.disabled = true;
-            downloadPdfBtn.innerHTML = 'Generating...';
+            downloadPdfBtn.innerHTML = `
+                <svg class="animate-spin -ml-1 mr-2 h-4 w-4 text-white inline" xmlns="http://www.w3.org/2000/svg" fill="none" viewBox="0 0 24 24">
+                    <circle class="opacity-25" cx="12" cy="12" r="10" stroke="currentColor" stroke-width="4"></circle>
+                    <path class="opacity-75" fill="currentColor" d="M4 12a8 8 0 018-8v8H4z"></path>
+                </svg> Generating PDF...
+            `;
             
+            let pdfSuccess = false;
+            let printClone = null;
+
+            // Strategy 1: Client-Side html2pdf with sanitized mobile-safe DOM clone
             try {
-                const currentToken = localStorage.getItem('token');
-                const res = await fetch('/api/generate-pdf', {
-                    method: 'POST',
-                    headers: { 
-                        'Content-Type': 'application/json',
-                        'Authorization': `Bearer ${currentToken}` 
-                    },
-                    body: JSON.stringify({ report_text: reportText })
-                });
-                
-                if (res.ok) {
-                    const blob = await res.blob();
-                    const url = window.URL.createObjectURL(blob);
-                    const a = document.createElement('a');
-                    a.href = url;
-                    a.download = 'TimeCodeSecurity_Report.pdf';
-                    document.body.appendChild(a);
-                    a.click();
-                    a.remove();
-                    window.URL.revokeObjectURL(url);
-                } else {
-                    const err = await res.json().catch(() => ({}));
-                    alert('Failed to generate PDF: ' + (err.detail || 'Unknown error'));
+                if (typeof html2pdf !== 'undefined') {
+                    // Create clean cloned element stripped of backdrop-filter, gradients, or variable font weights
+                    printClone = document.createElement('div');
+                    printClone.id = 'tcs_printable_report_clone';
+                    printClone.style.cssText = 'position: fixed; top: -9999px; left: -9999px; width: 760px; background: #ffffff; color: #0f172a; padding: 28px; font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, Helvetica, Arial, sans-serif; box-sizing: border-box; z-index: -9999;';
+
+                    // Report Header
+                    const header = document.createElement('div');
+                    header.style.cssText = 'border-bottom: 2px solid #0284c7; padding-bottom: 14px; margin-bottom: 18px; display: flex; justify-content: space-between; align-items: flex-end;';
+                    header.innerHTML = `
+                        <div>
+                            <div style="font-size: 20px; font-weight: 800; color: #0369a1; letter-spacing: -0.5px; margin: 0;">TIMECODESECURITY</div>
+                            <div style="font-size: 11px; color: #64748b; font-weight: 600; margin-top: 3px;">ENTERPRISE AI CODE SECURITY AUDIT</div>
+                        </div>
+                        <div style="text-align: right;">
+                            <div style="display: inline-block; background: #e0f2fe; color: #0369a1; font-size: 9px; font-weight: 700; padding: 3px 8px; border-radius: 4px; border: 1px solid #bae6fd;">ZERO-LEAK VERIFIED</div>
+                            <div style="font-size: 10px; color: #94a3b8; margin-top: 3px;">${new Date().toUTCString()}</div>
+                        </div>
+                    `;
+                    printClone.appendChild(header);
+
+                    // Report Body
+                    const body = document.createElement('div');
+                    body.style.cssText = 'background: #f8fafc; border: 1px solid #e2e8f0; border-radius: 6px; padding: 18px; white-space: pre-wrap; word-break: break-word; font-family: "Courier New", Courier, monospace; font-size: 11px; line-height: 1.55; color: #1e293b;';
+                    body.textContent = reportText;
+                    printClone.appendChild(body);
+
+                    // Report Footer
+                    const footer = document.createElement('div');
+                    footer.style.cssText = 'margin-top: 20px; padding-top: 10px; border-top: 1px solid #e2e8f0; font-size: 9px; color: #94a3b8; text-align: center;';
+                    footer.textContent = 'Confidential - TimeCodeSecurity AST Engine - Single-Tenant Sandbox Analysis';
+                    printClone.appendChild(footer);
+
+                    document.body.appendChild(printClone);
+
+                    const opt = {
+                        margin: 10,
+                        filename: 'TimeCodeSecurity_Audit_Report.pdf',
+                        image: { type: 'jpeg', quality: 0.98 },
+                        html2canvas: { scale: 2, useCORS: true, logging: false },
+                        jsPDF: { unit: 'mm', format: 'a4', orientation: 'portrait' }
+                    };
+
+                    await html2pdf().set(opt).from(printClone).save();
+                    pdfSuccess = true;
+                    if (typeof showToast === 'function') {
+                        showToast('PDF Report downloaded successfully!', 'success');
+                    }
                 }
-            } catch (e) {
-                alert('Network error generating PDF.');
+            } catch (clientError) {
+                console.warn('html2pdf generation error, trying fallback:', clientError);
             } finally {
-                downloadPdfBtn.disabled = false;
-                downloadPdfBtn.innerHTML = `<svg xmlns="http://www.w3.org/2000/svg" class="h-4 w-4" fill="none" viewBox="0 0 24 24" stroke="currentColor"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M4 16v1a3 3 0 003 3h10a3 3 0 003-3v-1m-4-4l-4 4m0 0l-4-4m4 4V4" /></svg> Download PDF Report`;
+                if (printClone && printClone.parentNode) {
+                    printClone.parentNode.removeChild(printClone);
+                }
             }
+
+            // Strategy 2: Backend API fallback (/api/generate-pdf)
+            if (!pdfSuccess) {
+                try {
+                    const currentToken = localStorage.getItem('token');
+                    const res = await fetch('/api/generate-pdf', {
+                        method: 'POST',
+                        headers: { 
+                            'Content-Type': 'application/json',
+                            'Authorization': `Bearer ${currentToken}` 
+                        },
+                        body: JSON.stringify({ report_text: reportText })
+                    });
+                    
+                    if (res.ok) {
+                        const blob = await res.blob();
+                        const url = window.URL.createObjectURL(blob);
+                        const a = document.createElement('a');
+                        a.href = url;
+                        a.download = 'TimeCodeSecurity_Audit_Report.pdf';
+                        document.body.appendChild(a);
+                        a.click();
+                        a.remove();
+                        setTimeout(() => window.URL.revokeObjectURL(url), 1000);
+                        pdfSuccess = true;
+                        if (typeof showToast === 'function') {
+                            showToast('PDF downloaded successfully!', 'success');
+                        }
+                    }
+                } catch (apiError) {
+                    console.warn('Backend PDF endpoint error:', apiError);
+                }
+            }
+
+            // Strategy 3: Seamless Fallback (Clipboard copy or Clean Print dialog)
+            if (!pdfSuccess) {
+                try {
+                    if (navigator.clipboard && navigator.clipboard.writeText) {
+                        await navigator.clipboard.writeText(reportText);
+                        if (typeof showToast === 'function') {
+                            showToast('Mobile PDF export blocked by browser: Report copied to clipboard!', 'info');
+                        } else {
+                            alert('Report copied to clipboard!');
+                        }
+                    } else {
+                        window.print();
+                    }
+                } catch (fallbackError) {
+                    window.print();
+                }
+            }
+
+            downloadPdfBtn.disabled = false;
+            downloadPdfBtn.innerHTML = `<svg xmlns="http://www.w3.org/2000/svg" class="h-4 w-4" fill="none" viewBox="0 0 24 24" stroke="currentColor"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M4 16v1a3 3 0 003 3h10a3 3 0 003-3v-1m-4-4l-4 4m0 0l-4-4m4 4V4" /></svg> Download PDF Report`;
         });
     }
 
