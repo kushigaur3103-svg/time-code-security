@@ -131,6 +131,8 @@ class TaintTracker:
         self.sink_records: list[SinkRecord] = []
         self.functions: dict[str, ast.FunctionDef] = {}
         self.returns_by_scope: dict[str, list[ast.Return]] = {}
+        self.raw_calls: list[tuple[ast.Call, str, int]] = []
+        self.call_sites_by_target: dict[str, list[tuple[ast.Call, str, int]]] = {}
         self._source_counter = 0
         self._sink_counter = 0
 
@@ -142,31 +144,96 @@ class TaintTracker:
         self._sink_counter += 1
         return f"SNK-{self._sink_counter:03d}"
 
-    def is_source_call(self, node: ast.AST) -> bool:
+    def resolve_canonical_name(self, node: ast.AST, scope_id: str = "", visited: Optional[set[str]] = None) -> Optional[str]:
+        if visited is None:
+            visited = set()
+        mod_name = scope_id.split(":")[0] if scope_id else ""
+
+        if isinstance(node, ast.Name):
+            if mod_name and mod_name in self.imports and node.id in self.imports[mod_name]:
+                return self.imports[mod_name][node.id]
+
+            var_key = f"{scope_id}:{node.id}"
+            if var_key not in visited:
+                visited.add(var_key)
+                current_scope = scope_id
+                found_record = None
+                while current_scope:
+                    recs = self.assignments_by_scope.get((current_scope, node.id), [])
+                    if recs:
+                        uncond = [r for r in recs if not r.is_conditional]
+                        found_record = uncond[-1] if uncond else recs[-1]
+                        break
+                    if "." in current_scope and "function" in current_scope:
+                        current_scope = current_scope.rsplit(".", 1)[0]
+                    elif ":function" in current_scope:
+                        current_scope = f"{mod_name}:global"
+                    elif current_scope != f"{mod_name}:global":
+                        current_scope = f"{mod_name}:global"
+                    else:
+                        break
+
+                if found_record:
+                    resolved = self.resolve_canonical_name(found_record.value_node, found_record.scope_id, visited)
+                    if resolved:
+                        return resolved
+
+            return node.id
+
+        if isinstance(node, ast.Attribute):
+            base_canon = self.resolve_canonical_name(node.value, scope_id, visited)
+            if base_canon:
+                full_name = f"{base_canon}.{node.attr}"
+                if mod_name and mod_name in self.imports and full_name in self.imports[mod_name]:
+                    return self.imports[mod_name][full_name]
+                return full_name
+            return node.attr
+
+        if isinstance(node, ast.Call):
+            call_name = dotted_name(node.func)
+            if call_name:
+                func_scope = self._resolve_function_scope(call_name, scope_id)
+                if func_scope and func_scope not in visited:
+                    visited.add(func_scope)
+                    returns = self.returns_by_scope.get(func_scope, [])
+                    if returns:
+                        ret_canons = [self.resolve_canonical_name(r.value, func_scope, visited) for r in returns if r.value]
+                        if ret_canons and all(c == ret_canons[0] and c is not None for c in ret_canons):
+                            return ret_canons[0]
+
+        return None
+
+    def is_source_call(self, node: ast.AST, scope_id: str = "") -> bool:
         if not isinstance(node, ast.Call): return False
+        canon = self.resolve_canonical_name(node.func, scope_id) if scope_id else dotted_name(node.func)
+        if canon in SOURCE_REGISTRY: return True
         return dotted_name(node.func) in SOURCE_REGISTRY
 
-    def get_or_create_source(self, node: ast.Call, file_path: str) -> SecurityNode:
+    def get_or_create_source(self, node: ast.Call, file_path: str, scope_id: str = "") -> SecurityNode:
         loc = location(node, file_path)
         for existing in self.sources:
             if existing.location == loc: return existing
         source_id = self.next_source_id()
+        canon_name = self.resolve_canonical_name(node.func, scope_id) if scope_id else None
         name = dotted_name(node.func)
-        meta = SOURCE_REGISTRY.get(name, {})
+        lookup_name = canon_name if (canon_name and canon_name in SOURCE_REGISTRY) else name
+        meta = SOURCE_REGISTRY.get(lookup_name, {})
         source = SecurityNode(
-            id=source_id, node_type=NodeType.SOURCE, symbol=f"{name}(...)",
+            id=source_id, node_type=NodeType.SOURCE, symbol=f"{lookup_name}(...)",
             operation=meta.get("operation", "USER_INPUT_ACCESS"), location=loc,
             metadata={"source_type": meta.get("source_type", "USER_CONTROLLED")}
         )
         self.sources.append(source)
         return source
 
-    def is_sink_call(self, node: ast.AST) -> bool:
+    def is_sink_call(self, node: ast.AST, scope_id: str = "") -> bool:
         if not isinstance(node, ast.Call): return False
+        canon = self.resolve_canonical_name(node.func, scope_id) if scope_id else dotted_name(node.func)
+        if canon and canon in SINK_REGISTRY: return True
+        if canon and canon.endswith(".execute"): return True
         name = dotted_name(node.func)
-        if not name: return False
-        if name in SINK_REGISTRY: return True
-        if name.endswith(".execute"): return True
+        if name and name in SINK_REGISTRY: return True
+        if name and name.endswith(".execute"): return True
         return False
 
     def check_sink_safety(self, node: ast.Call, sink_name: str) -> bool:
@@ -178,17 +245,19 @@ class TaintTracker:
             if len(node.args) > 1 or getattr(node, 'keywords', []): return True
         return False
 
-    def get_or_create_sink(self, node: ast.Call, file_path: str) -> SecurityNode:
+    def get_or_create_sink(self, node: ast.Call, file_path: str, scope_id: str = "") -> SecurityNode:
         loc = location(node, file_path)
         for existing in self.sinks:
             if existing.location == loc: return existing
         sink_id = self.next_sink_id()
-        name = dotted_name(node.func)
-        meta = SINK_REGISTRY.get(name, {})
-        if not meta and name and name.endswith(".execute"):
+        canon_name = self.resolve_canonical_name(node.func, scope_id) if scope_id else None
+        name = dotted_name(node.func) or "sink"
+        lookup_name = canon_name if (canon_name and canon_name in SINK_REGISTRY) else name
+        meta = SINK_REGISTRY.get(lookup_name, {})
+        if not meta and (name.endswith(".execute") or (canon_name and canon_name.endswith(".execute"))):
             meta = {"operation": "SQL_EXECUTION", "category": "SQL_INJECTION", "cwe": "CWE-89"}
         sink = SecurityNode(
-            id=sink_id, node_type=NodeType.SINK, symbol=name or "sink",
+            id=sink_id, node_type=NodeType.SINK, symbol=canon_name or name,
             operation=meta.get("operation", "UNKNOWN_OPERATION"), location=loc,
             metadata={"sink_type": meta.get("category", "UNKNOWN_CATEGORY"), "cwe": meta.get("cwe", "UNKNOWN_CWE")}
         )
@@ -209,8 +278,16 @@ class TaintTracker:
         local_glob = f"{mod_name}:function:{call_name}"
         if local_glob in self.functions: return local_glob
         parts = call_name.split(".")
+
+        if len(parts) > 1:
+            for i in range(len(parts)-1, 0, -1):
+                r_mod = ".".join(parts[:i])
+                r_func = ".".join(parts[i:])
+                test_scope = f"{r_mod}:function:{r_func}"
+                if test_scope in self.functions: return test_scope
+
         base_name = parts[0]
-        if base_name in self.imports[mod_name]:
+        if base_name in self.imports.get(mod_name, {}):
             resolved_base = self.imports[mod_name][base_name]
             resolved_full = resolved_base + "." + ".".join(parts[1:]) if len(parts) > 1 else resolved_base
             parts2 = resolved_full.split(".")
@@ -235,6 +312,11 @@ class TaintTracker:
             return TaintValue(state=TaintState.TAINTED, source_id=first_tainted.source_id, confidence=min(t.confidence for t in taints), path=combined_path, last_operation=f"merged:{node_id}")
         return TaintValue(state=TaintState.UNKNOWN, source_id=first_tainted.source_id, confidence=0.50, path=combined_path, last_operation=f"path_dependent:{node_id}")
 
+    def _collect_calls_in_expr(self, expr: ast.AST, scope_id: str, lineno: int):
+        for subnode in ast.walk(expr):
+            if isinstance(subnode, ast.Call):
+                self.raw_calls.append((subnode, scope_id, getattr(subnode, "lineno", lineno)))
+
     def collect_statements(self, statements: list[ast.stmt], scope_id: str, is_conditional: bool = False):
         for stmt in statements:
             if isinstance(stmt, (ast.FunctionDef, ast.AsyncFunctionDef)):
@@ -247,16 +329,22 @@ class TaintTracker:
                         record = AssignmentRecord(target_name=target.id, value_node=stmt.value, lineno=stmt.lineno, scope_id=scope_id, is_conditional=is_conditional)
                         self.assignments_by_scope.setdefault((scope_id, target.id), []).append(record)
                 self.scan_for_sinks(stmt.value, scope_id, stmt.lineno)
+                self._collect_calls_in_expr(stmt.value, scope_id, stmt.lineno)
             elif isinstance(stmt, ast.AnnAssign):
                 if isinstance(stmt.target, ast.Name) and stmt.value:
                     record = AssignmentRecord(target_name=stmt.target.id, value_node=stmt.value, lineno=stmt.lineno, scope_id=scope_id, is_conditional=is_conditional)
                     self.assignments_by_scope.setdefault((scope_id, stmt.target.id), []).append(record)
                     self.scan_for_sinks(stmt.value, scope_id, stmt.lineno)
+                    self._collect_calls_in_expr(stmt.value, scope_id, stmt.lineno)
             elif isinstance(stmt, ast.If):
                 self.scan_for_sinks(stmt.test, scope_id, stmt.lineno)
+                self._collect_calls_in_expr(stmt.test, scope_id, stmt.lineno)
                 self.collect_statements(stmt.body, scope_id=scope_id, is_conditional=True)
                 self.collect_statements(stmt.orelse, scope_id=scope_id, is_conditional=True)
             elif isinstance(stmt, (ast.For, ast.While)):
+                if isinstance(stmt, ast.While):
+                    self.scan_for_sinks(stmt.test, scope_id, stmt.lineno)
+                    self._collect_calls_in_expr(stmt.test, scope_id, stmt.lineno)
                 self.collect_statements(stmt.body, scope_id=scope_id, is_conditional=True)
                 self.collect_statements(stmt.orelse, scope_id=scope_id, is_conditional=True)
             elif isinstance(stmt, ast.Try):
@@ -264,19 +352,28 @@ class TaintTracker:
                 for handler in stmt.handlers: self.collect_statements(handler.body, scope_id=scope_id, is_conditional=True)
                 self.collect_statements(stmt.orelse, scope_id=scope_id, is_conditional=True)
                 self.collect_statements(stmt.finalbody, scope_id=scope_id, is_conditional=False)
+            elif isinstance(stmt, (ast.With, ast.AsyncWith)):
+                for item in stmt.items:
+                    self.scan_for_sinks(item.context_expr, scope_id, stmt.lineno)
+                    self._collect_calls_in_expr(item.context_expr, scope_id, stmt.lineno)
+                self.collect_statements(stmt.body, scope_id=scope_id, is_conditional=is_conditional)
             elif isinstance(stmt, ast.Return):
                 self.returns_by_scope.setdefault(scope_id, []).append(stmt)
-                if stmt.value: self.scan_for_sinks(stmt.value, scope_id, stmt.lineno)
+                if stmt.value:
+                    self.scan_for_sinks(stmt.value, scope_id, stmt.lineno)
+                    self._collect_calls_in_expr(stmt.value, scope_id, stmt.lineno)
             elif isinstance(stmt, ast.Expr):
                 self.scan_for_sinks(stmt.value, scope_id, stmt.lineno)
+                self._collect_calls_in_expr(stmt.value, scope_id, stmt.lineno)
 
     def scan_for_sinks(self, expr: ast.AST, scope_id: str, lineno: int):
         mod_name = scope_id.split(":")[0]
         file_path = self.file_paths.get(mod_name, "unknown.py")
         for subnode in ast.walk(expr):
-            if isinstance(subnode, ast.Call) and self.is_sink_call(subnode):
-                if not self.check_sink_safety(subnode, dotted_name(subnode.func)):
-                    sink_node = self.get_or_create_sink(subnode, file_path)
+            if isinstance(subnode, ast.Call) and self.is_sink_call(subnode, scope_id):
+                canon_name = self.resolve_canonical_name(subnode.func, scope_id) or dotted_name(subnode.func) or ""
+                if not self.check_sink_safety(subnode, canon_name):
+                    sink_node = self.get_or_create_sink(subnode, file_path, scope_id)
                     self.sink_records.append(SinkRecord(node=subnode, security_node=sink_node, lineno=getattr(subnode, "lineno", lineno), scope_id=scope_id))
 
     def resolve_expression(self, node: ast.AST, sink: SecurityNode, scope_id: str, current_lineno: int, visited: Optional[set[str]] = None, call_context: Optional[dict[str, TaintValue]] = None) -> TaintValue:
@@ -285,8 +382,8 @@ class TaintTracker:
         mod_name = scope_id.split(":")[0]
         file_name = self.file_paths.get(mod_name, f"{mod_name}.py")
 
-        if isinstance(node, ast.Call) and self.is_source_call(node):
-            source = self.get_or_create_source(node, file_name)
+        if isinstance(node, ast.Call) and self.is_source_call(node, scope_id):
+            source = self.get_or_create_source(node, file_name, scope_id)
             return TaintValue(state=TaintState.TAINTED, source_id=source.id, confidence=1.0, path=[source.id], last_operation=dotted_name(node.func) or "source")
 
         if isinstance(node, ast.Name):
@@ -316,6 +413,41 @@ class TaintTracker:
 
             if not records_before:
                 if base_taint: return base_taint
+
+                # Interprocedural argument -> parameter flow resolution
+                func_node = self.functions.get(scope_id)
+                if func_node and any(a.arg == node.id for a in func_node.args.args):
+                    param_names = [a.arg for a in func_node.args.args]
+                    param_idx = param_names.index(node.id)
+                    call_sites = self.call_sites_by_target.get(scope_id, [])
+                    if call_sites:
+                        caller_taints = []
+                        for call_node, caller_scope, call_lineno in call_sites:
+                            arg_expr = None
+                            for kw in getattr(call_node, "keywords", []):
+                                if kw.arg == node.id:
+                                    arg_expr = kw.value
+                                    break
+                            if arg_expr is None:
+                                pos_idx = param_idx
+                                if param_names and param_names[0] in ("self", "cls"):
+                                    if isinstance(call_node.func, ast.Attribute) and call_node.func.attr == func_node.name:
+                                        pos_idx = param_idx - 1
+                                if 0 <= pos_idx < len(call_node.args):
+                                    arg_expr = call_node.args[pos_idx]
+
+                            if arg_expr is not None:
+                                call_site_key = f"param_flow:{scope_id}:{node.id}:{caller_scope}:{call_lineno}"
+                                if call_site_key not in visited:
+                                    v_copy = visited.copy()
+                                    v_copy.add(call_site_key)
+                                    caller_taint = self.resolve_expression(arg_expr, sink, caller_scope, call_lineno, v_copy)
+                                    caller_taints.append(caller_taint)
+                        if caller_taints:
+                            merged = self.merge_taints(caller_taints, f"{file_name}:{node.id}")
+                            if merged.state != TaintState.CLEAN:
+                                return merged
+
                 return TaintValue(state=TaintState.CLEAN, confidence=1.0, last_operation=f"untracked:{node.id}")
 
             last_uncond_idx = -1
@@ -338,7 +470,8 @@ class TaintTracker:
                 return self.merge_taints(resolved_list, f"{file_name}:{node.id}")
 
         if isinstance(node, ast.Call):
-            function_name = dotted_name(node.func) or "<unknown_function>"
+            canon_name = self.resolve_canonical_name(node.func, scope_id)
+            function_name = canon_name or dotted_name(node.func) or "<unknown_function>"
             arg_values = [self.resolve_expression(arg, sink, scope_id, current_lineno, visited.copy(), call_context) for arg in node.args]
 
             if function_name in SANITIZER_REGISTRY and self.sanitizer_protects_context(function_name, sink):
@@ -415,9 +548,20 @@ class TaintTracker:
                     for alias in node.names: self.imports[mod_name][alias.asname or alias.name] = f"{module}.{alias.name}" if module else alias.name
         for mod_name, tree in self.modules.items():
             self.collect_statements(tree.body, scope_id=f"{mod_name}:global", is_conditional=False)
+
+        # Index call sites by target function scope
+        for call_node, caller_scope, lineno in self.raw_calls:
+            canon_name = self.resolve_canonical_name(call_node.func, caller_scope)
+            fname = canon_name or dotted_name(call_node.func)
+            if fname:
+                func_scope = self._resolve_function_scope(fname, caller_scope)
+                if func_scope:
+                    self.call_sites_by_target.setdefault(func_scope, []).append((call_node, caller_scope, lineno))
+
         for mod_name, tree in self.modules.items():
             for node in ast.walk(tree):
-                if isinstance(node, ast.Call) and self.is_source_call(node): self.get_or_create_source(node, self.file_paths.get(mod_name, "unknown.py"))
+                if isinstance(node, ast.Call) and self.is_source_call(node, f"{mod_name}:global"):
+                    self.get_or_create_source(node, self.file_paths.get(mod_name, "unknown.py"), f"{mod_name}:global")
         for record in self.sink_records:
             sink = record.security_node
             if not record.node.args: continue
