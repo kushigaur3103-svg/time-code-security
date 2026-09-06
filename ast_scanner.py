@@ -82,6 +82,7 @@ SANITIZER_REGISTRY = {
 
 SINK_REGISTRY = {
     "eval": {"operation": "ARBITRARY_CODE_EXECUTION", "category": "CODE_EXECUTION", "cwe": "CWE-95"},
+    "exec": {"operation": "ARBITRARY_CODE_EXECUTION", "category": "CODE_EXECUTION", "cwe": "CWE-95"},
     "os.system": {"operation": "OS_COMMAND_EXECUTION", "category": "COMMAND_INJECTION", "cwe": "CWE-78"},
     "subprocess.run": {"operation": "OS_COMMAND_EXECUTION", "category": "COMMAND_INJECTION", "cwe": "CWE-78"},
     "subprocess.call": {"operation": "OS_COMMAND_EXECUTION", "category": "COMMAND_INJECTION", "cwe": "CWE-78"},
@@ -177,6 +178,8 @@ class TaintTracker:
                     resolved = self.resolve_canonical_name(found_record.value_node, found_record.scope_id, visited)
                     if resolved:
                         return resolved
+                    if node.id in ("exec", "eval", "open"):
+                        return f"shadowed:{node.id}"
 
             return node.id
 
@@ -226,14 +229,77 @@ class TaintTracker:
         self.sources.append(source)
         return source
 
-    def is_sink_call(self, node: ast.AST, scope_id: str = "") -> bool:
+    def _is_builtin_shadowed(self, name: str, scope_id: str, lineno: int = 0) -> bool:
+        if name not in ("exec", "eval", "open"):
+            return False
+
+        mod_name = scope_id.split(":")[0] if scope_id else ""
+        curr_scope = scope_id
+        while curr_scope:
+            f_node = self.functions.get(curr_scope)
+            if f_node:
+                all_args = [a.arg for a in f_node.args.args]
+                if getattr(f_node.args, "vararg", None):
+                    all_args.append(f_node.args.vararg.arg)
+                if getattr(f_node.args, "kwarg", None):
+                    all_args.append(f_node.args.kwarg.arg)
+                for kw in getattr(f_node.args, "kwonlyargs", []):
+                    all_args.append(kw.arg)
+                for p in getattr(f_node.args, "posonlyargs", []):
+                    all_args.append(p.arg)
+                if name in all_args:
+                    return True
+
+            recs = self.assignments_by_scope.get((curr_scope, name), [])
+            valid_recs = [r for r in recs if r.lineno < lineno] if (curr_scope == scope_id and lineno > 0) else recs
+            if valid_recs:
+                last_rec = valid_recs[-1]
+                target_canon = self.resolve_canonical_name(last_rec.value_node, last_rec.scope_id)
+                if target_canon in (name, f"builtins.{name}"):
+                    return False
+                return True
+
+            test_func_scope = f"{curr_scope}.{name}" if ":function" in curr_scope else f"{mod_name}:function:{name}"
+            if test_func_scope in self.functions:
+                return True
+
+            if "." in curr_scope and "function" in curr_scope:
+                curr_scope = curr_scope.rsplit(".", 1)[0]
+            elif ":function" in curr_scope:
+                curr_scope = f"{mod_name}:global"
+            elif curr_scope != f"{mod_name}:global":
+                curr_scope = f"{mod_name}:global"
+            else:
+                break
+
+        if f"{mod_name}:function:{name}" in self.functions:
+            return True
+
+        return False
+
+    def is_sink_call(self, node: ast.AST, scope_id: str = "", lineno: int = 0) -> bool:
         if not isinstance(node, ast.Call): return False
+        call_lineno = lineno or getattr(node, "lineno", 0)
         canon = self.resolve_canonical_name(node.func, scope_id) if scope_id else dotted_name(node.func)
-        if canon and canon in SINK_REGISTRY: return True
-        if canon and canon.endswith(".execute"): return True
+        if canon:
+            if canon.startswith("shadowed:"):
+                return False
+            unqualified = canon[9:] if canon.startswith("builtins.") else canon
+            if unqualified in SINK_REGISTRY:
+                name = dotted_name(node.func)
+                if name and not name.startswith("builtins.") and scope_id and self._is_builtin_shadowed(name, scope_id, call_lineno):
+                    return False
+                return True
+            if canon.endswith(".execute"): return True
+
         name = dotted_name(node.func)
-        if name and name in SINK_REGISTRY: return True
-        if name and name.endswith(".execute"): return True
+        if name:
+            if scope_id and not name.startswith("builtins.") and self._is_builtin_shadowed(name, scope_id, call_lineno):
+                return False
+            unqualified = name[9:] if name.startswith("builtins.") else name
+            if unqualified in SINK_REGISTRY: return True
+            if name.endswith(".execute"): return True
+
         if isinstance(node.func, ast.Attribute):
             if node.func.attr in {"read_text", "read_bytes", "write_text", "write_bytes"}:
                 return True
@@ -258,6 +324,12 @@ class TaintTracker:
         canon_name = self.resolve_canonical_name(node.func, scope_id) if scope_id else None
         name = dotted_name(node.func) or "sink"
         lookup_name = canon_name if (canon_name and canon_name in SINK_REGISTRY) else name
+        if lookup_name not in SINK_REGISTRY and canon_name and canon_name.startswith("builtins."):
+            unq = canon_name[9:]
+            if unq in SINK_REGISTRY: lookup_name = unq
+        if lookup_name not in SINK_REGISTRY and name.startswith("builtins."):
+            unq = name[9:]
+            if unq in SINK_REGISTRY: lookup_name = unq
         meta = SINK_REGISTRY.get(lookup_name, {})
         if not meta and (name.endswith(".execute") or (canon_name and canon_name.endswith(".execute"))):
             meta = {"operation": "SQL_EXECUTION", "category": "SQL_INJECTION", "cwe": "CWE-89"}
@@ -515,11 +587,12 @@ class TaintTracker:
         mod_name = scope_id.split(":")[0]
         file_path = self.file_paths.get(mod_name, "unknown.py")
         for subnode in ast.walk(expr):
-            if isinstance(subnode, ast.Call) and self.is_sink_call(subnode, scope_id):
+            call_lineno = getattr(subnode, "lineno", lineno)
+            if isinstance(subnode, ast.Call) and self.is_sink_call(subnode, scope_id, call_lineno):
                 canon_name = self.resolve_canonical_name(subnode.func, scope_id) or dotted_name(subnode.func) or ""
                 if not self.check_sink_safety(subnode, canon_name):
                     sink_node = self.get_or_create_sink(subnode, file_path, scope_id)
-                    self.sink_records.append(SinkRecord(node=subnode, security_node=sink_node, lineno=getattr(subnode, "lineno", lineno), scope_id=scope_id))
+                    self.sink_records.append(SinkRecord(node=subnode, security_node=sink_node, lineno=call_lineno, scope_id=scope_id))
 
     def _is_string_expr(self, expr_node: ast.AST, scope_id: str) -> bool:
         if isinstance(expr_node, ast.Constant) and isinstance(expr_node.value, str):
@@ -791,6 +864,27 @@ class TaintTracker:
                         return TaintValue(state=TaintState.CLEAN, confidence=1.0, last_operation="os.path.normpath")
                 return TaintValue(state=TaintState.CLEAN, confidence=1.0, last_operation="os.path.normpath")
 
+            # Builtin compile(...) transformation
+            if function_name in ("compile", "builtins.compile"):
+                source_expr = None
+                if node.args:
+                    source_expr = node.args[0]
+                else:
+                    for kw in getattr(node, "keywords", []):
+                        if kw.arg == "source":
+                            source_expr = kw.value
+                            break
+
+                if source_expr is not None:
+                    arg_taint = self.resolve_expression(source_expr, sink, scope_id, current_lineno, visited.copy(), call_context)
+                    if arg_taint.state == TaintState.TAINTED:
+                        return TaintValue(state=TaintState.TAINTED, source_id=arg_taint.source_id, confidence=arg_taint.confidence, path=[*arg_taint.path, f"{file_name}:compile()"], last_operation="compile")
+                    elif arg_taint.state == TaintState.UNKNOWN:
+                        return TaintValue(state=TaintState.UNKNOWN, source_id=arg_taint.source_id, confidence=0.50, path=[*arg_taint.path, f"{file_name}:compile()"], last_operation="compile")
+                    else:
+                        return TaintValue(state=TaintState.CLEAN, confidence=1.0, last_operation="compile")
+                return TaintValue(state=TaintState.CLEAN, confidence=1.0, last_operation="compile")
+
             func_scope = self._resolve_function_scope(function_name, scope_id)
             if func_scope:
                 call_sig = f"call:{func_scope}:{current_lineno}"
@@ -903,7 +997,7 @@ class TaintTracker:
         for record in self.sink_records:
             sink = record.security_node
             target_expr = None
-            if isinstance(record.node.func, ast.Attribute) and record.node.func.attr in {"read_text", "read_bytes", "write_text", "write_bytes", "open"}:
+            if isinstance(record.node.func, ast.Attribute) and (record.node.func.attr in {"read_text", "read_bytes", "write_text", "write_bytes"} or (record.node.func.attr == "open" and self._is_path_expr(record.node.func.value, record.scope_id))):
                 target_expr = record.node.func.value
             elif record.node.args:
                 target_expr = record.node.args[0]
