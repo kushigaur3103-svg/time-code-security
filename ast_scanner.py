@@ -91,6 +91,7 @@ SINK_REGISTRY = {
     "pickle.load": {"operation": "DESERIALIZATION", "category": "UNSAFE_DESERIALIZATION", "cwe": "CWE-502"},
     "open": {"operation": "FILE_ACCESS", "category": "PATH_TRAVERSAL", "cwe": "CWE-22"},
     "render_template_string": {"operation": "TEMPLATE_EVALUATION", "category": "SSTI", "cwe": "CWE-1336"},
+    "flask.render_template_string": {"operation": "TEMPLATE_EVALUATION", "category": "SSTI", "cwe": "CWE-1336"},
 }
 
 def location(node: ast.AST, file_path: str) -> CodeLocation:
@@ -284,26 +285,28 @@ class TaintTracker:
         if canon:
             if canon.startswith("shadowed:"):
                 return False
-            unqualified = canon[9:] if canon.startswith("builtins.") else canon
-            if unqualified in SINK_REGISTRY:
+            unqualified = canon[6:] if canon.startswith("flask.") else (canon[9:] if canon.startswith("builtins.") else canon)
+            if unqualified in SINK_REGISTRY or canon in SINK_REGISTRY:
                 name = dotted_name(node.func)
-                if name and not name.startswith("builtins.") and scope_id and self._is_builtin_shadowed(name, scope_id, call_lineno):
+                if name and not name.startswith("builtins.") and not name.startswith("flask.") and scope_id and self._is_builtin_shadowed(name, scope_id, call_lineno):
                     return False
                 return True
             if canon.endswith(".execute"): return True
 
         name = dotted_name(node.func)
         if name:
-            if scope_id and not name.startswith("builtins.") and self._is_builtin_shadowed(name, scope_id, call_lineno):
+            if scope_id and not name.startswith("builtins.") and not name.startswith("flask.") and self._is_builtin_shadowed(name, scope_id, call_lineno):
                 return False
-            unqualified = name[9:] if name.startswith("builtins.") else name
-            if unqualified in SINK_REGISTRY: return True
+            unqualified = name[6:] if name.startswith("flask.") else (name[9:] if name.startswith("builtins.") else name)
+            if unqualified in SINK_REGISTRY or name in SINK_REGISTRY: return True
             if name.endswith(".execute"): return True
 
         if isinstance(node.func, ast.Attribute):
             if node.func.attr in {"read_text", "read_bytes", "write_text", "write_bytes"}:
                 return True
             if node.func.attr == "open" and self._is_path_expr(node.func.value, scope_id):
+                return True
+            if node.func.attr == "render":
                 return True
         return False
 
@@ -330,12 +333,20 @@ class TaintTracker:
         if lookup_name not in SINK_REGISTRY and name.startswith("builtins."):
             unq = name[9:]
             if unq in SINK_REGISTRY: lookup_name = unq
+        if lookup_name not in SINK_REGISTRY and canon_name and canon_name.startswith("flask."):
+            unq = canon_name[6:]
+            if unq in SINK_REGISTRY: lookup_name = unq
+        if lookup_name not in SINK_REGISTRY and name.startswith("flask."):
+            unq = name[6:]
+            if unq in SINK_REGISTRY: lookup_name = unq
         meta = SINK_REGISTRY.get(lookup_name, {})
         if not meta and (name.endswith(".execute") or (canon_name and canon_name.endswith(".execute"))):
             meta = {"operation": "SQL_EXECUTION", "category": "SQL_INJECTION", "cwe": "CWE-89"}
         if not meta and isinstance(node.func, ast.Attribute):
             if node.func.attr in {"read_text", "read_bytes", "write_text", "write_bytes"} or (node.func.attr == "open" and self._is_path_expr(node.func.value, scope_id)):
                 meta = {"operation": "FILE_ACCESS", "category": "PATH_TRAVERSAL", "cwe": "CWE-22"}
+            elif node.func.attr == "render":
+                meta = {"operation": "TEMPLATE_EVALUATION", "category": "SSTI", "cwe": "CWE-1336"}
         sink = SecurityNode(
             id=sink_id, node_type=NodeType.SINK, symbol=canon_name or name,
             operation=meta.get("operation", "UNKNOWN_OPERATION"), location=loc,
@@ -642,6 +653,95 @@ class TaintTracker:
                 else: break
         return False
 
+    def _is_jinja_imported(self, mod_name: str) -> bool:
+        if not mod_name or mod_name not in self.imports:
+            return False
+        return any(v == "jinja2" or v.startswith("jinja2.") for v in self.imports[mod_name].values())
+
+    def _is_jinja_env_expr(self, expr_node: ast.AST, scope_id: str, visited: Optional[set[str]] = None) -> bool:
+        if visited is None: visited = set()
+        mod_name = scope_id.split(":")[0] if scope_id else ""
+
+        if isinstance(expr_node, ast.Call):
+            fname = self.resolve_canonical_name(expr_node.func, scope_id) or dotted_name(expr_node.func) or ""
+            if fname == "jinja2.Environment":
+                return True
+            if fname == "Environment" and (self._is_jinja_imported(mod_name) or not self.imports.get(mod_name)):
+                if not self._resolve_function_scope("Environment", scope_id):
+                    return True
+
+            func_scope = self._resolve_function_scope(fname, scope_id)
+            if func_scope and func_scope not in visited:
+                visited.add(func_scope)
+                returns = self.returns_by_scope.get(func_scope, [])
+                for r in returns:
+                    if r.value and self._is_jinja_env_expr(r.value, func_scope, visited.copy()):
+                        return True
+
+        if isinstance(expr_node, ast.Name):
+            var_key = f"{scope_id}:{expr_node.id}"
+            if var_key in visited: return False
+            visited.add(var_key)
+            curr = scope_id
+            while curr:
+                recs = self.assignments_by_scope.get((curr, expr_node.id), [])
+                if recs:
+                    latest = recs[-1]
+                    return self._is_jinja_env_expr(latest.value_node, curr, visited.copy())
+                if "." in curr and "function" in curr: curr = curr.rsplit(".", 1)[0]
+                elif ":function" in curr: curr = f"{mod_name}:global"
+                elif curr != f"{mod_name}:global": curr = f"{mod_name}:global"
+                else: break
+
+        return False
+
+    def _is_jinja_template_expr(self, expr_node: ast.AST, scope_id: str, visited: Optional[set[str]] = None) -> bool:
+        if visited is None: visited = set()
+        mod_name = scope_id.split(":")[0] if scope_id else ""
+
+        if isinstance(expr_node, ast.Call):
+            fname = self.resolve_canonical_name(expr_node.func, scope_id) or dotted_name(expr_node.func) or ""
+            # 1. Direct instantiation: Call to Template() or jinja2.Template() (matching resolved import)
+            if fname == "jinja2.Template":
+                return True
+            if fname == "Template" and (self._is_jinja_imported(mod_name) or not self.imports.get(mod_name)):
+                if not self._resolve_function_scope("Template", scope_id):
+                    return True
+
+            # 2. Direct constructor calls: Environment().from_string()
+            if isinstance(expr_node.func, ast.Attribute) and expr_node.func.attr == "from_string":
+                if self._is_jinja_env_expr(expr_node.func.value, scope_id):
+                    return True
+            if fname in ("jinja2.Environment.from_string", "Environment.from_string"):
+                return True
+
+            # 3. Interprocedural return: Resolving the called function's AST return statement
+            func_scope = self._resolve_function_scope(fname, scope_id)
+            if func_scope and func_scope not in visited:
+                visited.add(func_scope)
+                returns = self.returns_by_scope.get(func_scope, [])
+                for r in returns:
+                    if r.value and self._is_jinja_template_expr(r.value, func_scope, visited.copy()):
+                        return True
+
+        # 4. Local variable assignments pointing back to 1, 2, or 3
+        if isinstance(expr_node, ast.Name):
+            var_key = f"{scope_id}:{expr_node.id}"
+            if var_key in visited: return False
+            visited.add(var_key)
+            curr = scope_id
+            while curr:
+                recs = self.assignments_by_scope.get((curr, expr_node.id), [])
+                if recs:
+                    latest = recs[-1]
+                    return self._is_jinja_template_expr(latest.value_node, curr, visited.copy())
+                if "." in curr and "function" in curr: curr = curr.rsplit(".", 1)[0]
+                elif ":function" in curr: curr = f"{mod_name}:global"
+                elif curr != f"{mod_name}:global": curr = f"{mod_name}:global"
+                else: break
+
+        return False
+
     def resolve_expression(self, node: ast.AST, sink: SecurityNode, scope_id: str, current_lineno: int, visited: Optional[set[str]] = None, call_context: Optional[dict[str, TaintValue]] = None) -> TaintValue:
         if visited is None: visited = set()
         if call_context is None: call_context = {}
@@ -885,6 +985,48 @@ class TaintTracker:
                         return TaintValue(state=TaintState.CLEAN, confidence=1.0, last_operation="compile")
                 return TaintValue(state=TaintState.CLEAN, confidence=1.0, last_operation="compile")
 
+            # Jinja2 Template(...) constructor
+            if function_name == "jinja2.Template" or (function_name == "Template" and (self._is_jinja_imported(mod_name) or not self.imports.get(mod_name)) and not self._resolve_function_scope("Template", scope_id)):
+                source_expr = None
+                if node.args:
+                    source_expr = node.args[0]
+                else:
+                    for kw in getattr(node, "keywords", []):
+                        if kw.arg in ("source", "template"):
+                            source_expr = kw.value
+                            break
+
+                if source_expr is not None:
+                    arg_taint = self.resolve_expression(source_expr, sink, scope_id, current_lineno, visited.copy(), call_context)
+                    if arg_taint.state == TaintState.TAINTED:
+                        return TaintValue(state=TaintState.TAINTED, source_id=arg_taint.source_id, confidence=arg_taint.confidence, path=[*arg_taint.path, f"{file_name}:Template()"], last_operation="template_construct")
+                    elif arg_taint.state == TaintState.UNKNOWN:
+                        return TaintValue(state=TaintState.UNKNOWN, source_id=arg_taint.source_id, confidence=0.50, path=[*arg_taint.path, f"{file_name}:Template()"], last_operation="template_construct")
+                    else:
+                        return TaintValue(state=TaintState.CLEAN, confidence=1.0, last_operation="template_construct")
+                return TaintValue(state=TaintState.CLEAN, confidence=1.0, last_operation="template_construct")
+
+            # Jinja2 Environment.from_string(...)
+            if (isinstance(node.func, ast.Attribute) and node.func.attr == "from_string" and self._is_jinja_env_expr(node.func.value, scope_id)) or function_name in ("Environment.from_string", "jinja2.Environment.from_string"):
+                source_expr = None
+                if node.args:
+                    source_expr = node.args[0]
+                else:
+                    for kw in getattr(node, "keywords", []):
+                        if kw.arg in ("source", "template", "s"):
+                            source_expr = kw.value
+                            break
+
+                if source_expr is not None:
+                    arg_taint = self.resolve_expression(source_expr, sink, scope_id, current_lineno, visited.copy(), call_context)
+                    if arg_taint.state == TaintState.TAINTED:
+                        return TaintValue(state=TaintState.TAINTED, source_id=arg_taint.source_id, confidence=arg_taint.confidence, path=[*arg_taint.path, f"{file_name}:from_string()"], last_operation="template_from_string")
+                    elif arg_taint.state == TaintState.UNKNOWN:
+                        return TaintValue(state=TaintState.UNKNOWN, source_id=arg_taint.source_id, confidence=0.50, path=[*arg_taint.path, f"{file_name}:from_string()"], last_operation="template_from_string")
+                    else:
+                        return TaintValue(state=TaintState.CLEAN, confidence=1.0, last_operation="template_from_string")
+                return TaintValue(state=TaintState.CLEAN, confidence=1.0, last_operation="template_from_string")
+
             func_scope = self._resolve_function_scope(function_name, scope_id)
             if func_scope:
                 call_sig = f"call:{func_scope}:{current_lineno}"
@@ -999,8 +1141,20 @@ class TaintTracker:
             target_expr = None
             if isinstance(record.node.func, ast.Attribute) and (record.node.func.attr in {"read_text", "read_bytes", "write_text", "write_bytes"} or (record.node.func.attr == "open" and self._is_path_expr(record.node.func.value, record.scope_id))):
                 target_expr = record.node.func.value
+            elif isinstance(record.node.func, ast.Attribute) and record.node.func.attr == "render":
+                if self._is_jinja_template_expr(record.node.func.value, record.scope_id):
+                    target_expr = record.node.func.value
+                else:
+                    if sink in self.sinks:
+                        self.sinks.remove(sink)
+                    continue
             elif record.node.args:
                 target_expr = record.node.args[0]
+            elif getattr(record.node, "keywords", []):
+                for kw in record.node.keywords:
+                    if kw.arg in ("source", "template", "s"):
+                        target_expr = kw.value
+                        break
             else:
                 continue
 
