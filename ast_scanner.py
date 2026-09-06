@@ -89,7 +89,6 @@ SINK_REGISTRY = {
     "pickle.loads": {"operation": "DESERIALIZATION", "category": "UNSAFE_DESERIALIZATION", "cwe": "CWE-502"},
     "pickle.load": {"operation": "DESERIALIZATION", "category": "UNSAFE_DESERIALIZATION", "cwe": "CWE-502"},
     "open": {"operation": "FILE_ACCESS", "category": "PATH_TRAVERSAL", "cwe": "CWE-22"},
-    "pathlib.Path": {"operation": "FILE_ACCESS", "category": "PATH_TRAVERSAL", "cwe": "CWE-22"},
     "render_template_string": {"operation": "TEMPLATE_EVALUATION", "category": "SSTI", "cwe": "CWE-1336"},
 }
 
@@ -133,6 +132,7 @@ class TaintTracker:
         self.returns_by_scope: dict[str, list[ast.Return]] = {}
         self.raw_calls: list[tuple[ast.Call, str, int]] = []
         self.call_sites_by_target: dict[str, list[tuple[ast.Call, str, int]]] = {}
+        self.containment_guards: list[dict] = []
         self._source_counter = 0
         self._sink_counter = 0
 
@@ -234,6 +234,11 @@ class TaintTracker:
         name = dotted_name(node.func)
         if name and name in SINK_REGISTRY: return True
         if name and name.endswith(".execute"): return True
+        if isinstance(node.func, ast.Attribute):
+            if node.func.attr in {"read_text", "read_bytes", "write_text", "write_bytes"}:
+                return True
+            if node.func.attr == "open" and self._is_path_expr(node.func.value, scope_id):
+                return True
         return False
 
     def check_sink_safety(self, node: ast.Call, sink_name: str) -> bool:
@@ -256,6 +261,9 @@ class TaintTracker:
         meta = SINK_REGISTRY.get(lookup_name, {})
         if not meta and (name.endswith(".execute") or (canon_name and canon_name.endswith(".execute"))):
             meta = {"operation": "SQL_EXECUTION", "category": "SQL_INJECTION", "cwe": "CWE-89"}
+        if not meta and isinstance(node.func, ast.Attribute):
+            if node.func.attr in {"read_text", "read_bytes", "write_text", "write_bytes"} or (node.func.attr == "open" and self._is_path_expr(node.func.value, scope_id)):
+                meta = {"operation": "FILE_ACCESS", "category": "PATH_TRAVERSAL", "cwe": "CWE-22"}
         sink = SecurityNode(
             id=sink_id, node_type=NodeType.SINK, symbol=canon_name or name,
             operation=meta.get("operation", "UNKNOWN_OPERATION"), location=loc,
@@ -269,6 +277,76 @@ class TaintTracker:
         if not rule: return False
         return (sink.metadata.get("cwe") in rule.get("protected_cwes", set()) or 
                 sink.metadata.get("sink_type") in rule.get("protected_sinks", set()))
+
+    def _extract_target_from_parents_attr(self, node: ast.AST) -> Optional[str]:
+        if isinstance(node, ast.Attribute) and node.attr == "parents":
+            val = node.value
+            if isinstance(val, ast.Call) and isinstance(val.func, ast.Attribute) and val.func.attr == "resolve":
+                return dotted_name(val.func.value)
+            return dotted_name(val)
+        return None
+
+    def _extract_target_from_relative_to(self, node: ast.AST) -> Optional[str]:
+        if isinstance(node, ast.Call) and isinstance(node.func, ast.Attribute) and node.func.attr == "is_relative_to":
+            val = node.func.value
+            if isinstance(val, ast.Call) and isinstance(val.func, ast.Attribute) and val.func.attr == "resolve":
+                return dotted_name(val.func.value)
+            return dotted_name(val)
+        return None
+
+    def _extract_containment_pairs(self, test_node: ast.AST) -> list[tuple[str, ast.AST]]:
+        pairs = []
+        if isinstance(test_node, ast.Compare):
+            for op, comp in zip(test_node.ops, test_node.comparators):
+                if isinstance(op, ast.In):
+                    target_name = self._extract_target_from_parents_attr(comp)
+                    if target_name:
+                        pairs.append((target_name, test_node.left))
+        elif isinstance(test_node, ast.Call):
+            if isinstance(test_node.func, ast.Attribute) and test_node.func.attr == "is_relative_to":
+                target_name = self._extract_target_from_relative_to(test_node)
+                base_arg = test_node.args[0] if test_node.args else None
+                if target_name and base_arg:
+                    pairs.append((target_name, base_arg))
+        elif isinstance(test_node, ast.BoolOp) and isinstance(test_node.op, ast.And):
+            for val in test_node.values:
+                pairs.extend(self._extract_containment_pairs(val))
+        return pairs
+
+    def is_var_contained(self, var_name: str, scope_id: str, lineno: int, sink: Optional[SecurityNode] = None, visited: Optional[set[str]] = None) -> bool:
+        if sink is not None:
+            cwe = sink.metadata.get("cwe")
+            stype = sink.metadata.get("sink_type")
+            if cwe != "CWE-22" and stype not in ("PATH_TRAVERSAL", "FILE_ACCESS"):
+                return False
+
+        if visited is not None and f"guard_check:{scope_id}:{var_name}" in visited:
+            return False
+
+        sink_line = sink.location.line_start if (sink and hasattr(sink, "location") and sink.location) else lineno
+
+        for guard in self.containment_guards:
+            if guard["var_name"] == var_name:
+                if guard["scope_id"] == scope_id or scope_id.startswith(guard["scope_id"] + "."):
+                    is_in_body = (guard["start_line"] <= lineno <= guard["end_line"]) or (guard["start_line"] <= sink_line <= guard["end_line"])
+                    if is_in_body:
+                        # Check if var_name was reassigned between check_line and current evaluation line
+                        check_pt = max(lineno, sink_line)
+                        recs = self.assignments_by_scope.get((guard["scope_id"], var_name), [])
+                        reassigned = any(guard["check_line"] < r.lineno <= check_pt for r in recs)
+                        if reassigned:
+                            continue
+
+                        # Check if base_node is clean (not tainted by user input)
+                        base_node = guard.get("base_node")
+                        if base_node:
+                            base_visited = visited.copy() if visited is not None else set()
+                            base_visited.add(f"guard_check:{guard['scope_id']}:{var_name}")
+                            base_taint = self.resolve_expression(base_node, sink, guard["scope_id"], guard["check_line"], base_visited)
+                            if base_taint.state == TaintState.TAINTED:
+                                continue
+                        return True
+        return False
 
     def _resolve_function_scope(self, call_name: str, current_scope: str) -> str | None:
         mod_name = current_scope.split(":")[0]
@@ -393,6 +471,19 @@ class TaintTracker:
             elif isinstance(stmt, ast.If):
                 self.scan_for_sinks(stmt.test, scope_id, stmt.lineno)
                 self._collect_calls_in_expr(stmt.test, scope_id, stmt.lineno)
+                pairs = self._extract_containment_pairs(stmt.test)
+                if pairs and stmt.body:
+                    body_start = stmt.body[0].lineno
+                    body_end = max(getattr(s, "end_lineno", s.lineno) for s in stmt.body)
+                    for target_name, base_node in pairs:
+                        self.containment_guards.append({
+                            "var_name": target_name,
+                            "base_node": base_node,
+                            "scope_id": scope_id,
+                            "check_line": stmt.lineno,
+                            "start_line": body_start,
+                            "end_line": body_end,
+                        })
                 self.collect_statements(stmt.body, scope_id=scope_id, is_conditional=True)
                 self.collect_statements(stmt.orelse, scope_id=scope_id, is_conditional=True)
             elif isinstance(stmt, (ast.For, ast.While)):
@@ -453,6 +544,31 @@ class TaintTracker:
                 else: break
         return False
 
+    def _is_path_expr(self, expr_node: ast.AST, scope_id: str) -> bool:
+        if isinstance(expr_node, ast.Call):
+            fname = self.resolve_canonical_name(expr_node.func, scope_id) or dotted_name(expr_node.func) or ""
+            if fname in ("Path", "pathlib.Path"):
+                return True
+            if isinstance(expr_node.func, ast.Attribute) and expr_node.func.attr == "resolve":
+                return self._is_path_expr(expr_node.func.value, scope_id)
+        if isinstance(expr_node, ast.BinOp) and isinstance(expr_node.op, ast.Div):
+            return self._is_path_expr(expr_node.left, scope_id) or self._is_path_expr(expr_node.right, scope_id)
+        if isinstance(expr_node, ast.Name):
+            curr = scope_id
+            mod_name = scope_id.split(":")[0]
+            while curr:
+                recs = self.assignments_by_scope.get((curr, expr_node.id), [])
+                if recs:
+                    latest = recs[-1]
+                    if self._is_path_expr(latest.value_node, curr):
+                        return True
+                    break
+                if "." in curr and "function" in curr: curr = curr.rsplit(".", 1)[0]
+                elif ":function" in curr: curr = f"{mod_name}:global"
+                elif curr != f"{mod_name}:global": curr = f"{mod_name}:global"
+                else: break
+        return False
+
     def resolve_expression(self, node: ast.AST, sink: SecurityNode, scope_id: str, current_lineno: int, visited: Optional[set[str]] = None, call_context: Optional[dict[str, TaintValue]] = None) -> TaintValue:
         if visited is None: visited = set()
         if call_context is None: call_context = {}
@@ -484,7 +600,15 @@ class TaintTracker:
             source = self.get_or_create_source(node, file_name, scope_id)
             return TaintValue(state=TaintState.TAINTED, source_id=source.id, confidence=1.0, path=[source.id], last_operation=dotted_name(node.func) or "source")
 
+        if isinstance(node, ast.Attribute):
+            attr_name = dotted_name(node)
+            if attr_name and self.is_var_contained(attr_name, scope_id, current_lineno, sink, visited):
+                return TaintValue(state=TaintState.CLEAN, confidence=1.0, path=[f"{file_name}:{attr_name}", "path_containment_proven"], last_operation="path_containment_proven")
+
         if isinstance(node, ast.Name):
+            if self.is_var_contained(node.id, scope_id, current_lineno, sink, visited):
+                return TaintValue(state=TaintState.CLEAN, confidence=1.0, path=[f"{file_name}:{node.id}", "path_containment_proven"], last_operation="path_containment_proven")
+
             var_key = f"{scope_id}:{node.id}"
             if var_key in visited: return TaintValue(state=TaintState.UNKNOWN, confidence=0.50, path=[f"{file_name}:{node.id}"], last_operation="circular_reference")
             visited.add(var_key)
@@ -616,6 +740,57 @@ class TaintTracker:
                     return TaintValue(state=TaintState.UNKNOWN, source_id=first_u.source_id, confidence=0.50, path=[*first_u.path, f"{file_name}:format()"], last_operation="format")
                 return TaintValue(state=TaintState.CLEAN, confidence=1.0, last_operation="format")
 
+            # Path constructor (Path or pathlib.Path)
+            if function_name in ("Path", "pathlib.Path"):
+                if node.args:
+                    arg_taint = self.resolve_expression(node.args[0], sink, scope_id, current_lineno, visited.copy(), call_context)
+                    if arg_taint.state == TaintState.TAINTED:
+                        return TaintValue(state=TaintState.TAINTED, source_id=arg_taint.source_id, confidence=arg_taint.confidence, path=[*arg_taint.path, f"{file_name}:Path()"], last_operation="path_construct")
+                    elif arg_taint.state == TaintState.UNKNOWN:
+                        return TaintValue(state=TaintState.UNKNOWN, source_id=arg_taint.source_id, confidence=0.50, path=[*arg_taint.path, f"{file_name}:Path()"], last_operation="path_construct")
+                    else:
+                        return TaintValue(state=TaintState.CLEAN, confidence=1.0, last_operation="path_construct")
+                return TaintValue(state=TaintState.CLEAN, confidence=1.0, last_operation="path_construct")
+
+            # Path.resolve() call
+            if isinstance(node.func, ast.Attribute) and node.func.attr == "resolve":
+                recv_taint = self.resolve_expression(node.func.value, sink, scope_id, current_lineno, visited.copy(), call_context)
+                if recv_taint.state == TaintState.TAINTED:
+                    return TaintValue(state=TaintState.TAINTED, source_id=recv_taint.source_id, confidence=recv_taint.confidence, path=[*recv_taint.path, f"{file_name}:resolve()"], last_operation="path_resolve")
+                elif recv_taint.state == TaintState.UNKNOWN:
+                    return TaintValue(state=TaintState.UNKNOWN, source_id=recv_taint.source_id, confidence=0.50, path=[*recv_taint.path, f"{file_name}:resolve()"], last_operation="path_resolve")
+                else:
+                    return TaintValue(state=TaintState.CLEAN, confidence=1.0, last_operation="path_resolve")
+
+            # os.path.join
+            if function_name in ("os.path.join", "posixpath.join", "ntpath.join"):
+                arg_taints = [self.resolve_expression(arg, sink, scope_id, current_lineno, visited.copy(), call_context) for arg in node.args]
+                tainted_args = [a for a in arg_taints if a.state == TaintState.TAINTED]
+                if tainted_args:
+                    best_arg = max(tainted_args, key=lambda a: a.confidence)
+                    combined_path = []
+                    for a in arg_taints:
+                        if a.path: combined_path.extend(a.path)
+                    combined_path.append(f"{file_name}:os.path.join()")
+                    return TaintValue(state=TaintState.TAINTED, source_id=best_arg.source_id, confidence=best_arg.confidence, path=combined_path, last_operation="os.path.join")
+                unknown_args = [a for a in arg_taints if a.state != TaintState.CLEAN]
+                if unknown_args:
+                    first_u = unknown_args[0]
+                    return TaintValue(state=TaintState.UNKNOWN, source_id=first_u.source_id, confidence=0.50, path=[*first_u.path, f"{file_name}:os.path.join()"], last_operation="os.path.join")
+                return TaintValue(state=TaintState.CLEAN, confidence=1.0, last_operation="os.path.join")
+
+            # os.path.normpath (does not sanitize directory traversal)
+            if function_name in ("os.path.normpath", "posixpath.normpath", "ntpath.normpath"):
+                if node.args:
+                    arg_taint = self.resolve_expression(node.args[0], sink, scope_id, current_lineno, visited.copy(), call_context)
+                    if arg_taint.state == TaintState.TAINTED:
+                        return TaintValue(state=TaintState.TAINTED, source_id=arg_taint.source_id, confidence=arg_taint.confidence, path=[*arg_taint.path, f"{file_name}:os.path.normpath()"], last_operation="os.path.normpath")
+                    elif arg_taint.state == TaintState.UNKNOWN:
+                        return TaintValue(state=TaintState.UNKNOWN, source_id=arg_taint.source_id, confidence=0.50, path=[*arg_taint.path, f"{file_name}:os.path.normpath()"], last_operation="os.path.normpath")
+                    else:
+                        return TaintValue(state=TaintState.CLEAN, confidence=1.0, last_operation="os.path.normpath")
+                return TaintValue(state=TaintState.CLEAN, confidence=1.0, last_operation="os.path.normpath")
+
             func_scope = self._resolve_function_scope(function_name, scope_id)
             if func_scope:
                 call_sig = f"call:{func_scope}:{current_lineno}"
@@ -677,18 +852,21 @@ class TaintTracker:
 
             is_str_add = isinstance(node.op, ast.Add) and (self._is_string_expr(node.left, scope_id) or self._is_string_expr(node.right, scope_id))
             is_str_mod = isinstance(node.op, ast.Mod) and self._is_string_expr(node.left, scope_id)
+            is_path_div = isinstance(node.op, ast.Div) and (self._is_path_expr(node.left, scope_id) or self._is_path_expr(node.right, scope_id))
 
-            if is_str_add or is_str_mod:
+            if is_str_add or is_str_mod or is_path_div:
                 if left.state == TaintState.TAINTED or right.state == TaintState.TAINTED:
                     best_t = left if left.state == TaintState.TAINTED else right
                     if left.state == TaintState.TAINTED and right.state == TaintState.TAINTED:
                         best_t = left if left.confidence >= right.confidence else right
-                    combined_path = [*left.path, *right.path, "binary_op"]
-                    return TaintValue(state=TaintState.TAINTED, source_id=best_t.source_id, confidence=best_t.confidence, path=combined_path, last_operation="binary_op")
+                    op_label = "path_join" if is_path_div else "binary_op"
+                    combined_path = [*left.path, *right.path, op_label]
+                    return TaintValue(state=TaintState.TAINTED, source_id=best_t.source_id, confidence=best_t.confidence, path=combined_path, last_operation=op_label)
                 else:
                     src_id = left.source_id or right.source_id
-                    combined_path = [*left.path, *right.path, "binary_op"]
-                    return TaintValue(state=TaintState.UNKNOWN, source_id=src_id, confidence=0.50, path=combined_path, last_operation="binary_op")
+                    op_label = "path_join" if is_path_div else "binary_op"
+                    combined_path = [*left.path, *right.path, op_label]
+                    return TaintValue(state=TaintState.UNKNOWN, source_id=src_id, confidence=0.50, path=combined_path, last_operation=op_label)
 
             src_id = left.source_id or right.source_id
             return TaintValue(state=TaintState.TAINTED if (left.state == TaintState.TAINTED and right.state == TaintState.TAINTED) else TaintState.UNKNOWN, source_id=src_id, confidence=min(left.confidence, right.confidence), path=[*left.path, *right.path, "binary_op"], last_operation="binary_op")
@@ -724,9 +902,15 @@ class TaintTracker:
                     self.get_or_create_source(node, self.file_paths.get(mod_name, "unknown.py"), f"{mod_name}:global")
         for record in self.sink_records:
             sink = record.security_node
-            if not record.node.args: continue
-            
-            taint = self.resolve_expression(record.node.args[0], sink, record.scope_id, record.lineno)
+            target_expr = None
+            if isinstance(record.node.func, ast.Attribute) and record.node.func.attr in {"read_text", "read_bytes", "write_text", "write_bytes", "open"}:
+                target_expr = record.node.func.value
+            elif record.node.args:
+                target_expr = record.node.args[0]
+            else:
+                continue
+
+            taint = self.resolve_expression(target_expr, sink, record.scope_id, record.lineno)
             full_path_str = " -> ".join(taint.path) if taint.path else taint.last_operation
             if taint.state == TaintState.TAINTED:
                 kind = "CONFIRMED_DATA_FLOW" if taint.confidence >= 1.0 else "POTENTIAL_DATA_FLOW"
