@@ -2,3 +2,15 @@ node_modules/
 __pycache__/
 .env
 .DS_Store
+
+# Local scratch scripts and temporary artifacts
+scratch/
+test.py
+
+# Local database files
+*.db
+
+# Dynamic benchmark outputs
+benchmark_manifest.json
+benchmark_results.json
+benchmark_report.txt
