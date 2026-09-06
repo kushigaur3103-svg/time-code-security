@@ -21,7 +21,9 @@ import openai
 import cohere
 import secrets
 import re
-
+import json
+import ast
+from ast_scanner import TaintTracker, SINK_REGISTRY, SOURCE_REGISTRY, SANITIZER_REGISTRY
 
 try:
     from rag_engine.vector_db import CodeContextEngine
@@ -347,7 +349,12 @@ class AuthPayload(BaseModel):
     password: str
 
 class CodePayload(BaseModel):
-    code: str
+    code: Optional[str] = None
+    files: Optional[Dict[str, str]] = None
+
+@app.get("/health")
+async def health_check():
+    return {"status": "ok", "scanner": "available"}
 
 @app.head("/")
 @app.get("/")
@@ -1452,97 +1459,303 @@ def background_scan_task(job_id: str, email: str, redacted_code: str, system_pro
     finally:
         db.close()
 
+def extract_remediation_advice(cwe: str, sink_symbol: str) -> str:
+    remediations = {
+        "CWE-95": "Avoid passing untrusted input to eval(). Use ast.literal_eval() for parsing Python literals, or parse structured data using json.loads().",
+        "CWE-78": "Avoid shell execution with dynamic input. Use subprocess.run() with an argument list and shell=False, e.g., subprocess.run(['cmd', arg], shell=False).",
+        "CWE-89": "Use parameterized SQL queries with bind variables instead of string concatenation/formatting, e.g., cursor.execute('SELECT * FROM tbl WHERE id = ?', (user_id,)).",
+        "CWE-22": "Validate and sanitize file paths using secure_path_join() or verify containment with os.path.abspath / pathlib.Path.resolve() against an allowed base directory.",
+        "CWE-502": "Do not deserialize untrusted data with pickle. Use safe serialization formats such as JSON (json.loads), Protocol Buffers, or messagepack.",
+        "CWE-1336": "Avoid passing user input directly into render_template_string(). Use standard render_template() with parameterized template context variables to enforce auto-escaping."
+    }
+    return remediations.get(cwe, "Sanitize input parameters and enforce strict input validation against an explicit allow-list before passing to dangerous operations.")
+
+def detect_safe_patterns(files: Dict[str, str]) -> List[Dict[str, Any]]:
+    safe_patterns = []
+    for fname, code in files.items():
+        try:
+            tree = ast.parse(code, filename=fname)
+        except Exception:
+            continue
+        for node in ast.walk(tree):
+            if isinstance(node, ast.Call):
+                func_name = ''
+                if isinstance(node.func, ast.Name):
+                    func_name = node.func.id
+                elif isinstance(node.func, ast.Attribute):
+                    val = getattr(node.func.value, 'id', '')
+                    func_name = f"{val}.{node.func.attr}" if val else node.func.attr
+                line_no = getattr(node, 'lineno', 1)
+                
+                # Check against SANITIZER_REGISTRY from ast_scanner
+                if func_name in SANITIZER_REGISTRY:
+                    rule = SANITIZER_REGISTRY[func_name]
+                    cwes = ", ".join(sorted(rule.get("protected_cwes", [])))
+                    safe_patterns.append({
+                        'pattern': f'Scanner-Registered Sanitizer ({func_name})',
+                        'detail': f'Call in {fname}:{line_no} matches TCS engine SANITIZER_REGISTRY ({cwes}).',
+                        'classification': 'Informational Syntax Pattern',
+                        'is_authoritative': False
+                    })
+                # Parameterized SQL (matches check_sink_safety in ast_scanner)
+                elif func_name.endswith('.execute') and (len(node.args) > 1 or getattr(node, 'keywords', [])):
+                    safe_patterns.append({
+                        'pattern': 'Parameterized Database Query Call',
+                        'detail': f'Query execution in {fname}:{line_no} supplies parameter bindings (exempted by TCS sink safety rule).',
+                        'classification': 'Informational Syntax Pattern',
+                        'is_authoritative': False
+                    })
+                # Subprocess shell=False / list args (matches check_sink_safety in ast_scanner)
+                elif func_name in ['subprocess.run', 'subprocess.call', 'subprocess.Popen']:
+                    shell_kw = next((kw.value.value for kw in getattr(node, 'keywords', []) if kw.arg == 'shell' and isinstance(kw.value, ast.Constant)), None)
+                    if shell_kw is False or (shell_kw is None and node.args and isinstance(node.args[0], ast.List)):
+                        safe_patterns.append({
+                            'pattern': 'Argument-List Subprocess Call',
+                            'detail': f'Subprocess invocation in {fname}:{line_no} uses list arguments/shell=False (exempted by TCS sink safety rule).',
+                            'classification': 'Informational Syntax Pattern',
+                            'is_authoritative': False
+                        })
+                # json.loads (non-sink standard library call)
+                elif func_name == 'json.loads':
+                    safe_patterns.append({
+                        'pattern': 'Structured Deserialization (json.loads)',
+                        'detail': f'Parsing in {fname}:{line_no} uses standard json.loads (non-sink in TCS SINK_REGISTRY).',
+                        'classification': 'Informational Syntax Pattern',
+                        'is_authoritative': False
+                    })
+    return safe_patterns
+
+def execute_tcs_ast_scan(normalized_files: Dict[str, str]) -> Dict[str, Any]:
+    syntax_errors = []
+    for fpath, code in normalized_files.items():
+        try:
+            ast.parse(code, filename=fpath)
+        except SyntaxError as se:
+            syntax_errors.append(f"{fpath}:{se.lineno}: {se.msg}")
+            
+    tracker = TaintTracker(files=normalized_files)
+    sources, sinks, edges = tracker.analyze()
+    
+    sinks_by_id = {s.id: s for s in sinks}
+    sources_by_id = {s.id: s for s in sources}
+    
+    findings = []
+    seen_vulns = set()
+    vuln_idx = 1
+    
+    for edge in edges:
+        sink = sinks_by_id.get(edge.target_id)
+        if not sink:
+            continue
+            
+        cwe = sink.metadata.get("cwe", "UNKNOWN_CWE")
+        category = sink.metadata.get("sink_type", "UNKNOWN_VULNERABILITY")
+        confidence_val = float(edge.confidence)
+        confidence_label = "CONFIRMED" if confidence_val >= 1.0 else "POTENTIAL"
+        
+        if cwe in ["CWE-95", "CWE-78", "CWE-502", "CWE-1336"]:
+            severity = "CRITICAL" if confidence_label == "CONFIRMED" else "HIGH"
+        elif cwe in ["CWE-89", "CWE-22"]:
+            severity = "HIGH" if confidence_label == "CONFIRMED" else "MEDIUM"
+        else:
+            severity = "MEDIUM" if confidence_label == "CONFIRMED" else "LOW"
+            
+        source_node = sources_by_id.get(edge.source_id)
+        sink_loc = sink.location
+        source_loc = source_node.location if source_node else None
+        
+        dedup_key = (sink_loc.file, sink_loc.line_start, cwe, confidence_label)
+        if dedup_key in seen_vulns:
+            continue
+        seen_vulns.add(dedup_key)
+        
+        target_file_content = normalized_files.get(sink_loc.file, "")
+        target_lines = target_file_content.splitlines()
+        offending_snippet = ""
+        if 1 <= sink_loc.line_start <= len(target_lines):
+            offending_snippet = target_lines[sink_loc.line_start - 1].strip()
+            
+        transform_raw = edge.transform or ""
+        trace_steps = []
+        if source_node:
+            trace_steps.append(f"Source: {source_node.symbol} ({source_loc.file}:{source_loc.line_start})")
+        else:
+            trace_steps.append("Source: User Input")
+            
+        if transform_raw:
+            parts = [p.strip() for p in transform_raw.split("->")]
+            for p in parts:
+                if p.startswith("SRC-") or p == "binary_op" or not p:
+                    continue
+                clean_p = p.split(":")[-1] if ":" in p else p
+                if clean_p and clean_p not in trace_steps:
+                    trace_steps.append(f"Variable / Flow: {clean_p}")
+                    
+        trace_steps.append(f"Sink: {sink.symbol} ({sink_loc.file}:{sink_loc.line_start})")
+        
+        src_sym = source_node.symbol if source_node else "User Input"
+        src_line = f"L{source_loc.line_start}" if source_loc else "L?"
+        snk_sym = sink.symbol
+        snk_line = f"L{sink_loc.line_start}"
+        
+        flow_summary = f"[{src_sym} ({src_line})] -> [Tainted Dataflow] -> [{snk_sym} ({snk_line})]"
+        remediation = extract_remediation_advice(cwe, sink.symbol)
+        
+        findings.append({
+            "id": f"TCS-VULN-{vuln_idx:03d}",
+            "category": category,
+            "cwe": cwe,
+            "severity": severity,
+            "confidence": confidence_val,
+            "confidence_label": confidence_label,
+            "file": sink_loc.file,
+            "line_number": sink_loc.line_start,
+            "sink_symbol": sink.symbol,
+            "source_symbol": source_node.symbol if source_node else "USER_INPUT",
+            "source_line": source_loc.line_start if source_loc else None,
+            "source_file": source_loc.file if source_loc else None,
+            "code_snippet": offending_snippet,
+            "flow_trace": trace_steps,
+            "flow_trace_summary": flow_summary,
+            "remediation": remediation
+        })
+        vuln_idx += 1
+        
+    safe_patterns = detect_safe_patterns(normalized_files)
+    
+    total_files = len(normalized_files)
+    lines_scanned = sum(len(c.splitlines()) for c in normalized_files.values())
+    total_vulnerabilities = len(findings)
+    critical_count = sum(1 for f in findings if f["severity"] == "CRITICAL")
+    high_count = sum(1 for f in findings if f["severity"] == "HIGH")
+    medium_count = sum(1 for f in findings if f["severity"] == "MEDIUM")
+    low_count = sum(1 for f in findings if f["severity"] == "LOW")
+    
+    security_score = max(0, 100 - (critical_count * 25 + high_count * 15 + medium_count * 5))
+    
+    if total_vulnerabilities == 0:
+        risk_level = "CLEAN"
+        risk_message = "NO VULNERABILITIES DETECTED within current TCS analysis scope (6 supported CWE classes)."
+    elif critical_count > 0:
+        risk_level = "CRITICAL"
+        risk_message = "CRITICAL RISK: Arbitrary code execution or high-impact injection detected."
+    elif high_count > 0:
+        risk_level = "HIGH"
+        risk_message = "HIGH RISK: Injection or data traversal vulnerabilities detected."
+    elif medium_count > 0:
+        risk_level = "MEDIUM"
+        risk_message = "MEDIUM RISK: Potential data-flow flaws detected."
+    else:
+        risk_level = "LOW"
+        risk_message = "LOW RISK: Minor security notices."
+        
+    raw_evidence = {
+        "sources": [
+            {
+                "id": s.id,
+                "symbol": s.symbol,
+                "operation": s.operation,
+                "location": {"file": s.location.file, "line_start": s.location.line_start, "line_end": s.location.line_end},
+                "metadata": s.metadata
+            } for s in sources
+        ],
+        "sinks": [
+            {
+                "id": s.id,
+                "symbol": s.symbol,
+                "operation": s.operation,
+                "location": {"file": s.location.file, "line_start": s.location.line_start, "line_end": s.location.line_end},
+                "metadata": s.metadata
+            } for s in sinks
+        ],
+        "edges": [
+            {
+                "source_id": e.source_id,
+                "target_id": e.target_id,
+                "kind": e.kind,
+                "confidence": e.confidence,
+                "transform": e.transform
+            } for e in edges
+        ]
+    }
+    
+    return {
+        "status": "success",
+        "syntax_errors": syntax_errors,
+        "summary": {
+            "total_files": total_files,
+            "lines_scanned": lines_scanned,
+            "total_vulnerabilities": total_vulnerabilities,
+            "critical_count": critical_count,
+            "high_count": high_count,
+            "medium_count": medium_count,
+            "low_count": low_count,
+            "security_score": security_score,
+            "score_label": "Security Health Score",
+            "risk_level": risk_level,
+            "risk_message": risk_message
+        },
+        "findings": findings,
+        "safe_patterns": safe_patterns,
+        "raw_evidence": raw_evidence
+    }
+
 @app.post("/api/scan")
 @app.post("/scan")
-async def scan_code(payload: CodePayload, background_tasks: BackgroundTasks, authorization: str = Header(None)):
-    email = await get_current_user_email(authorization)
-    valid_code = validate_code_payload(payload.code)
-    
-    db = SessionLocal()
+async def scan_code(request: Request, authorization: str = Header(None)):
     try:
-        user = db.query(User).filter(User.email == email).first()
-        if not user:
-            raise HTTPException(status_code=404, detail="User not found")
+        body_bytes = await request.body()
+    except Exception:
+        raise HTTPException(status_code=400, detail="Unable to read request body.")
         
-        is_premium = user.plan_tier in ["developer", "enterprise"] or user.is_premium
-
-        # Check hardware-safe tier-aware rate limit (5/min Free, 30/min Pro)
-        check_rate_limit(user.email, is_premium, "scan")
-            
-        if user.scan_cycle_start:
-            try:
-                if (datetime.utcnow() - user.scan_cycle_start).days >= 30:
-                    user.scans_used = 0
-                    user.scan_cycle_start = datetime.utcnow()
-                    db.commit()
-            except TypeError:
-                pass
-        else:
-            user.scan_cycle_start = datetime.utcnow()
-            db.commit()
-            
-        scan_count = user.scan_count
+    if len(body_bytes) > 1_048_576:
+        raise HTTPException(
+            status_code=413,
+            detail=f"Payload exceeds maximum limit of 1MB ({len(body_bytes):,} bytes received)."
+        )
         
-        system_prompt = ENTERPRISE_DEVSECOPS_SYSTEM_PROMPT
-
-        if not is_premium:
-            if user.scans_used >= 3:
-                dynamic_summary = get_cached_or_generate_ai(valid_code, system_prompt, is_fix=False, db=db)
-                return {
-                    "is_blurred_paywall": True,
-                    "report": dynamic_summary
-                }
-            else:
-                user.scans_used += 1
-                db.commit()
-
-        # ====== GOD-MODE RAG CONTEXT INJECTION ======
-        if rag_engine_instance:
-            try:
-                context_files = rag_engine_instance.retrieve_context("default_repo", valid_code, top_k=2)
-                if context_files:
-                    context_str = "\n".join([f"--- File: {f['filename']} ---\n{f['content']}" for f in context_files])
-                    system_prompt += (
-                        f"\n\n[ARCHITECTURAL CONTEXT PROVIDED BY RAG ENGINE]\n"
-                        f"Consider the following related files from the codebase to detect cross-file vulnerabilities:\n{context_str}"
-                    )
-            except Exception as e:
-                print(f"[RAG WARNING] {e}")
+    try:
+        data = json.loads(body_bytes.decode("utf-8")) if body_bytes else {}
+    except Exception:
+        raise HTTPException(status_code=400, detail="Invalid JSON payload.")
+        
+    code = data.get("code")
+    files = data.get("files")
     
+    if not code and not files:
+        raise HTTPException(status_code=400, detail="Target source code cannot be empty.")
+        
+    if files and isinstance(files, dict):
+        normalized_files = {str(k): str(v) for k, v in files.items()}
+    elif code and isinstance(code, str):
+        normalized_files = {"app.py": code}
+    else:
+        raise HTTPException(status_code=400, detail="Invalid code or files format.")
+        
+    if len(normalized_files) > 20:
+        raise HTTPException(status_code=400, detail="Maximum 20 files allowed per scan request.")
+        
+    total_lines = sum(len(content.splitlines()) for content in normalized_files.values())
+    if total_lines > 2000:
+        raise HTTPException(
+            status_code=400, 
+            detail=f"Maximum 2000 total lines allowed per scan request (received {total_lines:,} lines)."
+        )
+        
+    if authorization:
         try:
-            redacted_code, secrets_found = apply_zero_leak_redaction(valid_code)
-            if secrets_found:
-                system_prompt += (
-                    "\n\n[CONFIRMED HARDCODED SECRET DETECTED]\n"
-                    "The pre-upload security filter detected one or more hardcoded secrets/credentials (CWE-798) and sanitized them to '***REDACTED_BY_TIMECODESECURITY***'. "
-                    "Audit this credential exposure in Pass 2, detail it in '**1. Static & AST Assessment**', and provide the secure runtime environment variable fix in '**4. Recommended Remediation & Hardened Code**'."
-                )
-
-            job_id = str(uuid.uuid4())
-            code_hash = hashlib.sha256(f"{redacted_code}_{system_prompt}".encode('utf-8')).hexdigest()
+            email = await get_current_user_email(authorization)
+            db = SessionLocal()
+            user = db.query(User).filter(User.email == email).first()
+            if user:
+                user.scan_count = (user.scan_count or 0) + 1
+                db.commit()
+            db.close()
+        except Exception:
+            pass
             
-            new_job = ScanCache(job_id=job_id, code_hash=code_hash, status="pending", is_fix=False, report_text="AI Scan in progress...", user_id=user.id)
-            db.add(new_job)
-            
-            user.scan_count += 1
-            db.commit()
-            
-            background_tasks.add_task(
-                background_scan_task,
-                job_id,
-                email,
-                redacted_code,
-                system_prompt,
-                secrets_found
-            )
-            
-            return {"job_id": job_id, "status": "pending"}
-        except HTTPException as he:
-            raise he
-        except Exception as e:
-            return {"error": f"API Error: {str(e)}"}
-    finally:
-        db.close()
+    results = execute_tcs_ast_scan(normalized_files)
+    return results
 
 @app.get("/api/scan/status/{job_id}")
 async def get_scan_status(job_id: str, authorization: str = Header(None)):

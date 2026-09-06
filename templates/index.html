@@ -1933,13 +1933,14 @@ jobs:
     }
 
     // ==========================================
-    // Feature 2: The Terminal Illusion
+    // Feature 2: Realistic Static Analysis Progress
     // ==========================================
     const TERMINAL_LOGS = [
-        "[+] Initializing Isolated Sandbox...",
-        "[+] Checking OWASP Top 10 Patterns...",
-        "[+] Scanning for Hardcoded Secrets...",
-        "[+] Compiling Audit Report..."
+        "[+] Initializing Static Analysis Engine...",
+        "[+] Parsing Abstract Syntax Trees & Symbols...",
+        "[+] Tracing Data Flow & Variable Taints...",
+        "[+] Evaluating Sinks & Sanitization Contexts...",
+        "[+] Compiling Security Audit Report..."
     ];
     let terminalLogTimer = null;
 
@@ -1965,17 +1966,14 @@ jobs:
             }
         }
 
-        // Display first log immediately
         appendNextLog();
-
-        // Cycle next logs with 800ms delay between each
         terminalLogTimer = setInterval(() => {
             if (idx < TERMINAL_LOGS.length) {
                 appendNextLog();
             } else {
                 clearInterval(terminalLogTimer);
             }
-        }, 800);
+        }, 350);
     }
 
     function hideTerminalIllusion() {
@@ -1986,49 +1984,356 @@ jobs:
         if (uploadBox) uploadBox.classList.remove('hidden');
     }
 
+    function escapeHtml(str) {
+        if (!str) return '';
+        return String(str)
+            .replace(/&/g, '&amp;')
+            .replace(/</g, '&lt;')
+            .replace(/>/g, '&gt;')
+            .replace(/"/g, '&quot;')
+            .replace(/'/g, '&#039;');
+    }
+
+    window.copyRawEvidenceJson = function() {
+        const codeBlock = document.getElementById('rawEvidenceCodeBlock');
+        if (!codeBlock) return;
+        const text = codeBlock.textContent || '';
+        if (!text) return;
+        navigator.clipboard.writeText(text).then(() => {
+            const copyTextEl = document.getElementById('copyEvidenceText');
+            if (copyTextEl) {
+                const original = copyTextEl.textContent;
+                copyTextEl.textContent = 'Copied! ✅';
+                setTimeout(() => { copyTextEl.textContent = original; }, 2000);
+            }
+        }).catch(() => {
+            alert('Failed to copy JSON to clipboard.');
+        });
+    };
+
+    function renderSecurityAuditReport(data) {
+        const reportContainer = document.getElementById('reportContainer');
+        const scanResult = document.getElementById('scanResult');
+        if (!reportContainer || !scanResult) return;
+
+        const summary = data.summary || {};
+        const findings = data.findings || [];
+        const safePatterns = data.safe_patterns || [];
+        const rawEvidence = data.raw_evidence || {};
+
+        // Update Dashboard Gauge
+        const scoreNumEl = document.getElementById('securityScoreNum');
+        const scoreGradeEl = document.getElementById('securityScoreGrade');
+        const gaugeArcEl = document.getElementById('gaugeProgressArc');
+        const score = summary.security_score !== undefined ? summary.security_score : 100;
+        
+        if (scoreNumEl) scoreNumEl.textContent = score;
+        if (gaugeArcEl) {
+            const offset = Math.round(264 * (1 - score / 100));
+            gaugeArcEl.style.strokeDashoffset = offset;
+        }
+        if (scoreGradeEl) {
+            if (score >= 90) {
+                scoreGradeEl.textContent = 'GRADE A';
+                scoreGradeEl.className = 'text-xs bg-emerald-500/20 text-emerald-400 border border-emerald-500/40 px-2 py-0.5 rounded font-mono font-bold';
+            } else if (score >= 75) {
+                scoreGradeEl.textContent = 'GRADE B';
+                scoreGradeEl.className = 'text-xs bg-yellow-500/20 text-yellow-400 border border-yellow-500/40 px-2 py-0.5 rounded font-mono font-bold';
+            } else if (score >= 50) {
+                scoreGradeEl.textContent = 'GRADE C';
+                scoreGradeEl.className = 'text-xs bg-orange-500/20 text-orange-400 border border-orange-500/40 px-2 py-0.5 rounded font-mono font-bold';
+            } else {
+                scoreGradeEl.textContent = 'GRADE F';
+                scoreGradeEl.className = 'text-xs bg-red-500/20 text-red-400 border border-red-500/40 px-2 py-0.5 rounded font-mono font-bold';
+            }
+        }
+
+        let riskBadgeColor = 'bg-emerald-500/20 text-emerald-400 border-emerald-500/40';
+        if (summary.risk_level === 'CRITICAL') {
+            riskBadgeColor = 'bg-red-500/20 text-red-400 border-red-500/50 shadow-[0_0_15px_rgba(239,68,68,0.3)]';
+        } else if (summary.risk_level === 'HIGH') {
+            riskBadgeColor = 'bg-orange-500/20 text-orange-400 border-orange-500/50';
+        } else if (summary.risk_level === 'MEDIUM') {
+            riskBadgeColor = 'bg-yellow-500/20 text-yellow-400 border-yellow-500/50';
+        }
+
+        let html = `
+            <!-- Executive Summary Bar -->
+            <div class="mb-6 p-6 rounded-2xl bg-gradient-to-br from-slate-900/90 to-slate-950/90 border border-white/10 shadow-2xl backdrop-blur-xl">
+                <div class="flex flex-col md:flex-row justify-between items-start md:items-center gap-4 pb-5 border-b border-white/[0.08]">
+                    <div>
+                        <div class="text-xs uppercase tracking-widest text-gray-400 font-mono font-bold mb-1">Audit Assessment</div>
+                        <h2 class="text-2xl font-black tracking-tight text-white flex items-center gap-3">
+                            Deterministic SAST Audit Report
+                            <span class="text-xs font-mono font-bold px-3 py-1 rounded-full border ${riskBadgeColor}">
+                                ${escapeHtml(summary.risk_level || 'ANALYSIS COMPLETE')}
+                            </span>
+                        </h2>
+                        <p class="text-xs text-gray-400 font-mono mt-1">${escapeHtml(summary.risk_message || '')}</p>
+                    </div>
+                    <div class="flex items-center gap-4 bg-white/[0.03] border border-white/10 p-3 rounded-xl">
+                        <div class="text-right">
+                            <div class="text-[10px] uppercase tracking-wider text-gray-400 font-mono font-bold">Security Health Score</div>
+                            <div class="text-3xl font-black font-mono ${score >= 75 ? 'text-emerald-400' : score >= 50 ? 'text-yellow-400' : 'text-red-400'}">
+                                ${score}<span class="text-sm text-gray-500 font-normal"> / 100</span>
+                            </div>
+                        </div>
+                    </div>
+                </div>
+
+                <!-- Metrics Grid -->
+                <div class="grid grid-cols-2 sm:grid-cols-3 lg:grid-cols-6 gap-3 mt-5">
+                    <div class="p-3 bg-white/[0.02] border border-white/5 rounded-xl">
+                        <div class="text-[10px] text-gray-400 uppercase font-mono font-bold">Files Scanned</div>
+                        <div class="text-xl font-bold font-mono text-white mt-1">${summary.total_files || 1}</div>
+                    </div>
+                    <div class="p-3 bg-white/[0.02] border border-white/5 rounded-xl">
+                        <div class="text-[10px] text-gray-400 uppercase font-mono font-bold">Lines Scanned</div>
+                        <div class="text-xl font-bold font-mono text-white mt-1">${summary.lines_scanned || 0}</div>
+                    </div>
+                    <div class="p-3 bg-white/[0.02] border border-white/5 rounded-xl">
+                        <div class="text-[10px] text-gray-400 uppercase font-mono font-bold">Total Flaws</div>
+                        <div class="text-xl font-bold font-mono ${summary.total_vulnerabilities > 0 ? 'text-red-400' : 'text-emerald-400'} mt-1">${summary.total_vulnerabilities || 0}</div>
+                    </div>
+                    <div class="p-3 bg-red-950/20 border border-red-500/20 rounded-xl">
+                        <div class="text-[10px] text-red-400 uppercase font-mono font-bold">Critical</div>
+                        <div class="text-xl font-bold font-mono text-red-400 mt-1">${summary.critical_count || 0}</div>
+                    </div>
+                    <div class="p-3 bg-orange-950/20 border border-orange-500/20 rounded-xl">
+                        <div class="text-[10px] text-orange-400 uppercase font-mono font-bold">High</div>
+                        <div class="text-xl font-bold font-mono text-orange-400 mt-1">${summary.high_count || 0}</div>
+                    </div>
+                    <div class="p-3 bg-yellow-950/20 border border-yellow-500/20 rounded-xl">
+                        <div class="text-[10px] text-yellow-400 uppercase font-mono font-bold">Medium / Low</div>
+                        <div class="text-xl font-bold font-mono text-yellow-400 mt-1">${(summary.medium_count || 0) + (summary.low_count || 0)}</div>
+                    </div>
+                </div>
+            </div>
+        `;
+
+        // Zero Findings State vs Finding Cards
+        if (findings.length === 0) {
+            html += `
+                <div class="p-8 rounded-2xl bg-[#061412] border border-emerald-500/30 text-center shadow-lg my-6">
+                    <div class="w-16 h-16 rounded-full bg-emerald-500/20 border border-emerald-500/40 flex items-center justify-center mx-auto mb-4">
+                        <svg class="w-8 h-8 text-emerald-400" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M5 13l4 4L19 7"></path></svg>
+                    </div>
+                    <h3 class="text-lg md:text-xl font-bold text-emerald-400 font-mono mb-2">
+                        NO VULNERABILITIES DETECTED within current TCS analysis scope (6 supported CWE classes).
+                    </h3>
+                    <p class="text-sm text-gray-400 max-w-2xl mx-auto leading-relaxed mb-6 font-mono">
+                        Deterministic AST and interprocedural data-flow analysis confirmed zero tainted data flows reaching dangerous sinks across all scanned modules.
+                    </p>
+                    <div class="grid grid-cols-2 sm:grid-cols-3 gap-2 max-w-2xl mx-auto text-left text-xs font-mono">
+                        <div class="p-2.5 rounded-lg bg-emerald-950/30 border border-emerald-500/20 text-gray-300 flex items-center gap-2">
+                            <span class="text-emerald-400">✓</span> CWE-95: Code Execution
+                        </div>
+                        <div class="p-2.5 rounded-lg bg-emerald-950/30 border border-emerald-500/20 text-gray-300 flex items-center gap-2">
+                            <span class="text-emerald-400">✓</span> CWE-78: Command Injection
+                        </div>
+                        <div class="p-2.5 rounded-lg bg-emerald-950/30 border border-emerald-500/20 text-gray-300 flex items-center gap-2">
+                            <span class="text-emerald-400">✓</span> CWE-89: SQL Injection
+                        </div>
+                        <div class="p-2.5 rounded-lg bg-emerald-950/30 border border-emerald-500/20 text-gray-300 flex items-center gap-2">
+                            <span class="text-emerald-400">✓</span> CWE-22: Path Traversal
+                        </div>
+                        <div class="p-2.5 rounded-lg bg-emerald-950/30 border border-emerald-500/20 text-gray-300 flex items-center gap-2">
+                            <span class="text-emerald-400">✓</span> CWE-502: Deserialization
+                        </div>
+                        <div class="p-2.5 rounded-lg bg-emerald-950/30 border border-emerald-500/20 text-gray-300 flex items-center gap-2">
+                            <span class="text-emerald-400">✓</span> CWE-1336: SSTI
+                        </div>
+                    </div>
+                </div>
+            `;
+        } else {
+            html += `
+                <div class="mb-6">
+                    <div class="flex items-center justify-between mb-4">
+                        <h3 class="text-lg font-bold text-white font-mono flex items-center gap-2">
+                            <svg class="w-5 h-5 text-red-400" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M12 9v2m0 4h.01m-6.938 4h13.856c1.54 0 2.502-1.667 1.732-3L13.732 4c-.77-1.333-2.694-1.333-3.464 0L3.34 16c-.77 1.333.192 3 1.732 3z"></path></svg>
+                            Identified Vulnerabilities (${findings.length})
+                        </h3>
+                        <span class="text-xs text-gray-400 font-mono">Ranked by Severity & Confidence</span>
+                    </div>
+                    <div class="space-y-4">
+            `;
+
+            findings.forEach((f) => {
+                const sevColor = f.severity === 'CRITICAL' 
+                    ? 'bg-red-500/20 text-red-400 border-red-500/40'
+                    : f.severity === 'HIGH'
+                    ? 'bg-orange-500/20 text-orange-400 border-orange-500/40'
+                    : 'bg-yellow-500/20 text-yellow-400 border-yellow-500/40';
+
+                const confColor = f.confidence_label === 'CONFIRMED'
+                    ? 'bg-emerald-500/20 text-emerald-400 border-emerald-500/40'
+                    : 'bg-amber-500/20 text-amber-400 border-amber-500/40';
+
+                html += `
+                    <div class="p-6 rounded-2xl bg-slate-900/80 border border-white/10 hover:border-white/20 transition-all shadow-xl">
+                        <div class="flex flex-col sm:flex-row justify-between items-start sm:items-center gap-3 mb-4">
+                            <div class="flex items-center gap-3 flex-wrap">
+                                <span class="text-xs font-mono font-bold text-gray-400 bg-white/5 px-2.5 py-1 rounded border border-white/10">
+                                    ${escapeHtml(f.id)}
+                                </span>
+                                <span class="text-base font-bold text-white font-mono">
+                                    ${escapeHtml((f.category || '').replace(/_/g, ' '))}
+                                </span>
+                                <span class="text-xs font-mono font-bold px-2.5 py-0.5 rounded-full border ${sevColor}">
+                                    ${escapeHtml(f.severity)}
+                                </span>
+                                <span class="text-xs font-mono font-bold px-2.5 py-0.5 rounded-full border border-cyan-500/30 bg-cyan-500/10 text-cyan-400">
+                                    ${escapeHtml(f.cwe)}
+                                </span>
+                            </div>
+                            <div>
+                                <span class="text-xs font-mono font-bold px-2.5 py-1 rounded-full border ${confColor} flex items-center gap-1.5">
+                                    <span class="w-1.5 h-1.5 rounded-full ${f.confidence_label === 'CONFIRMED' ? 'bg-emerald-400' : 'bg-amber-400'} animate-pulse"></span>
+                                    ${escapeHtml(f.confidence_label)} (${Math.round((f.confidence || 1.0) * 100)}%)
+                                </span>
+                            </div>
+                        </div>
+
+                        <!-- Flow Trace Pipeline -->
+                        <div class="my-3 p-3.5 rounded-xl bg-[#040814] border border-cyan-500/20 font-mono text-xs text-cyan-300">
+                            <div class="text-[10px] uppercase font-bold text-gray-400 tracking-widest mb-1.5">Data-Flow Trace</div>
+                            <div class="flex items-center gap-2 flex-wrap text-xs font-semibold">
+                                ${(f.flow_trace || []).map((step, sIdx) => {
+                                    const isSource = sIdx === 0;
+                                    const isSink = sIdx === (f.flow_trace.length - 1);
+                                    const badgeStyle = isSource 
+                                        ? 'bg-blue-500/20 text-blue-300 border-blue-500/40'
+                                        : isSink
+                                        ? 'bg-red-500/20 text-red-300 border-red-500/40 font-bold'
+                                        : 'bg-slate-800 text-gray-300 border-slate-700';
+                                    return `<span class="px-2.5 py-1 rounded-md border ${badgeStyle}">${escapeHtml(step)}</span>` +
+                                        (!isSink ? `<span class="text-gray-500 font-bold">➔</span>` : '');
+                                }).join(' ')}
+                            </div>
+                        </div>
+
+                        <!-- Code Snippet -->
+                        ${f.code_snippet ? `
+                            <div class="my-3">
+                                <div class="flex items-center justify-between text-[11px] font-mono text-gray-400 mb-1 px-1">
+                                    <span>${escapeHtml(f.file || 'target.py')}</span>
+                                    <span class="text-red-400">Line ${f.line_number}</span>
+                                </div>
+                                <div class="p-3 rounded-xl bg-black/60 border border-red-500/30 text-red-300 font-mono text-xs overflow-x-auto">
+                                    <code><span class="text-gray-500 mr-3 select-none">${f.line_number} |</span>${escapeHtml(f.code_snippet)}</code>
+                                </div>
+                            </div>
+                        ` : ''}
+
+                        <!-- Prescriptive Remediation Box -->
+                        <div class="mt-4 p-4 rounded-xl bg-emerald-950/20 border border-emerald-500/30 text-xs font-mono">
+                            <div class="flex items-center gap-2 text-emerald-400 font-bold uppercase tracking-wider text-[11px] mb-1.5">
+                                <svg class="w-4 h-4" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M9 12l2 2 4-4m5.618-4.016A11.955 11.955 0 0112 2.944a11.955 11.955 0 01-8.618 3.04A12.02 12.02 0 003 9c0 5.591 3.824 10.29 9 11.622 5.176-1.332 9-6.03 9-11.622 0-1.042-.133-2.052-.382-3.016z"></path></svg>
+                                Prescriptive Remediation & Patch Advice
+                            </div>
+                            <p class="text-gray-300 leading-relaxed">${escapeHtml(f.remediation || '')}</p>
+                        </div>
+                    </div>
+                `;
+            });
+
+            html += `
+                    </div>
+                </div>
+            `;
+        }
+
+        // Safe Patterns Section (Informational Syntax Patterns)
+        if (safePatterns.length > 0) {
+            html += `
+                <div class="my-6 p-6 rounded-2xl bg-slate-900/60 border border-white/10 backdrop-blur-md">
+                    <div class="flex flex-col sm:flex-row sm:items-center justify-between gap-2 mb-3">
+                        <div class="flex items-center gap-2 text-emerald-400 font-bold font-mono text-sm uppercase tracking-wider">
+                            <svg class="w-5 h-5 text-emerald-400" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M9 12l2 2 4-4m5.618-4.016A11.955 11.955 0 0112 2.944a11.955 11.955 0 01-8.618 3.04A12.02 12.02 0 003 9c0 5.591 3.824 10.29 9 11.622 5.176-1.332 9-6.03 9-11.622 0-1.042-.133-2.052-.382-3.016z"></path></svg>
+                            Informational Defensive Syntax Patterns & Sanitizers (${safePatterns.length})
+                        </div>
+                        <span class="text-[10px] font-mono text-gray-400 border border-white/10 px-2.5 py-1 rounded bg-black/40">
+                            Informational Syntax Observation
+                        </span>
+                    </div>
+                    <p class="text-xs text-gray-400 font-mono mb-3 leading-relaxed">
+                        Notice: The following defensive syntax constructs were observed in AST. Authoritative vulnerability determinations are established exclusively through deterministic data-flow taint analysis.
+                    </p>
+                    <div class="space-y-2">
+                        ${safePatterns.map(sp => `
+                            <div class="p-3 rounded-xl bg-emerald-950/20 border border-emerald-500/20 text-xs font-mono flex items-start justify-between gap-2.5">
+                                <div class="flex items-start gap-2.5">
+                                    <span class="text-emerald-400 font-bold text-sm leading-none mt-0.5">ℹ</span>
+                                    <div>
+                                        <span class="font-bold text-emerald-300">${escapeHtml(sp.pattern)}:</span>
+                                        <span class="text-gray-300 ml-1">${escapeHtml(sp.detail)}</span>
+                                    </div>
+                                </div>
+                                <span class="text-[10px] uppercase font-mono px-2 py-0.5 rounded bg-emerald-950/40 text-emerald-400 border border-emerald-500/20 shrink-0">
+                                    ${escapeHtml(sp.classification || 'Informational')}
+                                </span>
+                            </div>
+                        `).join('')}
+                    </div>
+                </div>
+            `;
+        }
+
+        // Collapsible Raw Evidence Drawer
+        const evidenceJsonStr = JSON.stringify(rawEvidence, null, 2);
+        html += `
+            <div class="my-6">
+                <details class="group rounded-2xl bg-[#030712]/90 border border-white/10 p-5 transition-all">
+                    <summary class="cursor-pointer font-mono text-xs font-bold text-gray-300 flex items-center justify-between select-none">
+                        <span class="flex items-center gap-2">
+                            <svg class="w-4 h-4 text-cyan-400 transition-transform group-open:rotate-90" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M9 5l7 7-7 7"></path></svg>
+                            Deterministic AST Graph Evidence & Taint Proof (Raw Output)
+                        </span>
+                        <button type="button" onclick="event.stopPropagation(); copyRawEvidenceJson();" class="text-[11px] bg-slate-800 hover:bg-slate-700 text-gray-300 hover:text-white px-2.5 py-1 rounded border border-white/10 flex items-center gap-1 cursor-pointer">
+                            <span id="copyEvidenceText">Copy Evidence JSON</span>
+                        </button>
+                    </summary>
+                    <div class="mt-4 pt-4 border-t border-white/10">
+                        <pre class="bg-black/70 p-4 rounded-xl text-emerald-400 font-mono text-xs overflow-x-auto leading-relaxed border border-white/5"><code id="rawEvidenceCodeBlock">${escapeHtml(evidenceJsonStr)}</code></pre>
+                    </div>
+                </details>
+            </div>
+        `;
+
+        scanResult.innerHTML = html;
+        reportContainer.classList.remove('hidden');
+    }
+
     if (scanBtn) {
         scanBtn.addEventListener('click', async () => {
             const code = codeInput ? codeInput.value.trim() : '';
             if (!code) {
-                alert('Please enter some code to scan!');
+                if (typeof showToast === 'function') showToast('Please enter Python source code to scan!', 'error');
+                else alert('Please enter Python source code to scan!');
                 return;
             }
 
-            // Feature 1: Pre-Upload check on code size (5MB Limit)
             const codeBlob = new Blob([code]);
-            if (codeBlob.size > 5 * 1024 * 1024) {
-                const exactError = "Error: File exceeds 5MB Microservice Limit. Massive monolithic codebases require Enterprise Dedicated Clusters. Contact Founder for upgrade.";
+            if (codeBlob.size > 1024 * 1024) {
+                const exactError = "Error: File exceeds 1MB limit. Maximum allowable payload is 1MB.";
                 const fileErrorMsg = document.getElementById('fileErrorMsg');
                 const fileErrorText = document.getElementById('fileErrorText');
                 if (fileErrorText) fileErrorText.innerText = exactError;
                 if (fileErrorMsg) fileErrorMsg.classList.remove('hidden');
                 if (typeof showToast === 'function') showToast(exactError, 'error');
-                return; // Immediately halt process, do not send to backend
+                return;
             }
 
-            // Hide previous file error
             document.getElementById('fileErrorMsg')?.classList.add('hidden');
-            
-            if (!isPremium) {
-                const freeScansUsed = parseInt(localStorage.getItem('free_scans_used') || '0', 10);
-                if (freeScansUsed >= 3) {
-                    document.getElementById('upgradeModal')?.classList.remove('hidden');
-                    showToast('Free scan limit reached (3/3). Upgrade to Enterprise to unlock unlimited scans.', 'error');
-                    return;
-                }
-                const newCount = freeScansUsed + 1;
-                localStorage.setItem('free_scans_used', newCount.toString());
-                showToast("Free Scan Used: " + newCount + "/3", "info");
-            }
 
-            // Loading State & Terminal Illusion
             scanBtn.disabled = true;
             scanBtn.innerHTML = `
                 <svg class="animate-spin -ml-1 mr-3 h-5 w-5 text-white" xmlns="http://www.w3.org/2000/svg" fill="none" viewBox="0 0 24 24">
                     <circle class="opacity-25" cx="12" cy="12" r="10" stroke="currentColor" stroke-width="4"></circle>
                     <path class="opacity-75" fill="currentColor" d="M4 12a8 8 0 018-8V0C5.373 0 0 5.373 0 12h4zm2 5.291A7.962 7.962 0 014 12H0c0 3.042 1.135 5.824 3 7.938l3-2.647z"></path>
                 </svg>
-                SCANNING IN BACKGROUND...
+                STATIC TAINT ANALYSIS IN PROGRESS...
             `;
             if (reportContainer) reportContainer.classList.add('hidden');
             if (scanResult) {
@@ -2038,134 +2343,56 @@ jobs:
             document.getElementById('blurPaywallOverlay')?.classList.add('hidden');
             document.getElementById('scanLimitWarning')?.classList.add('hidden');
 
-            // Show Terminal Illusion during Upload/Fetch
             showTerminalIllusion();
 
             try {
-                const controller = new AbortController();
-                const timeoutId = setTimeout(() => controller.abort(), 40000);
                 const currentToken = localStorage.getItem('token');
+                const headers = { 'Content-Type': 'application/json' };
+                if (currentToken) {
+                    headers['Authorization'] = `Bearer ${currentToken}`;
+                }
 
-                const response = await fetch('/scan', {
+                const startTime = Date.now();
+                const response = await fetch('/api/scan', {
                     method: 'POST',
-                    headers: { 
-                        'Content-Type': 'application/json',
-                        'Authorization': `Bearer ${currentToken}`
-                    },
-                    body: JSON.stringify({ code: code }),
-                    signal: controller.signal
+                    headers: headers,
+                    body: JSON.stringify({ code: code })
                 });
-                
-                clearTimeout(timeoutId);
-                
-                if (response.status === 429) {
+
+                if (response.status === 413) {
+                    hideTerminalIllusion();
+                    resetScanBtn();
+                    showToast('Payload exceeds maximum limit of 1MB.', 'error');
+                    return;
+                }
+
+                if (!response.ok) {
                     const errData = await response.json().catch(() => ({}));
-                    showToast(errData.detail || 'Rate limit exceeded. Free tier limit is 5 scans/min. Please wait a moment.', 'error');
+                    hideTerminalIllusion();
                     resetScanBtn();
+                    showToast(errData.detail || 'Scan failed. Check code syntax or limits.', 'error');
                     return;
                 }
-                
-                if (response.status === 504) {
-                    showToast('Scan timed out. Please try again.', 'error');
-                    resetScanBtn();
-                    return;
-                }
-                
+
                 const data = await response.json();
-                
-                if (data.is_blurred_paywall) {
-                    const freeScansUsed = parseInt(localStorage.getItem('free_scans_used') || '0', 10);
-                    if (!isPremium && freeScansUsed > 3) {
-                        if (scanResult) {
-                            scanResult.innerHTML = formatScanReport(data.report);
-                            scanResult.classList.add('blur-effect');
-                        }
-                        document.getElementById('scanLimitWarning')?.classList.remove('hidden');
-                        document.getElementById('blurPaywallOverlay')?.classList.remove('hidden');
-                    } else {
-                        if (scanResult) {
-                            scanResult.innerHTML = formatScanReport(data.report || 'Scan complete: No critical security risks detected.');
-                            scanResult.classList.remove('blur-effect', 'text-red-400');
-                        }
-                        document.getElementById('scanLimitWarning')?.classList.add('hidden');
-                        document.getElementById('blurPaywallOverlay')?.classList.add('hidden');
-                    }
-                    if (reportContainer) reportContainer.classList.remove('hidden');
+
+                const elapsed = Date.now() - startTime;
+                const remainingTime = Math.max(0, 1600 - elapsed);
+                setTimeout(() => {
+                    hideTerminalIllusion();
+                    renderSecurityAuditReport(data);
                     resetScanBtn();
-                } else if (data.error) {
-                    if (scanResult) {
-                        scanResult.innerHTML = formatScanReport('Error: ' + data.error);
-                        scanResult.classList.add('text-red-400');
-                    }
-                    document.getElementById('scanLimitWarning')?.classList.add('hidden');
-                    document.getElementById('blurPaywallOverlay')?.classList.add('hidden');
-                    if (reportContainer) reportContainer.classList.remove('hidden');
-                    resetScanBtn();
-                } else if (data.job_id) {
-                    const jobId = data.job_id;
-                    
-                    const pollInterval = setInterval(async () => {
-                        try {
-                            const statusRes = await fetch(`/api/scan/status/${jobId}`, {
-                                headers: { 'Authorization': `Bearer ${currentToken}` }
-                            });
-                            const statusData = await statusRes.json();
-                            
-                            if (!statusRes.ok || statusData.detail || (statusData.status !== 'completed' && statusData.status !== 'failed' && statusData.status !== 'pending')) {
-                                clearInterval(pollInterval);
-                                if (scanResult) {
-                                    scanResult.innerHTML = formatScanReport('Error: ' + (statusData.detail || 'Scan failed or job not found.'));
-                                    scanResult.classList.add('text-red-400');
-                                }
-                                document.getElementById('scanLimitWarning')?.classList.add('hidden');
-                                document.getElementById('blurPaywallOverlay')?.classList.add('hidden');
-                                if (reportContainer) reportContainer.classList.remove('hidden');
-                                resetScanBtn();
-                            } else if (statusData.status === 'completed') {
-                                clearInterval(pollInterval);
-                                if (scanResult) {
-                                    scanResult.innerHTML = formatScanReport(statusData.report);
-                                    scanResult.classList.remove('blur-effect', 'text-red-400');
-                                }
-                                document.getElementById('scanLimitWarning')?.classList.add('hidden');
-                                document.getElementById('blurPaywallOverlay')?.classList.add('hidden');
-                                await fetchPlan();
-                                await fetchAnalytics();
-                                if (reportContainer) reportContainer.classList.remove('hidden');
-                                resetScanBtn();
-                            } else if (statusData.status === 'failed') {
-                                clearInterval(pollInterval);
-                                if (scanResult) {
-                                    scanResult.innerHTML = formatScanReport('Error: ' + (statusData.report || 'Scan failed.'));
-                                    scanResult.classList.add('text-red-400');
-                                }
-                                if (reportContainer) reportContainer.classList.remove('hidden');
-                                resetScanBtn();
-                            }
-                        } catch (err) {
-                            clearInterval(pollInterval);
-                            if (scanResult) {
-                                scanResult.innerHTML = formatScanReport('System Failure: Polling error.');
-                                scanResult.classList.add('text-red-400');
-                            }
-                            if (reportContainer) reportContainer.classList.remove('hidden');
-                            resetScanBtn();
-                        }
-                    }, 2000);
-                }
+                }, remainingTime);
+
             } catch (error) {
-                if (error.name === 'AbortError') {
-                    showToast('Scan timed out. Please try again.', 'error');
-                } else {
-                    if (scanResult) {
-                        scanResult.innerHTML = formatScanReport('Backend Connecting: Server is waking up or deploying updates. Please wait 10 seconds and click Initiate Deep Scan again.');
-                        scanResult.classList.add('text-amber-400');
-                    }
-                    if (reportContainer) reportContainer.classList.remove('hidden');
-                }
+                hideTerminalIllusion();
                 resetScanBtn();
+                if (scanResult) {
+                    scanResult.innerHTML = `<div class="text-red-400 p-4 font-mono">Error connecting to analyzer: ${escapeHtml(error.message)}</div>`;
+                }
+                if (reportContainer) reportContainer.classList.remove('hidden');
             }
-            
+
             function resetScanBtn() {
                 hideTerminalIllusion();
                 if (!scanBtn) return;

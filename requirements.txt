@@ -1,5 +1,6 @@
 fastapi
-uvicorn
+uvicorn[standard]
+gunicorn>=21.2.0
 requests
 jinja2
 python-dotenv
