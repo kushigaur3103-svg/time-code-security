@@ -287,6 +287,50 @@ class TaintTracker:
                 if test_scope in self.functions: return test_scope
 
         base_name = parts[0]
+        # Check if base_name is a variable holding a class instance (e.g. loader = Loader(); loader.method)
+        if len(parts) > 1:
+            method_attr = ".".join(parts[1:])
+            curr = current_scope
+            while curr:
+                recs = self.assignments_by_scope.get((curr, base_name), [])
+                if recs:
+                    latest = recs[-1]
+                    if isinstance(latest.value_node, ast.Call):
+                        cls_name = dotted_name(latest.value_node.func)
+                        if cls_name:
+                            shadowed = False
+                            cls_recs = [r for r in self.assignments_by_scope.get((curr, cls_name), []) if r.lineno < latest.lineno]
+                            if cls_recs:
+                                last_cls_rec = cls_recs[-1]
+                                if not isinstance(last_cls_rec.value_node, ast.Name):
+                                    shadowed = True
+
+                            if not shadowed:
+                                candidate = f"{mod_name}:function:{cls_name}.{method_attr}"
+                                if candidate in self.functions: return candidate
+
+                                resolved_cls = None
+                                if cls_name in self.imports.get(mod_name, {}):
+                                    resolved_cls = self.imports[mod_name][cls_name]
+                                else:
+                                    cls_parts = cls_name.split(".")
+                                    if cls_parts[0] in self.imports.get(mod_name, {}):
+                                        res_base = self.imports[mod_name][cls_parts[0]]
+                                        resolved_cls = res_base + "." + ".".join(cls_parts[1:])
+
+                                if resolved_cls:
+                                    parts_cls = resolved_cls.split(".")
+                                    for i in range(len(parts_cls)-1, 0, -1):
+                                        r_mod = ".".join(parts_cls[:i])
+                                        r_cls = ".".join(parts_cls[i:])
+                                        cand = f"{r_mod}:function:{r_cls}.{method_attr}"
+                                        if cand in self.functions: return cand
+                    break
+                if "." in curr and "function" in curr: curr = curr.rsplit(".", 1)[0]
+                elif ":function" in curr: curr = f"{mod_name}:global"
+                elif curr != f"{mod_name}:global": curr = f"{mod_name}:global"
+                else: break
+
         if base_name in self.imports.get(mod_name, {}):
             resolved_base = self.imports[mod_name][base_name]
             resolved_full = resolved_base + "." + ".".join(parts[1:]) if len(parts) > 1 else resolved_base
@@ -323,6 +367,16 @@ class TaintTracker:
                 child_scope = f"{scope_id}.{stmt.name}" if ":global" not in scope_id else f"{scope_id.split(':')[0]}:function:{stmt.name}"
                 self.functions[child_scope] = stmt
                 self.collect_statements(stmt.body, scope_id=child_scope, is_conditional=False)
+            elif isinstance(stmt, ast.ClassDef):
+                mod_name = scope_id.split(":")[0]
+                class_scope = f"{scope_id}.{stmt.name}" if ":global" not in scope_id else f"{mod_name}:function:{stmt.name}"
+                for item in stmt.body:
+                    if isinstance(item, (ast.FunctionDef, ast.AsyncFunctionDef)):
+                        method_scope = f"{mod_name}:function:{stmt.name}.{item.name}"
+                        self.functions[method_scope] = item
+                        self.collect_statements(item.body, scope_id=method_scope, is_conditional=False)
+                    else:
+                        self.collect_statements([item], scope_id=class_scope, is_conditional=is_conditional)
             elif isinstance(stmt, ast.Assign):
                 for target in stmt.targets:
                     if isinstance(target, ast.Name):
@@ -414,12 +468,25 @@ class TaintTracker:
             if not records_before:
                 if base_taint: return base_taint
 
-                # Interprocedural argument -> parameter flow resolution
-                func_node = self.functions.get(scope_id)
-                if func_node and any(a.arg == node.id for a in func_node.args.args):
-                    param_names = [a.arg for a in func_node.args.args]
+                # Interprocedural argument -> parameter flow resolution (supports closures and outer scopes)
+                enc_scope = scope_id
+                target_func_node = None
+                target_scope = None
+                while enc_scope:
+                    f_node = self.functions.get(enc_scope)
+                    if f_node and any(a.arg == node.id for a in f_node.args.args):
+                        target_func_node = f_node
+                        target_scope = enc_scope
+                        break
+                    if "." in enc_scope:
+                        enc_scope = enc_scope.rsplit(".", 1)[0]
+                    else:
+                        break
+
+                if target_func_node and target_scope:
+                    param_names = [a.arg for a in target_func_node.args.args]
                     param_idx = param_names.index(node.id)
-                    call_sites = self.call_sites_by_target.get(scope_id, [])
+                    call_sites = self.call_sites_by_target.get(target_scope, [])
                     if call_sites:
                         caller_taints = []
                         for call_node, caller_scope, call_lineno in call_sites:
@@ -431,19 +498,24 @@ class TaintTracker:
                             if arg_expr is None:
                                 pos_idx = param_idx
                                 if param_names and param_names[0] in ("self", "cls"):
-                                    if isinstance(call_node.func, ast.Attribute) and call_node.func.attr == func_node.name:
-                                        pos_idx = param_idx - 1
+                                    pos_idx = param_idx - 1
                                 if 0 <= pos_idx < len(call_node.args):
                                     arg_expr = call_node.args[pos_idx]
 
                             if arg_expr is not None:
-                                call_site_key = f"param_flow:{scope_id}:{node.id}:{caller_scope}:{call_lineno}"
+                                call_site_key = f"param_flow:{target_scope}:{node.id}:{caller_scope}:{call_lineno}"
                                 if call_site_key not in visited:
                                     v_copy = visited.copy()
                                     v_copy.add(call_site_key)
                                     caller_taint = self.resolve_expression(arg_expr, sink, caller_scope, call_lineno, v_copy)
                                     caller_taints.append(caller_taint)
-                        if caller_taints:
+
+                        # If any caller is confirmed tainted, preserve confirmed taint
+                        tainted_callers = [t for t in caller_taints if t.state == TaintState.TAINTED]
+                        if tainted_callers:
+                            best_t = max(tainted_callers, key=lambda t: t.confidence)
+                            return TaintValue(state=TaintState.TAINTED, source_id=best_t.source_id, confidence=best_t.confidence, path=[*best_t.path, f"{file_name}:{node.id}"], last_operation=f"param:{node.id}")
+                        elif caller_taints:
                             merged = self.merge_taints(caller_taints, f"{file_name}:{node.id}")
                             if merged.state != TaintState.CLEAN:
                                 return merged
@@ -498,6 +570,11 @@ class TaintTracker:
                     if i < len(arg_values): new_call_context[p_name] = arg_values[i]
                     else: new_call_context[p_name] = TaintValue(state=TaintState.CLEAN, confidence=1.0)
 
+                # Process keyword arguments for interprocedural call context
+                for kw in getattr(node, "keywords", []):
+                    if kw.arg and kw.arg in param_names:
+                        new_call_context[kw.arg] = self.resolve_expression(kw.value, sink, scope_id, current_lineno, visited.copy(), call_context)
+
                 returns = self.returns_by_scope.get(func_scope, [])
                 if not returns: return TaintValue(state=TaintState.CLEAN, confidence=1.0, last_operation=f"void_return:{function_name}")
 
@@ -516,10 +593,18 @@ class TaintTracker:
                     if not src_id:
                         for a in arg_values:
                             if a.source_id: src_id = a.source_id; break
+                        if not src_id:
+                            for kw in new_call_context.values():
+                                if kw.source_id: src_id = kw.source_id; break
                     return TaintValue(state=merged_ret.state, source_id=src_id, confidence=merged_ret.confidence, path=[*merged_ret.path, f"return_from:{callee_file}:{callee_func}"], last_operation=f"call:{function_name}")
                 return merged_ret
 
             tainted_args = [arg for arg in arg_values if arg.state != TaintState.CLEAN]
+            # Check keyword arguments for unknown wrappers as well
+            for kw in getattr(node, "keywords", []):
+                kw_val = self.resolve_expression(kw.value, sink, scope_id, current_lineno, visited.copy(), call_context)
+                if kw_val.state != TaintState.CLEAN:
+                    tainted_args.append(kw_val)
             if not tainted_args: return TaintValue(state=TaintState.CLEAN, confidence=1.0, last_operation=function_name)
 
             first_tainted = tainted_args[0]
