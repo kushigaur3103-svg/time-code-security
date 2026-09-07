@@ -2048,6 +2048,16 @@ jobs:
             }
         }
 
+        const activeCount = summary.active_vulnerabilities !== undefined
+            ? summary.active_vulnerabilities
+            : (summary.total_vulnerabilities !== undefined ? summary.total_vulnerabilities : findings.filter(f => !f.suppressed).length);
+        const suppCount = summary.suppressed_vulnerabilities !== undefined
+            ? summary.suppressed_vulnerabilities
+            : findings.filter(f => f.suppressed).length;
+        const totalCount = summary.total_vulnerabilities !== undefined
+            ? summary.total_vulnerabilities
+            : findings.length;
+
         let riskBadgeColor = 'bg-emerald-500/20 text-emerald-400 border-emerald-500/40';
         if (summary.risk_level === 'CRITICAL') {
             riskBadgeColor = 'bg-red-500/20 text-red-400 border-red-500/50 shadow-[0_0_15px_rgba(239,68,68,0.3)]';
@@ -2057,26 +2067,80 @@ jobs:
             riskBadgeColor = 'bg-yellow-500/20 text-yellow-400 border-yellow-500/50';
         }
 
+        // Header Status according to UI RULE 1:
+        // Compact content-sized pills (inline-flex, w-fit)
+        // CASE A: active == 0 && supp == 0 -> CLEAN
+        // CASE B: active == 0 && supp > 0 -> CLEAN · N SUPPRESSED
+        // CASE C: active > 0 && supp > 0 -> Active risk level (e.g. CRITICAL) + secondary badge N SUPPRESSED
+        // CASE D: active > 0 && supp == 0 -> Active risk level
+        let headerStatusHtml = '';
+        if (activeCount === 0 && suppCount === 0) {
+            headerStatusHtml = `
+                <span class="inline-flex items-center w-fit text-xs font-mono font-bold px-3 py-1 rounded-full border bg-emerald-500/20 text-emerald-400 border-emerald-500/40">
+                    CLEAN
+                </span>
+            `;
+        } else if (activeCount === 0 && suppCount > 0) {
+            headerStatusHtml = `
+                <span class="inline-flex items-center gap-1.5 w-fit text-xs font-mono font-bold px-3 py-1 rounded-full border bg-emerald-500/20 text-emerald-400 border-emerald-500/40">
+                    <span class="w-1.5 h-1.5 rounded-full bg-emerald-400"></span>
+                    CLEAN · ${suppCount} SUPPRESSED
+                </span>
+            `;
+        } else if (activeCount > 0 && suppCount > 0) {
+            headerStatusHtml = `
+                <span class="inline-flex items-center w-fit text-xs font-mono font-bold px-3 py-1 rounded-full border ${riskBadgeColor}">
+                    ${escapeHtml(summary.risk_level || 'ANALYSIS COMPLETE')}
+                </span>
+                <span class="inline-flex items-center gap-1.5 w-fit text-xs font-mono font-bold px-3 py-1 rounded-full border border-slate-600/60 bg-slate-800/90 text-slate-300">
+                    <span class="w-1.5 h-1.5 rounded-full bg-slate-400"></span>
+                    ${suppCount} SUPPRESSED
+                </span>
+            `;
+        } else {
+            headerStatusHtml = `
+                <span class="inline-flex items-center w-fit text-xs font-mono font-bold px-3 py-1 rounded-full border ${riskBadgeColor}">
+                    ${escapeHtml(summary.risk_level || 'ANALYSIS COMPLETE')}
+                </span>
+            `;
+        }
+
+        // UI RULE 2 — Score Card Subtitle:
+        // When active == 0 && supp > 0: Add explanatory subtitle:
+        // "1 accepted risk exempted" / "N accepted risks exempted"
+        let scoreSubtitleHtml = '';
+        if (activeCount === 0 && suppCount > 0) {
+            const riskWord = suppCount === 1 ? 'risk' : 'risks';
+            scoreSubtitleHtml = `
+                <div class="text-[11px] font-mono text-emerald-400/90 font-medium mt-1">
+                    ${suppCount} accepted ${riskWord} exempted
+                </div>
+            `;
+        }
+
         let html = `
             <!-- Executive Summary Bar -->
             <div class="mb-6 p-6 rounded-2xl bg-gradient-to-br from-slate-900/90 to-slate-950/90 border border-white/10 shadow-2xl backdrop-blur-xl">
-                <div class="flex flex-col md:flex-row justify-between items-start md:items-center gap-4 pb-5 border-b border-white/[0.08]">
-                    <div>
-                        <div class="text-xs uppercase tracking-widest text-gray-400 font-mono font-bold mb-1">Audit Assessment</div>
-                        <h2 class="text-2xl font-black tracking-tight text-white flex items-center gap-3">
+                <div class="flex flex-col sm:flex-row justify-between items-start sm:items-center gap-4 pb-5 border-b border-white/[0.08]">
+                    <!-- Container Isolation: Vertical Title & Badge Area -->
+                    <div class="flex flex-col gap-2">
+                        <span class="text-xs uppercase tracking-widest text-gray-400 font-mono font-bold">Audit Assessment</span>
+                        <h2 class="text-2xl font-black tracking-tight text-white">
                             Deterministic SAST Audit Report
-                            <span class="text-xs font-mono font-bold px-3 py-1 rounded-full border ${riskBadgeColor}">
-                                ${escapeHtml(summary.risk_level || 'ANALYSIS COMPLETE')}
-                            </span>
                         </h2>
-                        <p class="text-xs text-gray-400 font-mono mt-1">${escapeHtml(summary.risk_message || '')}</p>
+                        <div class="flex flex-wrap items-center gap-2 pt-0.5">
+                            ${headerStatusHtml}
+                        </div>
+                        ${summary.risk_message ? `<p class="text-xs text-gray-400 font-mono mt-0.5">${escapeHtml(summary.risk_message)}</p>` : ''}
                     </div>
-                    <div class="flex items-center gap-4 bg-white/[0.03] border border-white/10 p-3 rounded-xl">
-                        <div class="text-right">
+                    <!-- Score Card: Stays compact and visible in normal page flow -->
+                    <div class="flex items-center gap-4 bg-white/[0.03] border border-white/10 p-3 rounded-xl shrink-0">
+                        <div class="text-left sm:text-right">
                             <div class="text-[10px] uppercase tracking-wider text-gray-400 font-mono font-bold">Security Health Score</div>
                             <div class="text-3xl font-black font-mono ${score >= 75 ? 'text-emerald-400' : score >= 50 ? 'text-yellow-400' : 'text-red-400'}">
                                 ${score}<span class="text-sm text-gray-500 font-normal"> / 100</span>
                             </div>
+                            ${scoreSubtitleHtml}
                         </div>
                     </div>
                 </div>
@@ -2093,7 +2157,10 @@ jobs:
                     </div>
                     <div class="p-3 bg-white/[0.02] border border-white/5 rounded-xl">
                         <div class="text-[10px] text-gray-400 uppercase font-mono font-bold">Total Flaws</div>
-                        <div class="text-xl font-bold font-mono ${summary.total_vulnerabilities > 0 ? 'text-red-400' : 'text-emerald-400'} mt-1">${summary.total_vulnerabilities || 0}</div>
+                        <div class="text-xl font-bold font-mono ${activeCount > 0 ? 'text-red-400' : 'text-emerald-400'} mt-1">
+                            ${totalCount}
+                            ${suppCount > 0 ? `<span class="text-xs font-normal text-slate-400"> (${activeCount} active, ${suppCount} supp.)</span>` : ''}
+                        </div>
                     </div>
                     <div class="p-3 bg-red-950/20 border border-red-500/20 rounded-xl">
                         <div class="text-[10px] text-red-400 uppercase font-mono font-bold">Critical</div>
@@ -2149,10 +2216,19 @@ jobs:
         } else {
             html += `
                 <div class="mb-6">
-                    <div class="flex items-center justify-between mb-4">
+                    <div class="flex items-center justify-between mb-4 flex-wrap gap-2">
                         <h3 class="text-lg font-bold text-white font-mono flex items-center gap-2">
-                            <svg class="w-5 h-5 text-red-400" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M12 9v2m0 4h.01m-6.938 4h13.856c1.54 0 2.502-1.667 1.732-3L13.732 4c-.77-1.333-2.694-1.333-3.464 0L3.34 16c-.77 1.333.192 3 1.732 3z"></path></svg>
+                            ${activeCount > 0
+                                ? `<svg class="w-5 h-5 text-red-400" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M12 9v2m0 4h.01m-6.938 4h13.856c1.54 0 2.502-1.667 1.732-3L13.732 4c-.77-1.333-2.694-1.333-3.464 0L3.34 16c-.77 1.333.192 3 1.732 3z"></path></svg>`
+                                : `<svg class="w-5 h-5 text-emerald-400" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M9 12l2 2 4-4m5.618-4.016A11.955 11.955 0 0112 2.944a11.955 11.955 0 01-8.618 3.04A12.02 12.02 0 003 9c0 5.591 3.824 10.29 9 11.622 5.176-1.332 9-6.03 9-11.622 0-1.042-.133-2.052-.382-3.016z"></path></svg>`
+                            }
                             Identified Vulnerabilities (${findings.length})
+                            ${activeCount > 0 && suppCount > 0
+                                ? `<span class="text-xs font-mono font-normal text-slate-300 ml-2">(${activeCount} Active, ${suppCount} Suppressed)</span>`
+                                : (activeCount === 0 && suppCount > 0
+                                    ? `<span class="text-xs font-mono font-normal text-emerald-400/90 ml-2">(${suppCount} Suppressed · 0 Active)</span>`
+                                    : '')
+                            }
                         </h3>
                         <span class="text-xs text-gray-400 font-mono">Ranked by Severity & Confidence</span>
                     </div>
@@ -2160,82 +2236,169 @@ jobs:
             `;
 
             findings.forEach((f) => {
-                const sevColor = f.severity === 'CRITICAL' 
-                    ? 'bg-red-500/20 text-red-400 border-red-500/40'
-                    : f.severity === 'HIGH'
-                    ? 'bg-orange-500/20 text-orange-400 border-orange-500/40'
-                    : 'bg-yellow-500/20 text-yellow-400 border-yellow-500/40';
+                const isSuppressed = Boolean(f.suppressed);
 
-                const confColor = f.confidence_label === 'CONFIRMED'
-                    ? 'bg-emerald-500/20 text-emerald-400 border-emerald-500/40'
-                    : 'bg-amber-500/20 text-amber-400 border-amber-500/40';
-
-                html += `
-                    <div class="p-6 rounded-2xl bg-slate-900/80 border border-white/10 hover:border-white/20 transition-all shadow-xl">
-                        <div class="flex flex-col sm:flex-row justify-between items-start sm:items-center gap-3 mb-4">
-                            <div class="flex items-center gap-3 flex-wrap">
-                                <span class="text-xs font-mono font-bold text-gray-400 bg-white/5 px-2.5 py-1 rounded border border-white/10">
-                                    ${escapeHtml(f.id)}
-                                </span>
-                                <span class="text-base font-bold text-white font-mono">
-                                    ${escapeHtml((f.category || '').replace(/_/g, ' '))}
-                                </span>
-                                <span class="text-xs font-mono font-bold px-2.5 py-0.5 rounded-full border ${sevColor}">
-                                    ${escapeHtml(f.severity)}
-                                </span>
-                                <span class="text-xs font-mono font-bold px-2.5 py-0.5 rounded-full border border-cyan-500/30 bg-cyan-500/10 text-cyan-400">
-                                    ${escapeHtml(f.cwe)}
-                                </span>
-                            </div>
-                            <div>
-                                <span class="text-xs font-mono font-bold px-2.5 py-1 rounded-full border ${confColor} flex items-center gap-1.5">
-                                    <span class="w-1.5 h-1.5 rounded-full ${f.confidence_label === 'CONFIRMED' ? 'bg-emerald-400' : 'bg-amber-400'} animate-pulse"></span>
-                                    ${escapeHtml(f.confidence_label)} (${Math.round((f.confidence || 1.0) * 100)}%)
-                                </span>
-                            </div>
-                        </div>
-
-                        <!-- Flow Trace Pipeline -->
-                        <div class="my-3 p-3.5 rounded-xl bg-[#040814] border border-cyan-500/20 font-mono text-xs text-cyan-300">
-                            <div class="text-[10px] uppercase font-bold text-gray-400 tracking-widest mb-1.5">Data-Flow Trace</div>
-                            <div class="flex items-center gap-2 flex-wrap text-xs font-semibold">
-                                ${(f.flow_trace || []).map((step, sIdx) => {
-                                    const isSource = sIdx === 0;
-                                    const isSink = sIdx === (f.flow_trace.length - 1);
-                                    const badgeStyle = isSource 
-                                        ? 'bg-blue-500/20 text-blue-300 border-blue-500/40'
-                                        : isSink
-                                        ? 'bg-red-500/20 text-red-300 border-red-500/40 font-bold'
-                                        : 'bg-slate-800 text-gray-300 border-slate-700';
-                                    return `<span class="px-2.5 py-1 rounded-md border ${badgeStyle}">${escapeHtml(step)}</span>` +
-                                        (!isSink ? `<span class="text-gray-500 font-bold">➔</span>` : '');
-                                }).join(' ')}
-                            </div>
-                        </div>
-
-                        <!-- Code Snippet -->
-                        ${f.code_snippet ? `
-                            <div class="my-3">
-                                <div class="flex items-center justify-between text-[11px] font-mono text-gray-400 mb-1 px-1">
-                                    <span>${escapeHtml(f.file || 'target.py')}</span>
-                                    <span class="text-red-400">Line ${f.line_number}</span>
+                if (isSuppressed) {
+                    // UI RULE 3: Suppressed finding card — muted background & dashed border without fading child text
+                    html += `
+                        <div class="p-6 rounded-2xl bg-[#090e1a] border border-dashed border-slate-700/90 shadow-lg">
+                            <div class="flex flex-col sm:flex-row justify-between items-start sm:items-center gap-3 mb-4">
+                                <div class="flex items-center gap-2.5 flex-wrap">
+                                    <span class="inline-flex items-center w-fit text-xs font-mono font-bold text-gray-400 bg-white/5 px-2.5 py-1 rounded border border-white/10">
+                                        ${escapeHtml(f.id)}
+                                    </span>
+                                    <span class="inline-flex items-center gap-1.5 w-fit text-xs font-mono font-extrabold px-2.5 py-0.5 rounded-full border border-slate-600 bg-slate-800 text-slate-200">
+                                        <span class="w-1.5 h-1.5 rounded-full bg-slate-400"></span>
+                                        SUPPRESSED
+                                    </span>
+                                    <span class="text-base font-bold text-gray-300 font-mono">
+                                        ${escapeHtml((f.category || '').replace(/_/g, ' '))}
+                                    </span>
+                                    <span class="inline-flex items-center w-fit text-xs font-mono font-medium px-2.5 py-0.5 rounded-full border border-slate-700 bg-slate-800/60 text-slate-400 line-through">
+                                        ${escapeHtml(f.severity)}
+                                    </span>
+                                    <span class="inline-flex items-center w-fit text-xs font-mono font-bold px-2.5 py-0.5 rounded-full border border-slate-700 bg-slate-800/50 text-slate-300">
+                                        ${escapeHtml(f.cwe)}
+                                    </span>
                                 </div>
-                                <div class="p-3 rounded-xl bg-black/60 border border-red-500/30 text-red-300 font-mono text-xs overflow-x-auto">
-                                    <code><span class="text-gray-500 mr-3 select-none">${f.line_number} |</span>${escapeHtml(f.code_snippet)}</code>
+                                <div>
+                                    <span class="inline-flex items-center w-fit text-xs font-mono px-2.5 py-1 rounded-full border border-slate-700/60 bg-slate-800/40 text-slate-400">
+                                        ${escapeHtml(f.confidence_label)} (${Math.round((f.confidence || 1.0) * 100)}%)
+                                    </span>
                                 </div>
                             </div>
-                        ` : ''}
 
-                        <!-- Prescriptive Remediation Box -->
-                        <div class="mt-4 p-4 rounded-xl bg-emerald-950/20 border border-emerald-500/30 text-xs font-mono">
-                            <div class="flex items-center gap-2 text-emerald-400 font-bold uppercase tracking-wider text-[11px] mb-1.5">
-                                <svg class="w-4 h-4" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M9 12l2 2 4-4m5.618-4.016A11.955 11.955 0 0112 2.944a11.955 11.955 0 01-8.618 3.04A12.02 12.02 0 003 9c0 5.591 3.824 10.29 9 11.622 5.176-1.332 9-6.03 9-11.622 0-1.042-.133-2.052-.382-3.016z"></path></svg>
-                                Prescriptive Remediation & Patch Advice
+                            <!-- Inline Comment Suppression Justification Box -->
+                            <div class="my-3 p-3.5 rounded-xl bg-slate-950/90 border border-slate-700/80 font-mono text-xs text-slate-200">
+                                <div class="flex items-center gap-1.5 text-slate-400 font-bold uppercase tracking-wider text-[11px] mb-1">
+                                    <svg class="w-3.5 h-3.5 text-slate-400" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M13 16h-1v-4h-1m1-4h.01M21 12a9 9 0 11-18 0 9 9 0 0118 0z"></path></svg>
+                                    Inline Comment Suppression
+                                </div>
+                                <div class="text-slate-200 pl-5">
+                                    <span class="text-slate-400 font-bold">Reason:</span> "${escapeHtml(f.suppression_justification || 'Suppressed via in-source comment')}"
+                                </div>
                             </div>
-                            <p class="text-gray-300 leading-relaxed">${escapeHtml(f.remediation || '')}</p>
+
+                            <!-- Flow Trace Pipeline (Preserved Technical Evidence) -->
+                            <div class="my-3 p-3.5 rounded-xl bg-[#040814] border border-slate-700/60 font-mono text-xs text-slate-300">
+                                <div class="text-[10px] uppercase font-bold text-gray-400 tracking-widest mb-1.5">Data-Flow Trace</div>
+                                <div class="flex items-center gap-2 flex-wrap text-xs font-semibold">
+                                    ${(f.flow_trace || []).map((step, sIdx) => {
+                                        const isSource = sIdx === 0;
+                                        const isSink = sIdx === (f.flow_trace.length - 1);
+                                        const badgeStyle = isSource
+                                            ? 'bg-blue-500/10 text-blue-300/80 border-blue-500/30'
+                                            : isSink
+                                            ? 'bg-red-500/10 text-red-300/80 border-red-500/30 font-bold'
+                                            : 'bg-slate-800 text-gray-400 border-slate-700';
+                                        return `<span class="inline-flex items-center px-2.5 py-1 rounded-md border ${badgeStyle}">${escapeHtml(step)}</span>` +
+                                            (!isSink ? `<span class="text-gray-500 font-bold">➔</span>` : '');
+                                    }).join(' ')}
+                                </div>
+                            </div>
+
+                            <!-- Code Snippet (Preserved Technical Evidence) -->
+                            ${f.code_snippet ? `
+                                <div class="my-3">
+                                    <div class="flex items-center justify-between text-[11px] font-mono text-gray-400 mb-1 px-1">
+                                        <span>${escapeHtml(f.file || 'target.py')}</span>
+                                        <span class="text-slate-400">Line ${f.line_number}</span>
+                                    </div>
+                                    <div class="p-3 rounded-xl bg-black/60 border border-slate-700/60 text-slate-300 font-mono text-xs overflow-x-auto">
+                                        <code><span class="text-gray-500 mr-3 select-none">${f.line_number} |</span>${escapeHtml(f.code_snippet)}</code>
+                                    </div>
+                                </div>
+                            ` : ''}
+
+                            <!-- Prescriptive Remediation Box (Preserved Technical Evidence) -->
+                            <div class="mt-4 p-4 rounded-xl bg-slate-950/40 border border-slate-700/60 text-xs font-mono">
+                                <div class="flex items-center gap-2 text-slate-300 font-bold uppercase tracking-wider text-[11px] mb-1.5">
+                                    <svg class="w-4 h-4 text-slate-400" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M9 12l2 2 4-4m5.618-4.016A11.955 11.955 0 0112 2.944a11.955 11.955 0 01-8.618 3.04A12.02 12.02 0 003 9c0 5.591 3.824 10.29 9 11.622 5.176-1.332 9-6.03 9-11.622 0-1.042-.133-2.052-.382-3.016z"></path></svg>
+                                    Prescriptive Remediation & Patch Advice
+                                </div>
+                                <p class="text-slate-400 leading-relaxed">${escapeHtml(f.remediation || '')}</p>
+                            </div>
                         </div>
-                    </div>
-                `;
+                    `;
+                } else {
+                    // UI RULE 4: Active findings remain the primary prominent security signal
+                    const sevColor = f.severity === 'CRITICAL'
+                        ? 'bg-red-500/20 text-red-400 border-red-500/40'
+                        : f.severity === 'HIGH'
+                        ? 'bg-orange-500/20 text-orange-400 border-orange-500/40'
+                        : 'bg-yellow-500/20 text-yellow-400 border-yellow-500/40';
+
+                    const confColor = f.confidence_label === 'CONFIRMED'
+                        ? 'bg-emerald-500/20 text-emerald-400 border-emerald-500/40'
+                        : 'bg-amber-500/20 text-amber-400 border-amber-500/40';
+
+                    html += `
+                        <div class="p-6 rounded-2xl bg-slate-900/80 border border-white/10 hover:border-white/20 transition-all shadow-xl">
+                            <div class="flex flex-col sm:flex-row justify-between items-start sm:items-center gap-3 mb-4">
+                                <div class="flex items-center gap-2.5 flex-wrap">
+                                    <span class="inline-flex items-center w-fit text-xs font-mono font-bold text-gray-400 bg-white/5 px-2.5 py-1 rounded border border-white/10">
+                                        ${escapeHtml(f.id)}
+                                    </span>
+                                    <span class="text-base font-bold text-white font-mono">
+                                        ${escapeHtml((f.category || '').replace(/_/g, ' '))}
+                                    </span>
+                                    <span class="inline-flex items-center w-fit text-xs font-mono font-bold px-2.5 py-0.5 rounded-full border ${sevColor}">
+                                        ${escapeHtml(f.severity)}
+                                    </span>
+                                    <span class="inline-flex items-center w-fit text-xs font-mono font-bold px-2.5 py-0.5 rounded-full border border-cyan-500/30 bg-cyan-500/10 text-cyan-400">
+                                        ${escapeHtml(f.cwe)}
+                                    </span>
+                                </div>
+                                <div>
+                                    <span class="inline-flex items-center gap-1.5 w-fit text-xs font-mono font-bold px-2.5 py-1 rounded-full border ${confColor}">
+                                        <span class="w-1.5 h-1.5 rounded-full ${f.confidence_label === 'CONFIRMED' ? 'bg-emerald-400' : 'bg-amber-400'} animate-pulse"></span>
+                                        ${escapeHtml(f.confidence_label)} (${Math.round((f.confidence || 1.0) * 100)}%)
+                                    </span>
+                                </div>
+                            </div>
+
+                            <!-- Flow Trace Pipeline -->
+                            <div class="my-3 p-3.5 rounded-xl bg-[#040814] border border-cyan-500/20 font-mono text-xs text-cyan-300">
+                                <div class="text-[10px] uppercase font-bold text-gray-400 tracking-widest mb-1.5">Data-Flow Trace</div>
+                                <div class="flex items-center gap-2 flex-wrap text-xs font-semibold">
+                                    ${(f.flow_trace || []).map((step, sIdx) => {
+                                        const isSource = sIdx === 0;
+                                        const isSink = sIdx === (f.flow_trace.length - 1);
+                                        const badgeStyle = isSource
+                                            ? 'bg-blue-500/20 text-blue-300 border-blue-500/40'
+                                            : isSink
+                                            ? 'bg-red-500/20 text-red-300 border-red-500/40 font-bold'
+                                            : 'bg-slate-800 text-gray-300 border-slate-700';
+                                        return `<span class="inline-flex items-center px-2.5 py-1 rounded-md border ${badgeStyle}">${escapeHtml(step)}</span>` +
+                                            (!isSink ? `<span class="text-gray-500 font-bold">➔</span>` : '');
+                                    }).join(' ')}
+                                </div>
+                            </div>
+
+                            <!-- Code Snippet -->
+                            ${f.code_snippet ? `
+                                <div class="my-3">
+                                    <div class="flex items-center justify-between text-[11px] font-mono text-gray-400 mb-1 px-1">
+                                        <span>${escapeHtml(f.file || 'target.py')}</span>
+                                        <span class="text-red-400">Line ${f.line_number}</span>
+                                    </div>
+                                    <div class="p-3 rounded-xl bg-black/60 border border-red-500/30 text-red-300 font-mono text-xs overflow-x-auto">
+                                        <code><span class="text-gray-500 mr-3 select-none">${f.line_number} |</span>${escapeHtml(f.code_snippet)}</code>
+                                    </div>
+                                </div>
+                            ` : ''}
+
+                            <!-- Prescriptive Remediation Box -->
+                            <div class="mt-4 p-4 rounded-xl bg-emerald-950/20 border border-emerald-500/30 text-xs font-mono">
+                                <div class="flex items-center gap-2 text-emerald-400 font-bold uppercase tracking-wider text-[11px] mb-1.5">
+                                    <svg class="w-4 h-4" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M9 12l2 2 4-4m5.618-4.016A11.955 11.955 0 0112 2.944a11.955 11.955 0 01-8.618 3.04A12.02 12.02 0 003 9c0 5.591 3.824 10.29 9 11.622 5.176-1.332 9-6.03 9-11.622 0-1.042-.133-2.052-.382-3.016z"></path></svg>
+                                    Prescriptive Remediation & Patch Advice
+                                </div>
+                                <p class="text-gray-300 leading-relaxed">${escapeHtml(f.remediation || '')}</p>
+                            </div>
+                        </div>
+                    `;
+                }
             });
 
             html += `
