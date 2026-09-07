@@ -24,6 +24,7 @@ import re
 import json
 import ast
 from ast_scanner import TaintTracker, SINK_REGISTRY, SOURCE_REGISTRY, SANITIZER_REGISTRY
+from sarif_adapter import to_sarif
 
 try:
     from rag_engine.vector_db import CodeContextEngine
@@ -1755,6 +1756,8 @@ async def scan_code(request: Request, authorization: str = Header(None)):
             pass
             
     results = execute_tcs_ast_scan(normalized_files)
+    if str(data.get("format", "")).lower() == "sarif":
+        return to_sarif(results)
     return results
 
 @app.get("/api/scan/status/{job_id}")
