@@ -260,6 +260,15 @@ def to_sarif(tcs_scan_result: Dict[str, Any]) -> Dict[str, Any]:
         if code_flows:
             result_obj["codeFlows"] = code_flows
 
+        if f.get("suppressed"):
+            supp_entry: Dict[str, Any] = {
+                "kind": f.get("suppression_kind") or "inSource",
+                "status": "accepted"
+            }
+            if f.get("suppression_justification") is not None:
+                supp_entry["justification"] = f.get("suppression_justification")
+            result_obj["suppressions"] = [supp_entry]
+
         result_obj["properties"] = {
             "confidence": f.get("confidence", 1.0),
             "confidenceLabel": f.get("confidence_label", "CONFIRMED"),

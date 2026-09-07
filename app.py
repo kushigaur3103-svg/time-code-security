@@ -25,6 +25,7 @@ import json
 import ast
 from ast_scanner import TaintTracker, SINK_REGISTRY, SOURCE_REGISTRY, SANITIZER_REGISTRY
 from sarif_adapter import to_sarif
+from suppression_resolver import resolve_suppressions
 
 try:
     from rag_engine.vector_db import CodeContextEngine
@@ -1622,19 +1623,29 @@ def execute_tcs_ast_scan(normalized_files: Dict[str, str]) -> Dict[str, Any]:
         })
         vuln_idx += 1
         
+    # Resolve in-source suppression directives (e.g. # tcs:ignore CWE-89)
+    findings = resolve_suppressions(findings, normalized_files)
+
     safe_patterns = detect_safe_patterns(normalized_files)
     
     total_files = len(normalized_files)
     lines_scanned = sum(len(c.splitlines()) for c in normalized_files.values())
     total_vulnerabilities = len(findings)
-    critical_count = sum(1 for f in findings if f["severity"] == "CRITICAL")
-    high_count = sum(1 for f in findings if f["severity"] == "HIGH")
-    medium_count = sum(1 for f in findings if f["severity"] == "MEDIUM")
-    low_count = sum(1 for f in findings if f["severity"] == "LOW")
+
+    active_findings = [f for f in findings if not f.get("suppressed", False)]
+    suppressed_findings = [f for f in findings if f.get("suppressed", False)]
+    active_vulnerabilities = len(active_findings)
+    suppressed_vulnerabilities = len(suppressed_findings)
+
+    # Calculate severity counts and penalties strictly from ACTIVE (non-suppressed) findings
+    critical_count = sum(1 for f in active_findings if f["severity"] == "CRITICAL")
+    high_count = sum(1 for f in active_findings if f["severity"] == "HIGH")
+    medium_count = sum(1 for f in active_findings if f["severity"] == "MEDIUM")
+    low_count = sum(1 for f in active_findings if f["severity"] == "LOW")
     
     security_score = max(0, 100 - (critical_count * 25 + high_count * 15 + medium_count * 5))
     
-    if total_vulnerabilities == 0:
+    if active_vulnerabilities == 0:
         risk_level = "CLEAN"
         risk_message = "NO VULNERABILITIES DETECTED within current TCS analysis scope (6 supported CWE classes)."
     elif critical_count > 0:
@@ -1687,6 +1698,8 @@ def execute_tcs_ast_scan(normalized_files: Dict[str, str]) -> Dict[str, Any]:
             "total_files": total_files,
             "lines_scanned": lines_scanned,
             "total_vulnerabilities": total_vulnerabilities,
+            "active_vulnerabilities": active_vulnerabilities,
+            "suppressed_vulnerabilities": suppressed_vulnerabilities,
             "critical_count": critical_count,
             "high_count": high_count,
             "medium_count": medium_count,
