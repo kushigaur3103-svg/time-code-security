@@ -72,6 +72,14 @@ class SinkRecord:
 
 SOURCE_REGISTRY = {
     "request.args.get": {"operation": "HTTP_QUERY_PARAMETER_ACCESS", "source_type": "USER_CONTROLLED"},
+    "request.args.getlist": {"operation": "HTTP_QUERY_PARAMETER_ACCESS", "source_type": "USER_CONTROLLED"},
+    "request.form.get": {"operation": "HTTP_BODY_PARAMETER_ACCESS", "source_type": "USER_CONTROLLED"},
+    "request.form.getlist": {"operation": "HTTP_BODY_PARAMETER_ACCESS", "source_type": "USER_CONTROLLED"},
+    "request.values.get": {"operation": "HTTP_PARAMETER_ACCESS", "source_type": "USER_CONTROLLED"},
+    "request.values.getlist": {"operation": "HTTP_PARAMETER_ACCESS", "source_type": "USER_CONTROLLED"},
+    "request.get_json": {"operation": "HTTP_BODY_JSON_ACCESS", "source_type": "USER_CONTROLLED"},
+    "request.headers.get": {"operation": "HTTP_HEADER_ACCESS", "source_type": "USER_CONTROLLED"},
+    "request.cookies.get": {"operation": "HTTP_COOKIE_ACCESS", "source_type": "USER_CONTROLLED"},
 }
 
 SANITIZER_REGISTRY = {
@@ -210,8 +218,13 @@ class TaintTracker:
     def is_source_call(self, node: ast.AST, scope_id: str = "") -> bool:
         if not isinstance(node, ast.Call): return False
         canon = self.resolve_canonical_name(node.func, scope_id) if scope_id else dotted_name(node.func)
-        if canon in SOURCE_REGISTRY: return True
-        return dotted_name(node.func) in SOURCE_REGISTRY
+        if canon:
+            if canon in SOURCE_REGISTRY: return True
+            if canon.startswith("flask.") and canon[6:] in SOURCE_REGISTRY: return True
+        name = dotted_name(node.func)
+        if name in SOURCE_REGISTRY: return True
+        if name and name.startswith("flask.") and name[6:] in SOURCE_REGISTRY: return True
+        return False
 
     def get_or_create_source(self, node: ast.Call, file_path: str, scope_id: str = "") -> SecurityNode:
         loc = location(node, file_path)
@@ -221,6 +234,12 @@ class TaintTracker:
         canon_name = self.resolve_canonical_name(node.func, scope_id) if scope_id else None
         name = dotted_name(node.func)
         lookup_name = canon_name if (canon_name and canon_name in SOURCE_REGISTRY) else name
+        if lookup_name not in SOURCE_REGISTRY and canon_name and canon_name.startswith("flask."):
+            unq = canon_name[6:]
+            if unq in SOURCE_REGISTRY: lookup_name = unq
+        if lookup_name not in SOURCE_REGISTRY and name and name.startswith("flask."):
+            unq = name[6:]
+            if unq in SOURCE_REGISTRY: lookup_name = unq
         meta = SOURCE_REGISTRY.get(lookup_name, {})
         source = SecurityNode(
             id=source_id, node_type=NodeType.SOURCE, symbol=f"{lookup_name}(...)",
@@ -777,6 +796,17 @@ class TaintTracker:
             attr_name = dotted_name(node)
             if attr_name and self.is_var_contained(attr_name, scope_id, current_lineno, sink, visited):
                 return TaintValue(state=TaintState.CLEAN, confidence=1.0, path=[f"{file_name}:{attr_name}", "path_containment_proven"], last_operation="path_containment_proven")
+            canon_attr = self.resolve_canonical_name(node, scope_id) or attr_name
+            norm_attr = canon_attr[6:] if (canon_attr and canon_attr.startswith("flask.")) else canon_attr
+            if norm_attr in ("request.data", "request.json", "request.query_string") or (attr_name in ("request.data", "request.json", "request.query_string")):
+                loc = location(node, file_name)
+                for existing in self.sources:
+                    if existing.location == loc:
+                        return TaintValue(state=TaintState.TAINTED, source_id=existing.id, confidence=1.0, path=[existing.id], last_operation=norm_attr)
+                source_id = self.next_source_id()
+                src = SecurityNode(id=source_id, node_type=NodeType.SOURCE, symbol=norm_attr, operation="HTTP_BODY_ACCESS", location=loc, metadata={"source_type": "USER_CONTROLLED"})
+                self.sources.append(src)
+                return TaintValue(state=TaintState.TAINTED, source_id=source_id, confidence=1.0, path=[source_id], last_operation=norm_attr)
 
         if isinstance(node, ast.Name):
             if self.is_var_contained(node.id, scope_id, current_lineno, sink, visited):
@@ -897,6 +927,12 @@ class TaintTracker:
                 first_tainted = next((arg for arg in arg_values if arg.state != TaintState.CLEAN), None)
                 if first_tainted:
                     return TaintValue(state=TaintState.TAINTED, source_id=first_tainted.source_id, confidence=0.50, path=[*first_tainted.path, f"{file_name}:{function_name}()"], last_operation=f"irrelevant_sanitizer:{function_name}")
+
+            # Receiver .get() / .getlist() / .pop() on tainted dictionary or object (e.g. payload = request.get_json(); payload.get("x"))
+            if isinstance(node.func, ast.Attribute) and node.func.attr in ("get", "getlist", "pop"):
+                recv_taint = self.resolve_expression(node.func.value, sink, scope_id, current_lineno, visited.copy(), call_context)
+                if recv_taint.state != TaintState.CLEAN and recv_taint.source_id:
+                    return TaintValue(state=recv_taint.state, source_id=recv_taint.source_id, confidence=recv_taint.confidence, path=[*recv_taint.path, f"{file_name}:{node.func.attr}()"], last_operation=f"{node.func.attr}()")
 
             # Format calls on string literals or templates
             if isinstance(node.func, ast.Attribute) and node.func.attr == "format" and self._is_string_expr(node.func.value, scope_id):
@@ -1079,6 +1115,25 @@ class TaintTracker:
 
             first_tainted = tainted_args[0]
             return TaintValue(state=TaintState.UNKNOWN, source_id=first_tainted.source_id, confidence=0.50, path=[*first_tainted.path, f"{file_name}:{function_name}()"], last_operation=f"unknown_wrapper:{function_name}")
+
+        if isinstance(node, ast.Subscript):
+            val_taint = self.resolve_expression(node.value, sink, scope_id, current_lineno, visited.copy(), call_context)
+            if val_taint.state != TaintState.CLEAN and val_taint.source_id:
+                return TaintValue(state=val_taint.state, source_id=val_taint.source_id, confidence=val_taint.confidence, path=[*val_taint.path, f"{file_name}:subscript"], last_operation="subscript")
+            canon_val = self.resolve_canonical_name(node.value, scope_id) or dotted_name(node.value)
+            norm_val = canon_val[6:] if (canon_val and canon_val.startswith("flask.")) else canon_val
+            dname_val = dotted_name(node.value)
+            if norm_val in ("request.args", "request.form", "request.values", "request.headers", "request.cookies") or dname_val in ("request.args", "request.form", "request.values", "request.headers", "request.cookies"):
+                loc = location(node, file_name)
+                for existing in self.sources:
+                    if existing.location == loc:
+                        return TaintValue(state=TaintState.TAINTED, source_id=existing.id, confidence=1.0, path=[existing.id], last_operation=f"{norm_val}[]")
+                source_id = self.next_source_id()
+                src = SecurityNode(id=source_id, node_type=NodeType.SOURCE, symbol=f"{norm_val}[...]", operation="HTTP_PARAMETER_ACCESS", location=loc, metadata={"source_type": "USER_CONTROLLED"})
+                self.sources.append(src)
+                return TaintValue(state=TaintState.TAINTED, source_id=source_id, confidence=1.0, path=[source_id], last_operation=f"{norm_val}[]")
+            if val_taint.state == TaintState.CLEAN:
+                return TaintValue(state=TaintState.CLEAN, confidence=1.0, last_operation="subscript")
 
         if isinstance(node, (ast.Constant, ast.List, ast.Tuple, ast.Set, ast.Dict)): return TaintValue(state=TaintState.CLEAN, confidence=1.0, last_operation="constant")
         if isinstance(node, ast.BinOp):
