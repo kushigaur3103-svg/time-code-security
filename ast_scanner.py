@@ -4,6 +4,7 @@ import re
 from dataclasses import dataclass, field
 from enum import Enum
 from typing import Optional
+from rule_engine import match_sink_rule, check_sink_safety_rules, get_rule
 
 class NodeType(str, Enum):
     SOURCE = "source"
@@ -300,42 +301,42 @@ class TaintTracker:
     def is_sink_call(self, node: ast.AST, scope_id: str = "", lineno: int = 0) -> bool:
         if not isinstance(node, ast.Call): return False
         call_lineno = lineno or getattr(node, "lineno", 0)
-        canon = self.resolve_canonical_name(node.func, scope_id) if scope_id else dotted_name(node.func)
+        name = dotted_name(node.func) or ""
+        canon = self.resolve_canonical_name(node.func, scope_id) if scope_id else name
         if canon:
             if canon.startswith("shadowed:"):
                 return False
-            unqualified = canon[6:] if canon.startswith("flask.") else (canon[9:] if canon.startswith("builtins.") else canon)
-            if unqualified in SINK_REGISTRY or canon in SINK_REGISTRY:
-                name = dotted_name(node.func)
-                if name and not name.startswith("builtins.") and not name.startswith("flask.") and scope_id and self._is_builtin_shadowed(name, scope_id, call_lineno):
-                    return False
+            if name and not name.startswith("builtins.") and not name.startswith("flask.") and scope_id and self._is_builtin_shadowed(name, scope_id, call_lineno):
+                return False
+            matched = match_sink_rule(node, name, canon)
+            if matched:
+                if isinstance(node.func, ast.Attribute) and node.func.attr == "render":
+                    if not self._is_jinja_template_expr(node.func.value, scope_id):
+                        return False
                 return True
-            if canon.endswith(".execute"): return True
 
-        name = dotted_name(node.func)
         if name:
             if scope_id and not name.startswith("builtins.") and not name.startswith("flask.") and self._is_builtin_shadowed(name, scope_id, call_lineno):
                 return False
-            unqualified = name[6:] if name.startswith("flask.") else (name[9:] if name.startswith("builtins.") else name)
-            if unqualified in SINK_REGISTRY or name in SINK_REGISTRY: return True
-            if name.endswith(".execute"): return True
+            matched = match_sink_rule(node, name, canon)
+            if matched:
+                if isinstance(node.func, ast.Attribute) and node.func.attr == "render":
+                    if not self._is_jinja_template_expr(node.func.value, scope_id):
+                        return False
+                return True
 
         if isinstance(node.func, ast.Attribute):
             if node.func.attr in {"read_text", "read_bytes", "write_text", "write_bytes"}:
                 return True
             if node.func.attr == "open" and self._is_path_expr(node.func.value, scope_id):
                 return True
-            if node.func.attr == "render":
+            if node.func.attr == "render" and self._is_jinja_template_expr(node.func.value, scope_id):
                 return True
         return False
 
     def check_sink_safety(self, node: ast.Call, sink_name: str) -> bool:
-        if sink_name in ["subprocess.run", "subprocess.call", "subprocess.Popen"]:
-            shell_kw = next((kw.value.value for kw in getattr(node, 'keywords', []) if kw.arg == "shell" and isinstance(kw.value, ast.Constant)), None)
-            if shell_kw is False: return True
-            if shell_kw is None and node.args and isinstance(node.args[0], ast.List): return True
-        if sink_name and sink_name.endswith(".execute"):
-            if len(node.args) > 1 or getattr(node, 'keywords', []): return True
+        if check_sink_safety_rules(node, sink_name):
+            return True
         return False
 
     def get_or_create_sink(self, node: ast.Call, file_path: str, scope_id: str = "") -> SecurityNode:
@@ -345,27 +346,21 @@ class TaintTracker:
         sink_id = self.next_sink_id()
         canon_name = self.resolve_canonical_name(node.func, scope_id) if scope_id else None
         name = dotted_name(node.func) or "sink"
-        lookup_name = canon_name if (canon_name and canon_name in SINK_REGISTRY) else name
-        if lookup_name not in SINK_REGISTRY and canon_name and canon_name.startswith("builtins."):
-            unq = canon_name[9:]
-            if unq in SINK_REGISTRY: lookup_name = unq
-        if lookup_name not in SINK_REGISTRY and name.startswith("builtins."):
-            unq = name[9:]
-            if unq in SINK_REGISTRY: lookup_name = unq
-        if lookup_name not in SINK_REGISTRY and canon_name and canon_name.startswith("flask."):
-            unq = canon_name[6:]
-            if unq in SINK_REGISTRY: lookup_name = unq
-        if lookup_name not in SINK_REGISTRY and name.startswith("flask."):
-            unq = name[6:]
-            if unq in SINK_REGISTRY: lookup_name = unq
-        meta = SINK_REGISTRY.get(lookup_name, {})
-        if not meta and (name.endswith(".execute") or (canon_name and canon_name.endswith(".execute"))):
-            meta = {"operation": "SQL_EXECUTION", "category": "SQL_INJECTION", "cwe": "CWE-89"}
+        matched_rule = match_sink_rule(node, name, canon_name)
+        if matched_rule and isinstance(node.func, ast.Attribute) and node.func.attr == "render":
+            if not self._is_jinja_template_expr(node.func.value, scope_id):
+                matched_rule = None
+        if matched_rule:
+            meta = {"operation": matched_rule.operation, "category": matched_rule.category, "cwe": matched_rule.cwe_id}
+        else:
+            meta = {}
         if not meta and isinstance(node.func, ast.Attribute):
             if node.func.attr in {"read_text", "read_bytes", "write_text", "write_bytes"} or (node.func.attr == "open" and self._is_path_expr(node.func.value, scope_id)):
-                meta = {"operation": "FILE_ACCESS", "category": "PATH_TRAVERSAL", "cwe": "CWE-22"}
-            elif node.func.attr == "render":
-                meta = {"operation": "TEMPLATE_EVALUATION", "category": "SSTI", "cwe": "CWE-1336"}
+                cwe22_rule = get_rule("CWE-22")
+                if cwe22_rule:
+                    meta = {"operation": cwe22_rule.operation, "category": cwe22_rule.category, "cwe": cwe22_rule.cwe_id}
+                else:
+                    meta = {"operation": "FILE_ACCESS", "category": "PATH_TRAVERSAL", "cwe": "CWE-22"}
         sink = SecurityNode(
             id=sink_id, node_type=NodeType.SINK, symbol=canon_name or name,
             operation=meta.get("operation", "UNKNOWN_OPERATION"), location=loc,

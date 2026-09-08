@@ -26,6 +26,7 @@ import ast
 from ast_scanner import TaintTracker, SINK_REGISTRY, SOURCE_REGISTRY, SANITIZER_REGISTRY
 from sarif_adapter import to_sarif
 from suppression_resolver import resolve_suppressions
+from rule_engine import GLOBAL_RULE_REGISTRY
 
 try:
     from rag_engine.vector_db import CodeContextEngine
@@ -1462,6 +1463,9 @@ def background_scan_task(job_id: str, email: str, redacted_code: str, system_pro
         db.close()
 
 def extract_remediation_advice(cwe: str, sink_symbol: str) -> str:
+    rule = GLOBAL_RULE_REGISTRY.get_rule(cwe)
+    if rule and rule.remediation:
+        return rule.remediation
     remediations = {
         "CWE-95": "Avoid passing untrusted input to eval(). Use ast.literal_eval() for parsing Python literals, or parse structured data using json.loads().",
         "CWE-78": "Avoid shell execution with dynamic input. Use subprocess.run() with an argument list and shell=False, e.g., subprocess.run(['cmd', arg], shell=False).",
@@ -1555,7 +1559,10 @@ def execute_tcs_ast_scan(normalized_files: Dict[str, str]) -> Dict[str, Any]:
         confidence_val = float(edge.confidence)
         confidence_label = "CONFIRMED" if confidence_val >= 1.0 else "POTENTIAL"
         
-        if cwe in ["CWE-95", "CWE-78", "CWE-502", "CWE-1336"]:
+        rule = GLOBAL_RULE_REGISTRY.get_rule(cwe)
+        if rule:
+            severity = rule.get_severity(confidence_label)
+        elif cwe in ["CWE-95", "CWE-78", "CWE-502", "CWE-1336"]:
             severity = "CRITICAL" if confidence_label == "CONFIRMED" else "HIGH"
         elif cwe in ["CWE-89", "CWE-22"]:
             severity = "HIGH" if confidence_label == "CONFIRMED" else "MEDIUM"
