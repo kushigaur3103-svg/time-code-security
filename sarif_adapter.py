@@ -293,6 +293,98 @@ def to_sarif(tcs_scan_result: Dict[str, Any]) -> Dict[str, Any]:
 
         results.append(sca_res)
 
+    # ---------------------------------------------------------
+    # Secret Scanning Findings (CWE-798)
+    # ---------------------------------------------------------
+    secret_findings = tcs_scan_result.get("secret_findings", []) if isinstance(tcs_scan_result, dict) else []
+
+    if secret_findings and "CWE-798" not in rule_index_by_id:
+        cwe_798_rule = {
+            "id": "CWE-798",
+            "name": "HardcodedCredentials",
+            "shortDescription": {
+                "text": "Use of Hard-coded Credentials"
+            },
+            "fullDescription": {
+                "text": "The software contains hard-coded credentials, such as a password, token, or cryptographic key, which can be extracted and used to gain unauthorized access."
+            },
+            "defaultConfiguration": {
+                "level": "error"
+            },
+            "properties": {
+                "tags": ["security", "credentials", "cwe-798"]
+            }
+        }
+        rule_index_by_id["CWE-798"] = len(driver_rules)
+        driver_rules.append(cwe_798_rule)
+
+    _SECRET_TYPE_LABELS = {
+        "aws_access_key": "AWS Access Key",
+        "github_token": "GitHub Token",
+        "slack_token": "Slack Token",
+        "private_key": "Private Key",
+        "database_connection_string": "Database Connection String",
+    }
+
+    for item in secret_findings:
+        if hasattr(item, "to_dict"):
+            sf = item.to_dict()
+        elif hasattr(item, "__dict__"):
+            sf = item.__dict__
+        else:
+            sf = dict(item)
+
+        secret_type = getattr(item, "secret_type", sf.get("secret_type", "unknown"))
+        masked_val = getattr(item, "masked_value", sf.get("masked_value", ""))
+        raw_file = getattr(item, "file", sf.get("file", "unknown")) or "unknown"
+        file_uri = str(raw_file).replace("\\", "/")
+        line_num = int(getattr(item, "line_number", sf.get("line_number", 1)) or 1)
+        col_start = int(getattr(item, "column_start", sf.get("column_start", 1)) or 1)
+        col_end = int(getattr(item, "column_end", sf.get("column_end", 1)) or 1)
+        detector = getattr(item, "detector", sf.get("detector", "secret_scanner"))
+        confidence = getattr(item, "confidence", sf.get("confidence", "HIGH"))
+        context = getattr(item, "context", sf.get("context"))
+
+        label = _SECRET_TYPE_LABELS.get(secret_type, secret_type.replace("_", " ").title())
+        msg_text = f"Hardcoded {label} detected: {masked_val}"
+
+        phys_loc = {
+            "artifactLocation": {
+                "uri": file_uri,
+                "uriBaseId": "%SRCROOT%"
+            },
+            "region": {
+                "startLine": line_num,
+                "startColumn": col_start,
+                "endColumn": col_end
+            }
+        }
+        if context:
+            phys_loc["region"]["snippet"] = {"text": context}
+
+        rule_idx = rule_index_by_id.get("CWE-798")
+        sec_res: Dict[str, Any] = {
+            "ruleId": "CWE-798",
+            "level": "error",
+            "message": {
+                "text": msg_text
+            },
+            "locations": [
+                {
+                    "physicalLocation": phys_loc
+                }
+            ],
+            "properties": {
+                "secret_type": secret_type,
+                "detector": detector,
+                "confidence": confidence
+            }
+        }
+        if rule_idx is not None:
+            sec_res["ruleIndex"] = rule_idx
+
+        results.append(sec_res)
+
     sarif_doc: Dict[str, Any] = {
         "$schema": SARIF_SCHEMA_URI,
         "version": SARIF_VERSION,

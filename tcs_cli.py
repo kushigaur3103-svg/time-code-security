@@ -21,6 +21,8 @@ from rule_engine import GLOBAL_RULE_REGISTRY
 from manifest_parser import parse_manifest, DependencyRecord
 from osv_client import OSVClient
 from version_matcher import match_dependencies, SCAFinding
+from secret_scanner import scan_text, SecretFinding
+from secret_filters import filter_findings, FilterConfig
 
 
 IGNORED_DIRS = {
@@ -215,7 +217,12 @@ def execute_tcs_scan(normalized_files: Dict[str, str]) -> Dict[str, Any]:
     }
 
 
-def discover_python_files(target_path: Path, base_dir: Path, sca_active: bool = False) -> Dict[str, str]:
+SECRET_EXTS = {".py", ".env", ".json", ".yaml", ".yml", ".toml", ".ini", ".conf", ".txt"}
+
+
+def discover_python_files(
+    target_path: Path, base_dir: Path, sca_active: bool = False, secrets_active: bool = False
+) -> Dict[str, str]:
     """
     Recursively discovers Python files, ignoring non-code or virtual env folders.
     Returns mapping of POSIX relative paths to text contents.
@@ -226,6 +233,11 @@ def discover_python_files(target_path: Path, base_dir: Path, sca_active: bool = 
     if target_path.is_file():
         if target_path.suffix.lower() != ".py":
             if sca_active and target_path.name.lower() in manifest_names:
+                return {}
+            if secrets_active and (
+                target_path.suffix.lower() in SECRET_EXTS
+                or target_path.name.lower().startswith(".env")
+            ):
                 return {}
             print(f"[ERROR] Target is not a Python file: {target_path}", file=sys.stderr)
             sys.exit(2)
@@ -264,6 +276,30 @@ def discover_python_files(target_path: Path, base_dir: Path, sca_active: bool = 
     return normalized_files
 
 
+def discover_secret_files(target_path: Path, base_dir: Path) -> List[Path]:
+    """
+    Discovers text/configuration files to scan for hardcoded secrets and credentials.
+    Supports .py, .env, .json, .yaml, .yml, .toml, .ini, .conf, .txt.
+    """
+    discovered: List[Path] = []
+
+    if target_path.is_file():
+        if target_path.suffix.lower() in SECRET_EXTS or target_path.name.lower().startswith(".env"):
+            discovered.append(target_path)
+        return discovered
+
+    for root, dirs, files in os.walk(target_path):
+        dirs[:] = [d for d in dirs if d not in IGNORED_DIRS and not d.startswith(".")]
+        for fname in files:
+            p = Path(root) / fname
+            if p.suffix.lower() in SECRET_EXTS or fname.lower().startswith(".env"):
+                if fname != "tcs_cli.py":
+                    discovered.append(p)
+
+    discovered.sort()
+    return discovered
+
+
 def discover_manifest_files(target_path: Path, base_dir: Path) -> List[Path]:
     """
     Discovers supported dependency manifests within the target scope.
@@ -291,7 +327,9 @@ def format_table(
     results: Dict[str, Any],
     findings: List[Dict[str, Any]],
     sca_findings: Optional[List[Any]] = None,
-    sca_enabled: bool = False
+    sca_enabled: bool = False,
+    secret_findings: Optional[List[Any]] = None,
+    secrets_enabled: bool = False
 ) -> str:
     """Renders human-readable tabular scan report for console display."""
     summary = results.get("summary", {})
@@ -301,8 +339,9 @@ def format_table(
     risk_level = summary.get("risk_level", "CLEAN")
 
     sca_list = [f.to_dict() if hasattr(f, "to_dict") else dict(f) for f in (sca_findings or [])] if sca_enabled else []
+    sec_list = [dataclasses.asdict(f) if hasattr(f, "__dataclass_fields__") else (f.to_dict() if hasattr(f, "to_dict") else dict(f)) for f in (secret_findings or [])] if secrets_enabled else []
 
-    if not sca_enabled:
+    if not sca_enabled and not secrets_enabled:
         lines = [
             "=" * 88,
             "TimeCodeSecurity (TCS) AST Security Scan Report",
@@ -351,20 +390,35 @@ def format_table(
         return "\n".join(lines)
 
     # ---------------------------------------------------------
-    # Unified SAST + SCA Report
+    # Unified Multi-Engine Report (SAST, SCA, Secrets)
     # ---------------------------------------------------------
     sep = "=" * 105
     dash_sep = "-" * 105
+
+    title_parts = ["SAST"]
+    if sca_enabled:
+        title_parts.append("SCA")
+    if secrets_enabled:
+        title_parts.append("SECRETS")
+    title_str = " + ".join(title_parts)
+
+    count_parts = [f"Total SAST Findings: {len(findings)}"]
+    if sca_enabled:
+        count_parts.append(f"Total SCA Findings: {len(sca_list)}")
+    if secrets_enabled:
+        count_parts.append(f"Total Secret Findings: {len(sec_list)}")
+    count_str = " | ".join(count_parts)
+
     lines = [
         sep,
-        "TimeCodeSecurity (TCS) Security Scan Report (SAST + SCA)",
+        f"TimeCodeSecurity (TCS) Security Scan Report ({title_str})",
         sep,
         f"Scanned Files: {total_files} | Total Lines: {lines_scanned} | Security Score: {score}/100 ({risk_level})",
-        f"Total SAST Findings: {len(findings)} | Total SCA Findings: {len(sca_list)}",
+        count_str,
         dash_sep
     ]
 
-    if not findings and not sca_list:
+    if not findings and not sca_list and not sec_list:
         lines.append("No security vulnerabilities detected.")
         lines.append(sep)
         return "\n".join(lines)
@@ -395,6 +449,18 @@ def format_table(
             fixed = str(sf.get("fixed_version") or "-")[:10]
             loc_str = f"{sf.get('manifest_source', '')}:{sf.get('line_number') or '?'}"[:20]
             lines.append(f"{pkg:<16} | {status:<11} | {ver_spec:<18} | {vid:<16} | {sev:<8} | {fixed:<10} | {loc_str:<20}")
+
+    if sec_list:
+        lines.append("\n[SECRET SCANNING FINDINGS (CWE-798)]")
+        lines.append(f"{'TYPE':<18} | {'MASKED VALUE':<24} | {'LOCATION':<22} | {'CONFIDENCE':<10} | {'DETECTOR':<16}")
+        lines.append(dash_sep)
+        for sf in sec_list:
+            stype = str(sf.get("secret_type", ""))[:18]
+            mv = str(sf.get("masked_value", ""))[:24]
+            loc = f"{sf.get('file', '')}:{sf.get('line_number', '')}"[:22]
+            conf = str(sf.get("confidence", "HIGH"))[:10]
+            det = str(sf.get("detector", ""))[:16]
+            lines.append(f"{stype:<18} | {mv:<24} | {loc:<22} | {conf:<10} | {det:<16}")
 
     lines.append(dash_sep)
     lines.append("\nFINDING DETAILS:")
@@ -442,6 +508,26 @@ def format_table(
             lines.append(f"  Location:       {loc}")
             lines.append(f"  Summary:        {summary}")
 
+    if sec_list:
+        for sf in sec_list:
+            stype = sf.get("secret_type", "")
+            mv = sf.get("masked_value", "")
+            loc = f"{sf.get('file', '')}:{sf.get('line_number', '')}"
+            cols = f"Cols {sf.get('column_start', 1)}-{sf.get('column_end', 1)}"
+            det = sf.get("detector", "")
+            conf = sf.get("confidence", "HIGH")
+            ctx = sf.get("context", "")
+
+            lines.append(f"\n[SECRET:CWE-798] {stype} - Location: {loc} ({cols})")
+            lines.append(f"  Type:         {stype}")
+            lines.append(f"  Masked Value: {mv}")
+            lines.append(f"  Location:     {loc} ({cols})")
+            lines.append(f"  Confidence:   {conf}")
+            lines.append(f"  Detector:     {det}")
+            if ctx:
+                lines.append(f"  Context:      {ctx}")
+            lines.append("  Remediation:  Never commit hardcoded secrets or credentials to source control. Revoke and rotate this secret immediately.")
+
     lines.append(sep)
     return "\n".join(lines)
 
@@ -484,6 +570,11 @@ def main():
         "--sca-cache",
         help="Path to local OSV cache JSON file"
     )
+    parser.add_argument(
+        "--secrets",
+        action="store_true",
+        help="Enable Secret and Credential Scanning (CWE-798)"
+    )
 
     args = parser.parse_args()
 
@@ -498,8 +589,8 @@ def main():
         print(f"[ERROR] Target path does not exist: {args.target}", file=sys.stderr)
         sys.exit(2)
 
-    files = discover_python_files(target, base_dir, sca_active=args.sca)
-    if not files and not args.sca:
+    files = discover_python_files(target, base_dir, sca_active=args.sca, secrets_active=args.secrets)
+    if not files and not args.sca and not args.secrets:
         print(f"[WARN] No Python (*.py) files found in: {args.target}", file=sys.stderr)
 
     try:
@@ -547,6 +638,37 @@ def main():
             osv_results = osv_client.query_packages(package_names)
             sca_findings = match_dependencies(all_deps, osv_results)
 
+    # ---------------------------------------------------------
+    # Secret Scanning Analysis (if requested)
+    # ---------------------------------------------------------
+    secret_findings: List[SecretFinding] = []
+    secret_files: List[Path] = []
+
+    if args.secrets:
+        secret_files = discover_secret_files(target, base_dir)
+        filter_cfg = FilterConfig()
+        for sf in secret_files:
+            if target.is_dir():
+                try:
+                    rel_sf = sf.relative_to(target).as_posix()
+                except ValueError:
+                    try:
+                        rel_sf = sf.relative_to(base_dir).as_posix()
+                    except ValueError:
+                        rel_sf = sf.name
+            else:
+                rel_sf = sf.name
+
+            try:
+                content = sf.read_text(encoding="utf-8", errors="replace")
+            except Exception as e:
+                print(f"[WARN] Unable to read secret target '{sf}': {e}", file=sys.stderr)
+                continue
+
+            raw_findings = scan_text(content, filename=rel_sf)
+            passed_findings = filter_findings(raw_findings, file_path=rel_sf, config=filter_cfg)
+            secret_findings.extend(passed_findings)
+
     all_findings = results.get("findings", [])
     if args.exclude_suppressed:
         effective_findings = [f for f in all_findings if not f.get("suppressed", False)]
@@ -573,13 +695,43 @@ def main():
         summary_copy["sca_unresolved"] = sum(1 for f in sca_findings if (getattr(f, "status", None) or f.get("status")) == "UNRESOLVED")
         export_data["summary"] = summary_copy
 
+    if args.secrets:
+        serialized_secrets = [
+            {
+                "secret_type": sf.secret_type,
+                "masked_value": sf.masked_value,
+                "file": sf.file,
+                "line_number": sf.line_number,
+                "column_start": sf.column_start,
+                "column_end": sf.column_end,
+                "confidence": sf.confidence,
+                "detector": sf.detector,
+                "context": sf.context,
+                "cwe": "CWE-798"
+            }
+            for sf in secret_findings
+        ]
+        export_data["secret_findings"] = serialized_secrets
+        summary_copy = dict(export_data.get("summary", {}))
+        summary_copy["secrets_scanned"] = len(secret_files)
+        summary_copy["secrets_scanned_files"] = len(secret_files)
+        summary_copy["secrets_detected"] = len(secret_findings)
+        export_data["summary"] = summary_copy
+
     if args.format.lower() == "sarif":
         sarif_doc = to_sarif(export_data)
         output_text = json.dumps(sarif_doc, indent=2)
     elif args.format.lower() == "json":
         output_text = json.dumps(export_data, indent=2)
     else:
-        output_text = format_table(results, effective_findings, sca_findings=sca_findings, sca_enabled=args.sca)
+        output_text = format_table(
+            results,
+            effective_findings,
+            sca_findings=sca_findings,
+            sca_enabled=args.sca,
+            secret_findings=secret_findings,
+            secrets_enabled=args.secrets
+        )
 
     if args.output:
         out_path = Path(args.output).resolve()
@@ -597,7 +749,12 @@ def main():
     score = summary.get("security_score", 100)
     risk = summary.get("risk_level", "CLEAN")
 
-    if args.sca:
+    if not args.sca and not args.secrets:
+        print(
+            f"[TCS CLI] Scanned {len(files)} files | Findings: {total} (Active: {active}, Suppressed: {suppressed}) | Score: {score}/100 ({risk})",
+            file=sys.stderr
+        )
+    elif args.sca and not args.secrets:
         sca_count = len(sca_findings)
         sca_confirmed = sum(1 for f in sca_findings if (getattr(f, "status", None) or f.get("status")) == "CONFIRMED")
         sca_potential = sum(1 for f in sca_findings if (getattr(f, "status", None) or f.get("status")) == "POTENTIAL")
@@ -607,15 +764,32 @@ def main():
             file=sys.stderr
         )
     else:
+        status_items = [f"{len(files)} files"]
+        if args.sca:
+            status_items.append(f"{len(manifest_files)} manifests")
+        if args.secrets:
+            status_items.append(f"{len(secret_files)} secret files")
+
+        findings_items = [f"SAST: {total} (Active: {active}, Suppressed: {suppressed})"]
+        if args.sca:
+            sca_count = len(sca_findings)
+            sca_confirmed = sum(1 for f in sca_findings if (getattr(f, "status", None) or f.get("status")) == "CONFIRMED")
+            sca_potential = sum(1 for f in sca_findings if (getattr(f, "status", None) or f.get("status")) == "POTENTIAL")
+            sca_unresolved = sum(1 for f in sca_findings if (getattr(f, "status", None) or f.get("status")) == "UNRESOLVED")
+            findings_items.append(f"SCA: {sca_count} (Confirmed: {sca_confirmed}, Potential: {sca_potential}, Unresolved: {sca_unresolved})")
+        if args.secrets:
+            findings_items.append(f"Secrets: {len(secret_findings)} (CWE-798)")
+
         print(
-            f"[TCS CLI] Scanned {len(files)} files | Findings: {total} (Active: {active}, Suppressed: {suppressed}) | Score: {score}/100 ({risk})",
+            f"[TCS CLI] Scanned {', '.join(status_items)} | {' | '.join(findings_items)} | Score: {score}/100 ({risk})",
             file=sys.stderr
         )
 
     has_sast_failure = len(effective_findings) > 0
     has_sca_failure = (len(sca_findings) > 0) if args.sca else False
+    has_secret_failure = (len(secret_findings) > 0) if args.secrets else False
 
-    if has_sast_failure or has_sca_failure:
+    if has_sast_failure or has_sca_failure or has_secret_failure:
         sys.exit(1)
     else:
         sys.exit(0)
