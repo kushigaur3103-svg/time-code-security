@@ -6,6 +6,7 @@ compatible with GitHub Advanced Security / Code Scanning.
 
 import re
 from typing import Dict, Any, List, Optional
+from rule_engine import GLOBAL_RULE_REGISTRY, get_rule
 
 SARIF_SCHEMA_URI = "https://raw.githubusercontent.com/oasis-tcs/sarif-spec/master/Schemata/sarif-schema-2.1.0.json"
 SARIF_VERSION = "2.1.0"
@@ -13,124 +14,18 @@ TOOL_NAME = "TimeCodeSecurity"
 TOOL_VERSION = "1.0.0"
 TOOL_INFORMATION_URI = "https://time-code-security.onrender.com"
 
-# The 6 supported CWE rule definitions according to the SARIF v2.1.0 specification
-SUPPORTED_RULES: List[Dict[str, Any]] = [
-    {
-        "id": "CWE-89",
-        "name": "SqlInjection",
-        "shortDescription": {
-            "text": "Improper Neutralization of Special Elements used in an SQL Command ('SQL Injection')"
-        },
-        "fullDescription": {
-            "text": "The software constructs an SQL command using untrusted input from an upstream component without parameterization or proper escaping, allowing arbitrary SQL execution."
-        },
-        "helpUri": "https://cwe.mitre.org/data/definitions/89.html",
-        "defaultConfiguration": {
-            "level": "error"
-        },
-        "properties": {
-            "precision": "high",
-            "security-severity": "8.5",
-            "tags": ["security", "external/cwe/cwe-89"]
-        }
-    },
-    {
-        "id": "CWE-78",
-        "name": "CommandInjection",
-        "shortDescription": {
-            "text": "Improper Neutralization of Special Elements used in an OS Command ('OS Command Injection')"
-        },
-        "fullDescription": {
-            "text": "The software executes an OS command using untrusted input without proper neutralization, allowing attackers to execute arbitrary system commands."
-        },
-        "helpUri": "https://cwe.mitre.org/data/definitions/78.html",
-        "defaultConfiguration": {
-            "level": "error"
-        },
-        "properties": {
-            "precision": "high",
-            "security-severity": "9.5",
-            "tags": ["security", "external/cwe/cwe-78"]
-        }
-    },
-    {
-        "id": "CWE-22",
-        "name": "PathTraversal",
-        "shortDescription": {
-            "text": "Improper Limitation of a Pathname to a Restricted Directory ('Path Traversal')"
-        },
-        "fullDescription": {
-            "text": "The software uses external input to construct a pathname without sufficient validation or containment checking, resolving to locations outside intended directories."
-        },
-        "helpUri": "https://cwe.mitre.org/data/definitions/22.html",
-        "defaultConfiguration": {
-            "level": "error"
-        },
-        "properties": {
-            "precision": "high",
-            "security-severity": "7.5",
-            "tags": ["security", "external/cwe/cwe-22"]
-        }
-    },
-    {
-        "id": "CWE-502",
-        "name": "UnsafeDeserialization",
-        "shortDescription": {
-            "text": "Deserialization of Untrusted Data"
-        },
-        "fullDescription": {
-            "text": "The application deserializes untrusted data using pickle without verifying its validity, enabling arbitrary object instantiation and code execution."
-        },
-        "helpUri": "https://cwe.mitre.org/data/definitions/502.html",
-        "defaultConfiguration": {
-            "level": "error"
-        },
-        "properties": {
-            "precision": "high",
-            "security-severity": "9.8",
-            "tags": ["security", "external/cwe/cwe-502"]
-        }
-    },
-    {
-        "id": "CWE-95",
-        "name": "CodeExecution",
-        "shortDescription": {
-            "text": "Improper Neutralization of Directives in Dynamically Evaluated Code ('Eval Injection')"
-        },
-        "fullDescription": {
-            "text": "The software receives input from an upstream source and executes it via eval() or exec() without proper sanitization, allowing arbitrary code execution."
-        },
-        "helpUri": "https://cwe.mitre.org/data/definitions/95.html",
-        "defaultConfiguration": {
-            "level": "error"
-        },
-        "properties": {
-            "precision": "high",
-            "security-severity": "9.8",
-            "tags": ["security", "external/cwe/cwe-95"]
-        }
-    },
-    {
-        "id": "CWE-1336",
-        "name": "ServerSideTemplateInjection",
-        "shortDescription": {
-            "text": "Improper Neutralization of Special Elements Used in a Template Engine ('Server-Side Template Injection')"
-        },
-        "fullDescription": {
-            "text": "The application passes untrusted user input directly into template constructors or render_template_string, allowing attackers to inject template directives and achieve arbitrary code execution."
-        },
-        "helpUri": "https://cwe.mitre.org/data/definitions/1336.html",
-        "defaultConfiguration": {
-            "level": "error"
-        },
-        "properties": {
-            "precision": "high",
-            "security-severity": "9.0",
-            "tags": ["security", "external/cwe/cwe-1336"]
-        }
-    }
-]
 
+def get_supported_rules() -> List[Dict[str, Any]]:
+    """Retrieve SARIF v2.1.0 rule definitions dynamically from the Rule Engine."""
+    return [
+        rule.sarif_metadata
+        for rule in GLOBAL_RULE_REGISTRY.all_rules()
+        if rule.sarif_metadata
+    ]
+
+
+# Backward-compatibility facade: dynamically sourced from Rule Engine
+SUPPORTED_RULES: List[Dict[str, Any]] = get_supported_rules()
 RULE_INDEX_BY_ID: Dict[str, int] = {rule["id"]: idx for idx, rule in enumerate(SUPPORTED_RULES)}
 
 LEVEL_MAP: Dict[str, str] = {
@@ -166,22 +61,27 @@ def to_sarif(tcs_scan_result: Dict[str, Any]) -> Dict[str, Any]:
     """
     findings = tcs_scan_result.get("findings", []) if isinstance(tcs_scan_result, dict) else []
     results: List[Dict[str, Any]] = []
+    driver_rules = get_supported_rules()
+    rule_index_by_id = {rule["id"]: idx for idx, rule in enumerate(driver_rules)}
 
     for f in findings:
         cwe = f.get("cwe", "UNKNOWN_CWE")
-        rule_idx = RULE_INDEX_BY_ID.get(cwe)
-        severity = str(f.get("severity", "HIGH")).upper()
+        rule = get_rule(cwe)
+        rule_idx = rule_index_by_id.get(cwe)
+        severity = str(f.get("severity") or (rule.get_severity(f.get("confidence_label", "CONFIRMED")) if rule else "HIGH")).upper()
         level = LEVEL_MAP.get(severity, "error")
         file_uri = f.get("file") or "app.py"
         line_num = int(f.get("line_number") or 1)
         code_snippet = f.get("code_snippet") or ""
         sink_symbol = f.get("sink_symbol") or "sink"
-        category = (f.get("category") or "Vulnerability").replace("_", " ")
+        raw_category = f.get("category") or (rule.category if rule else "Vulnerability")
+        category = raw_category.replace("_", " ")
+        remediation = f.get("remediation") or (rule.remediation if rule else "")
 
         # Result primary message
         message_text = (
             f"{cwe} ({category}): Tainted data flow reaching dangerous sink '{sink_symbol}'. "
-            f"{f.get('remediation', '')}".strip()
+            f"{remediation}".strip()
         )
 
         # Primary location
@@ -289,7 +189,7 @@ def to_sarif(tcs_scan_result: Dict[str, Any]) -> Dict[str, Any]:
                         "name": TOOL_NAME,
                         "version": TOOL_VERSION,
                         "informationUri": TOOL_INFORMATION_URI,
-                        "rules": SUPPORTED_RULES
+                        "rules": driver_rules
                     }
                 },
                 "results": results
