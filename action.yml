@@ -1,0 +1,119 @@
+name: "TimeCodeSecurity (TCS) Security Scan"
+description: "Unified SAST, SCA, and Secret scanning engine for Python codebases"
+author: "TimeCodeSecurity"
+
+inputs:
+  target:
+    description: "Target directory or file to scan"
+    required: false
+    default: "."
+  sca:
+    description: "Enable Software Composition Analysis (dependency scanning)"
+    required: false
+    default: "false"
+  sca-offline:
+    description: "Run SCA in offline mode using local OSV cache"
+    required: false
+    default: "false"
+  secrets:
+    description: "Enable Secret and Credential Scanning (CWE-798)"
+    required: false
+    default: "false"
+  format:
+    description: "Output report format (table, json, sarif)"
+    required: false
+    default: "sarif"
+  sarif-file:
+    description: "Path to write SARIF/scan report"
+    required: false
+    default: "tcs-results.sarif"
+  output:
+    description: "Compatibility alias for sarif-file"
+    required: false
+    default: ""
+  fail-on-findings:
+    description: "Fail the build if active vulnerabilities are detected"
+    required: false
+    default: "true"
+  exclude-suppressed:
+    description: "Exclude suppressed findings from failing the build"
+    required: false
+    default: "false"
+  step-summary:
+    description: "Generate GitHub Actions Step Summary"
+    required: false
+    default: "true"
+
+runs:
+  using: "composite"
+  steps:
+    - name: Run TCS Scan
+      id: tcs-scan
+      shell: bash
+      env:
+        INPUT_TARGET: ${{ inputs.target }}
+        INPUT_SCA: ${{ inputs.sca }}
+        INPUT_SCA_OFFLINE: ${{ inputs.sca-offline }}
+        INPUT_SECRETS: ${{ inputs.secrets }}
+        INPUT_FORMAT: ${{ inputs.format }}
+        INPUT_SARIF_FILE: ${{ inputs.sarif-file }}
+        INPUT_OUTPUT: ${{ inputs.output }}
+        INPUT_FAIL_ON_FINDINGS: ${{ inputs.fail-on-findings }}
+        INPUT_EXCLUDE_SUPPRESSED: ${{ inputs.exclude-suppressed }}
+        INPUT_STEP_SUMMARY: ${{ inputs.step-summary }}
+        ACTION_PATH: ${{ github.action_path }}
+      run: |
+        ARGS=()
+        ARGS+=("$INPUT_TARGET")
+        ARGS+=("--github-actions")
+
+        if [ "$INPUT_SCA" = "true" ]; then
+          ARGS+=("--sca")
+        fi
+
+        if [ "$INPUT_SCA_OFFLINE" = "true" ]; then
+          ARGS+=("--sca-offline")
+        fi
+
+        if [ "$INPUT_SECRETS" = "true" ]; then
+          ARGS+=("--secrets")
+        fi
+
+        if [ -n "$INPUT_FORMAT" ]; then
+          ARGS+=("--format" "$INPUT_FORMAT")
+        fi
+
+        OUTPUT_PATH="$INPUT_SARIF_FILE"
+        if [ -n "$INPUT_OUTPUT" ] && [ "$INPUT_SARIF_FILE" = "tcs-results.sarif" ]; then
+          OUTPUT_PATH="$INPUT_OUTPUT"
+        fi
+
+        if [ -n "$OUTPUT_PATH" ]; then
+          ARGS+=("--output" "$OUTPUT_PATH")
+        fi
+
+        if [ "$INPUT_EXCLUDE_SUPPRESSED" = "true" ]; then
+          ARGS+=("--exclude-suppressed")
+        fi
+
+        if [ "$INPUT_STEP_SUMMARY" != "true" ]; then
+          unset GITHUB_STEP_SUMMARY
+        fi
+
+        set +e
+        python "${ACTION_PATH}/tcs_cli.py" "${ARGS[@]}"
+        EXIT_CODE=$?
+        set -e
+
+        if [ "$EXIT_CODE" -eq 0 ]; then
+          exit 0
+        elif [ "$EXIT_CODE" -eq 1 ]; then
+          if [ "$INPUT_FAIL_ON_FINDINGS" = "false" ]; then
+            echo "TCS detected security findings, but fail-on-findings is false. Step continuing."
+            exit 0
+          else
+            exit 1
+          fi
+        else
+          exit "$EXIT_CODE"
+        fi

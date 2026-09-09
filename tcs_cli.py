@@ -23,6 +23,7 @@ from osv_client import OSVClient
 from version_matcher import match_dependencies, SCAFinding
 from secret_scanner import scan_text, SecretFinding
 from secret_filters import filter_findings, FilterConfig
+from ci_reporter import format_github_annotations, generate_step_summary
 
 
 IGNORED_DIRS = {
@@ -575,6 +576,15 @@ def main():
         action="store_true",
         help="Enable Secret and Credential Scanning (CWE-798)"
     )
+    parser.add_argument(
+        "--github-actions",
+        action="store_true",
+        help="Enable GitHub Actions workflow annotations and step summary generation"
+    )
+    parser.add_argument(
+        "--step-summary-file",
+        help="Path to Step Summary Markdown output file (defaults to $GITHUB_STEP_SUMMARY)"
+    )
 
     args = parser.parse_args()
 
@@ -740,6 +750,26 @@ def main():
         print(f"[TCS CLI] Results written to: {args.output} (Format: {args.format})", file=sys.stderr)
     else:
         print(output_text)
+
+    # ---------------------------------------------------------
+    # GitHub Actions Workflow Commands & Step Summary
+    # ---------------------------------------------------------
+    if args.github_actions:
+        annotations = format_github_annotations(export_data)
+        for ann in annotations:
+            print(ann, file=sys.stderr)
+
+        summary_file = args.step_summary_file or os.environ.get("GITHUB_STEP_SUMMARY")
+        if summary_file:
+            try:
+                summary_md = generate_step_summary(export_data)
+                sum_path = Path(summary_file).resolve()
+                sum_path.parent.mkdir(parents=True, exist_ok=True)
+                with open(sum_path, "a", encoding="utf-8") as f:
+                    f.write(summary_md)
+            except Exception as e:
+                print(f"[ERROR] Failed to write Step Summary to '{summary_file}': {e}", file=sys.stderr)
+                sys.exit(2)
 
     # Human status summary to stderr
     summary = results.get("summary", {})

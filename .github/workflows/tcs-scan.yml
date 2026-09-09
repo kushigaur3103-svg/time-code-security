@@ -1,0 +1,43 @@
+name: "TCS Security Scan"
+
+on:
+  push:
+    branches: [ "main" ]
+  pull_request:
+    branches: [ "main" ]
+
+permissions:
+  security-events: write
+  contents: read
+
+jobs:
+  tcs-security-scan:
+    name: "TCS Unified Security Scan"
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout Code
+        uses: actions/checkout@v4
+
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.11"
+
+      - name: Install Runtime Dependencies
+        run: |
+          python -m pip install --upgrade pip
+          pip install packaging
+
+      - name: Run TCS Action
+        uses: ./
+        with:
+          sca: "true"
+          secrets: "true"
+          format: "sarif"
+          sarif-file: "tcs-results.sarif"
+
+      - name: Upload SARIF Results
+        uses: github/codeql-action/upload-sarif@v3
+        if: always()
+        with:
+          sarif_file: "tcs-results.sarif"
