@@ -32,7 +32,8 @@ LEVEL_MAP: Dict[str, str] = {
     "CRITICAL": "error",
     "HIGH": "error",
     "MEDIUM": "warning",
-    "LOW": "note"
+    "LOW": "note",
+    "UNKNOWN": "note"
 }
 
 
@@ -178,6 +179,119 @@ def to_sarif(tcs_scan_result: Dict[str, Any]) -> Dict[str, Any]:
         }
 
         results.append(result_obj)
+
+    # ---------------------------------------------------------
+    # SCA (Software Composition Analysis) Findings
+    # ---------------------------------------------------------
+    sca_findings = tcs_scan_result.get("sca_findings", []) if isinstance(tcs_scan_result, dict) else []
+
+    # Collect and deduplicate dynamic SCA rules deterministically
+    sca_rules_to_add: Dict[str, Dict[str, Any]] = {}
+
+    for item in sca_findings:
+        sf = item.to_dict() if hasattr(item, "to_dict") else dict(item)
+        vuln_id = sf.get("vulnerability_id") or "UNKNOWN"
+        pkg_name = sf.get("package_name") or "package"
+        severity = str(sf.get("severity") or "UNKNOWN").upper()
+        level = LEVEL_MAP.get(severity, "note")
+        status = sf.get("status") or "POTENTIAL"
+        if status == "UNRESOLVED" and level == "note":
+            level = "warning"
+
+        if vuln_id not in rule_index_by_id and vuln_id not in sca_rules_to_add:
+            rule_desc = sf.get("summary") or f"Vulnerability {vuln_id} affecting {pkg_name}"
+            sca_rules_to_add[vuln_id] = {
+                "id": vuln_id,
+                "name": vuln_id,
+                "shortDescription": {
+                    "text": f"Dependency advisory {vuln_id} for {pkg_name}"
+                },
+                "fullDescription": {
+                    "text": rule_desc
+                },
+                "defaultConfiguration": {
+                    "level": level
+                },
+                "properties": {
+                    "tags": ["security", "sca", "dependency"],
+                    "package": pkg_name,
+                    "aliases": list(sf.get("aliases", []))
+                }
+            }
+
+    # Add dynamic SCA rules sorted deterministically
+    for vuln_id in sorted(sca_rules_to_add.keys()):
+        rule_def = sca_rules_to_add[vuln_id]
+        rule_index_by_id[vuln_id] = len(driver_rules)
+        driver_rules.append(rule_def)
+
+    # Serialize each SCA finding into a SARIF result
+    for item in sca_findings:
+        sf = item.to_dict() if hasattr(item, "to_dict") else dict(item)
+        vuln_id = sf.get("vulnerability_id") or "UNKNOWN"
+        pkg_name = sf.get("package_name") or "package"
+        installed_ver = sf.get("installed_version")
+        req_spec = sf.get("requested_specifier")
+        ver_desc = installed_ver or req_spec or "unspecified"
+        status = sf.get("status") or "POTENTIAL"
+        fixed_ver = sf.get("fixed_version")
+        summary = sf.get("summary") or ""
+        severity = str(sf.get("severity") or "UNKNOWN").upper()
+        level = LEVEL_MAP.get(severity, "note")
+        if status == "UNRESOLVED" and level == "note":
+            level = "warning"
+
+        fixed_msg = f" Fixed version: {fixed_ver}." if fixed_ver else ""
+        if status == "UNRESOLVED":
+            msg_text = f"[UNRESOLVED] Vulnerability status for {pkg_name} ({ver_desc}) against {vuln_id} could not be determined: {summary}"
+        else:
+            msg_text = f"[{status}] Dependency '{pkg_name}' ({ver_desc}) is affected by {vuln_id}.{fixed_msg} {summary}".strip()
+
+        # Physical location: normalize manifest path with forward slashes
+        raw_manifest = sf.get("manifest_source") or "requirements.txt"
+        manifest_uri = raw_manifest.replace("\\", "/")
+        line_num = sf.get("line_number")
+
+        phys_loc: Dict[str, Any] = {
+            "artifactLocation": {
+                "uri": manifest_uri,
+                "uriBaseId": "%SRCROOT%"
+            }
+        }
+        if line_num is not None and isinstance(line_num, int) and line_num > 0:
+            phys_loc["region"] = {
+                "startLine": line_num,
+                "startColumn": 1
+            }
+
+        rule_idx = rule_index_by_id.get(vuln_id)
+        sca_res: Dict[str, Any] = {
+            "ruleId": vuln_id,
+            "level": level,
+            "message": {
+                "text": msg_text
+            },
+            "locations": [
+                {
+                    "physicalLocation": phys_loc
+                }
+            ],
+            "properties": {
+                "sca": True,
+                "packageName": pkg_name,
+                "installedVersion": installed_ver,
+                "requestedSpecifier": req_spec,
+                "fixedVersion": fixed_ver,
+                "status": status,
+                "confidence": sf.get("confidence", 0.0),
+                "matchedRange": sf.get("matched_range", ""),
+                "cvssScore": sf.get("cvss_score")
+            }
+        }
+        if rule_idx is not None:
+            sca_res["ruleIndex"] = rule_idx
+
+        results.append(sca_res)
 
     sarif_doc: Dict[str, Any] = {
         "$schema": SARIF_SCHEMA_URI,

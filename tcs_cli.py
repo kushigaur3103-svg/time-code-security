@@ -10,6 +10,7 @@ import os
 import ast
 import json
 import argparse
+import dataclasses
 from pathlib import Path
 from typing import Dict, List, Any, Optional
 
@@ -17,6 +18,9 @@ from ast_scanner import TaintTracker
 from suppression_resolver import resolve_suppressions
 from sarif_adapter import to_sarif
 from rule_engine import GLOBAL_RULE_REGISTRY
+from manifest_parser import parse_manifest, DependencyRecord
+from osv_client import OSVClient
+from version_matcher import match_dependencies, SCAFinding
 
 
 IGNORED_DIRS = {
@@ -211,15 +215,18 @@ def execute_tcs_scan(normalized_files: Dict[str, str]) -> Dict[str, Any]:
     }
 
 
-def discover_python_files(target_path: Path, base_dir: Path) -> Dict[str, str]:
+def discover_python_files(target_path: Path, base_dir: Path, sca_active: bool = False) -> Dict[str, str]:
     """
     Recursively discovers Python files, ignoring non-code or virtual env folders.
     Returns mapping of POSIX relative paths to text contents.
     """
     normalized_files: Dict[str, str] = {}
+    manifest_names = {"requirements.txt", "pipfile.lock", "poetry.lock"}
 
     if target_path.is_file():
         if target_path.suffix.lower() != ".py":
+            if sca_active and target_path.name.lower() in manifest_names:
+                return {}
             print(f"[ERROR] Target is not a Python file: {target_path}", file=sys.stderr)
             sys.exit(2)
         try:
@@ -241,9 +248,12 @@ def discover_python_files(target_path: Path, base_dir: Path) -> Dict[str, str]:
             if fname.endswith(".py") and fname != "tcs_cli.py":
                 full_file = Path(root) / fname
                 try:
-                    rel_path = full_file.relative_to(base_dir).as_posix()
+                    rel_path = full_file.relative_to(target_path).as_posix()
                 except ValueError:
-                    rel_path = full_file.as_posix()
+                    try:
+                        rel_path = full_file.relative_to(base_dir).as_posix()
+                    except ValueError:
+                        rel_path = full_file.name
 
                 try:
                     normalized_files[rel_path] = full_file.read_text(encoding="utf-8")
@@ -254,7 +264,35 @@ def discover_python_files(target_path: Path, base_dir: Path) -> Dict[str, str]:
     return normalized_files
 
 
-def format_table(results: Dict[str, Any], findings: List[Dict[str, Any]]) -> str:
+def discover_manifest_files(target_path: Path, base_dir: Path) -> List[Path]:
+    """
+    Discovers supported dependency manifests within the target scope.
+    Supported filenames: requirements.txt, Pipfile.lock, poetry.lock.
+    """
+    manifest_names = {"requirements.txt", "pipfile.lock", "poetry.lock"}
+    discovered: List[Path] = []
+
+    if target_path.is_file():
+        if target_path.name.lower() in manifest_names:
+            discovered.append(target_path)
+        return discovered
+
+    for root, dirs, files in os.walk(target_path):
+        dirs[:] = [d for d in dirs if d not in IGNORED_DIRS and not d.startswith(".")]
+        for fname in files:
+            if fname.lower() in manifest_names:
+                discovered.append(Path(root) / fname)
+
+    discovered.sort()
+    return discovered
+
+
+def format_table(
+    results: Dict[str, Any],
+    findings: List[Dict[str, Any]],
+    sca_findings: Optional[List[Any]] = None,
+    sca_enabled: bool = False
+) -> str:
     """Renders human-readable tabular scan report for console display."""
     summary = results.get("summary", {})
     total_files = summary.get("total_files", 0)
@@ -262,62 +300,160 @@ def format_table(results: Dict[str, Any], findings: List[Dict[str, Any]]) -> str
     score = summary.get("security_score", 100)
     risk_level = summary.get("risk_level", "CLEAN")
 
-    lines = [
-        "=" * 88,
-        "TimeCodeSecurity (TCS) AST Security Scan Report",
-        "=" * 88,
-        f"Scanned Files: {total_files} | Total Lines: {lines_scanned} | Security Score: {score}/100 ({risk_level})",
-        f"Total Findings Displayed: {len(findings)}",
-        "-" * 88
-    ]
+    sca_list = [f.to_dict() if hasattr(f, "to_dict") else dict(f) for f in (sca_findings or [])] if sca_enabled else []
 
-    if not findings:
-        lines.append("No security vulnerabilities detected.")
+    if not sca_enabled:
+        lines = [
+            "=" * 88,
+            "TimeCodeSecurity (TCS) AST Security Scan Report",
+            "=" * 88,
+            f"Scanned Files: {total_files} | Total Lines: {lines_scanned} | Security Score: {score}/100 ({risk_level})",
+            f"Total Findings Displayed: {len(findings)}",
+            "-" * 88
+        ]
+
+        if not findings:
+            lines.append("No security vulnerabilities detected.")
+            lines.append("=" * 88)
+            return "\n".join(lines)
+
+        lines.append(f"{'ID':<14} | {'SEVERITY':<8} | {'CWE':<9} | {'STATUS':<10} | {'LOCATION':<22} | {'SINK':<15}")
+        lines.append("-" * 88)
+        for f in findings:
+            fid = f.get("id", "")
+            sev = f.get("severity", "MEDIUM")
+            cwe = f.get("cwe", "")
+            status = "SUPPRESSED" if f.get("suppressed") else "ACTIVE"
+            loc = f"{f.get('file', '')}:{f.get('line_number', '')}"
+            sink = f.get("sink_symbol", "")
+            lines.append(f"{fid:<14} | {sev:<8} | {cwe:<9} | {status:<10} | {loc:<22} | {sink:<15}")
+
+        lines.append("-" * 88)
+        lines.append("\nFINDING DETAILS:")
+        for f in findings:
+            fid = f.get("id", "")
+            cwe = f.get("cwe", "")
+            cat = f.get("category", "")
+            status = "SUPPRESSED" if f.get("suppressed") else "ACTIVE"
+            lines.append(f"\n[{fid}] {cwe} ({cat}) - Status: {status}")
+            lines.append(f"  Location:     {f.get('file', '')}:{f.get('line_number', '')}")
+            lines.append(f"  Severity:     {f.get('severity', '')} (Confidence: {f.get('confidence_label', '')})")
+            if f.get("code_snippet"):
+                lines.append(f"  Code Snippet: {f.get('code_snippet')}")
+            if f.get("flow_trace_summary"):
+                lines.append(f"  Flow Summary: {f.get('flow_trace_summary')}")
+            if f.get("suppressed") and f.get("suppression_justification"):
+                lines.append(f"  Justification:{f.get('suppression_justification')}")
+            if f.get("remediation"):
+                lines.append(f"  Remediation:  {f.get('remediation')}")
+
         lines.append("=" * 88)
         return "\n".join(lines)
 
-    lines.append(f"{'ID':<14} | {'SEVERITY':<8} | {'CWE':<9} | {'STATUS':<10} | {'LOCATION':<22} | {'SINK':<15}")
-    lines.append("-" * 88)
-    for f in findings:
-        fid = f.get("id", "")
-        sev = f.get("severity", "MEDIUM")
-        cwe = f.get("cwe", "")
-        status = "SUPPRESSED" if f.get("suppressed") else "ACTIVE"
-        loc = f"{f.get('file', '')}:{f.get('line_number', '')}"
-        sink = f.get("sink_symbol", "")
-        lines.append(f"{fid:<14} | {sev:<8} | {cwe:<9} | {status:<10} | {loc:<22} | {sink:<15}")
+    # ---------------------------------------------------------
+    # Unified SAST + SCA Report
+    # ---------------------------------------------------------
+    sep = "=" * 105
+    dash_sep = "-" * 105
+    lines = [
+        sep,
+        "TimeCodeSecurity (TCS) Security Scan Report (SAST + SCA)",
+        sep,
+        f"Scanned Files: {total_files} | Total Lines: {lines_scanned} | Security Score: {score}/100 ({risk_level})",
+        f"Total SAST Findings: {len(findings)} | Total SCA Findings: {len(sca_list)}",
+        dash_sep
+    ]
 
-    lines.append("-" * 88)
+    if not findings and not sca_list:
+        lines.append("No security vulnerabilities detected.")
+        lines.append(sep)
+        return "\n".join(lines)
+
+    if findings:
+        lines.append("\n[SAST CODE ANALYSIS FINDINGS]")
+        lines.append(f"{'ID':<14} | {'SEVERITY':<8} | {'CWE':<9} | {'STATUS':<10} | {'LOCATION':<22} | {'SINK':<15}")
+        lines.append(dash_sep)
+        for f in findings:
+            fid = f.get("id", "")
+            sev = f.get("severity", "MEDIUM")
+            cwe = f.get("cwe", "")
+            status = "SUPPRESSED" if f.get("suppressed") else "ACTIVE"
+            loc = f"{f.get('file', '')}:{f.get('line_number', '')}"
+            sink = f.get("sink_symbol", "")
+            lines.append(f"{fid:<14} | {sev:<8} | {cwe:<9} | {status:<10} | {loc:<22} | {sink:<15}")
+
+    if sca_list:
+        lines.append("\n[SCA DEPENDENCY VULNERABILITIES]")
+        lines.append(f"{'PACKAGE':<16} | {'STATUS':<11} | {'INSTALLED / SPEC':<18} | {'VULN ID':<16} | {'SEVERITY':<8} | {'FIXED':<10} | {'LOCATION':<20}")
+        lines.append(dash_sep)
+        for sf in sca_list:
+            pkg = str(sf.get("package_name", ""))[:16]
+            status = str(sf.get("status", ""))[:11]
+            ver_spec = str(sf.get("installed_version") or sf.get("requested_specifier") or "-")[:18]
+            vid = str(sf.get("vulnerability_id", ""))[:16]
+            sev = str(sf.get("severity", "UNKNOWN"))[:8]
+            fixed = str(sf.get("fixed_version") or "-")[:10]
+            loc_str = f"{sf.get('manifest_source', '')}:{sf.get('line_number') or '?'}"[:20]
+            lines.append(f"{pkg:<16} | {status:<11} | {ver_spec:<18} | {vid:<16} | {sev:<8} | {fixed:<10} | {loc_str:<20}")
+
+    lines.append(dash_sep)
     lines.append("\nFINDING DETAILS:")
-    for f in findings:
-        fid = f.get("id", "")
-        cwe = f.get("cwe", "")
-        cat = f.get("category", "")
-        status = "SUPPRESSED" if f.get("suppressed") else "ACTIVE"
-        lines.append(f"\n[{fid}] {cwe} ({cat}) - Status: {status}")
-        lines.append(f"  Location:     {f.get('file', '')}:{f.get('line_number', '')}")
-        lines.append(f"  Severity:     {f.get('severity', '')} (Confidence: {f.get('confidence_label', '')})")
-        if f.get("code_snippet"):
-            lines.append(f"  Code Snippet: {f.get('code_snippet')}")
-        if f.get("flow_trace_summary"):
-            lines.append(f"  Flow Summary: {f.get('flow_trace_summary')}")
-        if f.get("suppressed") and f.get("suppression_justification"):
-            lines.append(f"  Justification:{f.get('suppression_justification')}")
-        if f.get("remediation"):
-            lines.append(f"  Remediation:  {f.get('remediation')}")
 
-    lines.append("=" * 88)
+    if findings:
+        for f in findings:
+            fid = f.get("id", "")
+            cwe = f.get("cwe", "")
+            cat = f.get("category", "")
+            status = "SUPPRESSED" if f.get("suppressed") else "ACTIVE"
+            lines.append(f"\n[SAST:{fid}] {cwe} ({cat}) - Status: {status}")
+            lines.append(f"  Location:     {f.get('file', '')}:{f.get('line_number', '')}")
+            lines.append(f"  Severity:     {f.get('severity', '')} (Confidence: {f.get('confidence_label', '')})")
+            if f.get("code_snippet"):
+                lines.append(f"  Code Snippet: {f.get('code_snippet')}")
+            if f.get("flow_trace_summary"):
+                lines.append(f"  Flow Summary: {f.get('flow_trace_summary')}")
+            if f.get("suppressed") and f.get("suppression_justification"):
+                lines.append(f"  Justification:{f.get('suppression_justification')}")
+            if f.get("remediation"):
+                lines.append(f"  Remediation:  {f.get('remediation')}")
+
+    if sca_list:
+        for sf in sca_list:
+            vid = sf.get("vulnerability_id", "")
+            pkg = sf.get("package_name", "")
+            status = sf.get("status", "")
+            sev = sf.get("severity", "UNKNOWN")
+            cvss = sf.get("cvss_score")
+            cvss_str = str(cvss) if cvss is not None else "N/A"
+            ver_desc = sf.get("installed_version") or sf.get("requested_specifier") or "unspecified"
+            fixed = sf.get("fixed_version") or "None / Unknown"
+            matched_range = sf.get("matched_range", "")
+            loc = f"{sf.get('manifest_source', '')}:{sf.get('line_number') or '?'}"
+            summary = sf.get("summary", "")
+
+            lines.append(f"\n[SCA:{vid}] {pkg} ({ver_desc}) - Status: {status}")
+            lines.append(f"  Package:        {pkg}")
+            lines.append(f"  Vulnerability:  {vid}")
+            lines.append(f"  Status:         {status}")
+            lines.append(f"  Severity:       {sev} (CVSS: {cvss_str})")
+            lines.append(f"  Installed/Spec: {ver_desc}")
+            lines.append(f"  Fixed Version:  {fixed}")
+            lines.append(f"  Matched Range:  {matched_range}")
+            lines.append(f"  Location:       {loc}")
+            lines.append(f"  Summary:        {summary}")
+
+    lines.append(sep)
     return "\n".join(lines)
 
 
 def main():
     parser = argparse.ArgumentParser(
-        description="TimeCodeSecurity (TCS) SAST Scanner CLI",
+        description="TimeCodeSecurity (TCS) SAST & SCA Scanner CLI",
         prog="tcs_cli.py"
     )
     parser.add_argument(
         "target",
-        help="Target Python file or directory to scan"
+        help="Target Python file, manifest, or directory to scan"
     )
     parser.add_argument(
         "--format",
@@ -334,8 +470,26 @@ def main():
         "-o", "--output",
         help="Write formatted scan output to specified file path instead of stdout"
     )
+    parser.add_argument(
+        "--sca",
+        action="store_true",
+        help="Enable Software Composition Analysis (SCA) for dependency manifests"
+    )
+    parser.add_argument(
+        "--sca-offline",
+        action="store_true",
+        help="Enforce offline SCA analysis using local OSV cache only (requires --sca)"
+    )
+    parser.add_argument(
+        "--sca-cache",
+        help="Path to local OSV cache JSON file"
+    )
 
     args = parser.parse_args()
+
+    if args.sca_offline and not args.sca:
+        print("[ERROR] --sca-offline requires --sca to be enabled.", file=sys.stderr)
+        sys.exit(2)
 
     base_dir = Path.cwd().resolve()
     target = Path(args.target).resolve()
@@ -344,8 +498,8 @@ def main():
         print(f"[ERROR] Target path does not exist: {args.target}", file=sys.stderr)
         sys.exit(2)
 
-    files = discover_python_files(target, base_dir)
-    if not files:
+    files = discover_python_files(target, base_dir, sca_active=args.sca)
+    if not files and not args.sca:
         print(f"[WARN] No Python (*.py) files found in: {args.target}", file=sys.stderr)
 
     try:
@@ -358,6 +512,40 @@ def main():
         for err in results["syntax_errors"]:
             print(f"[ERROR] Syntax error in target file: {err}", file=sys.stderr)
         sys.exit(2)
+
+    # ---------------------------------------------------------
+    # SCA Analysis (if requested)
+    # ---------------------------------------------------------
+    sca_findings: List[SCAFinding] = []
+    manifest_files: List[Path] = []
+
+    if args.sca:
+        manifest_files = discover_manifest_files(target, base_dir)
+        all_deps: List[DependencyRecord] = []
+        for mf in manifest_files:
+            if target.is_dir():
+                try:
+                    rel_mf = mf.relative_to(target).as_posix()
+                except ValueError:
+                    try:
+                        rel_mf = mf.relative_to(base_dir).as_posix()
+                    except ValueError:
+                        rel_mf = mf.name
+            else:
+                rel_mf = mf.name
+
+            parse_res = parse_manifest(str(mf))
+            for dep in parse_res.dependencies:
+                if dep.source != rel_mf:
+                    dep = dataclasses.replace(dep, source=rel_mf)
+                all_deps.append(dep)
+
+        if all_deps:
+            package_names = [dep.name for dep in all_deps]
+            cache_file = args.sca_cache or os.environ.get("TCS_OSV_CACHE", os.path.expanduser("~/.tcs/osv_cache.json"))
+            osv_client = OSVClient(cache_file=cache_file, offline_mode=args.sca_offline)
+            osv_results = osv_client.query_packages(package_names)
+            sca_findings = match_dependencies(all_deps, osv_results)
 
     all_findings = results.get("findings", [])
     if args.exclude_suppressed:
@@ -374,13 +562,24 @@ def main():
         summary_copy["active_vulnerabilities"] = len(effective_findings)
         export_data["summary"] = summary_copy
 
+    if args.sca:
+        serialized_sca = [f.to_dict() if hasattr(f, "to_dict") else dict(f) for f in sca_findings]
+        export_data["sca_findings"] = serialized_sca
+        summary_copy = dict(export_data.get("summary", {}))
+        summary_copy["manifests_scanned"] = len(manifest_files)
+        summary_copy["sca_vulnerabilities"] = len(sca_findings)
+        summary_copy["sca_confirmed"] = sum(1 for f in sca_findings if (getattr(f, "status", None) or f.get("status")) == "CONFIRMED")
+        summary_copy["sca_potential"] = sum(1 for f in sca_findings if (getattr(f, "status", None) or f.get("status")) == "POTENTIAL")
+        summary_copy["sca_unresolved"] = sum(1 for f in sca_findings if (getattr(f, "status", None) or f.get("status")) == "UNRESOLVED")
+        export_data["summary"] = summary_copy
+
     if args.format.lower() == "sarif":
         sarif_doc = to_sarif(export_data)
         output_text = json.dumps(sarif_doc, indent=2)
     elif args.format.lower() == "json":
         output_text = json.dumps(export_data, indent=2)
     else:
-        output_text = format_table(results, effective_findings)
+        output_text = format_table(results, effective_findings, sca_findings=sca_findings, sca_enabled=args.sca)
 
     if args.output:
         out_path = Path(args.output).resolve()
@@ -398,12 +597,25 @@ def main():
     score = summary.get("security_score", 100)
     risk = summary.get("risk_level", "CLEAN")
 
-    print(
-        f"[TCS CLI] Scanned {len(files)} files | Findings: {total} (Active: {active}, Suppressed: {suppressed}) | Score: {score}/100 ({risk})",
-        file=sys.stderr
-    )
+    if args.sca:
+        sca_count = len(sca_findings)
+        sca_confirmed = sum(1 for f in sca_findings if (getattr(f, "status", None) or f.get("status")) == "CONFIRMED")
+        sca_potential = sum(1 for f in sca_findings if (getattr(f, "status", None) or f.get("status")) == "POTENTIAL")
+        sca_unresolved = sum(1 for f in sca_findings if (getattr(f, "status", None) or f.get("status")) == "UNRESOLVED")
+        print(
+            f"[TCS CLI] Scanned {len(files)} files, {len(manifest_files)} manifests | SAST: {total} (Active: {active}, Suppressed: {suppressed}) | SCA: {sca_count} (Confirmed: {sca_confirmed}, Potential: {sca_potential}, Unresolved: {sca_unresolved}) | Score: {score}/100 ({risk})",
+            file=sys.stderr
+        )
+    else:
+        print(
+            f"[TCS CLI] Scanned {len(files)} files | Findings: {total} (Active: {active}, Suppressed: {suppressed}) | Score: {score}/100 ({risk})",
+            file=sys.stderr
+        )
 
-    if len(effective_findings) > 0:
+    has_sast_failure = len(effective_findings) > 0
+    has_sca_failure = (len(sca_findings) > 0) if args.sca else False
+
+    if has_sast_failure or has_sca_failure:
         sys.exit(1)
     else:
         sys.exit(0)
