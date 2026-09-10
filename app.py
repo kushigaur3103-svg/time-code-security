@@ -235,9 +235,14 @@ class APIKey(Base):
 
     user = relationship("User", backref="api_keys")
 
+# Register Phase 15B and 15D models in Base.metadata before create_all
+import notification_models
+import delivery_models
+
 Base.metadata.create_all(bind=engine)
 
 app = FastAPI(title="TimeCodeSecurity Enterprise API")
+
 
 from fastapi.middleware.cors import CORSMiddleware
 from starlette.middleware.base import BaseHTTPMiddleware
@@ -1444,13 +1449,61 @@ def background_scan_task(job_id: str, email: str, redacted_code: str, system_pro
                 db.commit()
 
         user = db.query(User).filter(User.email == email).first()
-        if user and user.webhook_url:
-            try:
-                import requests
-                payload = {"content": "🚨 **TimeCodeSecurity Alert** 🚨\n\n**Vulnerability Detected!**\n" + ai_reply[:1500]}
-                requests.post(user.webhook_url, json=payload, timeout=5)
-            except:
-                pass
+        if user:
+            org_id = getattr(user, "org_id", None)
+            if org_id is None:
+                logger.warning(
+                    "User %s (%s) has no associated organization (org_id is None); "
+                    "skipping notification setup and event dispatch.",
+                    user.id,
+                    user.email,
+                )
+            else:
+                if user.webhook_url:
+                    from webhook_adapter import WebhookDestinationConfig
+                    try:
+                        notification_service.register_destination(
+                            WebhookDestinationConfig(
+                                destination_id=f"dest_{user.id}",
+                                organization_id=org_id,
+                                url=user.webhook_url,
+                            )
+                        )
+                    except Exception as dest_err:
+                        logger.error(f"Failed to register webhook destination: {dest_err}")
+
+                # Derive scan events strictly from actual deterministic scanner truth
+                real_scan_result = None
+                try:
+                    real_scan_result = execute_tcs_ast_scan({"source.py": redacted_code})
+                except Exception as scan_err:
+                    logger.error(
+                        "Authoritative AST scanner execution failed for job %s: %s; "
+                        "skipping notification event publication (scanner failure != clean scan).",
+                        job_id,
+                        scan_err,
+                    )
+
+                if real_scan_result is not None:
+                    if "secret_findings" not in real_scan_result:
+                        real_scan_result["secret_findings"] = []
+
+                    if secrets_found:
+                        real_scan_result.setdefault("summary", {})["secrets_detected"] = 1
+
+                    try:
+                        notification_service.publish_scan_events(
+                            scan_result=real_scan_result,
+                            repository=f"org_{org_id}",
+                            scan_id=job_id,
+                            metadata={
+                                "user_id": user.id,
+                                "organization_id": org_id,
+                                "email": user.email,
+                            },
+                        )
+                    except Exception as publish_err:
+                        logger.error(f"Event publication failed for job {job_id}: {publish_err}")
             
     except Exception as e:
         pending_job = db.query(ScanCache).filter(ScanCache.job_id == job_id).first()
@@ -2077,6 +2130,23 @@ async def generate_test(payload: CodePayload, request: Request, authorization: s
             return {"error": f"API Error: {str(e)}"}
     finally:
         db.close()
+
+# Mount Phase 15D Notification & Delivery REST API
+from notification_routes import router as notification_router
+app.include_router(notification_router)
+
+from notification_service import NotificationService
+notification_service = getattr(app.state, "notification_service", None)
+if notification_service is None:
+    notification_service = NotificationService(session_factory=SessionLocal)
+    app.state.notification_service = notification_service
+
+@app.on_event("shutdown")
+def shutdown_notification_service():
+    try:
+        notification_service.shutdown()
+    except Exception:
+        pass
 
 @app.get("/{full_path:path}")
 async def catch_all(request: Request, full_path: str):
