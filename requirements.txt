@@ -4,6 +4,7 @@ gunicorn>=21.2.0
 requests
 jinja2
 python-dotenv
+pyyaml>=6.0
 
 passlib[bcrypt]
 bcrypt==3.2.2

@@ -5,7 +5,7 @@ compatible with GitHub Advanced Security / Code Scanning.
 """
 
 import re
-from typing import Dict, Any, List, Optional
+from typing import Dict, Any, List, Optional, Set, FrozenSet, Union
 from rule_engine import GLOBAL_RULE_REGISTRY, get_rule
 
 SARIF_SCHEMA_URI = "https://raw.githubusercontent.com/oasis-tcs/sarif-spec/master/Schemata/sarif-schema-2.1.0.json"
@@ -15,12 +15,19 @@ TOOL_VERSION = "1.0.0"
 TOOL_INFORMATION_URI = "https://time-code-security.onrender.com"
 
 
-def get_supported_rules() -> List[Dict[str, Any]]:
+def get_supported_rules(enabled_rule_ids: Optional[Union[Set[str], FrozenSet[str], List[str]]] = None) -> List[Dict[str, Any]]:
     """Retrieve SARIF v2.1.0 rule definitions dynamically from the Rule Engine."""
+    if enabled_rule_ids is None:
+        return [
+            rule.sarif_metadata
+            for rule in GLOBAL_RULE_REGISTRY.all_rules()
+            if rule.sarif_metadata
+        ]
+    enabled_set = set(enabled_rule_ids)
     return [
         rule.sarif_metadata
         for rule in GLOBAL_RULE_REGISTRY.all_rules()
-        if rule.sarif_metadata
+        if rule.sarif_metadata and rule.cwe_id in enabled_set
     ]
 
 
@@ -53,16 +60,27 @@ def _parse_step_location(step_text: str, default_file: str, default_line: int) -
     return default_file, default_line
 
 
-def to_sarif(tcs_scan_result: Dict[str, Any]) -> Dict[str, Any]:
+def to_sarif(
+    tcs_scan_result: Dict[str, Any],
+    enabled_rule_ids: Optional[Union[Set[str], FrozenSet[str], List[str]]] = None
+) -> Dict[str, Any]:
     """
     Translates a TCS scan result dictionary into a valid OASIS SARIF v2.1.0 document.
 
     :param tcs_scan_result: Standard dictionary returned by TCS AST scan.
+    :param enabled_rule_ids: Optional collection of enabled rule IDs to include in driver.rules.
+                             If omitted, uses tcs_scan_result.get("enabled_rules") if present,
+                             or defaults to all rules in GLOBAL_RULE_REGISTRY.
     :return: OASIS SARIF v2.1.0 formatted dictionary.
     """
+    if enabled_rule_ids is None and isinstance(tcs_scan_result, dict):
+        raw_enabled = tcs_scan_result.get("enabled_rules")
+        if raw_enabled is not None:
+            enabled_rule_ids = raw_enabled
+
     findings = tcs_scan_result.get("findings", []) if isinstance(tcs_scan_result, dict) else []
     results: List[Dict[str, Any]] = []
-    driver_rules = get_supported_rules()
+    driver_rules = get_supported_rules(enabled_rule_ids=enabled_rule_ids)
     rule_index_by_id = {rule["id"]: idx for idx, rule in enumerate(driver_rules)}
 
     for f in findings:

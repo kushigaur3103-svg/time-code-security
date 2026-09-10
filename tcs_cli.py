@@ -24,6 +24,7 @@ from version_matcher import match_dependencies, SCAFinding
 from secret_scanner import scan_text, SecretFinding
 from secret_filters import filter_findings, FilterConfig
 from ci_reporter import format_github_annotations, generate_step_summary
+from config_loader import load_config, TCSConfig, ConfigValidationError
 
 
 IGNORED_DIRS = {
@@ -59,7 +60,10 @@ def extract_remediation_advice(cwe: str, sink_symbol: str) -> str:
     return remediations.get(cwe, "Sanitize input parameters and enforce strict input validation against an explicit allow-list before passing to dangerous operations.")
 
 
-def execute_tcs_scan(normalized_files: Dict[str, str]) -> Dict[str, Any]:
+def execute_tcs_scan(
+    normalized_files: Dict[str, str],
+    config: Optional[TCSConfig] = None
+) -> Dict[str, Any]:
     """
     Executes AST taint tracking, resolves suppressions, and computes risk scores.
     Uses relative filepaths as keys.
@@ -87,6 +91,8 @@ def execute_tcs_scan(normalized_files: Dict[str, str]) -> Dict[str, Any]:
             continue
 
         cwe = sink.metadata.get("cwe", "UNKNOWN_CWE")
+        if config is not None and not config.is_rule_enabled(cwe):
+            continue
         category = sink.metadata.get("sink_type", "UNKNOWN_VULNERABILITY")
         confidence_val = float(edge.confidence)
         confidence_label = "CONFIRMED" if confidence_val >= 1.0 else "POTENTIAL"
@@ -162,7 +168,15 @@ def execute_tcs_scan(normalized_files: Dict[str, str]) -> Dict[str, Any]:
         })
         vuln_idx += 1
 
-    findings = resolve_suppressions(findings, normalized_files)
+    suppression_enabled = True if config is None else config.suppression.enabled
+    if suppression_enabled:
+        findings = resolve_suppressions(findings, normalized_files)
+    else:
+        for f in findings:
+            f["suppressed"] = False
+            f["suppression_justification"] = None
+            f["suppression_kind"] = None
+            f["active"] = True
 
     total_files = len(normalized_files)
     lines_scanned = sum(len(c.splitlines()) for c in normalized_files.values())
@@ -199,6 +213,7 @@ def execute_tcs_scan(normalized_files: Dict[str, str]) -> Dict[str, Any]:
     return {
         "status": "success",
         "syntax_errors": syntax_errors,
+        "enabled_rules": list(config.effective_rules) if config else [r.cwe_id for r in GLOBAL_RULE_REGISTRY.all_rules()],
         "summary": {
             "total_files": total_files,
             "lines_scanned": lines_scanned,
@@ -543,10 +558,14 @@ def main():
         help="Target Python file, manifest, or directory to scan"
     )
     parser.add_argument(
+        "--config",
+        help="Path to .tcs.yml configuration file"
+    )
+    parser.add_argument(
         "--format",
         choices=["table", "json", "sarif"],
-        default="table",
-        help="Output format: table, json, or sarif (default: table)"
+        default=None,
+        help="Output format: table, json, or sarif (default: table or configured in .tcs.yml)"
     )
     parser.add_argument(
         "--exclude-suppressed",
@@ -559,8 +578,16 @@ def main():
     )
     parser.add_argument(
         "--sca",
+        dest="sca",
         action="store_true",
+        default=None,
         help="Enable Software Composition Analysis (SCA) for dependency manifests"
+    )
+    parser.add_argument(
+        "--no-sca",
+        dest="sca",
+        action="store_false",
+        help="Disable Software Composition Analysis (SCA)"
     )
     parser.add_argument(
         "--sca-offline",
@@ -573,8 +600,16 @@ def main():
     )
     parser.add_argument(
         "--secrets",
+        dest="secrets",
         action="store_true",
+        default=None,
         help="Enable Secret and Credential Scanning (CWE-798)"
+    )
+    parser.add_argument(
+        "--no-secrets",
+        dest="secrets",
+        action="store_false",
+        help="Disable Secret and Credential Scanning (CWE-798)"
     )
     parser.add_argument(
         "--github-actions",
@@ -587,6 +622,39 @@ def main():
     )
 
     args = parser.parse_args()
+
+    # Load configuration
+    try:
+        config = load_config(args.config, base_dir=Path.cwd())
+    except ConfigValidationError as cve:
+        print(f"[ERROR] Configuration error: {cve}", file=sys.stderr)
+        sys.exit(2)
+
+    # Resolve CLI precedence: CLI explicit > .tcs.yml > built-in defaults
+    if args.sca is not None:
+        active_sca = args.sca
+    elif config is not None:
+        active_sca = config.scan.sca
+    else:
+        active_sca = False
+
+    if args.secrets is not None:
+        active_secrets = args.secrets
+    elif config is not None:
+        active_secrets = config.scan.secrets
+    else:
+        active_secrets = False
+
+    if args.format is not None:
+        active_format = args.format
+    elif config is not None:
+        active_format = config.output.format
+    else:
+        active_format = "table"
+
+    args.sca = active_sca
+    args.secrets = active_secrets
+    args.format = active_format
 
     if args.sca_offline and not args.sca:
         print("[ERROR] --sca-offline requires --sca to be enabled.", file=sys.stderr)
@@ -604,7 +672,7 @@ def main():
         print(f"[WARN] No Python (*.py) files found in: {args.target}", file=sys.stderr)
 
     try:
-        results = execute_tcs_scan(files)
+        results = execute_tcs_scan(files, config=config)
     except Exception as e:
         print(f"[ERROR] Scan execution failed: {e}", file=sys.stderr)
         sys.exit(2)
@@ -729,7 +797,7 @@ def main():
         export_data["summary"] = summary_copy
 
     if args.format.lower() == "sarif":
-        sarif_doc = to_sarif(export_data)
+        sarif_doc = to_sarif(export_data, enabled_rule_ids=config.effective_rules if config else None)
         output_text = json.dumps(sarif_doc, indent=2)
     elif args.format.lower() == "json":
         output_text = json.dumps(export_data, indent=2)
