@@ -16,6 +16,90 @@ class TaintState(str, Enum):
     TAINTED = "TAINTED"
     UNKNOWN = "UNKNOWN"
 
+class ProvenanceState(str, Enum):
+    STATIC = "STATIC"
+    INTERNAL_DYNAMIC = "INTERNAL_DYNAMIC"
+    UNKNOWN = "UNKNOWN"
+    TAINTED = "TAINTED"
+
+@dataclass(frozen=True)
+class ProvenanceValue:
+    state: ProvenanceState
+    confidence: float = 1.0
+    source_id: Optional[str] = None
+    source_trace: tuple[str, ...] = field(default_factory=tuple)
+    origin_node: Optional[ast.AST] = None
+
+PROVENANCE_COMPOSITION_TABLE: dict[tuple[ProvenanceState, ProvenanceState], ProvenanceState] = {
+    (ProvenanceState.STATIC, ProvenanceState.STATIC):           ProvenanceState.STATIC,
+    (ProvenanceState.STATIC, ProvenanceState.INTERNAL_DYNAMIC): ProvenanceState.INTERNAL_DYNAMIC,
+    (ProvenanceState.STATIC, ProvenanceState.UNKNOWN):          ProvenanceState.UNKNOWN,
+    (ProvenanceState.STATIC, ProvenanceState.TAINTED):          ProvenanceState.TAINTED,
+
+    (ProvenanceState.INTERNAL_DYNAMIC, ProvenanceState.STATIC):           ProvenanceState.INTERNAL_DYNAMIC,
+    (ProvenanceState.INTERNAL_DYNAMIC, ProvenanceState.INTERNAL_DYNAMIC): ProvenanceState.INTERNAL_DYNAMIC,
+    (ProvenanceState.INTERNAL_DYNAMIC, ProvenanceState.UNKNOWN):          ProvenanceState.UNKNOWN,
+    (ProvenanceState.INTERNAL_DYNAMIC, ProvenanceState.TAINTED):          ProvenanceState.TAINTED,
+
+    (ProvenanceState.UNKNOWN, ProvenanceState.STATIC):           ProvenanceState.UNKNOWN,
+    (ProvenanceState.UNKNOWN, ProvenanceState.INTERNAL_DYNAMIC): ProvenanceState.UNKNOWN,
+    (ProvenanceState.UNKNOWN, ProvenanceState.UNKNOWN):          ProvenanceState.UNKNOWN,
+    (ProvenanceState.UNKNOWN, ProvenanceState.TAINTED):          ProvenanceState.TAINTED,
+
+    (ProvenanceState.TAINTED, ProvenanceState.STATIC):           ProvenanceState.TAINTED,
+    (ProvenanceState.TAINTED, ProvenanceState.INTERNAL_DYNAMIC): ProvenanceState.TAINTED,
+    (ProvenanceState.TAINTED, ProvenanceState.UNKNOWN):          ProvenanceState.TAINTED,
+    (ProvenanceState.TAINTED, ProvenanceState.TAINTED):          ProvenanceState.TAINTED,
+}
+
+def compose_path_provenance(
+    left: ProvenanceValue,
+    right: ProvenanceValue,
+    operator: str = "path_join"
+) -> ProvenanceValue:
+    pair = (left.state, right.state)
+    if pair not in PROVENANCE_COMPOSITION_TABLE:
+        raise RuntimeError(f"Unmapped provenance composition pair: {pair}")
+    result_state = PROVENANCE_COMPOSITION_TABLE[pair]
+
+    source_id = None
+    if result_state == ProvenanceState.TAINTED:
+        if left.state == ProvenanceState.TAINTED and right.state == ProvenanceState.TAINTED:
+            confidence = max(left.confidence, right.confidence)
+            source_id = left.source_id or right.source_id
+        elif left.state == ProvenanceState.TAINTED:
+            confidence = left.confidence
+            source_id = left.source_id
+        else:
+            confidence = right.confidence
+            source_id = right.source_id
+    elif result_state == ProvenanceState.UNKNOWN:
+        confidence = 0.50
+        source_id = left.source_id or right.source_id
+    elif result_state == ProvenanceState.INTERNAL_DYNAMIC:
+        confidence = min(left.confidence, right.confidence)
+    else:
+        confidence = 1.00
+
+    combined_trace = (*left.source_trace, f"[{operator}]", *right.source_trace)
+    origin = right.origin_node or left.origin_node
+    return ProvenanceValue(
+        state=result_state,
+        confidence=confidence,
+        source_id=source_id,
+        source_trace=combined_trace,
+        origin_node=origin
+    )
+
+STD_INTERNAL_PATH_PRODUCERS: dict[str, dict] = {
+    "tempfile.TemporaryDirectory": {"is_context_manager": True, "return_type": "str"},
+    "tempfile.mkdtemp": {"is_context_manager": False, "return_type": "str"},
+    "tempfile.NamedTemporaryFile": {"is_context_manager": True, "return_type": "file"},
+    "tempfile.mkstemp": {"is_context_manager": False, "return_type": "tuple"},
+    "tempfile.gettempdir": {"is_context_manager": False, "return_type": "str"},
+    "argparse.ArgumentParser.parse_args": {"is_context_manager": False, "return_type": "namespace"},
+}
+
 @dataclass(frozen=True)
 class CodeLocation:
     file: str
@@ -227,13 +311,14 @@ class TaintTracker:
         if name and name.startswith("flask.") and name[6:] in SOURCE_REGISTRY: return True
         return False
 
-    def get_or_create_source(self, node: ast.Call, file_path: str, scope_id: str = "") -> SecurityNode:
+    def get_or_create_source(self, node: ast.AST, file_path: str, scope_id: str = "") -> SecurityNode:
         loc = location(node, file_path)
         for existing in self.sources:
             if existing.location == loc: return existing
         source_id = self.next_source_id()
-        canon_name = self.resolve_canonical_name(node.func, scope_id) if scope_id else None
-        name = dotted_name(node.func)
+        target_node = node.func if isinstance(node, ast.Call) else (node.value if isinstance(node, ast.Subscript) else node)
+        canon_name = self.resolve_canonical_name(target_node, scope_id) if scope_id else None
+        name = dotted_name(target_node)
         lookup_name = canon_name if (canon_name and canon_name in SOURCE_REGISTRY) else name
         if lookup_name not in SOURCE_REGISTRY and canon_name and canon_name.startswith("flask."):
             unq = canon_name[6:]
@@ -242,8 +327,9 @@ class TaintTracker:
             unq = name[6:]
             if unq in SOURCE_REGISTRY: lookup_name = unq
         meta = SOURCE_REGISTRY.get(lookup_name, {})
+        sym = f"{lookup_name}(...)" if isinstance(node, ast.Call) else (f"{lookup_name}[...]" if isinstance(node, ast.Subscript) else f"{lookup_name}")
         source = SecurityNode(
-            id=source_id, node_type=NodeType.SOURCE, symbol=f"{lookup_name}(...)",
+            id=source_id, node_type=NodeType.SOURCE, symbol=sym,
             operation=meta.get("operation", "USER_INPUT_ACCESS"), location=loc,
             metadata={"source_type": meta.get("source_type", "USER_CONTROLLED")}
         )
@@ -583,10 +669,23 @@ class TaintTracker:
                         })
                 self.collect_statements(stmt.body, scope_id=scope_id, is_conditional=True)
                 self.collect_statements(stmt.orelse, scope_id=scope_id, is_conditional=True)
-            elif isinstance(stmt, (ast.For, ast.While)):
+            elif isinstance(stmt, (ast.For, ast.AsyncFor, ast.While)):
                 if isinstance(stmt, ast.While):
                     self.scan_for_sinks(stmt.test, scope_id, stmt.lineno)
                     self._collect_calls_in_expr(stmt.test, scope_id, stmt.lineno)
+                else:
+                    self.scan_for_sinks(stmt.iter, scope_id, stmt.lineno)
+                    self._collect_calls_in_expr(stmt.iter, scope_id, stmt.lineno)
+                    targets = []
+                    if isinstance(stmt.target, ast.Name):
+                        targets.append(stmt.target.id)
+                    elif isinstance(stmt.target, (ast.Tuple, ast.List)):
+                        for elt in stmt.target.elts:
+                            if isinstance(elt, ast.Name):
+                                targets.append(elt.id)
+                    for t_name in targets:
+                        record = AssignmentRecord(target_name=t_name, value_node=stmt.iter, lineno=stmt.lineno, scope_id=scope_id, is_conditional=True)
+                        self.assignments_by_scope.setdefault((scope_id, t_name), []).append(record)
                 self.collect_statements(stmt.body, scope_id=scope_id, is_conditional=True)
                 self.collect_statements(stmt.orelse, scope_id=scope_id, is_conditional=True)
             elif isinstance(stmt, ast.Try):
@@ -598,6 +697,17 @@ class TaintTracker:
                 for item in stmt.items:
                     self.scan_for_sinks(item.context_expr, scope_id, stmt.lineno)
                     self._collect_calls_in_expr(item.context_expr, scope_id, stmt.lineno)
+                    if item.optional_vars:
+                        targets = []
+                        if isinstance(item.optional_vars, ast.Name):
+                            targets.append(item.optional_vars.id)
+                        elif isinstance(item.optional_vars, (ast.Tuple, ast.List)):
+                            for elt in item.optional_vars.elts:
+                                if isinstance(elt, ast.Name):
+                                    targets.append(elt.id)
+                        for t_name in targets:
+                            record = AssignmentRecord(target_name=t_name, value_node=item.context_expr, lineno=stmt.lineno, scope_id=scope_id, is_conditional=is_conditional)
+                            self.assignments_by_scope.setdefault((scope_id, t_name), []).append(record)
                 self.collect_statements(stmt.body, scope_id=scope_id, is_conditional=is_conditional)
             elif isinstance(stmt, ast.Return):
                 self.returns_by_scope.setdefault(scope_id, []).append(stmt)
@@ -647,8 +757,13 @@ class TaintTracker:
             fname = self.resolve_canonical_name(expr_node.func, scope_id) or dotted_name(expr_node.func) or ""
             if fname in ("Path", "pathlib.Path"):
                 return True
-            if isinstance(expr_node.func, ast.Attribute) and expr_node.func.attr == "resolve":
+            if isinstance(expr_node.func, ast.Attribute) and expr_node.func.attr in ("resolve", "absolute", "expanduser", "joinpath"):
                 return self._is_path_expr(expr_node.func.value, scope_id)
+            if isinstance(expr_node.func, ast.Attribute) and expr_node.func.attr in ("cwd", "home"):
+                return fname in ("Path.cwd", "pathlib.Path.cwd", "Path.home", "pathlib.Path.home")
+        if isinstance(expr_node, ast.Attribute):
+            if expr_node.attr in ("parent", "parents", "name", "stem", "suffix", "suffixes"):
+                return self._is_path_expr(expr_node.value, scope_id)
         if isinstance(expr_node, ast.BinOp) and isinstance(expr_node.op, ast.Div):
             return self._is_path_expr(expr_node.left, scope_id) or self._is_path_expr(expr_node.right, scope_id)
         if isinstance(expr_node, ast.Name):
@@ -803,6 +918,16 @@ class TaintTracker:
                 self.sources.append(src)
                 return TaintValue(state=TaintState.TAINTED, source_id=source_id, confidence=1.0, path=[source_id], last_operation=norm_attr)
 
+            # Path attribute navigation (.parent, .parents, .name, .stem, .suffix, .suffixes)
+            if node.attr in ("parent", "parents", "name", "stem", "suffix", "suffixes") or self._is_path_expr(node.value, scope_id):
+                recv_taint = self.resolve_expression(node.value, sink, scope_id, current_lineno, visited.copy(), call_context)
+                if recv_taint.state == TaintState.TAINTED:
+                    return TaintValue(state=TaintState.TAINTED, source_id=recv_taint.source_id, confidence=recv_taint.confidence, path=[*recv_taint.path, f"{file_name}:{node.attr}"], last_operation=f"path_{node.attr}")
+                elif recv_taint.state == TaintState.CLEAN:
+                    return TaintValue(state=TaintState.CLEAN, confidence=1.0, last_operation=f"path_{node.attr}")
+                else:
+                    return TaintValue(state=TaintState.UNKNOWN, source_id=recv_taint.source_id, confidence=0.50, path=[*recv_taint.path, f"{file_name}:{node.attr}"], last_operation=f"path_{node.attr}")
+
         if isinstance(node, ast.Name):
             if self.is_var_contained(node.id, scope_id, current_lineno, sink, visited):
                 return TaintValue(state=TaintState.CLEAN, confidence=1.0, path=[f"{file_name}:{node.id}", "path_containment_proven"], last_operation="path_containment_proven")
@@ -883,10 +1008,28 @@ class TaintTracker:
                             return TaintValue(state=TaintState.TAINTED, source_id=best_t.source_id, confidence=best_t.confidence, path=[*best_t.path, f"{file_name}:{node.id}"], last_operation=f"param:{node.id}")
                         elif caller_taints:
                             merged = self.merge_taints(caller_taints, f"{file_name}:{node.id}")
-                            if merged.state != TaintState.CLEAN:
-                                return merged
+                            return merged
 
-                return TaintValue(state=TaintState.CLEAN, confidence=1.0, last_operation=f"untracked:{node.id}")
+                    # Parameter with no call sites (or self/cls)
+                    if node.id in ("self", "cls"):
+                        return TaintValue(state=TaintState.CLEAN, confidence=1.0, last_operation=f"self:{node.id}")
+                    # Unresolved parameter with unknown/external caller provenance must NOT be auto-clean
+                    return TaintValue(state=TaintState.UNKNOWN, confidence=0.50, path=[f"{file_name}:{node.id}"], last_operation=f"unresolved_param:{node.id}")
+
+                # Check known builtins / constants / imports
+                if node.id == "__file__":
+                    return TaintValue(state=TaintState.CLEAN, confidence=1.0, last_operation="__file__")
+                if node.id in ("__name__", "__doc__", "__package__", "True", "False", "None"):
+                    return TaintValue(state=TaintState.CLEAN, confidence=1.0, last_operation="builtin_constant")
+                if node.id in self.imports.get(mod_name, {}):
+                    return TaintValue(state=TaintState.CLEAN, confidence=1.0, last_operation=f"import:{node.id}")
+                if f"{mod_name}:function:{node.id}" in self.functions:
+                    return TaintValue(state=TaintState.CLEAN, confidence=1.0, last_operation=f"function:{node.id}")
+                if node.id in ("int", "str", "bytes", "float", "bool", "list", "dict", "set", "tuple", "len", "range", "enumerate", "zip", "open", "print", "isinstance", "issubclass", "getattr", "setattr", "hasattr", "Exception", "ValueError", "TypeError", "FileNotFoundError", "dir", "min", "max", "sum", "any", "all", "map", "filter"):
+                    return TaintValue(state=TaintState.CLEAN, confidence=1.0, last_operation="builtin_symbol")
+
+                # Name has no assignment, is not a known builtin, not an import, not a function: unresolved provenance
+                return TaintValue(state=TaintState.UNKNOWN, confidence=0.50, path=[f"{file_name}:{node.id}"], last_operation=f"unresolved:{node.id}")
 
             last_uncond_idx = -1
             for idx, r in enumerate(records_before):
@@ -956,15 +1099,38 @@ class TaintTracker:
                         return TaintValue(state=TaintState.CLEAN, confidence=1.0, last_operation="path_construct")
                 return TaintValue(state=TaintState.CLEAN, confidence=1.0, last_operation="path_construct")
 
-            # Path.resolve() call
-            if isinstance(node.func, ast.Attribute) and node.func.attr == "resolve":
+            # Path.cwd() or Path.home()
+            if function_name in ("Path.cwd", "pathlib.Path.cwd", "Path.home", "pathlib.Path.home"):
+                return TaintValue(state=TaintState.CLEAN, confidence=1.0, last_operation=function_name)
+
+            # Path.resolve() / Path.absolute() / Path.expanduser() call
+            if isinstance(node.func, ast.Attribute) and node.func.attr in ("resolve", "absolute", "expanduser"):
                 recv_taint = self.resolve_expression(node.func.value, sink, scope_id, current_lineno, visited.copy(), call_context)
                 if recv_taint.state == TaintState.TAINTED:
-                    return TaintValue(state=TaintState.TAINTED, source_id=recv_taint.source_id, confidence=recv_taint.confidence, path=[*recv_taint.path, f"{file_name}:resolve()"], last_operation="path_resolve")
+                    return TaintValue(state=TaintState.TAINTED, source_id=recv_taint.source_id, confidence=recv_taint.confidence, path=[*recv_taint.path, f"{file_name}:{node.func.attr}()"], last_operation=f"path_{node.func.attr}")
                 elif recv_taint.state == TaintState.UNKNOWN:
-                    return TaintValue(state=TaintState.UNKNOWN, source_id=recv_taint.source_id, confidence=0.50, path=[*recv_taint.path, f"{file_name}:resolve()"], last_operation="path_resolve")
+                    return TaintValue(state=TaintState.UNKNOWN, source_id=recv_taint.source_id, confidence=0.50, path=[*recv_taint.path, f"{file_name}:{node.func.attr}()"], last_operation=f"path_{node.func.attr}")
                 else:
-                    return TaintValue(state=TaintState.CLEAN, confidence=1.0, last_operation="path_resolve")
+                    return TaintValue(state=TaintState.CLEAN, confidence=1.0, last_operation=f"path_{node.func.attr}")
+
+            # Path.joinpath(*args)
+            if isinstance(node.func, ast.Attribute) and node.func.attr == "joinpath":
+                recv_taint = self.resolve_expression(node.func.value, sink, scope_id, current_lineno, visited.copy(), call_context)
+                arg_taints = [self.resolve_expression(arg, sink, scope_id, current_lineno, visited.copy(), call_context) for arg in node.args]
+                all_taints = [recv_taint] + arg_taints
+                tainted_parts = [t for t in all_taints if t.state == TaintState.TAINTED]
+                if tainted_parts:
+                    best_t = max(tainted_parts, key=lambda t: t.confidence)
+                    combined_path = []
+                    for t in all_taints:
+                        if t.path: combined_path.extend(t.path)
+                    combined_path.append(f"{file_name}:joinpath()")
+                    return TaintValue(state=TaintState.TAINTED, source_id=best_t.source_id, confidence=best_t.confidence, path=combined_path, last_operation="path_joinpath")
+                unknown_parts = [t for t in all_taints if t.state != TaintState.CLEAN]
+                if unknown_parts:
+                    first_u = unknown_parts[0]
+                    return TaintValue(state=TaintState.UNKNOWN, source_id=first_u.source_id, confidence=0.50, path=[*first_u.path, f"{file_name}:joinpath()"], last_operation="path_joinpath")
+                return TaintValue(state=TaintState.CLEAN, confidence=1.0, last_operation="path_joinpath")
 
             # os.path.join
             if function_name in ("os.path.join", "posixpath.join", "ntpath.join"):
@@ -1130,7 +1296,40 @@ class TaintTracker:
             if val_taint.state == TaintState.CLEAN:
                 return TaintValue(state=TaintState.CLEAN, confidence=1.0, last_operation="subscript")
 
-        if isinstance(node, (ast.Constant, ast.List, ast.Tuple, ast.Set, ast.Dict)): return TaintValue(state=TaintState.CLEAN, confidence=1.0, last_operation="constant")
+        if isinstance(node, ast.Constant):
+            return TaintValue(state=TaintState.CLEAN, confidence=1.0, last_operation="constant")
+
+        if isinstance(node, (ast.List, ast.Tuple, ast.Set)):
+            if not node.elts:
+                return TaintValue(state=TaintState.CLEAN, confidence=1.0, last_operation="constant")
+            elt_taints = [self.resolve_expression(elt, sink, scope_id, current_lineno, visited.copy(), call_context) for elt in node.elts]
+            tainted_elts = [e for e in elt_taints if e.state == TaintState.TAINTED]
+            if tainted_elts:
+                best_e = max(tainted_elts, key=lambda e: e.confidence)
+                return TaintValue(state=TaintState.TAINTED, source_id=best_e.source_id, confidence=best_e.confidence, path=[*best_e.path, f"{file_name}:collection"], last_operation="collection")
+            unknown_elts = [e for e in elt_taints if e.state != TaintState.CLEAN]
+            if unknown_elts:
+                first_u = unknown_elts[0]
+                return TaintValue(state=TaintState.UNKNOWN, source_id=first_u.source_id, confidence=0.50, path=[*first_u.path, f"{file_name}:collection"], last_operation="collection")
+            return TaintValue(state=TaintState.CLEAN, confidence=1.0, last_operation="constant")
+
+        if isinstance(node, ast.Dict):
+            items_to_check = []
+            for k in node.keys:
+                if k: items_to_check.append(k)
+            items_to_check.extend(node.values)
+            if not items_to_check:
+                return TaintValue(state=TaintState.CLEAN, confidence=1.0, last_operation="constant")
+            item_taints = [self.resolve_expression(item, sink, scope_id, current_lineno, visited.copy(), call_context) for item in items_to_check]
+            tainted_items = [e for e in item_taints if e.state == TaintState.TAINTED]
+            if tainted_items:
+                best_e = max(tainted_items, key=lambda e: e.confidence)
+                return TaintValue(state=TaintState.TAINTED, source_id=best_e.source_id, confidence=best_e.confidence, path=[*best_e.path, f"{file_name}:dict"], last_operation="dict")
+            unknown_items = [e for e in item_taints if e.state != TaintState.CLEAN]
+            if unknown_items:
+                first_u = unknown_items[0]
+                return TaintValue(state=TaintState.UNKNOWN, source_id=first_u.source_id, confidence=0.50, path=[*first_u.path, f"{file_name}:dict"], last_operation="dict")
+            return TaintValue(state=TaintState.CLEAN, confidence=1.0, last_operation="constant")
         if isinstance(node, ast.BinOp):
             left = self.resolve_expression(node.left, sink, scope_id, current_lineno, visited.copy(), call_context)
             right = self.resolve_expression(node.right, sink, scope_id, current_lineno, visited.copy(), call_context)
@@ -1157,6 +1356,508 @@ class TaintTracker:
             src_id = left.source_id or right.source_id
             return TaintValue(state=TaintState.TAINTED if (left.state == TaintState.TAINTED and right.state == TaintState.TAINTED) else TaintState.UNKNOWN, source_id=src_id, confidence=min(left.confidence, right.confidence), path=[*left.path, *right.path, "binary_op"], last_operation="binary_op")
         return TaintValue(state=TaintState.UNKNOWN, confidence=0.50, last_operation="unknown_expression")
+
+    def resolve_path_provenance(
+        self,
+        node: ast.AST,
+        sink: SecurityNode,
+        scope_id: str,
+        current_lineno: int,
+        visited: Optional[set[str]] = None,
+        call_context: Optional[dict[str, ProvenanceValue]] = None
+    ) -> ProvenanceValue:
+        if visited is None: visited = set()
+        if call_context is None: call_context = {}
+        mod_name = scope_id.split(":")[0]
+        file_name = self.file_paths.get(mod_name, f"{mod_name}.py")
+
+        # 1. Path containment check
+        if isinstance(node, (ast.Name, ast.Attribute)):
+            dname = dotted_name(node)
+            if dname and self.is_var_contained(dname, scope_id, current_lineno, sink, visited):
+                return ProvenanceValue(
+                    state=ProvenanceState.STATIC,
+                    confidence=1.0,
+                    source_trace=(f"{file_name}:{dname}", "path_containment_proven"),
+                    origin_node=node
+                )
+
+        # 2. String/Bytes Constants
+        if isinstance(node, ast.Constant):
+            return ProvenanceValue(
+                state=ProvenanceState.STATIC,
+                confidence=1.0,
+                source_trace=("literal",),
+                origin_node=node
+            )
+
+        # 3. JoinedStr (f-strings)
+        if isinstance(node, ast.JoinedStr):
+            parts: list[ProvenanceValue] = []
+            for part in node.values:
+                if isinstance(part, ast.FormattedValue):
+                    parts.append(self.resolve_path_provenance(part.value, sink, scope_id, current_lineno, visited.copy(), call_context))
+                elif isinstance(part, ast.Constant):
+                    parts.append(ProvenanceValue(state=ProvenanceState.STATIC, confidence=1.0, source_trace=("fstring_const",), origin_node=part))
+                else:
+                    parts.append(self.resolve_path_provenance(part, sink, scope_id, current_lineno, visited.copy(), call_context))
+            if not parts:
+                return ProvenanceValue(state=ProvenanceState.STATIC, confidence=1.0, source_trace=("fstring_empty",), origin_node=node)
+            res = parts[0]
+            for p in parts[1:]:
+                res = compose_path_provenance(res, p, operator="fstring")
+            return res
+
+        # 4. BinOp (path joins via /, +, %)
+        if isinstance(node, ast.BinOp):
+            left = self.resolve_path_provenance(node.left, sink, scope_id, current_lineno, visited.copy(), call_context)
+            right = self.resolve_path_provenance(node.right, sink, scope_id, current_lineno, visited.copy(), call_context)
+            op_label = "/" if isinstance(node.op, ast.Div) else ("+" if isinstance(node.op, ast.Add) else "%")
+            return compose_path_provenance(left, right, operator=op_label)
+
+        # 4b. Collections (List, Tuple, Set)
+        if isinstance(node, (ast.List, ast.Tuple, ast.Set)):
+            if not node.elts:
+                return ProvenanceValue(state=ProvenanceState.STATIC, confidence=1.0, source_trace=("empty_collection",), origin_node=node)
+            elt_provs = [self.resolve_path_provenance(elt, sink, scope_id, current_lineno, visited.copy(), call_context) for elt in node.elts]
+            tainted_elts = [e for e in elt_provs if e.state == ProvenanceState.TAINTED]
+            if tainted_elts:
+                best_e = max(tainted_elts, key=lambda e: e.confidence)
+                return ProvenanceValue(
+                    state=ProvenanceState.TAINTED,
+                    confidence=best_e.confidence,
+                    source_id=best_e.source_id,
+                    source_trace=(*best_e.source_trace, "collection"),
+                    origin_node=node
+                )
+            unknown_elts = [e for e in elt_provs if e.state == ProvenanceState.UNKNOWN]
+            if unknown_elts:
+                first_u = unknown_elts[0]
+                return ProvenanceValue(
+                    state=ProvenanceState.UNKNOWN,
+                    confidence=0.50,
+                    source_id=first_u.source_id,
+                    source_trace=(*first_u.source_trace, "collection"),
+                    origin_node=node
+                )
+            if all(e.state == ProvenanceState.STATIC for e in elt_provs):
+                return ProvenanceValue(state=ProvenanceState.STATIC, confidence=1.0, source_trace=("collection_static",), origin_node=node)
+            return ProvenanceValue(state=ProvenanceState.INTERNAL_DYNAMIC, confidence=1.0, source_trace=("collection_dynamic",), origin_node=node)
+
+        # 5. Call
+        if isinstance(node, ast.Call):
+            if self.is_source_call(node, scope_id):
+                src = self.get_or_create_source(node, file_name, scope_id)
+                return ProvenanceValue(
+                    state=ProvenanceState.TAINTED,
+                    confidence=1.0,
+                    source_id=src.id,
+                    source_trace=(src.id,),
+                    origin_node=node
+                )
+
+            canon_name = self.resolve_canonical_name(node.func, scope_id) or dotted_name(node.func) or ""
+            d_name = dotted_name(node.func) or ""
+
+            if (canon_name in SANITIZER_REGISTRY and self.sanitizer_protects_context(canon_name, sink)) or \
+               (d_name in SANITIZER_REGISTRY and self.sanitizer_protects_context(d_name, sink)):
+                return ProvenanceValue(
+                    state=ProvenanceState.STATIC,
+                    confidence=1.0,
+                    source_trace=(f"sanitizer:{canon_name or d_name}",),
+                    origin_node=node
+                )
+
+            # 1. User-defined function resolution MUST take precedence over semantic stdlib producer lookup
+            func_scope = self._resolve_function_scope(d_name or canon_name, scope_id)
+            if func_scope:
+                call_sig = f"prov_call:{func_scope}:{current_lineno}"
+                if call_sig not in visited:
+                    visited.add(call_sig)
+                    func_node = self.functions[func_scope]
+                    param_names = [a.arg for a in func_node.args.args]
+                    arg_provs = [self.resolve_path_provenance(a, sink, scope_id, current_lineno, visited.copy(), call_context) for a in node.args]
+                    new_ctx = {}
+                    for idx, p_name in enumerate(param_names):
+                        if idx < len(arg_provs):
+                            new_ctx[p_name] = arg_provs[idx]
+                        else:
+                            new_ctx[p_name] = ProvenanceValue(state=ProvenanceState.STATIC, confidence=1.0)
+                    for kw in getattr(node, "keywords", []):
+                        if kw.arg and kw.arg in param_names:
+                            new_ctx[kw.arg] = self.resolve_path_provenance(kw.value, sink, scope_id, current_lineno, visited.copy(), call_context)
+                    returns = self.returns_by_scope.get(func_scope, [])
+                    if returns:
+                        ret_provs = []
+                        for r in returns:
+                            if r.value:
+                                ret_provs.append(self.resolve_path_provenance(r.value, sink, func_scope, r.lineno, visited.copy(), new_ctx))
+                            else:
+                                ret_provs.append(ProvenanceValue(state=ProvenanceState.STATIC, confidence=1.0))
+                        res_p = ret_provs[0]
+                        for rp in ret_provs[1:]:
+                            res_p = compose_path_provenance(res_p, rp, operator="return_merge")
+                        return res_p
+
+            # 2. Standard library internal path producers (only canonical/import-qualified)
+            if canon_name in STD_INTERNAL_PATH_PRODUCERS:
+                return ProvenanceValue(
+                    state=ProvenanceState.INTERNAL_DYNAMIC,
+                    confidence=1.0,
+                    source_trace=(f"std_internal:{canon_name}",),
+                    origin_node=node
+                )
+            if isinstance(node.func, ast.Attribute) and node.func.attr == "parse_args":
+                recv_name = getattr(node.func.value, "id", "")
+                recs = self.assignments_by_scope.get((scope_id, recv_name), [])
+                if recs and isinstance(recs[-1].value_node, ast.Call):
+                    cname = dotted_name(recs[-1].value_node.func)
+                    if cname in ("argparse.ArgumentParser", "ArgumentParser"):
+                        return ProvenanceValue(
+                            state=ProvenanceState.INTERNAL_DYNAMIC,
+                            confidence=1.0,
+                            source_trace=("std_internal:argparse.parse_args",),
+                            origin_node=node
+                        )
+
+            # 3. Built-in type conversions / path wrappers (str, bytes, os.fspath)
+            if (canon_name in ("str", "bytes", "os.fspath", "builtins.str", "builtins.bytes") or d_name in ("str", "bytes", "os.fspath")) and node.args:
+                return self.resolve_path_provenance(node.args[0], sink, scope_id, current_lineno, visited.copy(), call_context)
+
+            if canon_name in ("os.walk", "walk") or d_name in ("os.walk", "walk"):
+                root_expr = node.args[0] if node.args else None
+                if root_expr:
+                    root_prov = self.resolve_path_provenance(root_expr, sink, scope_id, current_lineno, visited.copy(), call_context)
+                else:
+                    root_prov = ProvenanceValue(state=ProvenanceState.UNKNOWN, confidence=0.50)
+
+                if root_prov.state == ProvenanceState.TAINTED:
+                    return ProvenanceValue(
+                        state=ProvenanceState.TAINTED,
+                        confidence=root_prov.confidence,
+                        source_id=root_prov.source_id,
+                        source_trace=(*root_prov.source_trace, "os.walk(tainted_root)"),
+                        origin_node=node
+                    )
+                elif root_prov.state == ProvenanceState.UNKNOWN:
+                    return ProvenanceValue(
+                        state=ProvenanceState.UNKNOWN,
+                        confidence=0.50,
+                        source_id=root_prov.source_id,
+                        source_trace=(*root_prov.source_trace, "os.walk(unknown_root)"),
+                        origin_node=node
+                    )
+                else:
+                    return ProvenanceValue(
+                        state=ProvenanceState.INTERNAL_DYNAMIC,
+                        confidence=1.0,
+                        source_trace=(*root_prov.source_trace, "os.walk(internal_root)"),
+                        origin_node=node
+                    )
+
+            if canon_name in ("Path", "pathlib.Path") or d_name in ("Path", "pathlib.Path"):
+                if node.args:
+                    arg_prov = self.resolve_path_provenance(node.args[0], sink, scope_id, current_lineno, visited.copy(), call_context)
+                    return ProvenanceValue(
+                        state=arg_prov.state,
+                        confidence=arg_prov.confidence,
+                        source_id=arg_prov.source_id,
+                        source_trace=(*arg_prov.source_trace, f"{file_name}:Path()"),
+                        origin_node=node
+                    )
+                return ProvenanceValue(
+                    state=ProvenanceState.INTERNAL_DYNAMIC,
+                    confidence=1.0,
+                    source_trace=(f"{file_name}:Path()",),
+                    origin_node=node
+                )
+
+            if canon_name in ("Path.cwd", "pathlib.Path.cwd", "Path.home", "pathlib.Path.home") or \
+               d_name in ("Path.cwd", "pathlib.Path.cwd", "Path.home", "pathlib.Path.home"):
+                return ProvenanceValue(
+                    state=ProvenanceState.INTERNAL_DYNAMIC,
+                    confidence=1.0,
+                    source_trace=(canon_name or d_name,),
+                    origin_node=node
+                )
+
+            if isinstance(node.func, ast.Attribute) and node.func.attr in ("resolve", "absolute", "expanduser"):
+                recv_prov = self.resolve_path_provenance(node.func.value, sink, scope_id, current_lineno, visited.copy(), call_context)
+                return ProvenanceValue(
+                    state=recv_prov.state,
+                    confidence=recv_prov.confidence,
+                    source_id=recv_prov.source_id,
+                    source_trace=(*recv_prov.source_trace, f".{node.func.attr}()"),
+                    origin_node=node
+                )
+
+            if (isinstance(node.func, ast.Attribute) and node.func.attr == "joinpath") or \
+               canon_name in ("os.path.join", "posixpath.join", "ntpath.join") or \
+               d_name in ("os.path.join", "posixpath.join", "ntpath.join"):
+                if isinstance(node.func, ast.Attribute) and node.func.attr == "joinpath":
+                    curr_prov = self.resolve_path_provenance(node.func.value, sink, scope_id, current_lineno, visited.copy(), call_context)
+                    args_to_join = list(node.args)
+                else:
+                    curr_prov = self.resolve_path_provenance(node.args[0], sink, scope_id, current_lineno, visited.copy(), call_context) if node.args else ProvenanceValue(state=ProvenanceState.STATIC)
+                    args_to_join = list(node.args[1:]) if len(node.args) > 1 else []
+                for a in args_to_join:
+                    a_prov = self.resolve_path_provenance(a, sink, scope_id, current_lineno, visited.copy(), call_context)
+                    curr_prov = compose_path_provenance(curr_prov, a_prov, operator="join")
+                return curr_prov
+
+            if (canon_name in ("os.path.normpath", "posixpath.normpath", "ntpath.normpath",
+                               "os.path.dirname", "posixpath.dirname", "ntpath.dirname",
+                               "os.path.abspath", "posixpath.abspath", "ntpath.abspath",
+                               "os.path.realpath", "posixpath.realpath", "ntpath.realpath") or \
+                d_name in ("os.path.normpath", "posixpath.normpath", "ntpath.normpath",
+                           "os.path.dirname", "posixpath.dirname", "ntpath.dirname",
+                           "os.path.abspath", "posixpath.abspath", "ntpath.abspath",
+                           "os.path.realpath", "posixpath.realpath", "ntpath.realpath")) and node.args:
+                return self.resolve_path_provenance(node.args[0], sink, scope_id, current_lineno, visited.copy(), call_context)
+
+            # Unmodeled / opaque call: check if any arguments are tainted
+            arg_provs = [self.resolve_path_provenance(a, sink, scope_id, current_lineno, visited.copy(), call_context) for a in node.args]
+            for kw in getattr(node, "keywords", []):
+                arg_provs.append(self.resolve_path_provenance(kw.value, sink, scope_id, current_lineno, visited.copy(), call_context))
+            tainted_args = [a for a in arg_provs if a.state == ProvenanceState.TAINTED]
+            if tainted_args:
+                best_t = max(tainted_args, key=lambda a: a.confidence)
+                return ProvenanceValue(
+                    state=ProvenanceState.UNKNOWN,
+                    confidence=0.50,
+                    source_id=best_t.source_id,
+                    source_trace=(*best_t.source_trace, f"unknown_wrapper:{canon_name or d_name}()"),
+                    origin_node=node
+                )
+            t_val = self.resolve_expression(node, sink, scope_id, current_lineno, visited.copy(), {})
+            if t_val.state == TaintState.TAINTED:
+                return ProvenanceValue(
+                    state=ProvenanceState.TAINTED,
+                    confidence=t_val.confidence,
+                    source_id=t_val.source_id,
+                    source_trace=tuple(t_val.path) or (t_val.source_id,),
+                    origin_node=node
+                )
+            return ProvenanceValue(
+                state=ProvenanceState.UNKNOWN,
+                confidence=0.50,
+                source_id=t_val.source_id,
+                source_trace=tuple(t_val.path) or (f"opaque_call:{canon_name or d_name}()",),
+                origin_node=node
+            )
+
+        # 6. Attribute
+        if isinstance(node, ast.Attribute):
+            canon_attr = self.resolve_canonical_name(node, scope_id) or dotted_name(node) or ""
+            norm_attr = canon_attr[6:] if canon_attr.startswith("flask.") else canon_attr
+            if norm_attr in ("request.data", "request.json", "request.query_string") or (node.attr in ("data", "json", "query_string") and dotted_name(node.value) == "request"):
+                src = self.get_or_create_source(node, file_name, scope_id)
+                return ProvenanceValue(
+                    state=ProvenanceState.TAINTED,
+                    confidence=1.0,
+                    source_id=src.id,
+                    source_trace=(src.id,),
+                    origin_node=node
+                )
+
+            if node.attr in ("parent", "parents", "name", "stem", "suffix", "suffixes"):
+                recv_prov = self.resolve_path_provenance(node.value, sink, scope_id, current_lineno, visited.copy(), call_context)
+                return ProvenanceValue(
+                    state=recv_prov.state,
+                    confidence=recv_prov.confidence,
+                    source_id=recv_prov.source_id,
+                    source_trace=(*recv_prov.source_trace, f".{node.attr}"),
+                    origin_node=node
+                )
+
+            recv_prov = self.resolve_path_provenance(node.value, sink, scope_id, current_lineno, visited.copy(), call_context)
+            if recv_prov.state == ProvenanceState.INTERNAL_DYNAMIC:
+                return ProvenanceValue(
+                    state=ProvenanceState.INTERNAL_DYNAMIC,
+                    confidence=recv_prov.confidence,
+                    source_trace=(*recv_prov.source_trace, f".{node.attr}"),
+                    origin_node=node
+                )
+            elif recv_prov.state == ProvenanceState.TAINTED:
+                return ProvenanceValue(
+                    state=ProvenanceState.TAINTED,
+                    confidence=recv_prov.confidence,
+                    source_id=recv_prov.source_id,
+                    source_trace=(*recv_prov.source_trace, f".{node.attr}"),
+                    origin_node=node
+                )
+            return ProvenanceValue(state=ProvenanceState.UNKNOWN, confidence=0.50, source_trace=(f".{node.attr}",), origin_node=node)
+
+        # 7. Subscript (e.g. request.args["param"])
+        if isinstance(node, ast.Subscript):
+            canon_val = self.resolve_canonical_name(node.value, scope_id) or dotted_name(node.value) or ""
+            norm_val = canon_val[6:] if canon_val.startswith("flask.") else canon_val
+            if norm_val in ("request.args", "request.form", "request.values", "request.headers", "request.cookies") or dotted_name(node.value) in ("request.args", "request.form", "request.values", "request.headers", "request.cookies"):
+                src = self.get_or_create_source(node, file_name, scope_id)
+                return ProvenanceValue(
+                    state=ProvenanceState.TAINTED,
+                    confidence=1.0,
+                    source_id=src.id,
+                    source_trace=(src.id,),
+                    origin_node=node
+                )
+            val_prov = self.resolve_path_provenance(node.value, sink, scope_id, current_lineno, visited.copy(), call_context)
+            if val_prov.state == ProvenanceState.TAINTED:
+                return ProvenanceValue(state=ProvenanceState.TAINTED, confidence=val_prov.confidence, source_id=val_prov.source_id, source_trace=(*val_prov.source_trace, "subscript"), origin_node=node)
+            elif val_prov.state == ProvenanceState.INTERNAL_DYNAMIC:
+                return ProvenanceValue(state=ProvenanceState.INTERNAL_DYNAMIC, confidence=val_prov.confidence, source_trace=(*val_prov.source_trace, "subscript"), origin_node=node)
+            elif val_prov.state == ProvenanceState.STATIC:
+                return ProvenanceValue(state=ProvenanceState.STATIC, confidence=1.0, source_trace=(*val_prov.source_trace, "subscript"), origin_node=node)
+            return ProvenanceValue(state=ProvenanceState.UNKNOWN, confidence=0.50, source_trace=("subscript",), origin_node=node)
+
+        # 8. Name
+        if isinstance(node, ast.Name):
+            if node.id == "__file__":
+                return ProvenanceValue(state=ProvenanceState.STATIC, confidence=1.0, source_trace=("__file__",), origin_node=node)
+            if node.id in ("__name__", "__doc__", "__package__", "True", "False", "None"):
+                return ProvenanceValue(state=ProvenanceState.STATIC, confidence=1.0, source_trace=("builtin_constant",), origin_node=node)
+            if node.id in ("self", "cls"):
+                return ProvenanceValue(state=ProvenanceState.STATIC, confidence=1.0, source_trace=(node.id,), origin_node=node)
+
+            var_key = f"prov:{scope_id}:{node.id}"
+            if var_key in visited:
+                return ProvenanceValue(state=ProvenanceState.UNKNOWN, confidence=0.50, source_trace=(f"circular:{node.id}",), origin_node=node)
+            visited.add(var_key)
+
+            if node.id in call_context:
+                ctx_v = call_context[node.id]
+                return ProvenanceValue(
+                    state=ctx_v.state,
+                    confidence=ctx_v.confidence,
+                    source_id=ctx_v.source_id,
+                    source_trace=(*ctx_v.source_trace, f"{file_name}:{node.id}"),
+                    origin_node=node
+                )
+
+            current_scope = scope_id
+            records_before = []
+            while current_scope:
+                recs = self.assignments_by_scope.get((current_scope, node.id), [])
+                records_before = [r for r in recs if r.lineno < current_lineno]
+                if records_before:
+                    break
+                if "." in current_scope and "function" in current_scope:
+                    current_scope = current_scope.rsplit(".", 1)[0]
+                elif ":function" in current_scope:
+                    current_scope = f"{mod_name}:global"
+                elif current_scope != f"{mod_name}:global":
+                    current_scope = f"{mod_name}:global"
+                else:
+                    break
+
+            if records_before:
+                last_uncond_idx = -1
+                for idx, r in enumerate(records_before):
+                    if not r.is_conditional: last_uncond_idx = idx
+                reaching = [records_before[last_uncond_idx]] + [r for r in records_before[last_uncond_idx + 1:] if r.is_conditional] if last_uncond_idx != -1 else records_before
+
+                if len(reaching) == 1 and not reaching[0].is_conditional:
+                    target_rec = reaching[0]
+                    resolved = self.resolve_path_provenance(target_rec.value_node, sink, target_rec.scope_id, target_rec.lineno, visited, call_context)
+                    return ProvenanceValue(
+                        state=resolved.state,
+                        confidence=resolved.confidence,
+                        source_id=resolved.source_id,
+                        source_trace=(*resolved.source_trace, f"{file_name}:{node.id}"),
+                        origin_node=node
+                    )
+                else:
+                    resolved_list = [self.resolve_path_provenance(r.value_node, sink, r.scope_id, r.lineno, visited.copy(), call_context) for r in reaching]
+                    res_p = resolved_list[0]
+                    for rp in resolved_list[1:]:
+                        res_p = compose_path_provenance(res_p, rp, operator="branch_merge")
+                    return ProvenanceValue(
+                        state=res_p.state,
+                        confidence=res_p.confidence,
+                        source_id=res_p.source_id,
+                        source_trace=(*res_p.source_trace, f"{file_name}:{node.id}"),
+                        origin_node=node
+                    )
+
+            # Parameter flow from callers
+            enc_scope = scope_id
+            target_func_node = None
+            target_scope = None
+            while enc_scope:
+                f_node = self.functions.get(enc_scope)
+                if f_node and any(a.arg == node.id for a in f_node.args.args):
+                    target_func_node = f_node
+                    target_scope = enc_scope
+                    break
+                if "." in enc_scope:
+                    enc_scope = enc_scope.rsplit(".", 1)[0]
+                else:
+                    break
+
+            if target_func_node and target_scope:
+                param_names = [a.arg for a in target_func_node.args.args]
+                param_idx = param_names.index(node.id)
+                call_sites = self.call_sites_by_target.get(target_scope, [])
+                if call_sites:
+                    caller_provs = []
+                    for call_node, caller_scope, call_lineno in call_sites:
+                        arg_expr = None
+                        for kw in getattr(call_node, "keywords", []):
+                            if kw.arg == node.id:
+                                arg_expr = kw.value
+                                break
+                        if arg_expr is None:
+                            pos_idx = param_idx
+                            if param_names and param_names[0] in ("self", "cls"):
+                                pos_idx = param_idx - 1
+                            if 0 <= pos_idx < len(call_node.args):
+                                arg_expr = call_node.args[pos_idx]
+                        if arg_expr is not None:
+                            site_key = f"prov_param:{target_scope}:{node.id}:{caller_scope}:{call_lineno}"
+                            if site_key not in visited:
+                                v_copy = visited.copy()
+                                v_copy.add(site_key)
+                                caller_prov = self.resolve_path_provenance(arg_expr, sink, caller_scope, call_lineno, v_copy)
+                                caller_provs.append(caller_prov)
+                    if caller_provs:
+                        res_p = caller_provs[0]
+                        for cp in caller_provs[1:]:
+                            res_p = compose_path_provenance(res_p, cp, operator="caller_merge")
+                        return ProvenanceValue(
+                            state=res_p.state,
+                            confidence=res_p.confidence,
+                            source_id=res_p.source_id,
+                            source_trace=(*res_p.source_trace, f"param:{node.id}"),
+                            origin_node=node
+                        )
+                # Unresolved parameter with no call sites
+                return ProvenanceValue(
+                    state=ProvenanceState.UNKNOWN,
+                    confidence=0.50,
+                    source_trace=(f"unresolved_param:{node.id}",),
+                    origin_node=node
+                )
+
+            # Known imports, functions, builtins
+            if node.id in self.imports.get(mod_name, {}):
+                return ProvenanceValue(state=ProvenanceState.STATIC, confidence=1.0, source_trace=(f"import:{node.id}",), origin_node=node)
+            if f"{mod_name}:function:{node.id}" in self.functions:
+                return ProvenanceValue(state=ProvenanceState.STATIC, confidence=1.0, source_trace=(f"function:{node.id}",), origin_node=node)
+            if node.id in ("int", "str", "bytes", "float", "bool", "list", "dict", "set", "tuple", "len", "range", "open", "print"):
+                return ProvenanceValue(state=ProvenanceState.STATIC, confidence=1.0, source_trace=(f"builtin:{node.id}",), origin_node=node)
+
+            return ProvenanceValue(state=ProvenanceState.UNKNOWN, confidence=0.50, source_trace=(f"unresolved:{node.id}",), origin_node=node)
+
+        t_val = self.resolve_expression(node, sink, scope_id, current_lineno, visited.copy(), {})
+        if t_val.state == TaintState.TAINTED:
+            return ProvenanceValue(
+                state=ProvenanceState.TAINTED,
+                confidence=t_val.confidence,
+                source_id=t_val.source_id,
+                source_trace=tuple(t_val.path) or (t_val.source_id,),
+                origin_node=node
+            )
+        return ProvenanceValue(state=ProvenanceState.UNKNOWN, confidence=0.50, source_trace=("unknown_expr",), origin_node=node)
 
     def analyze(self):
         for mod_name, tree in self.modules.items():
@@ -1208,11 +1909,39 @@ class TaintTracker:
             else:
                 continue
 
-            taint = self.resolve_expression(target_expr, sink, record.scope_id, record.lineno)
-            full_path_str = " -> ".join(taint.path) if taint.path else taint.last_operation
-            if taint.state == TaintState.TAINTED:
-                kind = "CONFIRMED_DATA_FLOW" if taint.confidence >= 1.0 else "POTENTIAL_DATA_FLOW"
-                self.edges.append(DataFlowEdge(source_id=taint.source_id or "UNKNOWN", target_id=sink.id, kind=kind, confidence=taint.confidence, transform=full_path_str))
-            elif taint.state == TaintState.UNKNOWN:
-                self.edges.append(DataFlowEdge(source_id=taint.source_id or "UNKNOWN", target_id=sink.id, kind="POTENTIAL_DATA_FLOW", confidence=0.50, transform=full_path_str))
+            cwe = sink.metadata.get("cwe")
+            stype = sink.metadata.get("sink_type")
+            op = sink.metadata.get("operation")
+            is_cwe22 = (cwe == "CWE-22" or stype in ("PATH_TRAVERSAL", "FILE_ACCESS") or op == "FILE_ACCESS")
+
+            if is_cwe22:
+                prov = self.resolve_path_provenance(target_expr, sink, record.scope_id, record.lineno)
+                full_path_str = " -> ".join(prov.source_trace) if prov.source_trace else "path_provenance"
+                if prov.state in (ProvenanceState.STATIC, ProvenanceState.INTERNAL_DYNAMIC):
+                    continue
+                elif prov.state == ProvenanceState.TAINTED:
+                    kind = "CONFIRMED_DATA_FLOW" if prov.confidence >= 1.0 else "POTENTIAL_DATA_FLOW"
+                    self.edges.append(DataFlowEdge(
+                        source_id=prov.source_id or "UNKNOWN",
+                        target_id=sink.id,
+                        kind=kind,
+                        confidence=prov.confidence,
+                        transform=full_path_str
+                    ))
+                elif prov.state == ProvenanceState.UNKNOWN:
+                    self.edges.append(DataFlowEdge(
+                        source_id=prov.source_id or "UNKNOWN",
+                        target_id=sink.id,
+                        kind="POTENTIAL_DATA_FLOW",
+                        confidence=0.50,
+                        transform=full_path_str
+                    ))
+            else:
+                taint = self.resolve_expression(target_expr, sink, record.scope_id, record.lineno)
+                full_path_str = " -> ".join(taint.path) if taint.path else taint.last_operation
+                if taint.state == TaintState.TAINTED:
+                    kind = "CONFIRMED_DATA_FLOW" if taint.confidence >= 1.0 else "POTENTIAL_DATA_FLOW"
+                    self.edges.append(DataFlowEdge(source_id=taint.source_id or "UNKNOWN", target_id=sink.id, kind=kind, confidence=taint.confidence, transform=full_path_str))
+                elif taint.state == TaintState.UNKNOWN:
+                    self.edges.append(DataFlowEdge(source_id=taint.source_id or "UNKNOWN", target_id=sink.id, kind="POTENTIAL_DATA_FLOW", confidence=0.50, transform=full_path_str))
         return self.sources, self.sinks, self.edges
