@@ -9,7 +9,6 @@ import os
 from pathlib import Path
 from dataclasses import dataclass
 from typing import Optional, Set, FrozenSet, Dict, Any, List, Union
-import yaml
 
 SUPPORTED_RULES: FrozenSet[str] = frozenset({
     "CWE-22",
@@ -101,6 +100,14 @@ def parse_config(raw_yaml: str, config_path: Optional[str] = None) -> TCSConfig:
     """
     Parses and strictly validates a raw YAML configuration string against schema v1.
     """
+    try:
+        import yaml
+    except ImportError:
+        raise ConfigValidationError(
+            "PyYAML is required to parse configuration files, but is not installed. "
+            "Install it via 'pip install -r requirements.txt' or 'pip install pyyaml'."
+        )
+
     try:
         data = yaml.safe_load(raw_yaml)
     except Exception as e:
