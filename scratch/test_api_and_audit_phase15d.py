@@ -1231,6 +1231,23 @@ class Phase15DTestSuite(unittest.TestCase):
         self.assertEqual(clean_events[0].summary.security_score, 100)
         self.assertEqual(clean_events[0].summary.risk_level, "CLEAN")
 
+    # -----------------------------------------------------------------------
+    # 35. Phase 15A event infrastructure dependencies are present & importable
+    # -----------------------------------------------------------------------
+    def test_35_phase15a_event_dependencies_present_and_importable(self):
+        """Verifies event_bus, event_publisher, event_taxonomy are importable in deployment."""
+        import event_bus
+        import event_publisher
+        import event_taxonomy
+        import notification_service
+        import app
+
+        self.assertTrue(hasattr(event_bus, "InMemoryEventBus"))
+        self.assertTrue(hasattr(event_publisher, "EventPublisher"))
+        self.assertTrue(hasattr(event_taxonomy, "SecurityDomainEvent"))
+        self.assertTrue(hasattr(notification_service, "NotificationService"))
+        self.assertIsNotNone(getattr(app.app.state, "notification_service", None))
+
 
 if __name__ == "__main__":
     unittest.main(verbosity=2)
