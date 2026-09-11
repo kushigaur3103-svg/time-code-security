@@ -15,3 +15,9 @@ jobs:
       - uses: actions/checkout@v4
       - uses: kushigaur3103-svg/time-code-security@v1
 ```
+
+## CLI Usage
+
+```bash
+python tcs_cli.py . --sca --secrets --format sarif -o tcs-results.sarif
+```
