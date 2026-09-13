@@ -403,22 +403,39 @@ def to_sarif(
 
         results.append(sec_res)
 
+    run_obj: Dict[str, Any] = {
+        "tool": {
+            "driver": {
+                "name": TOOL_NAME,
+                "version": TOOL_VERSION,
+                "informationUri": TOOL_INFORMATION_URI,
+                "rules": driver_rules
+            }
+        },
+        "results": results
+    }
+
+    syntax_errors = tcs_scan_result.get("syntax_errors") if isinstance(tcs_scan_result, dict) else []
+    if syntax_errors:
+        run_obj["invocations"] = [
+            {
+                "executionSuccessful": True,
+                "toolExecutionNotifications": [
+                    {
+                        "message": {
+                            "text": f"Skipping AST analysis for unparseable file: {err}"
+                        },
+                        "level": "warning"
+                    }
+                    for err in syntax_errors
+                ]
+            }
+        ]
+
     sarif_doc: Dict[str, Any] = {
         "$schema": SARIF_SCHEMA_URI,
         "version": SARIF_VERSION,
-        "runs": [
-            {
-                "tool": {
-                    "driver": {
-                        "name": TOOL_NAME,
-                        "version": TOOL_VERSION,
-                        "informationUri": TOOL_INFORMATION_URI,
-                        "rules": driver_rules
-                    }
-                },
-                "results": results
-            }
-        ]
+        "runs": [run_obj]
     }
 
     return sarif_doc

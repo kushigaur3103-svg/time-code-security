@@ -610,8 +610,12 @@ class VersionMatcher:
             has_unresolved = False
             unresolved_desc = ""
 
+            applicable_ranges = [r for r in vuln.affected_ranges if r.type.upper() in ("ECOSYSTEM", "SEMVER")]
+            if not applicable_ranges:
+                applicable_ranges = vuln.affected_ranges
+
             # Match against affected ranges
-            for aff_range in vuln.affected_ranges:
+            for aff_range in applicable_ranges:
                 intervals = extract_intervals_from_events(aff_range.events)
                 for interval in intervals:
                     # Check unparseable interval bounds
@@ -720,7 +724,11 @@ class VersionMatcher:
         has_unresolved = False
         unresolved_desc = ""
 
-        for aff_range in vuln.affected_ranges:
+        applicable_ranges = [r for r in vuln.affected_ranges if r.type.upper() in ("ECOSYSTEM", "SEMVER")]
+        if not applicable_ranges:
+            applicable_ranges = vuln.affected_ranges
+
+        for aff_range in applicable_ranges:
             intervals = extract_intervals_from_events(aff_range.events)
 
             # Case B1: Events intervals exist

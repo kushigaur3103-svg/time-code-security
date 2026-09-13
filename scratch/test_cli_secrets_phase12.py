@@ -351,15 +351,21 @@ def test_09_private_key_detection_and_masking():
 
 
 def test_10_error_conditions():
-    """Verify exit code 2 on invalid targets or syntax errors."""
+    """Verify graceful degradation on syntax errors and exit code 2 on nonexistent target."""
     with tempfile.TemporaryDirectory() as tmpdir:
         tmp = Path(tmpdir)
         bad_py = tmp / "syntax_err.py"
         bad_py.write_text("def broken_syntax(\n", encoding="utf-8")
 
+        # Non-fatal degradation: exits 0 when clean
         rc, stdout, stderr = run_cli(str(bad_py), "--secrets")
+        assert rc == 0
+        assert "Skipping AST analysis for unparseable file" in stderr
+
+        # Fatal when --strict is passed
+        rc, stdout, stderr = run_cli(str(bad_py), "--secrets", "--strict")
         assert rc == 2
-        assert "Syntax error" in stderr
+        assert "Skipping AST analysis for unparseable file" in stderr
 
         rc, stdout, stderr = run_cli(str(tmp / "nonexistent.py"), "--secrets")
         assert rc == 2

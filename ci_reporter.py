@@ -288,6 +288,24 @@ def format_github_annotations(scan_result: Dict[str, Any]) -> List[str]:
 
     staged_items: List[Tuple[Tuple[str, int, int, int, str], str]] = []
 
+    # 0. Parser Warnings (Syntax Errors)
+    syntax_errors = scan_result.get("syntax_errors", [])
+    if isinstance(syntax_errors, list):
+        for err in syntax_errors:
+            parts = str(err).split(":", 2)
+            f_err = parts[0].strip() if len(parts) > 0 else ""
+            line_err = _extract_int_coord(parts[1].strip()) if len(parts) > 1 else None
+            msg_err = f"Skipping AST analysis for unparseable file: {err}"
+            sort_key = (_normalize_path(f_err), line_err or 0, 0, 0, "SYNTAX_ERROR")
+            ann = format_github_annotation(
+                level="warning",
+                message=msg_err,
+                file_path=f_err,
+                line=line_err,
+                title="Syntax Warning",
+            )
+            staged_items.append((sort_key, ann))
+
     # 1. SAST Findings
     sast_findings = scan_result.get("findings", [])
     if isinstance(sast_findings, list):
@@ -414,7 +432,15 @@ def generate_step_summary(scan_result: Dict[str, Any]) -> str:
 
     if total_findings == 0:
         lines.append("*No vulnerabilities detected across active scanners.*")
-        return "\n".join(lines)
+        lines.append("")
+        syntax_errors = scan_result.get("syntax_errors", [])
+        if isinstance(syntax_errors, list) and syntax_errors:
+            lines.append("### Parser Warnings")
+            lines.append("")
+            for err in syntax_errors:
+                lines.append(f"- ⚠️ Skipping AST analysis for unparseable file: `{err}`")
+            lines.append("")
+        return "\n".join(lines).rstrip() + "\n"
 
     # SAST Table
     if active_sast:
@@ -495,6 +521,14 @@ def generate_step_summary(scan_result: Dict[str, Any]) -> str:
             conf = str(sec.get("confidence") or "HIGH").upper()
             det = sec.get("detector") or stype
             lines.append(f"| {label} | {mv} | {loc} | {conf} | {det} |")
+        lines.append("")
+
+    syntax_errors = scan_result.get("syntax_errors", [])
+    if isinstance(syntax_errors, list) and syntax_errors:
+        lines.append("### Parser Warnings")
+        lines.append("")
+        for err in syntax_errors:
+            lines.append(f"- ⚠️ Skipping AST analysis for unparseable file: `{err}`")
         lines.append("")
 
     return "\n".join(lines).rstrip() + "\n"

@@ -436,6 +436,10 @@ def format_table(
 
     if not findings and not sca_list and not sec_list:
         lines.append("No security vulnerabilities detected.")
+        if results.get("syntax_errors"):
+            lines.append("\n[PARSER WARNINGS (SKIPPED FILES)]")
+            for err in results["syntax_errors"]:
+                lines.append(f"  Skipping AST analysis for unparseable file: {err}")
         lines.append(sep)
         return "\n".join(lines)
 
@@ -544,6 +548,11 @@ def format_table(
                 lines.append(f"  Context:      {ctx}")
             lines.append("  Remediation:  Never commit hardcoded secrets or credentials to source control. Revoke and rotate this secret immediately.")
 
+    if results.get("syntax_errors"):
+        lines.append("\n[PARSER WARNINGS (SKIPPED FILES)]")
+        for err in results["syntax_errors"]:
+            lines.append(f"  Skipping AST analysis for unparseable file: {err}")
+
     lines.append(sep)
     return "\n".join(lines)
 
@@ -620,6 +629,11 @@ def main():
         "--step-summary-file",
         help="Path to Step Summary Markdown output file (defaults to $GITHUB_STEP_SUMMARY)"
     )
+    parser.add_argument(
+        "--strict",
+        action="store_true",
+        help="Treat syntax errors as fatal (exit code 2)"
+    )
 
     args = parser.parse_args()
 
@@ -679,8 +693,9 @@ def main():
 
     if results.get("syntax_errors"):
         for err in results["syntax_errors"]:
-            print(f"[ERROR] Syntax error in target file: {err}", file=sys.stderr)
-        sys.exit(2)
+            print(f"[WARN] Skipping AST analysis for unparseable file: {err}", file=sys.stderr)
+        if getattr(args, "strict", False):
+            sys.exit(2)
 
     # ---------------------------------------------------------
     # SCA Analysis (if requested)
