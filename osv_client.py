@@ -10,6 +10,7 @@ import json
 import time
 import urllib.request
 import urllib.error
+from concurrent.futures import ThreadPoolExecutor, as_completed
 from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Dict, List, Optional, Tuple, Any, Callable
@@ -17,10 +18,12 @@ from typing import Dict, List, Optional, Tuple, Any, Callable
 from manifest_parser import normalize_package_name
 
 OSV_API_URL = "https://api.osv.dev/v1/querybatch"
+OSV_VULN_URL = "https://api.osv.dev/v1/vulns"
 DEFAULT_BATCH_CHUNK_SIZE = 500
 DEFAULT_TIMEOUT_SECONDS = 10.0
 DEFAULT_MAX_RETRIES = 3
 DEFAULT_BACKOFF_FACTOR = 0.5
+DEFAULT_HYDRATION_WORKERS = 10
 
 
 @dataclass(frozen=True)
@@ -112,6 +115,11 @@ def _parse_osv_vuln(package_name: str, raw_vuln: Dict[str, Any]) -> OSVVulnerabi
     )
 
 
+def _is_stub(vuln_dict: Dict[str, Any]) -> bool:
+    """Returns True if the vulnerability record is an unhydrated stub (missing affected ranges)."""
+    return "affected" not in vuln_dict and "schema_version" not in vuln_dict
+
+
 class OSVClient:
     """
     Offline-capable, batch-chunking OSV API Client for Python/PyPI packages.
@@ -120,6 +128,7 @@ class OSVClient:
     def __init__(
         self,
         api_url: str = OSV_API_URL,
+        vuln_api_url: str = OSV_VULN_URL,
         cache_file: Optional[str] = None,
         timeout: float = DEFAULT_TIMEOUT_SECONDS,
         max_retries: int = DEFAULT_MAX_RETRIES,
@@ -127,17 +136,23 @@ class OSVClient:
         batch_chunk_size: int = DEFAULT_BATCH_CHUNK_SIZE,
         offline_mode: bool = False,
         offline_fixtures: Optional[Dict[str, List[Dict[str, Any]]]] = None,
-        http_requester: Optional[Callable[[str, bytes, float], bytes]] = None
+        http_requester: Optional[Callable[[str, bytes, float], bytes]] = None,
+        http_get_requester: Optional[Callable[[str, float], bytes]] = None,
+        max_workers: int = DEFAULT_HYDRATION_WORKERS
     ):
         self.api_url = api_url
+        self.vuln_api_url = vuln_api_url
         self.cache_file = cache_file
         self.timeout = timeout
         self.max_retries = max_retries
         self.backoff_factor = backoff_factor
         self.batch_chunk_size = batch_chunk_size
         self.offline_mode = offline_mode
+        self.max_workers = max_workers
         self._memory_cache: Dict[str, List[Dict[str, Any]]] = {}
+        self._vuln_cache: Dict[str, Dict[str, Any]] = {}
         self._http_requester = http_requester or self._default_http_post
+        self._http_get_requester = http_get_requester or self._default_http_get
 
         # Load offline fixtures if provided
         if offline_fixtures:
@@ -188,6 +203,102 @@ class OSVClient:
         with urllib.request.urlopen(req, timeout=timeout) as response:
             return response.read()
 
+    def _default_http_get(self, url: str, timeout: float) -> bytes:
+        """Standard library HTTP GET request handler."""
+        req = urllib.request.Request(
+            url,
+            headers={
+                "Accept": "application/json",
+                "User-Agent": "TimeCodeSecurity-SCA/1.0"
+            },
+            method="GET"
+        )
+        with urllib.request.urlopen(req, timeout=timeout) as response:
+            return response.read()
+
+    def _fetch_vuln_detail(self, vuln_id: str) -> Optional[Dict[str, Any]]:
+        """
+        Fetches full advisory details for a specific vulnerability ID from /v1/vulns/{id}.
+        Checks _vuln_cache first. Retries on 5xx/network errors with exponential backoff.
+        Fails fast on 4xx. Returns None if unable to fetch.
+        """
+        if not vuln_id:
+            return None
+
+        if vuln_id in self._vuln_cache:
+            return self._vuln_cache[vuln_id]
+
+        if self.offline_mode:
+            return None
+
+        url = f"{self.vuln_api_url.rstrip('/')}/{vuln_id}"
+
+        for attempt in range(self.max_retries):
+            try:
+                raw_bytes = self._http_get_requester(url, self.timeout)
+                data = json.loads(raw_bytes.decode("utf-8"))
+                if isinstance(data, dict) and data.get("id"):
+                    self._vuln_cache[vuln_id] = data
+                    return data
+                return None
+            except urllib.error.HTTPError as http_err:
+                status = http_err.code
+                if 400 <= status < 500:
+                    return None
+                if attempt < self.max_retries - 1:
+                    sleep_time = self.backoff_factor * (2 ** attempt)
+                    if sleep_time > 0:
+                        time.sleep(sleep_time)
+                else:
+                    return None
+            except Exception:
+                if attempt < self.max_retries - 1:
+                    sleep_time = self.backoff_factor * (2 ** attempt)
+                    if sleep_time > 0:
+                        time.sleep(sleep_time)
+                else:
+                    return None
+
+        return None
+
+    def _hydrate_vulns(self, vulns: List[Dict[str, Any]]) -> List[Dict[str, Any]]:
+        """
+        Hydrates any unhydrated vulnerability stubs in the list.
+        Uses ThreadPoolExecutor for concurrent hydration if multiple stubs exist.
+        """
+        stubs = [v for v in vulns if _is_stub(v) and v.get("id")]
+        if not stubs or self.offline_mode:
+            return vulns
+
+        hydrated_map: Dict[str, Dict[str, Any]] = {}
+        unique_ids = list({v["id"] for v in stubs if v.get("id")})
+
+        if len(unique_ids) == 1 or self.max_workers <= 1:
+            for vid in unique_ids:
+                detail = self._fetch_vuln_detail(vid)
+                if detail:
+                    hydrated_map[vid] = detail
+        else:
+            with ThreadPoolExecutor(max_workers=min(self.max_workers, len(unique_ids))) as executor:
+                future_to_id = {executor.submit(self._fetch_vuln_detail, vid): vid for vid in unique_ids}
+                for future in as_completed(future_to_id):
+                    vid = future_to_id[future]
+                    try:
+                        detail = future.result()
+                        if detail:
+                            hydrated_map[vid] = detail
+                    except Exception:
+                        pass
+
+        result: List[Dict[str, Any]] = []
+        for v in vulns:
+            vid = v.get("id")
+            if vid and vid in hydrated_map:
+                result.append(hydrated_map[vid])
+            else:
+                result.append(v)
+        return result
+
     def query_package(self, package_name: str) -> OSVQueryResult:
         """Convenience method to query a single package."""
         results = self.query_packages([package_name])
@@ -201,6 +312,7 @@ class OSVClient:
         """
         results_map: Dict[str, OSVQueryResult] = {}
         pending_names: List[str] = []
+        cache_dirty = False
 
         # 1. Check local cache and offline fixtures
         for raw_name in package_names:
@@ -210,6 +322,10 @@ class OSVClient:
 
             if norm_name in self._memory_cache:
                 raw_vulns = self._memory_cache[norm_name]
+                if not self.offline_mode and any(_is_stub(v) for v in raw_vulns if v.get("id")):
+                    raw_vulns = self._hydrate_vulns(raw_vulns)
+                    self._memory_cache[norm_name] = raw_vulns
+                    cache_dirty = True
                 parsed = [_parse_osv_vuln(norm_name, v) for v in raw_vulns]
                 results_map[norm_name] = OSVQueryResult(
                     package_name=norm_name,
@@ -229,19 +345,23 @@ class OSVClient:
                     source="offline_fallback",
                     error="Offline mode active; package not found in local cache"
                 )
+            if cache_dirty:
+                self._save_disk_cache()
             return results_map
 
         if not pending_names:
+            if cache_dirty:
+                self._save_disk_cache()
             return results_map
 
         # 3. Chunk pending packages into batches (up to batch_chunk_size)
-        cache_dirty = False
         for i in range(0, len(pending_names), self.batch_chunk_size):
             chunk = pending_names[i:i + self.batch_chunk_size]
             chunk_results = self._fetch_batch_chunk(chunk)
 
             for name, (raw_vulns, source, err_msg) in chunk_results.items():
                 if source == "network":
+                    raw_vulns = self._hydrate_vulns(raw_vulns)
                     self._memory_cache[name] = raw_vulns
                     cache_dirty = True
                 parsed_vulns = [_parse_osv_vuln(name, v) for v in raw_vulns]

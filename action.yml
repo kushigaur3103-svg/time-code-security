@@ -10,7 +10,7 @@ inputs:
   sca:
     description: "Enable Software Composition Analysis (dependency scanning)"
     required: false
-    default: "false"
+    default: "true"
   sca-offline:
     description: "Run SCA in offline mode using local OSV cache"
     required: false
@@ -18,7 +18,7 @@ inputs:
   secrets:
     description: "Enable Secret and Credential Scanning (CWE-798)"
     required: false
-    default: "false"
+    default: "true"
   format:
     description: "Output report format (table, json, sarif)"
     required: false

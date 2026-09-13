@@ -294,6 +294,32 @@ class TestOSVClientOffline(unittest.TestCase):
         self.assertEqual(len(vuln.references), 1)
         self.assertEqual(vuln.references[0]["url"], "https://github.com/advisories/GHSA-j8r2-6x86-q33q")
 
+    def test_stub_advisory_hydration(self):
+        """Test that unhydrated stubs from /v1/querybatch are hydrated via GET /v1/vulns/{id}."""
+        stub = {"id": "GHSA-j8r2-6x86-q33q", "modified": "2024-01-01T00:00:00Z"}
+        get_calls = []
+
+        def mock_post(url: str, payload_bytes: bytes, timeout: float) -> bytes:
+            return json.dumps({"results": [{"vulns": [stub]}]}).encode("utf-8")
+
+        def mock_get(url: str, timeout: float) -> bytes:
+            get_calls.append(url)
+            self.assertTrue(url.endswith("GHSA-j8r2-6x86-q33q"))
+            return json.dumps(self.sample_raw_vuln).encode("utf-8")
+
+        client = OSVClient(
+            http_requester=mock_post,
+            http_get_requester=mock_get
+        )
+        res = client.query_package("requests")
+
+        self.assertEqual(len(get_calls), 1)
+        self.assertEqual(res.source, "network")
+        self.assertEqual(len(res.vulnerabilities), 1)
+        self.assertEqual(res.vulnerabilities[0].vuln_id, "GHSA-j8r2-6x86-q33q")
+        self.assertEqual(len(res.vulnerabilities[0].affected_ranges), 1)
+        self.assertEqual(res.vulnerabilities[0].affected_ranges[0].events, ({"introduced": "2.3.0"}, {"fixed": "2.31.0"}))
+
 
 if __name__ == "__main__":
     unittest.main(verbosity=2)
