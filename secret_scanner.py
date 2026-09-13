@@ -90,7 +90,7 @@ def shannon_entropy(data: str) -> float:
 
 # 1. Private Key (anchored to header line, zero multi-line body buffering)
 _REGEX_PRIVATE_KEY = re.compile(
-    r"-----BEGIN (?:RSA |EC |OPENSSH |DSA |PGP )?PRIVATE KEY(?: BLOCK)?-----"
+    r"-----BEGIN (?:RSA |EC |OPENSSH |DSA |PGP |ENCRYPTED )?PRIVATE KEY(?: BLOCK)?-----"
 )
 
 # 2. GitHub Token (ghp, gho, ghu, ghs, ghr followed by 36 alphanumeric chars)
@@ -99,10 +99,13 @@ _REGEX_GITHUB_TOKEN = re.compile(r"\b(ghp|gho|ghu|ghs|ghr)_[0-9A-Za-z]{36}\b")
 # 3. Slack Token (xoxb, xoxp, xoxa, xoxr, xoxs followed by hyphen & 10..48 chars)
 _REGEX_SLACK_TOKEN = re.compile(r"\bxox[baprs]-[0-9A-Za-z]{10,48}\b")
 
-# 4. AWS Access Key (AKIA, ASIA, ABIA, ACCA followed by 14..16 chars)
+# 4. Stripe API Key (live secret keys sk_live_ and restricted keys rk_live_)
+_REGEX_STRIPE_KEY = re.compile(r"\b(sk_live|rk_live)_[0-9A-Za-z]{24,99}\b")
+
+# 5. AWS Access Key (AKIA, ASIA, ABIA, ACCA followed by 14..16 chars)
 _REGEX_AWS_ACCESS_KEY = re.compile(r"\b(AKIA|ASIA|ABIA|ACCA)[0-9A-Z]{14,16}\b")
 
-# 5. Database Connection String (strictly negated classes, ReDoS-immune)
+# 6. Database Connection String (strictly negated classes, ReDoS-immune)
 _REGEX_DB_URI = re.compile(
     r"\b(?P<scheme>postgres(?:ql)?|mysql|mongodb|redis)://"
     r"(?:(?P<user>[^\s:@/]+):|:)"
@@ -217,11 +220,24 @@ def scan_text(text: str, filename: str = "<string>") -> List[SecretFinding]:
                 )
             )
 
-        # 4. AWS Access Key (Precedence 4)
-        for m in _REGEX_AWS_ACCESS_KEY.finditer(clean_line):
+        # 4. Stripe Key (Precedence 4)
+        for m in _REGEX_STRIPE_KEY.finditer(clean_line):
             candidates.append(
                 _CandidateMatch(
                     precedence=4,
+                    start=m.start(),
+                    end=m.end(),
+                    secret_type="stripe_key",
+                    detector="stripe_key",
+                    masked_value=mask_secret(m.group(0)),
+                )
+            )
+
+        # 5. AWS Access Key (Precedence 5)
+        for m in _REGEX_AWS_ACCESS_KEY.finditer(clean_line):
+            candidates.append(
+                _CandidateMatch(
+                    precedence=5,
                     start=m.start(),
                     end=m.end(),
                     secret_type="aws_access_key",
@@ -230,11 +246,11 @@ def scan_text(text: str, filename: str = "<string>") -> List[SecretFinding]:
                 )
             )
 
-        # 5. Database Connection String (Precedence 5)
+        # 6. Database Connection String (Precedence 6)
         for m in _REGEX_DB_URI.finditer(clean_line):
             candidates.append(
                 _CandidateMatch(
-                    precedence=5,
+                    precedence=6,
                     start=m.start(),
                     end=m.end(),
                     secret_type="database_connection_string",

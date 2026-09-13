@@ -66,7 +66,7 @@ class FilterConfig:
         ".sample",
     )
     dummy_patterns: Tuple[str, ...] = (
-        r"(?i)\b(dummy|fake|placeholder|example|test|sample|change_me|your_token_here|my_secret_token)[\w]*",
+        r"(?i)\b(dummy|fake|placeholder|example|test|sample|change_me|your_token_here|my_secret_token|your_password_here|your_secret_here|your_api_key_here|your_key_here)[\w]*",
         r"(?i)\b(00000+|11111+|xxxxxx+|abcdef)\b",
         r"AKIA0{10,}",
         r"ghp_0{10,}",
@@ -153,6 +153,46 @@ def _is_dummy_value(finding: SecretFinding, config: FilterConfig) -> bool:
     if finding.context:
         for pattern in config.dummy_patterns:
             if re.search(pattern, finding.context):
+                return True
+
+    # 4. Check database connection string for localhost/loopback or dummy dev credentials
+    if finding.secret_type == "database_connection_string":
+        mv_lower = mv.lower()
+        is_loopback = any(
+            f"@{h}" in mv_lower
+            for h in ("localhost", "127.0.0.1", "0.0.0.0", "::1")
+        )
+        if is_loopback:
+            # 4a. Masked creds indicate short dummy credentials (e.g., ****:****, :****)
+            if re.search(r"://(?:\*{1,4}:)?\*{1,4}@", mv):
+                return True
+            if re.search(
+                r"://(?:p\*{6}s:p\*{6}s|a\*{3}n:a\*{3}n|g\*{3}t:g\*{3}t|r\*{2}t:r\*{2}t)@",
+                mv_lower,
+            ):
+                return True
+            # 4b. Context or variable indicates dev/local/test/staging
+            if finding.context and re.search(
+                r"(?i)\b(dev|development|test|dummy|sample|staging)[\w]*",
+                finding.context,
+            ):
+                return True
+            if finding.context and re.search(
+                r"(?i)\b(local_[a-z0-9_]+|[a-z0-9_]+_local)\b",
+                finding.context,
+            ):
+                return True
+            # 4c. Database name is dev/test/db
+            if re.search(
+                r"/(db|dev|test|testdb)(?:[\"\'\s;]|$)",
+                mv_lower,
+            ):
+                return True
+            # 4d. Context contains common dummy credential pairs
+            if finding.context and re.search(
+                r"(?i)\b(user:pass|root:root|admin:admin|postgres:postgres|guest:guest|test:test)\b",
+                finding.context,
+            ):
                 return True
 
     return False

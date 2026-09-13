@@ -30,6 +30,7 @@ _SECRET_TYPE_LABELS: Dict[str, str] = {
     "aws_access_key": "AWS Access Key",
     "github_token": "GitHub Token",
     "slack_token": "Slack Token",
+    "stripe_key": "Stripe API Key",
     "private_key": "Private Key",
     "database_connection_string": "Database Connection String",
 }
