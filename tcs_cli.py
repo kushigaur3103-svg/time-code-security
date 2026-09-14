@@ -288,7 +288,7 @@ def discover_python_files(
     Returns mapping of POSIX relative paths to text contents.
     """
     normalized_files: Dict[str, str] = {}
-    manifest_names = {"requirements.txt", "pipfile.lock", "poetry.lock"}
+    manifest_names = {"requirements.txt", "pipfile.lock", "poetry.lock", "pyproject.toml"}
 
     if target_path.is_file():
         if target_path.suffix.lower() != ".py":
@@ -440,7 +440,7 @@ def discover_manifest_files(
     Supported filenames: requirements.txt, Pipfile.lock, poetry.lock.
     Guards against symlink loops, giant files, binary blobs, and minified bundles.
     """
-    manifest_names = {"requirements.txt", "pipfile.lock", "poetry.lock"}
+    manifest_names = {"requirements.txt", "pipfile.lock", "poetry.lock", "pyproject.toml"}
     discovered: List[Path] = []
 
     if target_path.is_file():

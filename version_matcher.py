@@ -222,6 +222,93 @@ def _safe_parse_version(v_str: str) -> Optional[Version]:
         return None
 
 
+def _normalize_poetry_caret(ver_str: str) -> Optional[str]:
+    """
+    Normalizes a Poetry caret version constraint (^x.y.z) according to SemVer rules:
+    - major > 0:                         ^1.2.3 -> >=1.2.3, <2.0.0
+    - major == 0, minor > 0:             ^0.2.3 -> >=0.2.3, <0.3.0
+    - major == 0, minor == 0, patch > 0: ^0.0.3 -> >=0.0.3, <0.0.4
+    - major == 0, minor == 0 (len <= 2): ^0.0   -> >=0.0, <0.1.0
+    - major == 0 (len == 1):             ^0     -> >=0, <1.0.0
+    """
+    v = _safe_parse_version(ver_str)
+    if v is None:
+        return None
+    raw_parts = [p for p in ver_str.split(".") if p.strip()]
+    parts = [int(p) for p in v.base_version.split(".") if p.isdigit()]
+    if not parts:
+        return None
+
+    maj = parts[0]
+    mnr = parts[1] if len(parts) > 1 else 0
+    patch = parts[2] if len(parts) > 2 else 0
+
+    if maj > 0:
+        high = f"{maj + 1}.0.0"
+    elif len(raw_parts) == 1:
+        high = "1.0.0"
+    elif mnr > 0:
+        high = f"0.{mnr + 1}.0"
+    elif len(raw_parts) == 2:
+        high = "0.1.0"
+    else:
+        high = f"0.0.{patch + 1}"
+
+    return f">={ver_str},<{high}"
+
+
+def _normalize_poetry_tilde(ver_str: str) -> Optional[str]:
+    """
+    Normalizes a Poetry tilde version constraint (~x.y.z) according to SemVer rules:
+    - ~2.25.0 (major.minor.patch): allows patch updates -> >=2.25.0, <2.26.0
+    - ~2.25 (major.minor):         allows patch updates -> >=2.25, <2.26.0
+    - ~2 (major only):             allows minor/patch updates -> >=2, <3.0.0
+    """
+    v = _safe_parse_version(ver_str)
+    if v is None:
+        return None
+    raw_parts = [p for p in ver_str.split(".") if p.strip()]
+    parts = [int(p) for p in v.base_version.split(".") if p.isdigit()]
+    if not parts:
+        return None
+
+    maj = parts[0]
+    mnr = parts[1] if len(parts) > 1 else 0
+
+    if len(raw_parts) <= 1:
+        high = f"{maj + 1}.0.0"
+    else:
+        high = f"{maj}.{mnr + 1}.0"
+
+    return f">={ver_str},<{high}"
+
+
+def normalize_poetry_specifiers(spec_str: str) -> str:
+    """
+    Normalizes Poetry-specific version operators (^ and ~) to PEP 440 compound ranges.
+    Also normalizes bare wildcards (* and ==*) to >=0.
+    Preserves standard PEP 440 operators intact.
+    """
+    if not spec_str or not spec_str.strip():
+        return ""
+    clauses = [c.strip() for c in spec_str.split(",") if c.strip()]
+    normalized = []
+    for clause in clauses:
+        if clause in ("*", "==*"):
+            normalized.append(">=0")
+        elif clause.startswith("^"):
+            ver_part = clause[1:].strip()
+            norm = _normalize_poetry_caret(ver_part)
+            normalized.append(norm if norm else clause)
+        elif clause.startswith("~") and not clause.startswith("~="):
+            ver_part = clause[1:].strip()
+            norm = _normalize_poetry_tilde(ver_part)
+            normalized.append(norm if norm else clause)
+        else:
+            normalized.append(clause)
+    return ",".join(normalized)
+
+
 def _is_version_in_interval(v: Version, interval: Dict[str, str]) -> bool:
     """Checks if a concrete Version falls inside an OSV event interval."""
     intro_str = interval.get("introduced")
@@ -695,10 +782,12 @@ class VersionMatcher:
         # -------------------------------------------------------------
         # BRANCH B: Unpinned / Range Dependency
         # -------------------------------------------------------------
-        spec_str = dep.version_specifier or ""
+        raw_spec_str = dep.version_specifier or ""
         # If dependency has no specifier (e.g. bare "requests"), it accepts any version
-        if not spec_str.strip():
+        if not raw_spec_str.strip():
             spec_str = ">=0"
+        else:
+            spec_str = normalize_poetry_specifiers(raw_spec_str)
 
         try:
             spec_set = SpecifierSet(spec_str)
@@ -711,7 +800,7 @@ class VersionMatcher:
                 aliases=list(vuln.aliases),
                 severity=severity_str,
                 cvss_score=cvss_score,
-                summary=f"Ambiguous or invalid version specifier '{spec_str}': {summary}",
+                summary=f"Ambiguous or invalid version specifier '{raw_spec_str}': {summary}",
                 fixed_version=None,
                 matched_range="",
                 confidence=0.0,
