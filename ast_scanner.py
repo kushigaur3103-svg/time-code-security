@@ -173,6 +173,8 @@ SANITIZER_REGISTRY = {
     "secure_path_join": {"protected_cwes": {"CWE-22"}, "protected_sinks": {"PATH_TRAVERSAL"}},
 }
 
+PRIMITIVE_NUMERIC_CASTS = {"int", "float", "bool", "math.floor", "math.ceil"}
+
 SINK_REGISTRY = {
     "eval": {"operation": "ARBITRARY_CODE_EXECUTION", "category": "CODE_EXECUTION", "cwe": "CWE-95"},
     "exec": {"operation": "ARBITRARY_CODE_EXECUTION", "category": "CODE_EXECUTION", "cwe": "CWE-95"},
@@ -222,6 +224,8 @@ class TaintTracker:
         self.sinks: list[SecurityNode] = []
         self.edges: list[DataFlowEdge] = []
         self.assignments_by_scope: dict[tuple[str, str], list[AssignmentRecord]] = {}
+        self.class_field_assignments: dict[tuple[str, str], list[AssignmentRecord]] = {}
+        self.classes: set[str] = set()
         self.sink_records: list[SinkRecord] = []
         self.functions: dict[str, ast.FunctionDef] = {}
         self.returns_by_scope: dict[str, list[ast.Return]] = {}
@@ -603,6 +607,46 @@ class TaintTracker:
                 if test_scope in self.functions: return test_scope
         return None
 
+    def _get_enclosing_class_scope(self, scope_id: str) -> Optional[str]:
+        curr = scope_id
+        while curr:
+            if curr in self.classes:
+                return curr
+            if "." in curr:
+                curr = curr.rsplit(".", 1)[0]
+            else:
+                break
+        if ":function:" in scope_id:
+            prefix, func_part = scope_id.split(":function:", 1)
+            if "." in func_part:
+                cls_candidate = f"{prefix}:function:{func_part.split('.')[0]}"
+                return cls_candidate
+        return None
+
+    def _resolve_instance_class_scope(self, var_name: str, scope_id: str) -> Optional[str]:
+        curr = scope_id
+        mod_name = scope_id.split(":")[0] if scope_id else ""
+        while curr:
+            recs = self.assignments_by_scope.get((curr, var_name), [])
+            if recs:
+                latest = recs[-1]
+                if isinstance(latest.value_node, ast.Call):
+                    cls_name = dotted_name(latest.value_node.func)
+                    if cls_name:
+                        cand = f"{mod_name}:function:{cls_name}"
+                        if cand in self.classes or any(k[0] == cand for k in self.class_field_assignments):
+                            return cand
+                break
+            if "." in curr and "function" in curr:
+                curr = curr.rsplit(".", 1)[0]
+            elif ":function" in curr:
+                curr = f"{mod_name}:global"
+            elif curr != f"{mod_name}:global":
+                curr = f"{mod_name}:global"
+            else:
+                break
+        return None
+
     def merge_taints(self, taints: list[TaintValue], node_id: str) -> TaintValue:
         if not taints: return TaintValue(state=TaintState.CLEAN)
         if all(t.state == TaintState.CLEAN for t in taints):
@@ -631,6 +675,7 @@ class TaintTracker:
             elif isinstance(stmt, ast.ClassDef):
                 mod_name = scope_id.split(":")[0]
                 class_scope = f"{scope_id}.{stmt.name}" if ":global" not in scope_id else f"{mod_name}:function:{stmt.name}"
+                self.classes.add(class_scope)
                 for item in stmt.body:
                     if isinstance(item, (ast.FunctionDef, ast.AsyncFunctionDef)):
                         method_scope = f"{mod_name}:function:{stmt.name}.{item.name}"
@@ -643,12 +688,41 @@ class TaintTracker:
                     if isinstance(target, ast.Name):
                         record = AssignmentRecord(target_name=target.id, value_node=stmt.value, lineno=stmt.lineno, scope_id=scope_id, is_conditional=is_conditional)
                         self.assignments_by_scope.setdefault((scope_id, target.id), []).append(record)
+                        if scope_id in self.classes:
+                            self.class_field_assignments.setdefault((scope_id, target.id), []).append(record)
+                    elif isinstance(target, ast.Attribute) and isinstance(target.value, ast.Name) and target.value.id in ("self", "cls"):
+                        cls_scope = self._get_enclosing_class_scope(scope_id)
+                        if cls_scope:
+                            record = AssignmentRecord(target_name=target.attr, value_node=stmt.value, lineno=stmt.lineno, scope_id=scope_id, is_conditional=is_conditional)
+                            self.class_field_assignments.setdefault((cls_scope, target.attr), []).append(record)
+                    elif isinstance(target, (ast.Tuple, ast.List)):
+                        for idx, elt in enumerate(target.elts):
+                            val_node = stmt.value.elts[idx] if (isinstance(stmt.value, (ast.Tuple, ast.List)) and idx < len(stmt.value.elts)) else stmt.value
+                            if isinstance(elt, ast.Name):
+                                record = AssignmentRecord(target_name=elt.id, value_node=val_node, lineno=stmt.lineno, scope_id=scope_id, is_conditional=is_conditional)
+                                self.assignments_by_scope.setdefault((scope_id, elt.id), []).append(record)
+                                if scope_id in self.classes:
+                                    self.class_field_assignments.setdefault((scope_id, elt.id), []).append(record)
+                            elif isinstance(elt, ast.Attribute) and isinstance(elt.value, ast.Name) and elt.value.id in ("self", "cls"):
+                                cls_scope = self._get_enclosing_class_scope(scope_id)
+                                if cls_scope:
+                                    record = AssignmentRecord(target_name=elt.attr, value_node=val_node, lineno=stmt.lineno, scope_id=scope_id, is_conditional=is_conditional)
+                                    self.class_field_assignments.setdefault((cls_scope, elt.attr), []).append(record)
                 self.scan_for_sinks(stmt.value, scope_id, stmt.lineno)
                 self._collect_calls_in_expr(stmt.value, scope_id, stmt.lineno)
             elif isinstance(stmt, ast.AnnAssign):
                 if isinstance(stmt.target, ast.Name) and stmt.value:
                     record = AssignmentRecord(target_name=stmt.target.id, value_node=stmt.value, lineno=stmt.lineno, scope_id=scope_id, is_conditional=is_conditional)
                     self.assignments_by_scope.setdefault((scope_id, stmt.target.id), []).append(record)
+                    if scope_id in self.classes:
+                        self.class_field_assignments.setdefault((scope_id, stmt.target.id), []).append(record)
+                    self.scan_for_sinks(stmt.value, scope_id, stmt.lineno)
+                    self._collect_calls_in_expr(stmt.value, scope_id, stmt.lineno)
+                elif isinstance(stmt.target, ast.Attribute) and isinstance(stmt.target.value, ast.Name) and stmt.target.value.id in ("self", "cls") and stmt.value:
+                    cls_scope = self._get_enclosing_class_scope(scope_id)
+                    if cls_scope:
+                        record = AssignmentRecord(target_name=stmt.target.attr, value_node=stmt.value, lineno=stmt.lineno, scope_id=scope_id, is_conditional=is_conditional)
+                        self.class_field_assignments.setdefault((cls_scope, stmt.target.attr), []).append(record)
                     self.scan_for_sinks(stmt.value, scope_id, stmt.lineno)
                     self._collect_calls_in_expr(stmt.value, scope_id, stmt.lineno)
             elif isinstance(stmt, ast.If):
@@ -918,6 +992,74 @@ class TaintTracker:
                 self.sources.append(src)
                 return TaintValue(state=TaintState.TAINTED, source_id=source_id, confidence=1.0, path=[source_id], last_operation=norm_attr)
 
+            # Class attribute access (self.<attr>, cls.<attr>, or instance.<attr>)
+            target_cls_scope = None
+            is_self_cls = isinstance(node.value, ast.Name) and node.value.id in ("self", "cls")
+            if is_self_cls:
+                target_cls_scope = self._get_enclosing_class_scope(scope_id)
+            elif isinstance(node.value, ast.Name):
+                target_cls_scope = self._resolve_instance_class_scope(node.value.id, scope_id)
+
+            if target_cls_scope:
+                attr_key = f"class_attr:{target_cls_scope}:{node.attr}"
+                if attr_key in visited:
+                    return TaintValue(state=TaintState.UNKNOWN, confidence=0.50, path=[f"{file_name}:self.{node.attr}"], last_operation="circular_attribute")
+                v_copy = visited.copy()
+                v_copy.add(attr_key)
+
+                records = self.class_field_assignments.get((target_cls_scope, node.attr), [])
+                if not records:
+                    # Rule C: Unrecorded / External: fall back to UNKNOWN with confidence 0.50
+                    return TaintValue(
+                        state=TaintState.UNKNOWN,
+                        confidence=0.50,
+                        path=[f"{file_name}:self.{node.attr}"],
+                        last_operation=f"unrecorded_attr:self.{node.attr}"
+                    )
+
+                resolved_values = []
+                for r in records:
+                    r_taint = self.resolve_expression(r.value_node, sink, r.scope_id, r.lineno, v_copy.copy(), call_context)
+                    resolved_values.append(r_taint)
+
+                # Rule A (Taint Preservation): If ANY recorded assignment evaluates to TAINTED
+                tainted = [v for v in resolved_values if v.state == TaintState.TAINTED]
+                if tainted:
+                    best_t = max(tainted, key=lambda v: v.confidence)
+                    return TaintValue(
+                        state=TaintState.TAINTED,
+                        source_id=best_t.source_id,
+                        confidence=1.0,
+                        path=[*best_t.path, f"{file_name}:self.{node.attr}"],
+                        last_operation=f"class_attr:self.{node.attr}"
+                    )
+
+                # Rule B (Clean Proof): If ALL recorded assignments evaluate to CLEAN
+                if all(v.state == TaintState.CLEAN for v in resolved_values):
+                    return TaintValue(
+                        state=TaintState.CLEAN,
+                        confidence=1.0,
+                        path=[f"{file_name}:self.{node.attr}"],
+                        last_operation=f"clean_class_attr:self.{node.attr}"
+                    )
+
+                # Fallback for unknown / unconfirmed values
+                first_u = next((v for v in resolved_values if v.state != TaintState.CLEAN), resolved_values[0])
+                return TaintValue(
+                    state=TaintState.UNKNOWN,
+                    source_id=first_u.source_id,
+                    confidence=0.50,
+                    path=[*first_u.path, f"{file_name}:self.{node.attr}"],
+                    last_operation=f"unknown_class_attr:self.{node.attr}"
+                )
+            elif is_self_cls:
+                return TaintValue(
+                    state=TaintState.UNKNOWN,
+                    confidence=0.50,
+                    path=[f"{file_name}:self.{node.attr}"],
+                    last_operation=f"unrecorded_attr:self.{node.attr}"
+                )
+
             # Path attribute navigation (.parent, .parents, .name, .stem, .suffix, .suffixes)
             if node.attr in ("parent", "parents", "name", "stem", "suffix", "suffixes") or self._is_path_expr(node.value, scope_id):
                 recv_taint = self.resolve_expression(node.value, sink, scope_id, current_lineno, visited.copy(), call_context)
@@ -1054,6 +1196,46 @@ class TaintTracker:
             canon_name = self.resolve_canonical_name(node.func, scope_id)
             function_name = canon_name or dotted_name(node.func) or "<unknown_function>"
             arg_values = [self.resolve_expression(arg, sink, scope_id, current_lineno, visited.copy(), call_context) for arg in node.args]
+
+            fn_base = function_name.replace("builtins.", "")
+            d_base = (dotted_name(node.func) or "").replace("builtins.", "")
+            if fn_base in PRIMITIVE_NUMERIC_CASTS or d_base in PRIMITIVE_NUMERIC_CASTS:
+                sink_cwe = sink.metadata.get("cwe") if sink and hasattr(sink, "metadata") else None
+                sink_type = sink.metadata.get("sink_type") if sink and hasattr(sink, "metadata") else None
+                protected_cwes = {"CWE-89", "CWE-78", "CWE-22", "CWE-95", "UNKNOWN_CWE"}
+                if not sink_cwe or sink_cwe in protected_cwes or sink_type in ("SQL_INJECTION", "COMMAND_INJECTION", "PATH_TRAVERSAL", "CODE_EXECUTION", "FILE_ACCESS"):
+                    return TaintValue(state=TaintState.CLEAN, confidence=1.0, last_operation=f"primitive_cast:{fn_base or d_base}")
+
+            if fn_base in ("str", "repr", "bytes") or d_base in ("str", "repr", "bytes"):
+                tainted_args = [a for a in arg_values if a.state == TaintState.TAINTED]
+                for kw in getattr(node, "keywords", []):
+                    kw_val = self.resolve_expression(kw.value, sink, scope_id, current_lineno, visited.copy(), call_context)
+                    if kw_val.state == TaintState.TAINTED:
+                        tainted_args.append(kw_val)
+                if tainted_args:
+                    best_arg = max(tainted_args, key=lambda a: a.confidence)
+                    return TaintValue(
+                        state=TaintState.TAINTED,
+                        source_id=best_arg.source_id,
+                        confidence=best_arg.confidence,
+                        path=[*best_arg.path, f"{file_name}:{fn_base or d_base}()"],
+                        last_operation=f"cast:{fn_base or d_base}"
+                    )
+                unknown_args = [a for a in arg_values if a.state != TaintState.CLEAN]
+                for kw in getattr(node, "keywords", []):
+                    kw_val = self.resolve_expression(kw.value, sink, scope_id, current_lineno, visited.copy(), call_context)
+                    if kw_val.state != TaintState.CLEAN:
+                        unknown_args.append(kw_val)
+                if unknown_args:
+                    first_u = unknown_args[0]
+                    return TaintValue(
+                        state=TaintState.UNKNOWN,
+                        source_id=first_u.source_id,
+                        confidence=0.50,
+                        path=[*first_u.path, f"{file_name}:{fn_base or d_base}()"],
+                        last_operation=f"cast:{fn_base or d_base}"
+                    )
+                return TaintValue(state=TaintState.CLEAN, confidence=1.0, last_operation=f"cast:{fn_base or d_base}")
 
             if function_name in SANITIZER_REGISTRY and self.sanitizer_protects_context(function_name, sink):
                 first_tainted = next((arg for arg in arg_values if arg.state != TaintState.CLEAN), None)
@@ -1382,6 +1564,36 @@ class TaintTracker:
                     origin_node=node
                 )
 
+        # Class attribute check for self.<attr> / cls.<attr> / inst.<attr>
+        if isinstance(node, ast.Attribute):
+            target_cls_scope = None
+            if isinstance(node.value, ast.Name) and node.value.id in ("self", "cls"):
+                target_cls_scope = self._get_enclosing_class_scope(scope_id)
+            elif isinstance(node.value, ast.Name):
+                target_cls_scope = self._resolve_instance_class_scope(node.value.id, scope_id)
+
+            if target_cls_scope:
+                records = self.class_field_assignments.get((target_cls_scope, node.attr), [])
+                if records:
+                    provs = [self.resolve_path_provenance(r.value_node, sink, r.scope_id, r.lineno, visited.copy(), call_context) for r in records]
+                    tainted = [p for p in provs if p.state == ProvenanceState.TAINTED]
+                    if tainted:
+                        best_p = max(tainted, key=lambda p: p.confidence)
+                        return ProvenanceValue(
+                            state=ProvenanceState.TAINTED,
+                            confidence=1.0,
+                            source_id=best_p.source_id,
+                            source_trace=(*best_p.source_trace, f"{file_name}:self.{node.attr}"),
+                            origin_node=node
+                        )
+                    if all(p.state in (ProvenanceState.STATIC, ProvenanceState.INTERNAL_DYNAMIC) for p in provs):
+                        return ProvenanceValue(
+                            state=ProvenanceState.STATIC,
+                            confidence=1.0,
+                            source_trace=(f"{file_name}:self.{node.attr}", "clean_class_attr"),
+                            origin_node=node
+                        )
+
         # 2. String/Bytes Constants
         if isinstance(node, ast.Constant):
             return ProvenanceValue(
@@ -1467,6 +1679,20 @@ class TaintTracker:
                     source_trace=(f"sanitizer:{canon_name or d_name}",),
                     origin_node=node
                 )
+
+            fn_base = (canon_name or d_name).replace("builtins.", "")
+            d_base = d_name.replace("builtins.", "")
+            if fn_base in PRIMITIVE_NUMERIC_CASTS or d_base in PRIMITIVE_NUMERIC_CASTS:
+                return ProvenanceValue(
+                    state=ProvenanceState.STATIC,
+                    confidence=1.0,
+                    source_trace=(f"primitive_cast:{fn_base or d_base}",),
+                    origin_node=node
+                )
+
+            if fn_base in ("str", "repr", "bytes") or d_base in ("str", "repr", "bytes"):
+                if node.args:
+                    return self.resolve_path_provenance(node.args[0], sink, scope_id, current_lineno, visited.copy(), call_context)
 
             # 1. User-defined function resolution MUST take precedence over semantic stdlib producer lookup
             func_scope = self._resolve_function_scope(d_name or canon_name, scope_id)
