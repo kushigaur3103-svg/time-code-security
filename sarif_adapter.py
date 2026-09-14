@@ -417,19 +417,28 @@ def to_sarif(
     }
 
     syntax_errors = tcs_scan_result.get("syntax_errors") if isinstance(tcs_scan_result, dict) else []
-    if syntax_errors:
+    skipped_files = tcs_scan_result.get("skipped_files") if isinstance(tcs_scan_result, dict) else []
+    notifications = []
+    for err in (syntax_errors or []):
+        notifications.append({
+            "message": {
+                "text": f"Skipping AST analysis for unparseable file: {err}"
+            },
+            "level": "warning"
+        })
+    for skip in (skipped_files or []):
+        skip_msg = skip if isinstance(skip, str) else str(skip)
+        notifications.append({
+            "message": {
+                "text": f"Resource limit warning: {skip_msg}"
+            },
+            "level": "warning"
+        })
+    if notifications:
         run_obj["invocations"] = [
             {
                 "executionSuccessful": True,
-                "toolExecutionNotifications": [
-                    {
-                        "message": {
-                            "text": f"Skipping AST analysis for unparseable file: {err}"
-                        },
-                        "level": "warning"
-                    }
-                    for err in syntax_errors
-                ]
+                "toolExecutionNotifications": notifications
             }
         ]
 

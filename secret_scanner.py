@@ -10,6 +10,7 @@ Non-negotiable invariants:
 - Deterministic output sorted by (line_number, column_start, detector, secret_type).
 """
 
+import os
 from collections import Counter
 from dataclasses import dataclass
 import math
@@ -179,6 +180,8 @@ def scan_text(text: str, filename: str = "<string>") -> List[SecretFinding]:
 
     for line_idx, raw_line in enumerate(lines, start=1):
         clean_line = raw_line.rstrip("\r\n")
+        if len(clean_line) > 10000:
+            continue
         candidates: List[_CandidateMatch] = []
 
         # 1. Private Key (Precedence 1)
@@ -318,7 +321,25 @@ def scan_file(filepath: str) -> List[SecretFinding]:
 
     Raises FileNotFoundError if file does not exist.
     Decodes using UTF-8 with fallback replacement.
+    Skips files exceeding 1MB or containing binary prefix.
     """
+    if not os.path.exists(filepath):
+        raise FileNotFoundError(f"File not found: {filepath}")
+
+    try:
+        if os.path.getsize(filepath) > 1024 * 1024:
+            return []
+    except (OSError, ValueError):
+        return []
+
+    try:
+        with open(filepath, "rb") as bf:
+            chunk = bf.read(8192)
+            if b"\x00" in chunk:
+                return []
+    except (OSError, ValueError):
+        return []
+
     with open(filepath, "r", encoding="utf-8", errors="replace") as f:
         content = f.read()
     return scan_text(content, filename=filepath)

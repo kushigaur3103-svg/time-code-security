@@ -12,7 +12,7 @@ import json
 import argparse
 import dataclasses
 from pathlib import Path
-from typing import Dict, List, Any, Optional
+from typing import Dict, List, Any, Optional, Set
 
 from ast_scanner import TaintTracker
 from suppression_resolver import resolve_suppressions
@@ -43,6 +43,45 @@ IGNORED_DIRS = {
     ".idea",
     ".vscode"
 }
+
+MAX_FILE_SIZE_BYTES = 1 * 1024 * 1024  # 1 MB
+MAX_LINE_LENGTH_CHARS = 10000
+BINARY_PREFIX_BYTES = 8192
+
+
+def check_file_resilience(file_path: Path, display_path: str) -> Optional[str]:
+    """
+    Guards against resource exhaustion / DoS vectors:
+    1. Giant files (> 1MB)
+    2. Binary blobs (NUL bytes in prefix)
+    3. Pathological minified one-liners (> 10,000 characters)
+
+    Returns warning string if file must be skipped, or None if safe.
+    """
+    try:
+        st = file_path.stat()
+        if st.st_size > MAX_FILE_SIZE_BYTES:
+            return f"Skipping file exceeding size limit (1MB): {display_path}"
+    except (OSError, ValueError) as e:
+        return f"Skipping inaccessible file/symlink: {display_path} ({e})"
+
+    try:
+        with open(file_path, "rb") as f:
+            chunk = f.read(BINARY_PREFIX_BYTES)
+            if b"\x00" in chunk:
+                return f"Skipping binary file: {display_path}"
+    except (OSError, ValueError) as e:
+        return f"Skipping unreadable file: {display_path} ({e})"
+
+    try:
+        with open(file_path, "r", encoding="utf-8", errors="replace") as f:
+            for line in f:
+                if len(line) > MAX_LINE_LENGTH_CHARS:
+                    return f"Skipping minified file exceeding line length limit (10000): {display_path}"
+    except (OSError, ValueError) as e:
+        return f"Skipping unreadable file: {display_path} ({e})"
+
+    return None
 
 
 def extract_remediation_advice(cwe: str, sink_symbol: str) -> str:
@@ -237,10 +276,15 @@ SECRET_EXTS = {".py", ".env", ".json", ".yaml", ".yml", ".toml", ".ini", ".conf"
 
 
 def discover_python_files(
-    target_path: Path, base_dir: Path, sca_active: bool = False, secrets_active: bool = False
+    target_path: Path,
+    base_dir: Path,
+    sca_active: bool = False,
+    secrets_active: bool = False,
+    skipped_files: Optional[List[str]] = None,
 ) -> Dict[str, str]:
     """
     Recursively discovers Python files, ignoring non-code or virtual env folders.
+    Guards against symlink loops, giant files, binary blobs, and minified bundles.
     Returns mapping of POSIX relative paths to text contents.
     """
     normalized_files: Dict[str, str] = {}
@@ -261,6 +305,14 @@ def discover_python_files(
             rel_path = target_path.relative_to(base_dir).as_posix()
         except ValueError:
             rel_path = target_path.name
+
+        skip_reason = check_file_resilience(target_path, rel_path)
+        if skip_reason:
+            print(f"[WARN] {skip_reason}", file=sys.stderr)
+            if skipped_files is not None:
+                skipped_files.append(skip_reason)
+            return normalized_files
+
         try:
             normalized_files[rel_path] = target_path.read_text(encoding="utf-8")
         except Exception as e:
@@ -268,9 +320,23 @@ def discover_python_files(
             sys.exit(2)
         return normalized_files
 
-    for root, dirs, files in os.walk(target_path):
-        # Modify dirs in place to prune ignored folders
-        dirs[:] = [d for d in dirs if d not in IGNORED_DIRS and not d.startswith(".")]
+    visited_dirs: Set[str] = set()
+    for root, dirs, files in os.walk(target_path, followlinks=False):
+        real_root = os.path.realpath(root)
+        if real_root in visited_dirs:
+            dirs[:] = []
+            continue
+        visited_dirs.add(real_root)
+
+        # Modify dirs in place to prune ignored folders and directory symlinks
+        pruned_dirs = []
+        for d in dirs:
+            dir_full = os.path.join(root, d)
+            if os.path.islink(dir_full):
+                continue
+            if d not in IGNORED_DIRS and not d.startswith("."):
+                pruned_dirs.append(d)
+        dirs[:] = pruned_dirs
 
         for fname in files:
             if fname.endswith(".py") and fname != "tcs_cli.py":
@@ -283,6 +349,13 @@ def discover_python_files(
                     except ValueError:
                         rel_path = full_file.name
 
+                skip_reason = check_file_resilience(full_file, rel_path)
+                if skip_reason:
+                    print(f"[WARN] {skip_reason}", file=sys.stderr)
+                    if skipped_files is not None:
+                        skipped_files.append(skip_reason)
+                    continue
+
                 try:
                     normalized_files[rel_path] = full_file.read_text(encoding="utf-8")
                 except Exception as e:
@@ -292,48 +365,130 @@ def discover_python_files(
     return normalized_files
 
 
-def discover_secret_files(target_path: Path, base_dir: Path) -> List[Path]:
+def discover_secret_files(
+    target_path: Path,
+    base_dir: Path,
+    skipped_files: Optional[List[str]] = None,
+) -> List[Path]:
     """
     Discovers text/configuration files to scan for hardcoded secrets and credentials.
     Supports .py, .env, .json, .yaml, .yml, .toml, .ini, .conf, .txt.
+    Guards against symlink loops, giant files, binary blobs, and minified bundles.
     """
     discovered: List[Path] = []
 
     if target_path.is_file():
         if target_path.suffix.lower() in SECRET_EXTS or target_path.name.lower().startswith(".env"):
-            discovered.append(target_path)
+            rel_name = target_path.name
+            skip_reason = check_file_resilience(target_path, rel_name)
+            if skip_reason:
+                print(f"[WARN] {skip_reason}", file=sys.stderr)
+                if skipped_files is not None:
+                    skipped_files.append(skip_reason)
+            else:
+                discovered.append(target_path)
         return discovered
 
-    for root, dirs, files in os.walk(target_path):
-        dirs[:] = [d for d in dirs if d not in IGNORED_DIRS and not d.startswith(".")]
+    visited_dirs: Set[str] = set()
+    for root, dirs, files in os.walk(target_path, followlinks=False):
+        real_root = os.path.realpath(root)
+        if real_root in visited_dirs:
+            dirs[:] = []
+            continue
+        visited_dirs.add(real_root)
+
+        pruned_dirs = []
+        for d in dirs:
+            dir_full = os.path.join(root, d)
+            if os.path.islink(dir_full):
+                continue
+            if d not in IGNORED_DIRS and not d.startswith("."):
+                pruned_dirs.append(d)
+        dirs[:] = pruned_dirs
+
         for fname in files:
             p = Path(root) / fname
             if p.suffix.lower() in SECRET_EXTS or fname.lower().startswith(".env"):
                 if fname != "tcs_cli.py":
+                    try:
+                        rel_path = p.relative_to(target_path).as_posix()
+                    except ValueError:
+                        try:
+                            rel_path = p.relative_to(base_dir).as_posix()
+                        except ValueError:
+                            rel_path = p.name
+
+                    skip_reason = check_file_resilience(p, rel_path)
+                    if skip_reason:
+                        print(f"[WARN] {skip_reason}", file=sys.stderr)
+                        if skipped_files is not None:
+                            skipped_files.append(skip_reason)
+                        continue
                     discovered.append(p)
 
     discovered.sort()
     return discovered
 
 
-def discover_manifest_files(target_path: Path, base_dir: Path) -> List[Path]:
+def discover_manifest_files(
+    target_path: Path,
+    base_dir: Path,
+    skipped_files: Optional[List[str]] = None,
+) -> List[Path]:
     """
     Discovers supported dependency manifests within the target scope.
     Supported filenames: requirements.txt, Pipfile.lock, poetry.lock.
+    Guards against symlink loops, giant files, binary blobs, and minified bundles.
     """
     manifest_names = {"requirements.txt", "pipfile.lock", "poetry.lock"}
     discovered: List[Path] = []
 
     if target_path.is_file():
         if target_path.name.lower() in manifest_names:
-            discovered.append(target_path)
+            skip_reason = check_file_resilience(target_path, target_path.name)
+            if skip_reason:
+                print(f"[WARN] {skip_reason}", file=sys.stderr)
+                if skipped_files is not None:
+                    skipped_files.append(skip_reason)
+            else:
+                discovered.append(target_path)
         return discovered
 
-    for root, dirs, files in os.walk(target_path):
-        dirs[:] = [d for d in dirs if d not in IGNORED_DIRS and not d.startswith(".")]
+    visited_dirs: Set[str] = set()
+    for root, dirs, files in os.walk(target_path, followlinks=False):
+        real_root = os.path.realpath(root)
+        if real_root in visited_dirs:
+            dirs[:] = []
+            continue
+        visited_dirs.add(real_root)
+
+        pruned_dirs = []
+        for d in dirs:
+            dir_full = os.path.join(root, d)
+            if os.path.islink(dir_full):
+                continue
+            if d not in IGNORED_DIRS and not d.startswith("."):
+                pruned_dirs.append(d)
+        dirs[:] = pruned_dirs
+
         for fname in files:
             if fname.lower() in manifest_names:
-                discovered.append(Path(root) / fname)
+                p = Path(root) / fname
+                try:
+                    rel_path = p.relative_to(target_path).as_posix()
+                except ValueError:
+                    try:
+                        rel_path = p.relative_to(base_dir).as_posix()
+                    except ValueError:
+                        rel_path = p.name
+
+                skip_reason = check_file_resilience(p, rel_path)
+                if skip_reason:
+                    print(f"[WARN] {skip_reason}", file=sys.stderr)
+                    if skipped_files is not None:
+                        skipped_files.append(skip_reason)
+                    continue
+                discovered.append(p)
 
     discovered.sort()
     return discovered
@@ -369,6 +524,12 @@ def format_table(
 
         if not findings:
             lines.append("No security vulnerabilities detected.")
+            if results.get("syntax_errors") or results.get("skipped_files"):
+                lines.append("\n[PARSER & RESOURCE WARNINGS (SKIPPED FILES)]")
+                for err in results.get("syntax_errors", []):
+                    lines.append(f"  Skipping AST analysis for unparseable file: {err}")
+                for skip in results.get("skipped_files", []):
+                    lines.append(f"  {skip}")
             lines.append("=" * 88)
             return "\n".join(lines)
 
@@ -401,6 +562,13 @@ def format_table(
                 lines.append(f"  Justification:{f.get('suppression_justification')}")
             if f.get("remediation"):
                 lines.append(f"  Remediation:  {f.get('remediation')}")
+
+        if results.get("syntax_errors") or results.get("skipped_files"):
+            lines.append("\n[PARSER & RESOURCE WARNINGS (SKIPPED FILES)]")
+            for err in results.get("syntax_errors", []):
+                lines.append(f"  Skipping AST analysis for unparseable file: {err}")
+            for skip in results.get("skipped_files", []):
+                lines.append(f"  {skip}")
 
         lines.append("=" * 88)
         return "\n".join(lines)
@@ -436,10 +604,12 @@ def format_table(
 
     if not findings and not sca_list and not sec_list:
         lines.append("No security vulnerabilities detected.")
-        if results.get("syntax_errors"):
-            lines.append("\n[PARSER WARNINGS (SKIPPED FILES)]")
-            for err in results["syntax_errors"]:
+        if results.get("syntax_errors") or results.get("skipped_files"):
+            lines.append("\n[PARSER & RESOURCE WARNINGS (SKIPPED FILES)]")
+            for err in results.get("syntax_errors", []):
                 lines.append(f"  Skipping AST analysis for unparseable file: {err}")
+            for skip in results.get("skipped_files", []):
+                lines.append(f"  {skip}")
         lines.append(sep)
         return "\n".join(lines)
 
@@ -548,10 +718,12 @@ def format_table(
                 lines.append(f"  Context:      {ctx}")
             lines.append("  Remediation:  Never commit hardcoded secrets or credentials to source control. Revoke and rotate this secret immediately.")
 
-    if results.get("syntax_errors"):
-        lines.append("\n[PARSER WARNINGS (SKIPPED FILES)]")
-        for err in results["syntax_errors"]:
+    if results.get("syntax_errors") or results.get("skipped_files"):
+        lines.append("\n[PARSER & RESOURCE WARNINGS (SKIPPED FILES)]")
+        for err in results.get("syntax_errors", []):
             lines.append(f"  Skipping AST analysis for unparseable file: {err}")
+        for skip in results.get("skipped_files", []):
+            lines.append(f"  {skip}")
 
     lines.append(sep)
     return "\n".join(lines)
@@ -681,7 +853,8 @@ def main():
         print(f"[ERROR] Target path does not exist: {args.target}", file=sys.stderr)
         sys.exit(2)
 
-    files = discover_python_files(target, base_dir, sca_active=args.sca, secrets_active=args.secrets)
+    all_skipped_files: List[str] = []
+    files = discover_python_files(target, base_dir, sca_active=args.sca, secrets_active=args.secrets, skipped_files=all_skipped_files)
     if not files and not args.sca and not args.secrets:
         print(f"[WARN] No Python (*.py) files found in: {args.target}", file=sys.stderr)
 
@@ -690,6 +863,8 @@ def main():
     except Exception as e:
         print(f"[ERROR] Scan execution failed: {e}", file=sys.stderr)
         sys.exit(2)
+
+    results["skipped_files"] = all_skipped_files
 
     if results.get("syntax_errors"):
         for err in results["syntax_errors"]:
@@ -704,7 +879,7 @@ def main():
     manifest_files: List[Path] = []
 
     if args.sca:
-        manifest_files = discover_manifest_files(target, base_dir)
+        manifest_files = discover_manifest_files(target, base_dir, skipped_files=all_skipped_files)
         all_deps: List[DependencyRecord] = []
         for mf in manifest_files:
             if target.is_dir():
@@ -738,7 +913,7 @@ def main():
     secret_files: List[Path] = []
 
     if args.secrets:
-        secret_files = discover_secret_files(target, base_dir)
+        secret_files = discover_secret_files(target, base_dir, skipped_files=all_skipped_files)
         filter_cfg = FilterConfig()
         for sf in secret_files:
             if target.is_dir():
@@ -809,6 +984,12 @@ def main():
         summary_copy["secrets_scanned"] = len(secret_files)
         summary_copy["secrets_scanned_files"] = len(secret_files)
         summary_copy["secrets_detected"] = len(secret_findings)
+        export_data["summary"] = summary_copy
+
+    export_data["skipped_files"] = all_skipped_files
+    if all_skipped_files:
+        summary_copy = dict(export_data.get("summary", {}))
+        summary_copy["skipped_files_count"] = len(all_skipped_files)
         export_data["summary"] = summary_copy
 
     if args.format.lower() == "sarif":
