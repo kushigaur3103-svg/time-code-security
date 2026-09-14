@@ -1024,11 +1024,11 @@ class TestVector2DiscoveryIntegrationExtra(unittest.TestCase):
     def test_discovery_giant_pyproject_skipped_by_vector3_limit(self):
         from tcs_cli import discover_manifest_files
         giant = Path(self.test_dir) / "pyproject.toml"
-        # Write >1MB file
+        # Write >5MB file
         with open(giant, "wb") as f:
-            f.write(b"# giant file\n" + b" " * (1024 * 1024 + 10))
+            f.write(b"# giant file\n" + b" " * (5 * 1024 * 1024 + 10))
         manifests = discover_manifest_files(Path(self.test_dir), Path(self.test_dir))
-        self.assertEqual(len(manifests), 0, "Giant pyproject.toml > 1MB must be skipped by Vector 3 resource bounding")
+        self.assertEqual(len(manifests), 0, "Giant pyproject.toml > 5MB must be skipped by Vector 3 resource bounding")
 
     def test_discovery_minified_pyproject_skipped_by_vector3_limit(self):
         from tcs_cli import discover_manifest_files

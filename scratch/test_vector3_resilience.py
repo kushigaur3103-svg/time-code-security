@@ -2,7 +2,7 @@
 Vector 3 Resilience Test Suite: Resource Exhaustion & Giant Files (DoS Defense).
 
 Tests TCS defenses against:
-1. Giant files (> 1MB)
+1. Giant files (> 5MB)
 2. Binary blobs disguised as .py (NUL byte in prefix)
 3. Pathological minified one-liners (> 10,000 characters)
 4. Circular symlink loops (with Windows privilege fallback handling)
@@ -45,10 +45,10 @@ class TestVector3Resilience(unittest.TestCase):
         self.temp_dir.cleanup()
 
     def test_fixture_1_giant_file(self):
-        """Fixture 1: 5 MiB dummy Python file must be skipped without memory blowup, exit code 0."""
+        """Fixture 1: 10 MiB dummy Python file must be skipped without memory blowup, exit code 0."""
         giant_file = self.work_dir / "giant_script.py"
-        # Write 5 MiB of valid-looking comment characters
-        file_size = 5 * 1024 * 1024
+        # Write 10 MiB of valid-looking comment characters
+        file_size = 10 * 1024 * 1024
         with open(giant_file, "wb") as f:
             f.write(b"# " + b"A" * (file_size - 3) + b"\n")
 
@@ -57,14 +57,14 @@ class TestVector3Resilience(unittest.TestCase):
         # 1. Direct resilience check
         reason = check_file_resilience(giant_file, "giant_script.py")
         self.assertIsNotNone(reason)
-        self.assertIn("exceeding size limit (1MB)", reason)
+        self.assertIn("exceeding size limit (5MB)", reason)
 
         # 2. Discovery check (skipped, not loaded into memory)
         skipped = []
         discovered = discover_python_files(self.work_dir, self.work_dir, skipped_files=skipped)
         self.assertEqual(discovered, {})
         self.assertEqual(len(skipped), 1)
-        self.assertIn("exceeding size limit (1MB)", skipped[0])
+        self.assertIn("exceeding size limit (5MB)", skipped[0])
 
         # 3. secret_scanner.scan_file resilience
         secret_findings = scan_file(str(giant_file))
@@ -74,7 +74,7 @@ class TestVector3Resilience(unittest.TestCase):
         cmd = [sys.executable, "-u", str(ROOT_DIR / "tcs_cli.py"), str(giant_file), "--format", "json"]
         proc = subprocess.run(cmd, stdout=subprocess.PIPE, stderr=subprocess.PIPE, text=True, cwd=str(ROOT_DIR))
         self.assertEqual(proc.returncode, 0, f"CLI should exit 0 on clean skipped file, got {proc.returncode}. Stderr: {proc.stderr}")
-        self.assertIn("Skipping file exceeding size limit (1MB)", proc.stderr)
+        self.assertIn("Skipping file exceeding size limit (5MB)", proc.stderr)
 
         parsed = json.loads(proc.stdout)
         self.assertEqual(parsed["summary"]["active_vulnerabilities"], 0)
@@ -197,7 +197,7 @@ class TestVector3Resilience(unittest.TestCase):
         """Verify discover_secret_files and discover_manifest_files reject giant and binary files."""
         giant_secret = self.work_dir / "giant_config.json"
         with open(giant_secret, "wb") as f:
-            f.write(b"{" + b'"k": "v",' * 200000 + b'"end": 1}')
+            f.write(b"{" + b'"k": "v",' * 600000 + b'"end": 1}')
         self.assertGreater(giant_secret.stat().st_size, MAX_FILE_SIZE_BYTES)
 
         skipped = []
@@ -219,7 +219,7 @@ class TestVector3Resilience(unittest.TestCase):
         tcs_result = {
             "findings": [],
             "syntax_errors": ["corrupt.py:1: invalid syntax"],
-            "skipped_files": ["Skipping file exceeding size limit (1MB): huge.py"],
+            "skipped_files": ["Skipping file exceeding size limit (5MB): huge.py"],
             "summary": {
                 "total_files": 1,
                 "lines_scanned": 0,
@@ -243,6 +243,51 @@ class TestVector3Resilience(unittest.TestCase):
         notif_texts = [n["message"]["text"] for n in notifications]
         self.assertTrue(any("corrupt.py" in t for t in notif_texts))
         self.assertTrue(any("huge.py" in t for t in notif_texts))
+
+    def test_file_size_boundary_4_5mb_vs_5_5mb(self):
+        """Boundary test: 4.5MB dummy file MUST be processed; 5.5MB dummy file MUST be skipped."""
+        line_chunk = b"# safe regular comment line for sizing tests\n"  # 45 bytes
+
+        # 1. Test 4.5 MB file (within ceiling)
+        file_4_5mb = self.work_dir / "file_4_5mb.py"
+        size_4_5mb = int(4.5 * 1024 * 1024)
+        count_4_5 = size_4_5mb // len(line_chunk)
+        rem_4_5 = size_4_5mb % len(line_chunk)
+        with open(file_4_5mb, "wb") as f:
+            f.write(line_chunk * count_4_5 + b"# " + b"X" * max(0, rem_4_5 - 3) + b"\n")
+
+        self.assertLess(file_4_5mb.stat().st_size, MAX_FILE_SIZE_BYTES)
+        reason_4_5 = check_file_resilience(file_4_5mb, "file_4_5mb.py")
+        self.assertIsNone(reason_4_5, f"4.5MB file must not be skipped, got {reason_4_5}")
+
+        skipped_4_5 = []
+        discovered_4_5 = discover_python_files(self.work_dir, self.work_dir, skipped_files=skipped_4_5)
+        self.assertIn("file_4_5mb.py", discovered_4_5)
+        self.assertEqual(skipped_4_5, [])
+
+        secret_findings_4_5 = scan_file(str(file_4_5mb))
+        self.assertEqual(secret_findings_4_5, [])
+
+        # 2. Test 5.5 MB file (exceeds ceiling)
+        file_5_5mb = self.work_dir / "file_5_5mb.py"
+        size_5_5mb = int(5.5 * 1024 * 1024)
+        count_5_5 = size_5_5mb // len(line_chunk)
+        rem_5_5 = size_5_5mb % len(line_chunk)
+        with open(file_5_5mb, "wb") as f:
+            f.write(line_chunk * count_5_5 + b"# " + b"Y" * max(0, rem_5_5 - 3) + b"\n")
+
+        self.assertGreater(file_5_5mb.stat().st_size, MAX_FILE_SIZE_BYTES)
+        reason_5_5 = check_file_resilience(file_5_5mb, "file_5_5mb.py")
+        self.assertIsNotNone(reason_5_5)
+        self.assertIn("exceeding size limit (5MB)", reason_5_5)
+
+        skipped_5_5 = []
+        discovered_5_5 = discover_python_files(self.work_dir, self.work_dir, skipped_files=skipped_5_5)
+        self.assertNotIn("file_5_5mb.py", discovered_5_5)
+        self.assertTrue(any("file_5_5mb.py" in s and "exceeding size limit (5MB)" in s for s in skipped_5_5))
+
+        secret_findings_5_5 = scan_file(str(file_5_5mb))
+        self.assertEqual(secret_findings_5_5, [])
 
 
 if __name__ == "__main__":

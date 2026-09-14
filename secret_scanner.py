@@ -321,13 +321,13 @@ def scan_file(filepath: str) -> List[SecretFinding]:
 
     Raises FileNotFoundError if file does not exist.
     Decodes using UTF-8 with fallback replacement.
-    Skips files exceeding 1MB or containing binary prefix.
+    Skips files exceeding 5MB or containing binary prefix.
     """
     if not os.path.exists(filepath):
         raise FileNotFoundError(f"File not found: {filepath}")
 
     try:
-        if os.path.getsize(filepath) > 1024 * 1024:
+        if os.path.getsize(filepath) > 5 * 1024 * 1024:
             return []
     except (OSError, ValueError):
         return []

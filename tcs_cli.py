@@ -44,7 +44,7 @@ IGNORED_DIRS = {
     ".vscode"
 }
 
-MAX_FILE_SIZE_BYTES = 1 * 1024 * 1024  # 1 MB
+MAX_FILE_SIZE_BYTES = 5 * 1024 * 1024  # 5 MB
 MAX_LINE_LENGTH_CHARS = 10000
 BINARY_PREFIX_BYTES = 8192
 
@@ -52,7 +52,7 @@ BINARY_PREFIX_BYTES = 8192
 def check_file_resilience(file_path: Path, display_path: str) -> Optional[str]:
     """
     Guards against resource exhaustion / DoS vectors:
-    1. Giant files (> 1MB)
+    1. Giant files (> 5MB)
     2. Binary blobs (NUL bytes in prefix)
     3. Pathological minified one-liners (> 10,000 characters)
 
@@ -61,7 +61,7 @@ def check_file_resilience(file_path: Path, display_path: str) -> Optional[str]:
     try:
         st = file_path.stat()
         if st.st_size > MAX_FILE_SIZE_BYTES:
-            return f"Skipping file exceeding size limit (1MB): {display_path}"
+            return f"Skipping file exceeding size limit (5MB): {display_path}"
     except (OSError, ValueError) as e:
         return f"Skipping inaccessible file/symlink: {display_path} ({e})"
 
