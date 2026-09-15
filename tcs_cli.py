@@ -25,6 +25,13 @@ from secret_scanner import scan_text, SecretFinding
 from secret_filters import filter_findings, FilterConfig
 from ci_reporter import format_github_annotations, generate_step_summary
 from config_loader import load_config, TCSConfig, ConfigValidationError
+from staged_scanner import (
+    get_git_repo_root,
+    get_staged_git_files,
+    build_staged_dependency_closure,
+    filter_findings_for_staged,
+    recompute_summary_metrics,
+)
 
 
 IGNORED_DIRS = {
@@ -525,7 +532,13 @@ def format_table(
         ]
 
         if not findings:
-            lines.append("No security vulnerabilities detected.")
+            if results.get("unresolved_dependencies"):
+                lines.append("PARTIAL ANALYSIS: Analysis incomplete due to unresolved / deleted dependencies.")
+                lines.append("\n[UNRESOLVED DEPENDENCIES]")
+                for unres_item in results.get("unresolved_dependencies", []):
+                    lines.append(f"  {unres_item}")
+            else:
+                lines.append("No security vulnerabilities detected.")
             if results.get("syntax_errors") or results.get("skipped_files"):
                 lines.append("\n[PARSER & RESOURCE WARNINGS (SKIPPED FILES)]")
                 for err in results.get("syntax_errors", []):
@@ -605,7 +618,13 @@ def format_table(
     ]
 
     if not findings and not sca_list and not sec_list:
-        lines.append("No security vulnerabilities detected.")
+        if results.get("unresolved_dependencies"):
+            lines.append("PARTIAL ANALYSIS: Analysis incomplete due to unresolved / deleted dependencies.")
+            lines.append("\n[UNRESOLVED DEPENDENCIES]")
+            for unres_item in results.get("unresolved_dependencies", []):
+                lines.append(f"  {unres_item}")
+        else:
+            lines.append("No security vulnerabilities detected.")
         if results.get("syntax_errors") or results.get("skipped_files"):
             lines.append("\n[PARSER & RESOURCE WARNINGS (SKIPPED FILES)]")
             for err in results.get("syntax_errors", []):
@@ -738,6 +757,8 @@ def main():
     )
     parser.add_argument(
         "target",
+        nargs="?",
+        default=None,
         help="Target Python file, manifest, or directory to scan"
     )
     parser.add_argument(
@@ -808,6 +829,11 @@ def main():
         action="store_true",
         help="Treat syntax errors as fatal (exit code 2)"
     )
+    parser.add_argument(
+        "--staged",
+        action="store_true",
+        help="Scan only git-staged changes with full cross-file semantic dependency closure"
+    )
 
     args = parser.parse_args()
 
@@ -849,22 +875,124 @@ def main():
         sys.exit(2)
 
     base_dir = Path.cwd().resolve()
-    target = Path(args.target).resolve()
-
-    if not target.exists():
-        print(f"[ERROR] Target path does not exist: {args.target}", file=sys.stderr)
-        sys.exit(2)
-
     all_skipped_files: List[str] = []
-    files = discover_python_files(target, base_dir, sca_active=args.sca, secrets_active=args.secrets, skipped_files=all_skipped_files)
-    if not files and not args.sca and not args.secrets:
-        print(f"[WARN] No Python (*.py) files found in: {args.target}", file=sys.stderr)
+    staged_unresolved_deps: List[str] = []
 
-    try:
-        results = execute_tcs_scan(files, config=config)
-    except Exception as e:
-        print(f"[ERROR] Scan execution failed: {e}", file=sys.stderr)
-        sys.exit(2)
+    if args.staged:
+        if args.target is None or args.target == "scan":
+            target = base_dir
+        else:
+            target = Path(args.target).resolve()
+            if not target.exists():
+                print(f"[ERROR] Target path does not exist: {args.target}", file=sys.stderr)
+                sys.exit(2)
+
+        repo_root = get_git_repo_root(target if target.is_dir() else target.parent)
+        if repo_root is None:
+            print(f"[WARN] --staged requested but '{target}' is not in a git repository.", file=sys.stderr)
+            files = {}
+            results = {
+                "status": "success",
+                "syntax_errors": [],
+                "enabled_rules": list(config.effective_rules) if config else [r.cwe_id for r in GLOBAL_RULE_REGISTRY.all_rules()],
+                "summary": {
+                    "total_files": 0,
+                    "lines_scanned": 0,
+                    "total_vulnerabilities": 0,
+                    "active_vulnerabilities": 0,
+                    "suppressed_vulnerabilities": 0,
+                    "critical_count": 0,
+                    "high_count": 0,
+                    "medium_count": 0,
+                    "low_count": 0,
+                    "security_score": 100,
+                    "score_label": "Security Health Score",
+                    "risk_level": "CLEAN",
+                    "risk_message": "NO VULNERABILITIES DETECTED within current TCS analysis scope (6 supported CWE classes)."
+                },
+                "findings": [],
+                "skipped_files": []
+            }
+        else:
+            staged_py, staged_d, staged_r, non_py = get_staged_git_files(repo_root)
+            if not staged_py:
+                print("[INFO] No staged Python files to scan.", file=sys.stderr)
+                files = {}
+                results = {
+                    "status": "success",
+                    "syntax_errors": [],
+                    "enabled_rules": list(config.effective_rules) if config else [r.cwe_id for r in GLOBAL_RULE_REGISTRY.all_rules()],
+                    "summary": {
+                        "total_files": 0,
+                        "lines_scanned": 0,
+                        "total_vulnerabilities": 0,
+                        "active_vulnerabilities": 0,
+                        "suppressed_vulnerabilities": 0,
+                        "critical_count": 0,
+                        "high_count": 0,
+                        "medium_count": 0,
+                        "low_count": 0,
+                        "security_score": 100,
+                        "score_label": "Security Health Score",
+                        "risk_level": "CLEAN",
+                        "risk_message": "NO VULNERABILITIES DETECTED within current TCS analysis scope (6 supported CWE classes)."
+                    },
+                    "findings": [],
+                    "skipped_files": []
+                }
+            else:
+                files, staged_set, unres = build_staged_dependency_closure(
+                    repo_root, staged_py, staged_deleted=staged_d
+                )
+                staged_unresolved_deps = unres
+                for u in unres:
+                    print(f"[ERROR] Unresolved dependency: {u}", file=sys.stderr)
+                if unres:
+                    print("[ERROR] Staged changes contain unresolved/deleted dependencies; analysis cannot prove CLEAN.", file=sys.stderr)
+                try:
+                    results = execute_tcs_scan(files, config=config)
+                except Exception as e:
+                    print(f"[ERROR] Scan execution failed: {e}", file=sys.stderr)
+                    sys.exit(2)
+                raw_findings = results.get("findings", [])
+                affected_findings = filter_findings_for_staged(raw_findings, staged_set)
+                results["findings"] = affected_findings
+                results["summary"] = recompute_summary_metrics(
+                    results["summary"],
+                    affected_findings,
+                    total_files=len(files),
+                    lines_scanned=sum(len(c.splitlines()) for c in files.values())
+                )
+                if unres:
+                    results["status"] = "partial_analysis"
+                    results["unresolved_dependencies"] = unres
+                    if results["summary"]["active_vulnerabilities"] == 0:
+                        results["summary"]["risk_level"] = "PARTIAL_ANALYSIS"
+                        results["summary"]["risk_message"] = (
+                            f"PARTIAL ANALYSIS: {len(unres)} unresolved dependency(ies) detected in staged changes; "
+                            f"safety cannot be verified."
+                        )
+                        results["summary"]["security_score"] = 0
+    else:
+        if not args.target:
+            print("[ERROR] Target path is required when --staged is not specified.", file=sys.stderr)
+            parser.print_help(sys.stderr)
+            sys.exit(2)
+
+        target = Path(args.target).resolve()
+        if not target.exists():
+            print(f"[ERROR] Target path does not exist: {args.target}", file=sys.stderr)
+            sys.exit(2)
+
+        files = discover_python_files(target, base_dir, sca_active=args.sca, secrets_active=args.secrets, skipped_files=all_skipped_files)
+        if not files and not args.sca and not args.secrets:
+            print(f"[WARN] No Python (*.py) files found in: {args.target}", file=sys.stderr)
+
+        try:
+            results = execute_tcs_scan(files, config=config)
+        except Exception as e:
+            print(f"[ERROR] Scan execution failed: {e}", file=sys.stderr)
+            sys.exit(2)
 
     results["skipped_files"] = all_skipped_files
 
@@ -994,6 +1122,10 @@ def main():
         summary_copy["skipped_files_count"] = len(all_skipped_files)
         export_data["summary"] = summary_copy
 
+    if staged_unresolved_deps:
+        export_data["status"] = "partial_analysis"
+        export_data["unresolved_dependencies"] = staged_unresolved_deps
+
     if args.format.lower() == "sarif":
         sarif_doc = to_sarif(export_data, enabled_rule_ids=config.effective_rules if config else None)
         output_text = json.dumps(sarif_doc, indent=2)
@@ -1087,6 +1219,8 @@ def main():
 
     if has_sast_failure or has_sca_failure or has_secret_failure:
         sys.exit(1)
+    elif staged_unresolved_deps:
+        sys.exit(2)
     else:
         sys.exit(0)
 
