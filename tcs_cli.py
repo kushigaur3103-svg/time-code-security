@@ -14,7 +14,7 @@ import dataclasses
 from pathlib import Path
 from typing import Dict, List, Any, Optional, Set
 
-from ast_scanner import TaintTracker
+from ast_scanner import TaintTracker, render_proof_graph_ascii
 from suppression_resolver import resolve_suppressions
 from sarif_adapter import to_sarif
 from rule_engine import GLOBAL_RULE_REGISTRY
@@ -203,7 +203,9 @@ def execute_tcs_scan(
             "code_snippet": offending_snippet,
             "flow_trace": trace_steps,
             "flow_trace_summary": flow_summary,
-            "remediation": remediation
+            "remediation": remediation,
+            "proof_graph": edge.proof_graph.to_dict() if edge.proof_graph else None,
+            "proof_graph_ascii": render_proof_graph_ascii(edge.proof_graph) if edge.proof_graph else None
         })
         vuln_idx += 1
 

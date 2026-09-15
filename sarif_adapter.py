@@ -121,11 +121,51 @@ def to_sarif(
                 "text": code_snippet
             }
 
-        # Build threadFlowLocations from flow_trace
+        # Build threadFlowLocations from proof_graph (preferred) or flow_trace (legacy fallback)
+        proof_graph = f.get("proof_graph")
         flow_steps = f.get("flow_trace", [])
         thread_flow_locations: List[Dict[str, Any]] = []
 
-        if isinstance(flow_steps, list):
+        if proof_graph is not None:
+            pg_nodes = proof_graph.nodes if hasattr(proof_graph, "nodes") else (proof_graph.get("nodes", []) if isinstance(proof_graph, dict) else [])
+            for step_idx, node in enumerate(pg_nodes):
+                is_obj = hasattr(node, "node_type")
+                node_type = node.node_type.value if (is_obj and hasattr(node.node_type, "value")) else (node.node_type if is_obj else node.get("node_type", "FLOW"))
+                step_file = node.file_path if is_obj else node.get("file_path", file_uri)
+                start_line = int(node.start_line if is_obj else node.get("start_line", line_num))
+                end_line = int(node.end_line if is_obj else node.get("end_line", start_line))
+                symbol = node.symbol if is_obj else node.get("symbol", "")
+                snippet_text = node.expression_snippet if is_obj else node.get("expression_snippet", "")
+                scope_id = node.scope_id if is_obj else node.get("scope_id", "")
+                is_essential = (step_idx == 0 or step_idx == len(pg_nodes) - 1)
+
+                msg_text = f"[{step_idx}. {node_type}] {symbol} in {scope_id}"
+                loc_entry: Dict[str, Any] = {
+                    "location": {
+                        "message": {
+                            "text": msg_text
+                        },
+                        "physicalLocation": {
+                            "artifactLocation": {
+                                "uri": step_file,
+                                "uriBaseId": "%SRCROOT%"
+                            },
+                            "region": {
+                                "startLine": start_line,
+                                "endLine": end_line,
+                                "startColumn": 1
+                            }
+                        }
+                    },
+                    "importance": "essential" if is_essential else "important",
+                    "executionOrder": step_idx + 1
+                }
+                if snippet_text:
+                    loc_entry["location"]["physicalLocation"]["region"]["snippet"] = {
+                        "text": snippet_text
+                    }
+                thread_flow_locations.append(loc_entry)
+        elif isinstance(flow_steps, list):
             for step_idx, step in enumerate(flow_steps):
                 step_str = str(step)
                 step_file, step_line = _parse_step_location(step_str, file_uri, line_num)
