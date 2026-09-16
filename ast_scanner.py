@@ -159,6 +159,10 @@ class ProofGraphIR:
     edges: list[ProofEdge]
     sanitizer_applied: Optional[str] = None
 
+    @property
+    def proof_nodes(self) -> list[ProofNode]:
+        return self.nodes
+
     def to_dict(self) -> dict:
         return {
             "finding_id": self.finding_id,
@@ -242,6 +246,10 @@ class DataFlowEdge:
     transform: Optional[str] = None
     proof_graph: Optional[ProofGraphIR] = None
 
+    @property
+    def proof_nodes(self) -> list[ProofNode]:
+        return self.proof_graph.nodes if self.proof_graph else []
+
 @dataclass
 class TaintValue:
     state: TaintState
@@ -300,6 +308,8 @@ SINK_REGISTRY = {
     "os.system": {"operation": "OS_COMMAND_EXECUTION", "category": "COMMAND_INJECTION", "cwe": "CWE-78"},
     "subprocess.run": {"operation": "OS_COMMAND_EXECUTION", "category": "COMMAND_INJECTION", "cwe": "CWE-78"},
     "subprocess.call": {"operation": "OS_COMMAND_EXECUTION", "category": "COMMAND_INJECTION", "cwe": "CWE-78"},
+    "subprocess.check_call": {"operation": "OS_COMMAND_EXECUTION", "category": "COMMAND_INJECTION", "cwe": "CWE-78"},
+    "subprocess.check_output": {"operation": "OS_COMMAND_EXECUTION", "category": "COMMAND_INJECTION", "cwe": "CWE-78"},
     "subprocess.Popen": {"operation": "OS_COMMAND_EXECUTION", "category": "COMMAND_INJECTION", "cwe": "CWE-78"},
     "pickle.loads": {"operation": "DESERIALIZATION", "category": "UNSAFE_DESERIALIZATION", "cwe": "CWE-502"},
     "pickle.load": {"operation": "DESERIALIZATION", "category": "UNSAFE_DESERIALIZATION", "cwe": "CWE-502"},
@@ -317,17 +327,46 @@ def location(node: ast.AST, file_path: str) -> CodeLocation:
         column_end=getattr(node, "end_col_offset", getattr(node, "col_offset", 0)),
     )
 
+def unroll_chained_call(node: ast.AST) -> Optional[str]:
+    """Unrolls chained attribute/call expressions like conn.cursor().execute or db.get_conn().cursor().execute."""
+    if isinstance(node, ast.Name):
+        return node.id
+    if isinstance(node, ast.Attribute):
+        parent = unroll_chained_call(node.value)
+        if parent:
+            return f"{parent}.{node.attr}"
+        return node.attr
+    if isinstance(node, ast.Call):
+        func_str = unroll_chained_call(node.func)
+        if func_str:
+            return f"{func_str}()"
+    return None
+
+def is_cursor_call_node(node: ast.AST) -> bool:
+    """Checks whether node is an ast.Call whose attribute or chained attribute is 'cursor'."""
+    val = node
+    while isinstance(val, ast.Call) and isinstance(val.func, ast.Attribute):
+        if val.func.attr == "cursor":
+            return True
+        val = val.func.value
+    return False
+
 def dotted_name(node: ast.AST) -> Optional[str]:
     if isinstance(node, ast.Name): return node.id
     if isinstance(node, ast.Attribute):
+        if node.attr == "execute" and is_cursor_call_node(node.value):
+            unrolled = unroll_chained_call(node)
+            if unrolled:
+                return unrolled
         parent = dotted_name(node.value)
         if parent: return f"{parent}.{node.attr}"
         return node.attr
     return None
 
 class TaintTracker:
-    def __init__(self, files: dict[str, str] = None, source: str = None, file_path: str = "target.py"):
+    def __init__(self, files: dict[str, str] = None, source: str = None, file_path: str = "target.py", audit_all: bool = False):
         self.files = files if files is not None else {file_path: source}
+        self.audit_all = audit_all
         self.modules: dict[str, ast.AST] = {}
         self.file_paths: dict[str, str] = {}
         for fpath, code in self.files.items():
@@ -458,6 +497,10 @@ class TaintTracker:
             return node.id
 
         if isinstance(node, ast.Attribute):
+            if node.attr == "execute" and is_cursor_call_node(node.value):
+                unrolled = unroll_chained_call(node)
+                if unrolled:
+                    return unrolled
             base_canon = self.resolve_canonical_name(node.value, scope_id, visited)
             if base_canon:
                 full_name = f"{base_canon}.{node.attr}"
@@ -1456,13 +1499,19 @@ class TaintTracker:
                             )
                         elif caller_taints:
                             merged = self.merge_taints(caller_taints, f"{file_name}:{node.id}")
+                            if not self.audit_all and merged.state == TaintState.UNKNOWN:
+                                return TaintValue(state=TaintState.CLEAN, confidence=1.0, path=merged.path, last_operation=f"unbound_param:{node.id}")
                             return merged
 
                     # Parameter with no call sites (or self/cls)
                     if node.id in ("self", "cls"):
                         return TaintValue(state=TaintState.CLEAN, confidence=1.0, last_operation=f"self:{node.id}")
-                    # Unresolved parameter with unknown/external caller provenance must NOT be auto-clean
-                    return TaintValue(state=TaintState.UNKNOWN, confidence=0.50, path=[f"{file_name}:{node.id}"], last_operation=f"unresolved_param:{node.id}")
+                    # Parameter with no active taint binding to an untrusted source:
+                    # In default high-signal mode (not audit_all), suppress speculative POTENTIAL warnings.
+                    # In aggressive mode (--audit-all), emit UNKNOWN (confidence 0.50).
+                    if self.audit_all:
+                        return TaintValue(state=TaintState.UNKNOWN, confidence=0.50, path=[f"{file_name}:{node.id}"], last_operation=f"unresolved_param:{node.id}")
+                    return TaintValue(state=TaintState.CLEAN, confidence=1.0, path=[f"{file_name}:{node.id}"], last_operation=f"unbound_param:{node.id}")
 
                 # Check known builtins / constants / imports
                 if node.id == "__file__":

@@ -70,11 +70,17 @@ class RuleRegistry:
 # ==============================================================================
 
 def _cwe89_sink_matcher(node: ast.AST, name: str, canon_name: Optional[str] = None) -> bool:
-    """Matches method calls ending with .execute (e.g. cursor.execute, db.execute)."""
+    """Matches method calls ending with .execute (e.g. cursor.execute, db.execute, conn.cursor().execute)."""
     if name and name.endswith(".execute"):
         return True
     if canon_name and canon_name.endswith(".execute"):
         return True
+    if isinstance(node, ast.Call) and isinstance(node.func, ast.Attribute) and node.func.attr == "execute":
+        val = node.func.value
+        while isinstance(val, ast.Call) and isinstance(val.func, ast.Attribute):
+            if val.func.attr == "cursor":
+                return True
+            val = val.func.value
     return False
 
 
@@ -168,6 +174,8 @@ CWE78_SINKS = {
     "os.system",
     "subprocess.run",
     "subprocess.call",
+    "subprocess.check_call",
+    "subprocess.check_output",
     "subprocess.Popen",
 }
 
@@ -180,15 +188,16 @@ def _cwe78_sink_matcher(node: ast.AST, name: str, canon_name: Optional[str] = No
 
 def _cwe78_safety_filter(node: ast.Call, sink_name: str) -> bool:
     """
-    Exempts subprocess invocations using shell=False or argument list without shell=True.
+    Exempts subprocess invocations using shell=False or static argument lists without shell=True.
     os.system always executes via shell and is never exempted.
     """
-    if sink_name in ("subprocess.run", "subprocess.call", "subprocess.Popen"):
+    if sink_name in ("subprocess.run", "subprocess.call", "subprocess.check_call", "subprocess.check_output", "subprocess.Popen"):
         shell_kw = next((kw.value.value for kw in getattr(node, 'keywords', []) if kw.arg == "shell" and isinstance(kw.value, ast.Constant)), None)
         if shell_kw is False:
             return True
         if shell_kw is None and node.args and isinstance(node.args[0], ast.List):
-            return True
+            if all(isinstance(elt, ast.Constant) for elt in node.args[0].elts):
+                return True
     return False
 
 

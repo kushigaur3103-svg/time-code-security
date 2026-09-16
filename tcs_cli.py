@@ -108,7 +108,8 @@ def extract_remediation_advice(cwe: str, sink_symbol: str) -> str:
 
 def execute_tcs_scan(
     normalized_files: Dict[str, str],
-    config: Optional[TCSConfig] = None
+    config: Optional[TCSConfig] = None,
+    audit_all: bool = False
 ) -> Dict[str, Any]:
     """
     Executes AST taint tracking, resolves suppressions, and computes risk scores.
@@ -121,7 +122,7 @@ def execute_tcs_scan(
         except SyntaxError as se:
             syntax_errors.append(f"{fpath}:{se.lineno}: {se.msg}")
 
-    tracker = TaintTracker(files=normalized_files)
+    tracker = TaintTracker(files=normalized_files, audit_all=audit_all)
     sources, sinks, edges = tracker.analyze()
 
     sinks_by_id = {s.id: s for s in sinks}
@@ -834,6 +835,11 @@ def main():
         action="store_true",
         help="Scan only git-staged changes with full cross-file semantic dependency closure"
     )
+    parser.add_argument(
+        "--audit-all",
+        action="store_true",
+        help="Emit speculative POTENTIAL findings for unresolved function parameters without known taint bindings"
+    )
 
     args = parser.parse_args()
 
@@ -950,7 +956,7 @@ def main():
                 if unres:
                     print("[ERROR] Staged changes contain unresolved/deleted dependencies; analysis cannot prove CLEAN.", file=sys.stderr)
                 try:
-                    results = execute_tcs_scan(files, config=config)
+                    results = execute_tcs_scan(files, config=config, audit_all=getattr(args, "audit_all", False))
                 except Exception as e:
                     print(f"[ERROR] Scan execution failed: {e}", file=sys.stderr)
                     sys.exit(2)
@@ -989,7 +995,7 @@ def main():
             print(f"[WARN] No Python (*.py) files found in: {args.target}", file=sys.stderr)
 
         try:
-            results = execute_tcs_scan(files, config=config)
+            results = execute_tcs_scan(files, config=config, audit_all=getattr(args, "audit_all", False))
         except Exception as e:
             print(f"[ERROR] Scan execution failed: {e}", file=sys.stderr)
             sys.exit(2)
