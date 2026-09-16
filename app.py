@@ -23,7 +23,7 @@ import secrets
 import re
 import json
 import ast
-from ast_scanner import TaintTracker, SINK_REGISTRY, SOURCE_REGISTRY, SANITIZER_REGISTRY
+from ast_scanner import TaintTracker, SINK_REGISTRY, SOURCE_REGISTRY, SANITIZER_REGISTRY, render_proof_graph_ascii
 from sarif_adapter import to_sarif
 from suppression_resolver import resolve_suppressions
 from rule_engine import GLOBAL_RULE_REGISTRY
@@ -1679,7 +1679,9 @@ def execute_tcs_ast_scan(normalized_files: Dict[str, str]) -> Dict[str, Any]:
             "code_snippet": offending_snippet,
             "flow_trace": trace_steps,
             "flow_trace_summary": flow_summary,
-            "remediation": remediation
+            "remediation": remediation,
+            "proof_graph": edge.proof_graph.to_dict() if getattr(edge, "proof_graph", None) else None,
+            "proof_graph_ascii": render_proof_graph_ascii(edge.proof_graph) if getattr(edge, "proof_graph", None) else None
         })
         vuln_idx += 1
         
