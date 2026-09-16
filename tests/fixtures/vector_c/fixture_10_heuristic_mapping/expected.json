@@ -1,0 +1,65 @@
+{
+  "advisory_id": "TCS-VEC-C-001",
+  "advisory_aliases": [
+    "CVE-2026-0001",
+    "GHSA-vc01-test-0001"
+  ],
+  "advisory_summary": "Synthetic advisory: vulnlib.dangerous() execution vulnerability in versions <= 1.5.0",
+  "package_name": "my-weird-pkg",
+  "declared_version": "1.5.0",
+  "version_specifier": "==1.5.0",
+  "affected_status": "CONFIRMED",
+  "affected_confidence": 1.0,
+  "import_status": "PACKAGE_IMPORTED",
+  "import_evidence": {
+    "import_style": "import",
+    "distribution_name": "my-weird-pkg",
+    "import_root": "my_weird_pkg",
+    "module": "my_weird_pkg",
+    "symbol": null,
+    "alias": null,
+    "file": "app.py",
+    "line": 1,
+    "column": 0,
+    "scope_type": "MODULE",
+    "scope_path": "app",
+    "parent_scope_path": null,
+    "mapping_evidence": "TARGET_ENVIRONMENT_METADATA",
+    "environment_scope": "TARGET_ENVIRONMENT",
+    "is_wildcard": false
+  },
+  "import_evidence_source": "NORMALIZED_HEURISTIC",
+  "environment_scope": "NONE",
+  "api_status": "REACHABILITY_UNRESOLVED",
+  "call_evidence": {
+    "caller_scope": "app",
+    "callee_expr": "my_weird_pkg.dangerous()",
+    "attributed_import": null,
+    "target_symbol": "dangerous",
+    "call_path": [
+      "module_level",
+      "my_weird_pkg.dangerous"
+    ],
+    "file": "app.py",
+    "line": 2,
+    "column": 0,
+    "attribution_confidence": "POSSIBLE",
+    "is_dynamic": false
+  },
+  "call_status": "REACHABILITY_UNRESOLVED",
+  "call_path": [
+    "module_level",
+    "my_weird_pkg.dangerous"
+  ],
+  "call_depth": 1,
+  "edge_type": "POSSIBLE_EDGE",
+  "reachability_classification": "REACHABILITY_UNRESOLVED",
+  "is_transitive": false,
+  "severity": "HIGH",
+  "cvss_score": 8.5,
+  "manifest_source": "requirements.txt",
+  "manifest_line": null,
+  "limitations": [
+    "Import namespace mapping uses non-definitive heuristic normalization; PROVEN_STATIC attribution not possible"
+  ]
+}

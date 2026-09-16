@@ -1,0 +1,17 @@
+[[package]]
+name = "vulnlib"
+version = "1.5.0"
+description = "Synthetic test library"
+category = "main"
+optional = false
+python-versions = "*"
+files = []
+
+[[package]]
+name = "safe-lib"
+version = "3.0.0"
+description = "Safe test library"
+category = "main"
+optional = false
+python-versions = "*"
+files = []

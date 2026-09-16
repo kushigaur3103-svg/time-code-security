@@ -1,0 +1,32 @@
+{
+  "advisory_id": "TCS-VEC-C-001",
+  "advisory_aliases": [
+    "CVE-2026-0001",
+    "GHSA-vc01-test-0001"
+  ],
+  "advisory_summary": "Synthetic advisory: vulnlib.dangerous() execution vulnerability in versions <= 1.5.0",
+  "package_name": "vulnlib",
+  "declared_version": "1.5.0",
+  "version_specifier": "==1.5.0",
+  "affected_status": "CONFIRMED",
+  "affected_confidence": 1.0,
+  "import_status": "PACKAGE_IMPORT_NOT_FOUND",
+  "import_evidence": null,
+  "import_evidence_source": "UNRESOLVED",
+  "environment_scope": "NONE",
+  "api_status": "REACHABILITY_UNRESOLVED",
+  "call_evidence": null,
+  "call_status": "CALL_UNREACHABLE",
+  "call_path": [],
+  "call_depth": 0,
+  "edge_type": "UNRESOLVED_EDGE",
+  "reachability_classification": "DEPENDENCY_DORMANT",
+  "is_transitive": false,
+  "severity": "HIGH",
+  "cvss_score": 8.5,
+  "manifest_source": "poetry.lock",
+  "manifest_line": null,
+  "limitations": [
+    "No import found for vulnerable package vulnlib in analyzed AST"
+  ]
+}

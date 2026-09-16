@@ -1,0 +1,62 @@
+{
+  "advisory_id": "TCS-VEC-C-001",
+  "advisory_aliases": [
+    "CVE-2026-0001",
+    "GHSA-vc01-test-0001"
+  ],
+  "advisory_summary": "Synthetic advisory: vulnlib.dangerous() execution vulnerability in versions <= 1.5.0",
+  "package_name": "vulnlib",
+  "declared_version": "1.5.0",
+  "version_specifier": "==1.5.0",
+  "affected_status": "CONFIRMED",
+  "affected_confidence": 1.0,
+  "import_status": "PACKAGE_IMPORTED",
+  "import_evidence": {
+    "import_style": "import",
+    "distribution_name": "vulnlib",
+    "import_root": "vulnlib",
+    "module": "vulnlib",
+    "symbol": null,
+    "alias": null,
+    "file": "app.py",
+    "line": 2,
+    "column": 4,
+    "scope_type": "CLASS",
+    "scope_path": "app.A",
+    "parent_scope_path": "app",
+    "mapping_evidence": "TARGET_ENVIRONMENT_METADATA",
+    "environment_scope": "TARGET_ENVIRONMENT",
+    "is_wildcard": false
+  },
+  "import_evidence_source": "TARGET_ENVIRONMENT_METADATA",
+  "environment_scope": "TARGET_ENVIRONMENT",
+  "api_status": "REACHABILITY_UNRESOLVED",
+  "call_evidence": {
+    "caller_scope": "app.A.m",
+    "callee_expr": "vulnlib.dangerous()",
+    "attributed_import": null,
+    "target_symbol": "dangerous",
+    "call_path": [
+      "a.m",
+      "vulnlib.dangerous"
+    ],
+    "file": "app.py",
+    "line": 4,
+    "column": 8,
+    "attribution_confidence": "UNRESOLVED",
+    "is_dynamic": false
+  },
+  "call_status": "REACHABILITY_UNRESOLVED",
+  "call_path": [],
+  "call_depth": 0,
+  "edge_type": "UNRESOLVED_EDGE",
+  "reachability_classification": "DEPENDENCY_ACTIVE",
+  "is_transitive": false,
+  "severity": "HIGH",
+  "cvss_score": 8.5,
+  "manifest_source": "poetry.lock",
+  "manifest_line": null,
+  "limitations": [
+    "PEP 227: class body namespace is not an enclosing scope for methods; bare reference in m() is ungrounded"
+  ]
+}

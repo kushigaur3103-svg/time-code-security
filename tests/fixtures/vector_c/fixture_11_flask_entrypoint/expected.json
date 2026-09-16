@@ -1,0 +1,65 @@
+{
+  "advisory_id": "TCS-VEC-C-001",
+  "advisory_aliases": [
+    "CVE-2026-0001",
+    "GHSA-vc01-test-0001"
+  ],
+  "advisory_summary": "Synthetic advisory: vulnlib.dangerous() execution vulnerability in versions <= 1.5.0",
+  "package_name": "vulnlib",
+  "declared_version": "1.5.0",
+  "version_specifier": "==1.5.0",
+  "affected_status": "CONFIRMED",
+  "affected_confidence": 1.0,
+  "import_status": "PACKAGE_IMPORTED",
+  "import_evidence": {
+    "import_style": "import",
+    "distribution_name": "vulnlib",
+    "import_root": "vulnlib",
+    "module": "vulnlib",
+    "symbol": null,
+    "alias": null,
+    "file": "app.py",
+    "line": 1,
+    "column": 0,
+    "scope_type": "MODULE",
+    "scope_path": "app",
+    "parent_scope_path": null,
+    "mapping_evidence": "TARGET_ENVIRONMENT_METADATA",
+    "environment_scope": "TARGET_ENVIRONMENT",
+    "is_wildcard": false
+  },
+  "import_evidence_source": "TARGET_ENVIRONMENT_METADATA",
+  "environment_scope": "TARGET_ENVIRONMENT",
+  "api_status": "API_REFERENCE_FOUND",
+  "call_evidence": {
+    "caller_scope": "app.scan_route",
+    "callee_expr": "vulnlib.dangerous()",
+    "attributed_import": null,
+    "target_symbol": "dangerous",
+    "call_path": [
+      "scan_route",
+      "vulnlib.dangerous"
+    ],
+    "file": "app.py",
+    "line": 4,
+    "column": 4,
+    "attribution_confidence": "PROVEN_STATIC",
+    "is_dynamic": false
+  },
+  "call_status": "CALL_UNREACHABLE",
+  "call_path": [
+    "scan_route",
+    "vulnlib.dangerous"
+  ],
+  "call_depth": 1,
+  "edge_type": "UNRESOLVED_EDGE",
+  "reachability_classification": "DEPENDENCY_ACTIVE",
+  "is_transitive": false,
+  "severity": "HIGH",
+  "cvss_score": 8.5,
+  "manifest_source": "poetry.lock",
+  "manifest_line": null,
+  "limitations": [
+    "Function scan_route is not reachable from Phase 1 entrypoints (MODULE_LEVEL_CODE or CLI_ENTRY_POINTS)"
+  ]
+}

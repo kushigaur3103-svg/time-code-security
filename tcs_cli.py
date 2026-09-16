@@ -32,6 +32,7 @@ from staged_scanner import (
     filter_findings_for_staged,
     recompute_summary_metrics,
 )
+from sca_reachability.engine import analyze_dependency_reachability
 
 
 IGNORED_DIRS = {
@@ -515,13 +516,60 @@ def discover_manifest_files(
     return discovered
 
 
+def format_reachability_section(reachability_findings: List[Dict[str, Any]]) -> str:
+    if not reachability_findings:
+        return ""
+
+    reachable_count = sum(1 for f in reachability_findings if f.get("reachability_classification") == "REACHABLE_API_USE")
+    active_count = sum(1 for f in reachability_findings if f.get("reachability_classification") == "DEPENDENCY_ACTIVE")
+    dormant_count = sum(1 for f in reachability_findings if f.get("reachability_classification") == "DEPENDENCY_DORMANT")
+    transitive_count = sum(1 for f in reachability_findings if f.get("reachability_classification") == "TRANSITIVE_VULNERABLE")
+
+    lines = [
+        "=" * 55,
+        "VECTOR C: DEPENDENCY REACHABILITY ANALYSIS",
+        "=" * 55,
+        f"[Status Summary: {reachable_count} Reachable | {active_count} Active | {dormant_count} Dormant | {transitive_count} Transitive]",
+        ""
+    ]
+
+    for rf in reachability_findings:
+        pkg = rf.get("package_name", "")
+        ver = rf.get("declared_version") or "unknown"
+        cls = rf.get("reachability_classification", "")
+        adv_id = rf.get("advisory_id", "")
+        sev = rf.get("severity", "UNKNOWN")
+        imp_status = rf.get("import_status", "")
+        imp_ev = rf.get("import_evidence") or {}
+        file_loc = imp_ev.get("file", "-")
+        line_loc = imp_ev.get("line", "-")
+        loc_str = f"{file_loc}:{line_loc}" if file_loc != "-" else "-"
+        call_path = rf.get("call_path", [])
+        path_str = " -> ".join(call_path) if call_path else "None"
+        depth = rf.get("call_depth", 0)
+        edge = rf.get("edge_type", "UNRESOLVED_EDGE")
+        limitations = rf.get("limitations", [])
+
+        lines.append(f"- [PKG] {pkg} ({ver}) -> {cls}")
+        lines.append(f"  Advisory: {adv_id} ({sev})")
+        lines.append(f"  Import State: {imp_status} ({loc_str})")
+        lines.append(f"  Call Path: {path_str} (Depth: {depth}, Edge: {edge})")
+        if limitations:
+            lines.append(f"  Limitations: {'; '.join(limitations)}")
+        lines.append("")
+
+    return "\n".join(lines).rstrip()
+
+
 def format_table(
     results: Dict[str, Any],
     findings: List[Dict[str, Any]],
     sca_findings: Optional[List[Any]] = None,
     sca_enabled: bool = False,
     secret_findings: Optional[List[Any]] = None,
-    secrets_enabled: bool = False
+    secrets_enabled: bool = False,
+    reachability_findings: Optional[List[Any]] = None,
+    reachability_enabled: bool = False
 ) -> str:
     """Renders human-readable tabular scan report for console display."""
     summary = results.get("summary", {})
@@ -557,6 +605,8 @@ def format_table(
                     lines.append(f"  Skipping AST analysis for unparseable file: {err}")
                 for skip in results.get("skipped_files", []):
                     lines.append(f"  {skip}")
+            if reachability_enabled and reachability_findings:
+                lines.append("\n" + format_reachability_section(reachability_findings))
             lines.append("=" * 88)
             return "\n".join(lines)
 
@@ -596,6 +646,9 @@ def format_table(
                 lines.append(f"  Skipping AST analysis for unparseable file: {err}")
             for skip in results.get("skipped_files", []):
                 lines.append(f"  {skip}")
+
+        if reachability_enabled and reachability_findings:
+            lines.append("\n" + format_reachability_section(reachability_findings))
 
         lines.append("=" * 88)
         return "\n".join(lines)
@@ -643,6 +696,8 @@ def format_table(
                 lines.append(f"  Skipping AST analysis for unparseable file: {err}")
             for skip in results.get("skipped_files", []):
                 lines.append(f"  {skip}")
+        if reachability_enabled and reachability_findings:
+            lines.append("\n" + format_reachability_section(reachability_findings))
         lines.append(sep)
         return "\n".join(lines)
 
@@ -758,6 +813,9 @@ def format_table(
         for skip in results.get("skipped_files", []):
             lines.append(f"  {skip}")
 
+    if reachability_enabled and reachability_findings:
+        lines.append("\n" + format_reachability_section(reachability_findings))
+
     lines.append(sep)
     return "\n".join(lines)
 
@@ -813,6 +871,11 @@ def main():
     parser.add_argument(
         "--sca-cache",
         help="Path to local OSV cache JSON file"
+    )
+    parser.add_argument(
+        "--sca-reachability",
+        action="store_true",
+        help="Enable Vector C AST-grounded dependency reachability analysis"
     )
     parser.add_argument(
         "--secrets",
@@ -1143,6 +1206,48 @@ def main():
         export_data["status"] = "partial_analysis"
         export_data["unresolved_dependencies"] = staged_unresolved_deps
 
+    # ---------------------------------------------------------
+    # Vector C Reachability Analysis (if requested)
+    # ---------------------------------------------------------
+    reachability_findings: List[Dict[str, Any]] = []
+    if getattr(args, "sca_reachability", False):
+        cand_manifests = []
+        cand_sources = []
+        if target.is_dir():
+            for mf_name in ("poetry.lock", "requirements.txt"):
+                mf_candidate = target / mf_name
+                if mf_candidate.exists():
+                    cand_manifests.append(mf_candidate)
+            for root, dirs, files_in_dir in os.walk(target):
+                dirs[:] = [d for d in dirs if d not in IGNORED_DIRS and not d.startswith(".")]
+                for f in files_in_dir:
+                    if f.endswith(".py") and f != "tcs_cli.py":
+                        cand_sources.append(Path(root) / f)
+        else:
+            if target.name in ("poetry.lock", "requirements.txt"):
+                cand_manifests.append(target)
+                for root, dirs, files_in_dir in os.walk(target.parent):
+                    dirs[:] = [d for d in dirs if d not in IGNORED_DIRS and not d.startswith(".")]
+                    for f in files_in_dir:
+                        if f.endswith(".py") and f != "tcs_cli.py":
+                            cand_sources.append(Path(root) / f)
+            elif target.suffix == ".py":
+                cand_sources.append(target)
+                for mf_name in ("poetry.lock", "requirements.txt"):
+                    mf_candidate = target.parent / mf_name
+                    if mf_candidate.exists():
+                        cand_manifests.append(mf_candidate)
+
+        if cand_manifests and cand_sources:
+            selected_mf = cand_manifests[0]
+            try:
+                rf_objs = analyze_dependency_reachability(selected_mf, cand_sources)
+                reachability_findings = [f.to_dict() if hasattr(f, "to_dict") else dict(f) for f in rf_objs]
+            except Exception as e:
+                print(f"[WARN] Vector C reachability analysis failed: {e}", file=sys.stderr)
+
+        export_data["sca_reachability_findings"] = reachability_findings
+
     if args.format.lower() == "sarif":
         sarif_doc = to_sarif(export_data, enabled_rule_ids=config.effective_rules if config else None)
         output_text = json.dumps(sarif_doc, indent=2)
@@ -1155,7 +1260,9 @@ def main():
             sca_findings=sca_findings,
             sca_enabled=args.sca,
             secret_findings=secret_findings,
-            secrets_enabled=args.secrets
+            secrets_enabled=args.secrets,
+            reachability_findings=reachability_findings,
+            reachability_enabled=args.sca_reachability
         )
 
     if args.output:

@@ -1,0 +1,20 @@
+[[package]]
+name = "safe-wrapper"
+version = "1.0.0"
+description = "Safe wrapper library"
+category = "main"
+optional = false
+python-versions = "*"
+files = []
+
+[package.dependencies]
+vulnlib = ">=1.0.0"
+
+[[package]]
+name = "vulnlib"
+version = "1.5.0"
+description = "Synthetic test library"
+category = "main"
+optional = false
+python-versions = "*"
+files = []

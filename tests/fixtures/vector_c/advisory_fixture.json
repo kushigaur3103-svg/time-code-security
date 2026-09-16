@@ -1,0 +1,126 @@
+{
+  "advisories": [
+    {
+      "id": "TCS-VEC-C-001",
+      "package": {
+        "name": "vulnlib",
+        "ecosystem": "PyPI"
+      },
+      "summary": "Synthetic advisory: vulnlib.dangerous() execution vulnerability in versions <= 1.5.0",
+      "details": "Direct or indirect calls to vulnlib.dangerous() trigger dangerous operation in vulnerable versions.",
+      "aliases": [
+        "CVE-2026-0001",
+        "GHSA-vc01-test-0001"
+      ],
+      "affected": [
+        {
+          "package": {
+            "name": "vulnlib",
+            "ecosystem": "PyPI"
+          },
+          "ranges": [
+            {
+              "type": "ECOSYSTEM",
+              "events": [
+                {
+                  "introduced": "0"
+                },
+                {
+                  "fixed": "2.0.0"
+                }
+              ]
+            }
+          ],
+          "versions": [
+            "1.0.0",
+            "1.1.0",
+            "1.2.0",
+            "1.5.0"
+          ],
+          "database_specific": {
+            "severity": "HIGH",
+            "cvss_score": 8.5,
+            "api_hints": {
+              "affected_functions": [
+                "dangerous"
+              ],
+              "is_definitive": false,
+              "note": "TEST METADATA ONLY — real OSV advisories do not universally contain function lists"
+            }
+          }
+        }
+      ],
+      "severity": [
+        {
+          "type": "CVSS_V3",
+          "score": 8.5
+        }
+      ],
+      "database_specific": {
+        "severity": "HIGH",
+        "cvss_score": 8.5
+      }
+    },
+    {
+      "id": "TCS-VEC-C-001",
+      "package": {
+        "name": "my-weird-pkg",
+        "ecosystem": "PyPI"
+      },
+      "summary": "Synthetic advisory: vulnlib.dangerous() execution vulnerability in versions <= 1.5.0",
+      "details": "Direct or indirect calls trigger dangerous operation in vulnerable versions.",
+      "aliases": [
+        "CVE-2026-0001",
+        "GHSA-vc01-test-0001"
+      ],
+      "affected": [
+        {
+          "package": {
+            "name": "my-weird-pkg",
+            "ecosystem": "PyPI"
+          },
+          "ranges": [
+            {
+              "type": "ECOSYSTEM",
+              "events": [
+                {
+                  "introduced": "0"
+                },
+                {
+                  "fixed": "2.0.0"
+                }
+              ]
+            }
+          ],
+          "versions": [
+            "1.0.0",
+            "1.1.0",
+            "1.2.0",
+            "1.5.0"
+          ],
+          "database_specific": {
+            "severity": "HIGH",
+            "cvss_score": 8.5,
+            "api_hints": {
+              "affected_functions": [
+                "dangerous"
+              ],
+              "is_definitive": false,
+              "note": "TEST METADATA ONLY — real OSV advisories do not universally contain function lists"
+            }
+          }
+        }
+      ],
+      "severity": [
+        {
+          "type": "CVSS_V3",
+          "score": 8.5
+        }
+      ],
+      "database_specific": {
+        "severity": "HIGH",
+        "cvss_score": 8.5
+      }
+    }
+  ]
+}

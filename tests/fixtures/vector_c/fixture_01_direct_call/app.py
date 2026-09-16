@@ -1,0 +1,2 @@
+import vulnlib
+vulnlib.dangerous()
