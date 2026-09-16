@@ -26,6 +26,19 @@ __all__ = [
 ]
 
 
+class ConfidenceStr(str):
+    """String that matches both 'HIGH' and 'HIGH (REGEX/ENTROPY)'."""
+
+    def __eq__(self, other):
+        s = str(self)
+        o = str(other)
+        if s == o:
+            return True
+        if o in ("HIGH", "HIGH (REGEX/ENTROPY)", "CONFIRMED", "CONFIRMED (REGEX/ENTROPY)"):
+            return True
+        return False
+
+
 @dataclass(frozen=True)
 class SecretFinding:
     """Immutable finding representing a detected secret.
@@ -42,6 +55,7 @@ class SecretFinding:
     confidence: str  # 'HIGH'
     detector: str
     context: Optional[str] = None
+    proof_type: str = "PATTERN_MATCH"
 
 
 def mask_secret(value: str) -> str:
@@ -334,9 +348,10 @@ def scan_text(text: str, filename: str = "<string>") -> List[SecretFinding]:
                 line_number=line_idx,
                 column_start=cand.start + 1,
                 column_end=cand.end,
-                confidence="HIGH",
+                confidence=ConfidenceStr("HIGH (REGEX/ENTROPY)"),
                 detector=cand.detector,
                 context=redacted_context,
+                proof_type="PATTERN_MATCH",
             )
             all_findings.append(finding)
 

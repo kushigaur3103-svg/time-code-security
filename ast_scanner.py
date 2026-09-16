@@ -67,21 +67,26 @@ def compose_path_provenance(
         if left.state == ProvenanceState.TAINTED and right.state == ProvenanceState.TAINTED:
             confidence = max(left.confidence, right.confidence)
             source_id = left.source_id or right.source_id
+            combined_trace = (*left.source_trace, f"[{operator}]", *right.source_trace)
         elif left.state == ProvenanceState.TAINTED:
             confidence = left.confidence
             source_id = left.source_id
+            combined_trace = left.source_trace
         else:
             confidence = right.confidence
             source_id = right.source_id
+            combined_trace = right.source_trace
     elif result_state == ProvenanceState.UNKNOWN:
         confidence = 0.50
         source_id = left.source_id or right.source_id
+        combined_trace = (*left.source_trace, f"[{operator}]", *right.source_trace)
     elif result_state == ProvenanceState.INTERNAL_DYNAMIC:
         confidence = min(left.confidence, right.confidence)
+        combined_trace = (*left.source_trace, f"[{operator}]", *right.source_trace)
     else:
         confidence = 1.00
+        combined_trace = (*left.source_trace, f"[{operator}]", *right.source_trace)
 
-    combined_trace = (*left.source_trace, f"[{operator}]", *right.source_trace)
     origin = right.origin_node or left.origin_node
     return ProvenanceValue(
         state=result_state,
@@ -121,6 +126,7 @@ class ProofNodeType(str, Enum):
     SOURCE = "SOURCE"
     ASSIGNMENT = "ASSIGNMENT"
     PARAM_BINDING = "PARAM_BINDING"
+    CALL_SITE = "CALL_SITE"
     TRANSFORM = "TRANSFORM"
     SANITIZER = "SANITIZER"
     SINK = "SINK"
@@ -1229,7 +1235,34 @@ class TaintTracker:
             tainted_parts = [p for p in part_values if p.state == TaintState.TAINTED]
             if tainted_parts:
                 best_p = max(tainted_parts, key=lambda p: p.confidence)
-                return TaintValue(state=TaintState.TAINTED, source_id=best_p.source_id, confidence=best_p.confidence, path=[*best_p.path, f"{file_name}:f_string"], last_operation="f_string")
+                combined_path = []
+                combined_nodes = []
+                seen_nids = set()
+                combined_edges = []
+                seen_ekeys = set()
+                for p in tainted_parts:
+                    for hop in p.path:
+                        if hop not in combined_path:
+                            combined_path.append(hop)
+                    for pn in p.proof_nodes:
+                        if pn.node_id not in seen_nids:
+                            seen_nids.add(pn.node_id)
+                            combined_nodes.append(pn)
+                    for pe in p.proof_edges:
+                        ek = (pe.from_node_id, pe.to_node_id, pe.edge_type)
+                        if ek not in seen_ekeys:
+                            seen_ekeys.add(ek)
+                            combined_edges.append(pe)
+                combined_path.append(f"{file_name}:f_string")
+                return TaintValue(
+                    state=TaintState.TAINTED,
+                    source_id=best_p.source_id,
+                    confidence=best_p.confidence,
+                    path=combined_path,
+                    last_operation="f_string",
+                    proof_nodes=combined_nodes,
+                    proof_edges=combined_edges
+                )
             unknown_parts = [p for p in part_values if p.state != TaintState.CLEAN]
             if unknown_parts:
                 first_u = unknown_parts[0]
@@ -1447,7 +1480,7 @@ class TaintTracker:
                     param_idx = param_names.index(node.id)
                     call_sites = self.call_sites_by_target.get(target_scope, [])
                     if call_sites:
-                        caller_taints = []
+                        caller_matches = []
                         for call_node, caller_scope, call_lineno in call_sites:
                             arg_expr = None
                             for kw in getattr(call_node, "keywords", []):
@@ -1467,16 +1500,33 @@ class TaintTracker:
                                     v_copy = visited.copy()
                                     v_copy.add(call_site_key)
                                     caller_taint = self.resolve_expression(arg_expr, sink, caller_scope, call_lineno, v_copy)
-                                    caller_taints.append(caller_taint)
+                                    caller_matches.append((caller_taint, call_node, caller_scope, call_lineno))
 
                         # If any caller is confirmed tainted, preserve confirmed taint
-                        tainted_callers = [t for t in caller_taints if t.state == TaintState.TAINTED]
-                        if tainted_callers:
-                            best_t = max(tainted_callers, key=lambda t: t.confidence)
-                            callee_line = target_func_node.lineno if target_func_node else current_lineno
+                        tainted_matches = [m for m in caller_matches if m[0].state == TaintState.TAINTED]
+                        if tainted_matches:
+                            best_match = max(tainted_matches, key=lambda m: m[0].confidence)
+                            best_t, best_call_node, best_caller_scope, best_call_lineno = best_match
+
+                            caller_file = best_caller_scope.split(":", 1)[0] if ":" in best_caller_scope else file_name
+                            call_func_symbol = dotted_name(best_call_node.func) if hasattr(best_call_node, "func") else "call"
+                            call_snippet = self.get_source_snippet(caller_file, best_call_lineno, best_call_lineno, best_call_node) or f"{call_func_symbol}(...)"
+
                             step_idx = len(best_t.proof_nodes)
-                            param_pn = self.create_proof_node(
+                            call_site_pn = self.create_proof_node(
                                 step_index=step_idx,
+                                node_type=ProofNodeType.CALL_SITE,
+                                file_path=caller_file,
+                                node=best_call_node,
+                                symbol=call_func_symbol,
+                                scope_id=best_caller_scope,
+                                lineno=best_call_lineno,
+                                override_snippet=call_snippet
+                            )
+
+                            callee_line = target_func_node.lineno if target_func_node else current_lineno
+                            param_pn = self.create_proof_node(
+                                step_index=step_idx + 1,
                                 node_type=ProofNodeType.PARAM_BINDING,
                                 file_path=file_name,
                                 node=target_func_node,
@@ -1485,20 +1535,23 @@ class TaintTracker:
                                 lineno=callee_line,
                                 override_snippet=self.get_source_snippet(file_name, callee_line, callee_line, target_func_node) or f"def {target_func_node.name}(..., {node.id}, ...)"
                             )
+
                             new_edges = list(best_t.proof_edges)
                             if best_t.proof_nodes:
-                                new_edges.append(ProofEdge(from_node_id=best_t.proof_nodes[-1].node_id, to_node_id=param_pn.node_id, edge_type="PARAM_BINDING"))
+                                new_edges.append(ProofEdge(from_node_id=best_t.proof_nodes[-1].node_id, to_node_id=call_site_pn.node_id, edge_type="CALL_SITE"))
+                            new_edges.append(ProofEdge(from_node_id=call_site_pn.node_id, to_node_id=param_pn.node_id, edge_type="PARAM_BINDING"))
+
                             return TaintValue(
                                 state=TaintState.TAINTED,
                                 source_id=best_t.source_id,
                                 confidence=best_t.confidence,
-                                path=[*best_t.path, f"{file_name}:{node.id}"],
+                                path=[*best_t.path, f"call:{call_func_symbol}", f"{file_name}:{node.id}"],
                                 last_operation=f"param:{node.id}",
-                                proof_nodes=[*best_t.proof_nodes, param_pn],
+                                proof_nodes=[*best_t.proof_nodes, call_site_pn, param_pn],
                                 proof_edges=new_edges
                             )
-                        elif caller_taints:
-                            merged = self.merge_taints(caller_taints, f"{file_name}:{node.id}")
+                        elif caller_matches:
+                            merged = self.merge_taints([m[0] for m in caller_matches], f"{file_name}:{node.id}")
                             if not self.audit_all and merged.state == TaintState.UNKNOWN:
                                 return TaintValue(state=TaintState.CLEAN, confidence=1.0, path=merged.path, last_operation=f"unbound_param:{node.id}")
                             return merged
@@ -2022,7 +2075,30 @@ class TaintTracker:
                         best_t = left if left.confidence >= right.confidence else right
                     op_label = "path_join" if is_path_div else "binary_op"
                     combined_path = [*left.path, *right.path, op_label]
-                    return TaintValue(state=TaintState.TAINTED, source_id=best_t.source_id, confidence=best_t.confidence, path=combined_path, last_operation=op_label)
+                    combined_nodes = []
+                    seen_nids = set()
+                    combined_edges = []
+                    seen_ekeys = set()
+                    for t in (left, right):
+                        if t.state == TaintState.TAINTED:
+                            for pn in t.proof_nodes:
+                                if pn.node_id not in seen_nids:
+                                    seen_nids.add(pn.node_id)
+                                    combined_nodes.append(pn)
+                            for pe in t.proof_edges:
+                                ek = (pe.from_node_id, pe.to_node_id, pe.edge_type)
+                                if ek not in seen_ekeys:
+                                    seen_ekeys.add(ek)
+                                    combined_edges.append(pe)
+                    return TaintValue(
+                        state=TaintState.TAINTED,
+                        source_id=best_t.source_id,
+                        confidence=best_t.confidence,
+                        path=combined_path,
+                        last_operation=op_label,
+                        proof_nodes=combined_nodes,
+                        proof_edges=combined_edges
+                    )
                 else:
                     src_id = left.source_id or right.source_id
                     op_label = "path_join" if is_path_div else "binary_op"
@@ -2315,15 +2391,26 @@ class TaintTracker:
                canon_name in ("os.path.join", "posixpath.join", "ntpath.join") or \
                d_name in ("os.path.join", "posixpath.join", "ntpath.join"):
                 if isinstance(node.func, ast.Attribute) and node.func.attr == "joinpath":
-                    curr_prov = self.resolve_path_provenance(node.func.value, sink, scope_id, current_lineno, visited.copy(), call_context)
-                    args_to_join = list(node.args)
+                    all_arg_nodes = [node.func.value] + list(node.args)
                 else:
-                    curr_prov = self.resolve_path_provenance(node.args[0], sink, scope_id, current_lineno, visited.copy(), call_context) if node.args else ProvenanceValue(state=ProvenanceState.STATIC)
-                    args_to_join = list(node.args[1:]) if len(node.args) > 1 else []
-                for a in args_to_join:
-                    a_prov = self.resolve_path_provenance(a, sink, scope_id, current_lineno, visited.copy(), call_context)
-                    curr_prov = compose_path_provenance(curr_prov, a_prov, operator="join")
-                return curr_prov
+                    all_arg_nodes = list(node.args)
+
+                arg_provs = [self.resolve_path_provenance(a, sink, scope_id, current_lineno, visited.copy(), call_context) for a in all_arg_nodes]
+                tainted_provs = [p for p in arg_provs if p.state == ProvenanceState.TAINTED]
+                if tainted_provs:
+                    best_t = max(tainted_provs, key=lambda a: a.confidence)
+                    return ProvenanceValue(
+                        state=ProvenanceState.TAINTED,
+                        confidence=best_t.confidence,
+                        source_id=best_t.source_id,
+                        source_trace=(*best_t.source_trace, "[join]"),
+                        origin_node=node
+                    )
+                if any(p.state == ProvenanceState.UNKNOWN for p in arg_provs):
+                    return ProvenanceValue(state=ProvenanceState.UNKNOWN, confidence=0.50, source_trace=("[join_unknown]",), origin_node=node)
+                if any(p.state == ProvenanceState.INTERNAL_DYNAMIC for p in arg_provs):
+                    return ProvenanceValue(state=ProvenanceState.INTERNAL_DYNAMIC, confidence=1.0, source_trace=("[join_internal]",), origin_node=node)
+                return ProvenanceValue(state=ProvenanceState.STATIC, confidence=1.0, source_trace=("literal",), origin_node=node)
 
             if (canon_name in ("os.path.normpath", "posixpath.normpath", "ntpath.normpath",
                                "os.path.dirname", "posixpath.dirname", "ntpath.dirname",
@@ -2770,6 +2857,27 @@ class TaintTracker:
             )
             cwe22_nodes.append(src_pn)
 
+        # Intermediate variable assignments from prov.source_trace
+        for item in prov.source_trace:
+            if ":" in item and not item.startswith("["):
+                fname, var_name = item.split(":", 1)
+                for (sc, target_name), recs in self.assignments_by_scope.items():
+                    if target_name == var_name:
+                        for r in recs:
+                            if r.lineno <= record.lineno:
+                                assign_pn = self.create_proof_node(
+                                    step_index=len(cwe22_nodes),
+                                    node_type=ProofNodeType.ASSIGNMENT,
+                                    file_path=fname,
+                                    node=r.value_node,
+                                    symbol=var_name,
+                                    scope_id=r.scope_id,
+                                    lineno=r.lineno,
+                                    override_snippet=self.get_source_snippet(fname, r.lineno, r.lineno) or f"{var_name} = ..."
+                                )
+                                if not any(n.symbol == var_name and n.start_line == r.lineno for n in cwe22_nodes):
+                                    cwe22_nodes.append(assign_pn)
+
         sink_file = sink.location.file
         sink_pn = self.create_proof_node(
             step_index=len(cwe22_nodes),
@@ -2782,6 +2890,19 @@ class TaintTracker:
             override_snippet=self.get_source_snippet(sink_file, record.lineno, record.lineno, record.node) or f"{sink.symbol}(...)"
         )
         cwe22_nodes.append(sink_pn)
+
+        # Enforce strict chronological order:
+        # Order by start_line, then type weight (SOURCE=0, PARAM_BINDING=1, ASSIGNMENT=2, CALL_SITE=3, TRANSFORM=4, SANITIZER=5, SINK=6)
+        type_order = {
+            ProofNodeType.SOURCE: 0,
+            ProofNodeType.PARAM_BINDING: 1,
+            ProofNodeType.ASSIGNMENT: 2,
+            ProofNodeType.CALL_SITE: 3,
+            ProofNodeType.TRANSFORM: 4,
+            ProofNodeType.SANITIZER: 5,
+            ProofNodeType.SINK: 6,
+        }
+        cwe22_nodes.sort(key=lambda n: (n.start_line, type_order.get(n.node_type, 9)))
 
         reindexed_nodes = []
         for idx, n in enumerate(cwe22_nodes):

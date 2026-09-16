@@ -259,6 +259,8 @@ def execute_tcs_scan(
         risk_level = "LOW"
         risk_message = "LOW RISK: Minor security notices."
 
+    scan_filename = list(normalized_files.keys())[0] if len(normalized_files) == 1 else "target.py"
+
     return {
         "status": "success",
         "syntax_errors": syntax_errors,
@@ -276,7 +278,16 @@ def execute_tcs_scan(
             "security_score": security_score,
             "score_label": "Security Health Score",
             "risk_level": risk_level,
-            "risk_message": risk_message
+            "risk_message": risk_message,
+            "target_file": scan_filename,
+            "filename": scan_filename,
+            "scope_filename": scan_filename
+        },
+        "scope": {
+            "target_file": scan_filename,
+            "filename": scan_filename,
+            "total_files": total_files,
+            "lines_scanned": lines_scanned
         },
         "findings": findings
     }
