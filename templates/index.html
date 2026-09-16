@@ -2030,9 +2030,12 @@ jobs:
             const category = finding.category || 'HARDCODED CREDENTIAL / SECRET LEAK';
             const severity = finding.severity || 'CRITICAL';
             const secretType = finding.symbol || (finding.proof_graph && finding.proof_graph.nodes && finding.proof_graph.nodes[0] ? finding.proof_graph.nodes[0].symbol : 'Detected Secret');
+            // Full masked source line preferred; fallback to bare masked token
+            const fullLineSnippet = finding.snippet || finding.code_snippet || finding.masked_value || '';
             const maskedVal = finding.masked_value || finding.code_snippet || '';
             const file = finding.file || 'target.py';
             const line = finding.line_number || 1;
+            const confidence = finding.confidence || 'HIGH (PATTERN_MATCH)';
             const remediation = finding.remediation || "Never commit plaintext credentials. Rotate secret immediately and move to environment variables or vault.";
 
             container.innerHTML = `
@@ -2043,9 +2046,9 @@ jobs:
                         <span class="text-xs font-bold px-2 py-0.5 rounded-full border bg-red-500/20 text-red-400 border-red-500/40">${escapeHtml(severity)}</span>
                         <span class="text-xs font-bold px-2 py-0.5 rounded-full border border-purple-500/30 bg-purple-500/10 text-purple-300">${escapeHtml(cwe)}</span>
                     </div>
-                    <div class="text-[11px] font-mono text-red-400 flex items-center gap-1.5">
-                        <span class="w-1.5 h-1.5 rounded-full bg-red-400 animate-ping"></span>
-                        <span>CONFIRMED SECRET EXPOSURE</span>
+                    <div class="text-[11px] font-mono text-orange-400 flex items-center gap-1.5">
+                        <span class="w-1.5 h-1.5 rounded-full bg-orange-400 animate-ping"></span>
+                        <span>PATTERN_MATCH SECRET EXPOSURE</span>
                     </div>
                 </div>
 
@@ -2056,7 +2059,7 @@ jobs:
                             <span class="text-xs font-extrabold px-2.5 py-1 rounded-md bg-purple-950/60 text-purple-300 border border-purple-500/40 uppercase tracking-wider">[CREDENTIAL BREACH]</span>
                             <span class="text-xs text-gray-300 font-semibold">Hardcoded Secret / Token</span>
                         </div>
-                        <span class="text-xs font-mono text-purple-200 bg-purple-950/40 px-2.5 py-1 rounded border border-purple-500/30">${escapeHtml(file)} : Line ${escapeHtml(line)}</span>
+                        <span class="text-xs font-mono text-purple-200 bg-purple-950/40 px-2.5 py-1 rounded border border-purple-500/30">${escapeHtml(file)} : Line ${escapeHtml(String(line))}</span>
                     </div>
 
                     <div class="my-3 space-y-2 font-mono">
@@ -2065,9 +2068,18 @@ jobs:
                             <code class="text-purple-300 font-bold bg-black/60 px-2 py-0.5 rounded border border-purple-500/30">${escapeHtml(secretType)}</code>
                         </div>
                         <div class="text-xs text-gray-300 flex items-center gap-2 flex-wrap">
+                            <span class="text-gray-400">Confidence:</span>
+                            <code class="text-orange-300 font-bold bg-black/60 px-2 py-0.5 rounded border border-orange-500/30">${escapeHtml(confidence)}</code>
+                        </div>
+                        <div class="text-xs text-gray-300 flex items-center gap-2 flex-wrap">
                             <span class="text-gray-400">Masked Token Preview:</span>
                             <code class="text-red-400 font-bold bg-black/80 px-2.5 py-1 rounded border border-red-500/40 tracking-wider">${escapeHtml(maskedVal)}</code>
                         </div>
+                        ${fullLineSnippet && fullLineSnippet !== maskedVal ? `
+                        <div class="mt-2 text-xs text-gray-300">
+                            <span class="text-gray-400 block mb-1">Full Source Line (Masked):</span>
+                            <code class="block text-yellow-200 bg-black/70 px-3 py-2 rounded border border-yellow-500/20 break-all">${escapeHtml(fullLineSnippet)}</code>
+                        </div>` : ''}
                     </div>
 
                     <div class="mt-4 p-3.5 rounded-xl bg-red-950/30 border border-red-500/30 font-mono text-xs text-red-300 flex items-start gap-2.5">
@@ -2081,7 +2093,7 @@ jobs:
                     <div class="mt-4 p-4 rounded-xl bg-emerald-950/20 border border-emerald-500/30 font-mono text-xs">
                         <div class="flex items-center gap-2 text-emerald-400 font-bold uppercase tracking-wider text-[11px] mb-1.5">
                             <svg class="w-4 h-4" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M9 12l2 2 4-4m5.618-4.016A11.955 11.955 0 0112 2.944a11.955 11.955 0 01-8.618 3.04A12.02 12.02 0 003 9c0 5.591 3.824 10.29 9 11.622 5.176-1.332 9-6.03 9-11.622 0-1.042-.133-2.052-.382-3.016z"></path></svg>
-                            Prescriptive Remediation & Key Rotation
+                            Prescriptive Remediation &amp; Key Rotation
                         </div>
                         <p class="text-gray-300 leading-relaxed">${escapeHtml(remediation)}</p>
                     </div>

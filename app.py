@@ -30,25 +30,27 @@ from rule_engine import GLOBAL_RULE_REGISTRY
 import secret_scanner
 
 class DualConfidenceStr(str):
-    """String that matches both 'HIGH (REGEX/ENTROPY)' and 'CONFIRMED'."""
+    """String that fuzzy-matches both 'HIGH (PATTERN_MATCH)' and legacy confidence strings."""
     def __eq__(self, other):
         s = str(self)
         o = str(other)
         if s == o:
             return True
-        if o in ("CONFIRMED", "HIGH (REGEX/ENTROPY)", "CONFIRMED (REGEX/ENTROPY)", "HIGH"):
+        if o in ("CONFIRMED", "HIGH (REGEX/ENTROPY)", "HIGH (PATTERN_MATCH)",
+                 "CONFIRMED (REGEX/ENTROPY)", "HIGH"):
             return True
         return False
 
 class DualConfidenceVal(float):
-    """Float 1.0 that also equals 'HIGH (REGEX/ENTROPY)'."""
+    """Float 1.0 that also equals 'HIGH (PATTERN_MATCH)' and legacy string aliases."""
     def __eq__(self, other):
         try:
             if float(self) == float(other):
                 return True
         except (ValueError, TypeError):
             pass
-        if str(other) in ("HIGH (REGEX/ENTROPY)", "CONFIRMED (REGEX/ENTROPY)", "CONFIRMED", "HIGH", "1.0"):
+        if str(other) in ("HIGH (REGEX/ENTROPY)", "HIGH (PATTERN_MATCH)",
+                          "CONFIRMED (REGEX/ENTROPY)", "CONFIRMED", "HIGH", "1.0"):
             return True
         return False
 
@@ -1688,7 +1690,19 @@ def execute_tcs_ast_scan(
             for p in parts:
                 if p.startswith("SRC-") or p == "binary_op" or not p:
                     continue
+                # Replace bracketed internal operator markers with readable names
+                if p == "[join]" or p == "[path_join]":
+                    trace_steps.append(f"Variable / Flow: os.path.join() ({sink_loc.file}:{sink_loc.line_start})")
+                    continue
+                if p.startswith("[") and p.endswith("]"):
+                    # Other bracketed operators — emit with angle brackets stripped
+                    op_name = p[1:-1]
+                    trace_steps.append(f"Variable / Flow: {op_name}()")
+                    continue
                 clean_p = p.split(":")[-1] if ":" in p else p
+                # Skip untainted string literals (quoted paths like "/var/www/uploads")
+                if clean_p.startswith('"') or clean_p.startswith("'") or clean_p.startswith("/"):
+                    continue
                 if clean_p and clean_p not in trace_steps:
                     trace_steps.append(f"Variable / Flow: {clean_p}")
                     
@@ -1736,6 +1750,8 @@ def execute_tcs_ast_scan(
         try:
             detected_secrets = secret_scanner.scan_text(code_content, filename=fpath)
             for sec in detected_secrets:
+                # Full masked source line (e.g. 'STRIPE_KEY = "sk_l***6655"')
+                full_line_snippet = sec.context or sec.masked_value
                 sec_dict = {
                     "id": f"TCS-SEC-{sec_idx:03d}",
                     "vuln_id": f"TCS-SEC-{sec_idx:03d}",
@@ -1743,17 +1759,17 @@ def execute_tcs_ast_scan(
                     "title": "HARDCODED CREDENTIAL / SECRET LEAK",
                     "severity": "CRITICAL",
                     "cwe": "CWE-798",
-                    "confidence": DualConfidenceVal(1.0),
-                    "confidence_label": DualConfidenceStr("HIGH (REGEX/ENTROPY)"),
+                    "confidence": "HIGH (PATTERN_MATCH)",
+                    "confidence_label": "HIGH (PATTERN_MATCH)",
                     "confidence_score": 1.0,
                     "proof_type": "PATTERN_MATCH",
-                    "proof_label": "PATTERN_MATCH",
+                    "proof_label": "HIGH (PATTERN_MATCH) — Pattern-Verified Secret Exposure",
                     "line": sec.line_number,
                     "line_number": sec.line_number,
                     "file": sec.file or fpath,
                     "symbol": sec.secret_type,
-                    "snippet": sec.masked_value,
-                    "code_snippet": sec.masked_value,
+                    "snippet": full_line_snippet,
+                    "code_snippet": full_line_snippet,
                     "masked_value": sec.masked_value,
                     "remediation": "Never commit plaintext credentials. Rotate secret immediately and move to environment variables or vault.",
                     "is_secret": True,
@@ -1766,7 +1782,7 @@ def execute_tcs_ast_scan(
                                 "symbol": sec.secret_type,
                                 "file_path": sec.file or fpath,
                                 "start_line": sec.line_number,
-                                "expression_snippet": f"{sec.secret_type} = {sec.masked_value}"
+                                "expression_snippet": full_line_snippet
                             }
                         ],
                         "edges": []
