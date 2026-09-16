@@ -2090,10 +2090,14 @@ jobs:
             return;
         }
 
-        // Extract nodes from proof_graph.nodes, or fallback to flow_trace or edges
+        // Extract nodes from proof_graph.nodes, or fallback to proof_nodes, dataflow_steps, or flow_trace
         let nodes = [];
         if (finding.proof_graph && Array.isArray(finding.proof_graph.nodes) && finding.proof_graph.nodes.length > 0) {
             nodes = finding.proof_graph.nodes;
+        } else if (Array.isArray(finding.proof_nodes) && finding.proof_nodes.length > 0) {
+            nodes = finding.proof_nodes;
+        } else if (Array.isArray(finding.dataflow_steps) && finding.dataflow_steps.length > 0) {
+            nodes = finding.dataflow_steps;
         } else if (Array.isArray(finding.flow_trace) && finding.flow_trace.length > 0) {
             nodes = finding.flow_trace.map((step, idx) => {
                 const isSource = idx === 0;
@@ -2158,55 +2162,61 @@ jobs:
         `;
 
         nodes.forEach((node, idx) => {
-            const nType = (node.node_type || 'FLOW').toUpperCase();
-            const isSource = nType.includes('SOURCE') || idx === 0;
-            const isSink = nType.includes('SINK') || (idx === nodes.length - 1 && nodes.length > 1);
+            const rawType = (node.node_type || (idx === 0 ? 'SOURCE' : (idx === nodes.length - 1 ? 'SINK' : 'ASSIGNMENT'))).toUpperCase();
+            const isSource = idx === 0;
+            const isSink = idx === nodes.length - 1 && nodes.length > 1;
+            const isIntermediate = !isSource && !isSink;
 
-            let borderStyle = 'border: 1.5px solid #90caf9;';
-            let tagText = '[FLOW]';
-            let tagBg = 'background: rgba(144, 202, 249, 0.15); color: #90caf9; border: 1px solid rgba(144, 202, 249, 0.4);';
-            let subTitle = 'Intermediate Dataflow Propagation';
-            let iconSvg = `<svg class="w-4 h-4 text-[#90caf9]" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M13 7l5 5m0 0l-5 5m5-5H6"></path></svg>`;
+            let borderStyle = 'border: 1.5px solid #64748b; background: #0b1120;';
+            let tagText = `[INTERMEDIATE / ${rawType}] HOP ${idx + 1}`;
+            let tagBg = 'background: rgba(100, 116, 139, 0.2); color: #94a3b8; border: 1px solid rgba(100, 116, 139, 0.4);';
+            let subTitle = 'Intermediate Propagation & Assignment';
+            let iconSvg = `<svg class="w-4 h-4 text-[#94a3b8]" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M13 7l5 5m0 0l-5 5m5-5H6"></path></svg>`;
 
             if (isSource) {
-                borderStyle = 'border: 1.5px solid #ffb300;';
-                tagText = '[SOURCE]';
+                borderStyle = 'border: 1.5px solid #ffb300; background: #090d18;';
+                tagText = `[SOURCE] HOP 1`;
                 tagBg = 'background: rgba(255, 179, 0, 0.15); color: #ffb300; border: 1px solid rgba(255, 179, 0, 0.4);';
                 subTitle = 'Taint Origin (Untrusted User Input)';
                 iconSvg = `<svg class="w-4 h-4 text-[#ffb300]" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M11 16l-4-4m0 0l4-4m-4 4h14m-5 4v1a3 3 0 01-3 3H6a3 3 0 01-3-3V7a3 3 0 013-3h7a3 3 0 013 3v1"></path></svg>`;
             } else if (isSink) {
-                borderStyle = 'border: 1.5px solid #f44336;';
-                tagText = '[SINK]';
-                tagBg = 'background: rgba(244, 67, 54, 0.15); color: #f44336; border: 1px solid rgba(244, 67, 54, 0.4);';
+                borderStyle = 'border: 1.5px solid #ef4444; background: #130a0d;';
+                tagText = `[SINK] HOP ${idx + 1}`;
+                tagBg = 'background: rgba(239, 68, 68, 0.15); color: #ef4444; border: 1px solid rgba(239, 68, 68, 0.4);';
                 subTitle = 'Exploitation Point (Dangerous Sink Call)';
-                iconSvg = `<svg class="w-4 h-4 text-[#f44336]" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M12 9v2m0 4h.01m-6.938 4h13.856c1.54 0 2.502-1.667 1.732-3L13.732 4c-.77-1.333-2.694-1.333-3.464 0L3.34 16c-.77 1.333.192 3 1.732 3z"></path></svg>`;
+                iconSvg = `<svg class="w-4 h-4 text-[#ef4444]" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M12 9v2m0 4h.01m-6.938 4h13.856c1.54 0 2.502-1.667 1.732-3L13.732 4c-.77-1.333-2.694-1.333-3.464 0L3.34 16c-.77 1.333.192 3 1.732 3z"></path></svg>`;
             }
 
             const file = node.file_path || node.file || finding.file || 'target.py';
             const line = (node.start_line !== undefined && node.start_line !== null) ? node.start_line : (isSink ? finding.line_number : '');
             const locBadge = line ? `${file} : Line ${line}` : file;
-            const snippet = node.expression_snippet || (isSink ? finding.code_snippet : '');
-            const symbol = node.symbol || '';
+            const snippet = node.expression_snippet || node.snippet || (isSink ? finding.code_snippet : '');
+            const symbol = node.symbol || node.target || node.name || '';
 
             graphHtml += `
-                <div class="p-3.5 rounded-xl bg-[#090d18] shadow-lg transition-all" style="${borderStyle}">
+                <div class="p-3.5 rounded-xl shadow-lg transition-all" style="${borderStyle}">
                     <div class="flex items-center justify-between gap-2 mb-2 flex-wrap font-mono">
                         <div class="flex items-center gap-2">
                             ${iconSvg}
-                            <span class="text-[11px] font-bold px-2 py-0.5 rounded" style="${tagBg}">${tagText} HOP ${idx + 1}</span>
+                            <span class="text-[11px] font-bold px-2 py-0.5 rounded" style="${tagBg}">${tagText}</span>
                             <span class="text-xs text-gray-400 font-semibold">${escapeHtml(subTitle)}</span>
                         </div>
                         <span class="text-[11px] font-mono text-gray-400 bg-white/5 px-2 py-0.5 rounded border border-white/5">${escapeHtml(locBadge)}</span>
                     </div>
                     ${symbol ? `
                         <div class="text-xs font-mono text-gray-300 mb-1.5 flex items-center gap-1.5 flex-wrap">
-                            <span class="text-gray-400 font-medium">Symbol / Target:</span>
+                            <span class="text-gray-400 font-medium">${isSource ? 'Input Source:' : (isSink ? 'Sink Symbol:' : 'Variable / Expression:')}</span>
                             <code class="text-emerald-300 font-bold bg-black/60 px-2 py-0.5 rounded border border-white/10">${escapeHtml(symbol)}</code>
                         </div>
                     ` : ''}
                     ${snippet ? `
                         <div class="mt-2 p-2.5 rounded-lg bg-black/80 border border-white/10 font-mono text-xs text-gray-200 overflow-x-auto">
                             <code>${escapeHtml(snippet)}</code>
+                        </div>
+                    ` : ''}
+                    ${isSink && finding.remediation ? `
+                        <div class="mt-2.5 p-2 rounded-lg bg-red-950/40 border border-red-500/30 text-[11px] font-mono text-red-300">
+                            <span class="font-bold text-red-200">Remediation:</span> ${escapeHtml(finding.remediation)}
                         </div>
                     ` : ''}
                 </div>

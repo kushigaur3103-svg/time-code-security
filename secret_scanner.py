@@ -15,7 +15,7 @@ from collections import Counter
 from dataclasses import dataclass
 import math
 import re
-from typing import List, Optional
+from typing import List, Optional, Tuple
 
 __all__ = [
     "SecretFinding",
@@ -106,35 +106,60 @@ _REGEX_STRIPE_KEY = re.compile(r"\b(sk_live|rk_live)_[0-9A-Za-z]{24,99}\b")
 # 5. AWS Access Key (AKIA, ASIA, ABIA, ACCA followed by 14..16 chars)
 _REGEX_AWS_ACCESS_KEY = re.compile(r"\b(AKIA|ASIA|ABIA|ACCA)[0-9A-Z]{14,16}\b")
 
-# 6. Database Connection String (strictly negated classes, ReDoS-immune)
+# 6. Database Connection String (matches scheme and URI candidate tokens, parsed robustly)
 _REGEX_DB_URI = re.compile(
-    r"\b(?P<scheme>postgres(?:ql)?|mysql|mongodb|redis)://"
-    r"(?:(?P<user>[^\s:@/]+):|:)"
-    r"(?P<password>[^\s:@/]+)@"
-    r"(?P<host>[^\s:@/]+)"
-    r"(?::(?P<port>[0-9]{1,5}))?"
-    r"(?P<path>/[^\s\"']*)?"
+    r"\b(?P<scheme>postgres(?:ql)?|mysql|mongodb|redis)://[^\s\"'`]+"
 )
 
 
-def _mask_db_connection_uri(match: re.Match) -> str:
-    """Mask credentials within a database connection URI match."""
-    scheme = match.group("scheme")
-    user = match.group("user")
-    password = match.group("password")
-    host = match.group("host")
-    port = match.group("port")
-    path = match.group("path") or ""
+def _parse_and_mask_db_uri(raw_str: str) -> Optional[Tuple[str, int]]:
+    """Deterministically parse and mask credentials within a database connection URI.
 
-    masked_pw = mask_secret(password)
+    Handles passwords containing special characters (e.g. '@', ':', '!', etc.) by splitting
+    from the rightmost '@' boundary.
+    Replaces password strictly with '************' (12 asterisks).
+    Returns (masked_uri, matched_length) or None if not a credentialed DB URI.
+    """
+    # Trim trailing delimiters that are code/syntax rather than part of the URI
+    trimmed = raw_str
+    while trimmed and (trimmed[-1] in "',;)>]}" or (trimmed.endswith(".") and not trimmed.endswith(".."))):
+        trimmed = trimmed[:-1]
+
+    if "://" not in trimmed:
+        return None
+
+    scheme, rest = trimmed.split("://", 1)
+    if "@" not in rest:
+        return None
+
+    userinfo, host_and_path = rest.rsplit("@", 1)
+    if not host_and_path or not host_and_path.strip("/: "):
+        return None
+
+    if ":" not in userinfo:
+        return None
+
+    user, password = userinfo.split(":", 1)
+    if not password or not password.strip(":"):
+        return None
+
+    masked_pw = "************"
     if user:
         masked_user = mask_secret(user)
         creds = f"{masked_user}:{masked_pw}"
     else:
         creds = f":{masked_pw}"
 
-    port_part = f":{port}" if port else ""
-    return f"{scheme}://{creds}@{host}{port_part}{path}"
+    masked_uri = f"{scheme}://{creds}@{host_and_path}"
+    return masked_uri, len(trimmed)
+
+
+def _mask_db_connection_uri(match: re.Match) -> str:
+    """Mask credentials within a database connection URI match."""
+    parsed = _parse_and_mask_db_uri(match.group(0))
+    if parsed:
+        return parsed[0]
+    return match.group(0)
 
 
 class _CandidateMatch:
@@ -251,14 +276,20 @@ def scan_text(text: str, filename: str = "<string>") -> List[SecretFinding]:
 
         # 6. Database Connection String (Precedence 6)
         for m in _REGEX_DB_URI.finditer(clean_line):
+            parsed = _parse_and_mask_db_uri(m.group(0))
+            if parsed is None:
+                continue
+            masked_val, matched_len = parsed
+            cand_start = m.start()
+            cand_end = cand_start + matched_len
             candidates.append(
                 _CandidateMatch(
                     precedence=6,
-                    start=m.start(),
-                    end=m.end(),
+                    start=cand_start,
+                    end=cand_end,
                     secret_type="database_connection_string",
                     detector="database_connection_string",
-                    masked_value=_mask_db_connection_uri(m),
+                    masked_value=masked_val,
                 )
             )
 
