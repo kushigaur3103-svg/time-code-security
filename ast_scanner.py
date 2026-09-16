@@ -1782,7 +1782,7 @@ class TaintTracker:
                 else:
                     return TaintValue(state=TaintState.CLEAN, confidence=1.0, last_operation=f"path_{node.func.attr}")
 
-            # Path.joinpath(*args)
+            # Path.joinpath(*args) — propagate taint ONLY from tainted operands.
             if isinstance(node.func, ast.Attribute) and node.func.attr == "joinpath":
                 recv_taint = self.resolve_expression(node.func.value, sink, scope_id, current_lineno, visited.copy(), call_context)
                 arg_taints = [self.resolve_expression(arg, sink, scope_id, current_lineno, visited.copy(), call_context) for arg in node.args]
@@ -1790,28 +1790,50 @@ class TaintTracker:
                 tainted_parts = [t for t in all_taints if t.state == TaintState.TAINTED]
                 if tainted_parts:
                     best_t = max(tainted_parts, key=lambda t: t.confidence)
+                    # Only include path steps from tainted operands — discard clean literals
                     combined_path = []
-                    for t in all_taints:
-                        if t.path: combined_path.extend(t.path)
+                    for t in tainted_parts:
+                        if t.path:
+                            combined_path.extend(t.path)
                     combined_path.append(f"{file_name}:joinpath()")
-                    return TaintValue(state=TaintState.TAINTED, source_id=best_t.source_id, confidence=best_t.confidence, path=combined_path, last_operation="path_joinpath")
+                    return TaintValue(
+                        state=TaintState.TAINTED,
+                        source_id=best_t.source_id,
+                        confidence=best_t.confidence,
+                        path=combined_path,
+                        last_operation="path_joinpath",
+                        proof_nodes=best_t.proof_nodes,
+                        proof_edges=best_t.proof_edges,
+                    )
                 unknown_parts = [t for t in all_taints if t.state != TaintState.CLEAN]
                 if unknown_parts:
                     first_u = unknown_parts[0]
                     return TaintValue(state=TaintState.UNKNOWN, source_id=first_u.source_id, confidence=0.50, path=[*first_u.path, f"{file_name}:joinpath()"], last_operation="path_joinpath")
                 return TaintValue(state=TaintState.CLEAN, confidence=1.0, last_operation="path_joinpath")
 
-            # os.path.join
+            # os.path.join — propagate taint ONLY from tainted arguments.
+            # Safe literal base paths (e.g. "/var/www/uploads") are dropped from the
+            # proof chain to avoid noise and incorrect literal→[join] ordering.
             if function_name in ("os.path.join", "posixpath.join", "ntpath.join"):
                 arg_taints = [self.resolve_expression(arg, sink, scope_id, current_lineno, visited.copy(), call_context) for arg in node.args]
                 tainted_args = [a for a in arg_taints if a.state == TaintState.TAINTED]
                 if tainted_args:
                     best_arg = max(tainted_args, key=lambda a: a.confidence)
+                    # Only include path steps from tainted arguments — discard clean literals
                     combined_path = []
-                    for a in arg_taints:
-                        if a.path: combined_path.extend(a.path)
+                    for a in tainted_args:
+                        if a.path:
+                            combined_path.extend(a.path)
                     combined_path.append(f"{file_name}:os.path.join()")
-                    return TaintValue(state=TaintState.TAINTED, source_id=best_arg.source_id, confidence=best_arg.confidence, path=combined_path, last_operation="os.path.join")
+                    return TaintValue(
+                        state=TaintState.TAINTED,
+                        source_id=best_arg.source_id,
+                        confidence=best_arg.confidence,
+                        path=combined_path,
+                        last_operation="os.path.join",
+                        proof_nodes=best_arg.proof_nodes,
+                        proof_edges=best_arg.proof_edges,
+                    )
                 unknown_args = [a for a in arg_taints if a.state != TaintState.CLEAN]
                 if unknown_args:
                     first_u = unknown_args[0]
