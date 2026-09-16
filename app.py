@@ -27,6 +27,7 @@ from ast_scanner import TaintTracker, SINK_REGISTRY, SOURCE_REGISTRY, SANITIZER_
 from sarif_adapter import to_sarif
 from suppression_resolver import resolve_suppressions
 from rule_engine import GLOBAL_RULE_REGISTRY
+import secret_scanner
 
 try:
     from rag_engine.vector_db import CodeContextEngine
@@ -1592,7 +1593,7 @@ def execute_tcs_ast_scan(normalized_files: Dict[str, str]) -> Dict[str, Any]:
         except SyntaxError as se:
             syntax_errors.append(f"{fpath}:{se.lineno}: {se.msg}")
             
-    tracker = TaintTracker(files=normalized_files)
+    tracker = TaintTracker(files=normalized_files, audit_all=True)
     sources, sinks, edges = tracker.analyze()
     
     sinks_by_id = {s.id: s for s in sinks}
@@ -1688,11 +1689,58 @@ def execute_tcs_ast_scan(normalized_files: Dict[str, str]) -> Dict[str, Any]:
     # Resolve in-source suppression directives (e.g. # tcs:ignore CWE-89)
     findings = resolve_suppressions(findings, normalized_files)
 
+    # 2. Offline Secret Detection (Zero Raw Leakage)
+    secret_findings = []
+    sec_idx = 1
+    for fpath, code_content in normalized_files.items():
+        try:
+            detected_secrets = secret_scanner.scan_text(code_content, filename=fpath)
+            for sec in detected_secrets:
+                sec_dict = {
+                    "id": f"TCS-SEC-{sec_idx:03d}",
+                    "vuln_id": f"TCS-SEC-{sec_idx:03d}",
+                    "category": "HARDCODED CREDENTIAL / SECRET LEAK",
+                    "title": "HARDCODED CREDENTIAL / SECRET LEAK",
+                    "severity": "CRITICAL",
+                    "cwe": "CWE-798",
+                    "confidence": 1.0,
+                    "confidence_label": "CONFIRMED",
+                    "line_number": sec.line_number,
+                    "file": sec.file or fpath,
+                    "symbol": sec.secret_type,
+                    "snippet": sec.context or sec.masked_value,
+                    "code_snippet": sec.context or sec.masked_value,
+                    "masked_value": sec.masked_value,
+                    "remediation": "Never commit plaintext credentials. Rotate secret immediately and move to environment variables or vault.",
+                    "is_secret": True,
+                    "proof_graph": {
+                        "nodes": [
+                            {
+                                "node_type": "SECRET_EXPOSURE",
+                                "step_index": 0,
+                                "symbol": sec.secret_type,
+                                "file_path": sec.file or fpath,
+                                "start_line": sec.line_number,
+                                "expression_snippet": f"{sec.secret_type} = {sec.masked_value}"
+                            }
+                        ],
+                        "edges": []
+                    },
+                    "flow_trace": [f"Secret Exposure: {sec.secret_type} (Line {sec.line_number})"],
+                    "flow_trace_summary": f"[{sec.secret_type}] -> Hardcoded Secret in Source"
+                }
+                findings.append(sec_dict)
+                secret_findings.append(sec_dict)
+                sec_idx += 1
+        except Exception as sec_err:
+            print(f"[!] Secret scanner warning on {fpath}: {sec_err}")
+
     safe_patterns = detect_safe_patterns(normalized_files)
     
     total_files = len(normalized_files)
     lines_scanned = sum(len(c.splitlines()) for c in normalized_files.values())
     total_vulnerabilities = len(findings)
+    total_flaws = total_vulnerabilities
 
     active_findings = [f for f in findings if not f.get("suppressed", False)]
     suppressed_findings = [f for f in findings if f.get("suppressed", False)]
@@ -1709,10 +1757,10 @@ def execute_tcs_ast_scan(normalized_files: Dict[str, str]) -> Dict[str, Any]:
     
     if active_vulnerabilities == 0:
         risk_level = "CLEAN"
-        risk_message = "NO VULNERABILITIES DETECTED within current TCS analysis scope (6 supported CWE classes)."
+        risk_message = "NO VULNERABILITIES DETECTED within current TCS analysis scope."
     elif critical_count > 0:
         risk_level = "CRITICAL"
-        risk_message = "CRITICAL RISK: Arbitrary code execution or high-impact injection detected."
+        risk_message = "CRITICAL RISK: Arbitrary code execution, injection, or hardcoded credential leak detected."
     elif high_count > 0:
         risk_level = "HIGH"
         risk_message = "HIGH RISK: Injection or data traversal vulnerabilities detected."
@@ -1760,18 +1808,22 @@ def execute_tcs_ast_scan(normalized_files: Dict[str, str]) -> Dict[str, Any]:
             "total_files": total_files,
             "lines_scanned": lines_scanned,
             "total_vulnerabilities": total_vulnerabilities,
+            "total_flaws": total_flaws,
             "active_vulnerabilities": active_vulnerabilities,
             "suppressed_vulnerabilities": suppressed_vulnerabilities,
             "critical_count": critical_count,
             "high_count": high_count,
             "medium_count": medium_count,
             "low_count": low_count,
+            "secrets_detected": len(secret_findings),
             "security_score": security_score,
             "score_label": "Security Health Score",
             "risk_level": risk_level,
             "risk_message": risk_message
         },
         "findings": findings,
+        "secret_findings": secret_findings,
+        "total_flaws": total_flaws,
         "safe_patterns": safe_patterns,
         "raw_evidence": raw_evidence
     }

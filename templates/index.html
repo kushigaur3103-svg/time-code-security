@@ -2024,6 +2024,72 @@ jobs:
             return;
         }
 
+        // Dedicated renderer for Secret Leaks / Hardcoded Credentials (CWE-798)
+        if (finding.is_secret || finding.cwe === 'CWE-798') {
+            const cwe = finding.cwe || 'CWE-798';
+            const category = finding.category || 'HARDCODED CREDENTIAL / SECRET LEAK';
+            const severity = finding.severity || 'CRITICAL';
+            const secretType = finding.symbol || (finding.proof_graph && finding.proof_graph.nodes && finding.proof_graph.nodes[0] ? finding.proof_graph.nodes[0].symbol : 'Detected Secret');
+            const maskedVal = finding.masked_value || finding.code_snippet || '';
+            const file = finding.file || 'target.py';
+            const line = finding.line_number || 1;
+            const remediation = finding.remediation || "Never commit plaintext credentials. Rotate secret immediately and move to environment variables or vault.";
+
+            container.innerHTML = `
+                <div class="mb-4 p-3.5 rounded-xl bg-[#060a14] border border-red-500/30 flex flex-col sm:flex-row justify-between items-start sm:items-center gap-2">
+                    <div class="flex items-center gap-2 flex-wrap font-mono">
+                        <span class="text-xs font-bold text-gray-400 bg-white/5 px-2 py-0.5 rounded border border-white/10">${escapeHtml(finding.id || 'SEC')}</span>
+                        <span class="text-sm font-bold text-red-400">${escapeHtml(category)}</span>
+                        <span class="text-xs font-bold px-2 py-0.5 rounded-full border bg-red-500/20 text-red-400 border-red-500/40">${escapeHtml(severity)}</span>
+                        <span class="text-xs font-bold px-2 py-0.5 rounded-full border border-purple-500/30 bg-purple-500/10 text-purple-300">${escapeHtml(cwe)}</span>
+                    </div>
+                    <div class="text-[11px] font-mono text-red-400 flex items-center gap-1.5">
+                        <span class="w-1.5 h-1.5 rounded-full bg-red-400 animate-ping"></span>
+                        <span>CONFIRMED SECRET EXPOSURE</span>
+                    </div>
+                </div>
+
+                <div class="p-5 rounded-2xl bg-[#0a0814] shadow-xl border-2 border-purple-500/50 relative overflow-hidden">
+                    <div class="flex items-center justify-between gap-2 mb-3 flex-wrap font-mono">
+                        <div class="flex items-center gap-2">
+                            <span class="w-3 h-3 rounded-full bg-purple-400 animate-pulse"></span>
+                            <span class="text-xs font-extrabold px-2.5 py-1 rounded-md bg-purple-950/60 text-purple-300 border border-purple-500/40 uppercase tracking-wider">[CREDENTIAL BREACH]</span>
+                            <span class="text-xs text-gray-300 font-semibold">Hardcoded Secret / Token</span>
+                        </div>
+                        <span class="text-xs font-mono text-purple-200 bg-purple-950/40 px-2.5 py-1 rounded border border-purple-500/30">${escapeHtml(file)} : Line ${escapeHtml(line)}</span>
+                    </div>
+
+                    <div class="my-3 space-y-2 font-mono">
+                        <div class="text-xs text-gray-300 flex items-center gap-2 flex-wrap">
+                            <span class="text-gray-400">Secret Type / Detector:</span>
+                            <code class="text-purple-300 font-bold bg-black/60 px-2 py-0.5 rounded border border-purple-500/30">${escapeHtml(secretType)}</code>
+                        </div>
+                        <div class="text-xs text-gray-300 flex items-center gap-2 flex-wrap">
+                            <span class="text-gray-400">Masked Token Preview:</span>
+                            <code class="text-red-400 font-bold bg-black/80 px-2.5 py-1 rounded border border-red-500/40 tracking-wider">${escapeHtml(maskedVal)}</code>
+                        </div>
+                    </div>
+
+                    <div class="mt-4 p-3.5 rounded-xl bg-red-950/30 border border-red-500/30 font-mono text-xs text-red-300 flex items-start gap-2.5">
+                        <svg class="w-5 h-5 text-red-400 shrink-0 mt-0.5" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M12 9v2m0 4h.01m-6.938 4h13.856c1.54 0 2.502-1.667 1.732-3L13.732 4c-.77-1.333-2.694-1.333-3.464 0L3.34 16c-.77 1.333.192 3 1.732 3z"></path></svg>
+                        <div>
+                            <span class="font-bold text-red-200 uppercase tracking-wide block mb-0.5">Critical Security Alert</span>
+                            Active credential discovered in source text. Even if committed to private branches, hardcoded secrets allow immediate unauthorized lateral movement and system compromise.
+                        </div>
+                    </div>
+
+                    <div class="mt-4 p-4 rounded-xl bg-emerald-950/20 border border-emerald-500/30 font-mono text-xs">
+                        <div class="flex items-center gap-2 text-emerald-400 font-bold uppercase tracking-wider text-[11px] mb-1.5">
+                            <svg class="w-4 h-4" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M9 12l2 2 4-4m5.618-4.016A11.955 11.955 0 0112 2.944a11.955 11.955 0 01-8.618 3.04A12.02 12.02 0 003 9c0 5.591 3.824 10.29 9 11.622 5.176-1.332 9-6.03 9-11.622 0-1.042-.133-2.052-.382-3.016z"></path></svg>
+                            Prescriptive Remediation & Key Rotation
+                        </div>
+                        <p class="text-gray-300 leading-relaxed">${escapeHtml(remediation)}</p>
+                    </div>
+                </div>
+            `;
+            return;
+        }
+
         // Extract nodes from proof_graph.nodes, or fallback to flow_trace or edges
         let nodes = [];
         if (finding.proof_graph && Array.isArray(finding.proof_graph.nodes) && finding.proof_graph.nodes.length > 0) {
@@ -2176,17 +2242,28 @@ jobs:
     window.selectVulnerabilityForProofGraph = function(idx) {
         if (!window.currentScanFindings || !window.currentScanFindings[idx]) return;
         window.selectedFindingIndex = idx;
+        const finding = window.currentScanFindings[idx];
+        const isSecret = Boolean(finding.is_secret || finding.cwe === 'CWE-798');
 
         // Update active highlight on all cards
         document.querySelectorAll('.vuln-card').forEach((el, cIdx) => {
             if (cIdx === idx) {
-                el.classList.add('ring-2', 'ring-cyan-400', 'border-cyan-400/80', 'bg-slate-900/95');
-                el.classList.remove('border-white/10', 'bg-slate-900/80');
+                if (isSecret) {
+                    el.classList.add('ring-2', 'ring-purple-400', 'border-purple-400/80', 'bg-slate-900/95');
+                } else {
+                    el.classList.add('ring-2', 'ring-cyan-400', 'border-cyan-400/80', 'bg-slate-900/95');
+                }
+                el.classList.remove('border-white/10', 'bg-slate-900/80', 'border-purple-500/30');
             } else {
-                el.classList.remove('ring-2', 'ring-cyan-400', 'border-cyan-400/80', 'bg-slate-900/95');
-                el.classList.add('border-white/10', 'bg-slate-900/80');
+                el.classList.remove('ring-2', 'ring-cyan-400', 'ring-purple-400', 'border-cyan-400/80', 'border-purple-400/80', 'bg-slate-900/95');
+                el.classList.add('bg-slate-900/80');
             }
         });
+
+        const headerTitle = document.getElementById('proofGraphHeaderTitle');
+        if (headerTitle) {
+            headerTitle.textContent = isSecret ? 'Deterministic Secret Exposure Analysis' : 'Deterministic AST Dataflow Proof';
+        }
 
         // Ensure visual container is visible
         const visualContainer = document.getElementById('visualProofGraphContainer');
@@ -2584,13 +2661,22 @@ jobs:
                                         </div>
                                     `;
                                 } else {
+                                    const isSecret = Boolean(f.is_secret || f.cwe === 'CWE-798');
+                                    const cweBadgeClass = isSecret 
+                                        ? 'border border-purple-500/40 bg-purple-500/15 text-purple-300'
+                                        : 'border border-cyan-500/30 bg-cyan-500/10 text-cyan-400';
+                                    const snippetBorder = isSecret ? 'border-purple-500/30 text-purple-300' : 'border-red-500/20 text-red-300';
+                                    const actionText = isSecret ? 'Click to view Secret Exposure' : 'Click to view Proof Graph';
+                                    const actionBtnText = isSecret ? 'Inspect Secret →' : 'Inspect Flow →';
+                                    const actionColor = isSecret ? 'text-purple-400' : 'text-cyan-400';
+
                                     return `
-                                        <div id="vuln-card-${idx}" onclick="selectVulnerabilityForProofGraph(${idx})" class="vuln-card cursor-pointer p-4 rounded-xl bg-slate-900/80 border border-white/10 hover:border-cyan-400/50 hover:bg-slate-900/95 transition-all shadow-lg group">
+                                        <div id="vuln-card-${idx}" onclick="selectVulnerabilityForProofGraph(${idx})" class="vuln-card cursor-pointer p-4 rounded-xl bg-slate-900/80 border ${isSecret ? 'border-purple-500/30 hover:border-purple-400/60' : 'border-white/10 hover:border-cyan-400/50'} hover:bg-slate-900/95 transition-all shadow-lg group">
                                             <div class="flex items-center justify-between gap-2 mb-2 flex-wrap font-mono">
                                                 <div class="flex items-center gap-1.5 flex-wrap">
                                                     <span class="text-[11px] font-bold text-gray-400 bg-white/5 px-2 py-0.5 rounded border border-white/10">${escapeHtml(f.id)}</span>
                                                     <span class="text-[11px] font-bold px-2 py-0.5 rounded-full border ${sevColor}">${escapeHtml(f.severity)}</span>
-                                                    <span class="text-[11px] font-bold px-2 py-0.5 rounded-full border border-cyan-500/30 bg-cyan-500/10 text-cyan-400">${escapeHtml(f.cwe)}</span>
+                                                    <span class="text-[11px] font-bold px-2 py-0.5 rounded-full ${cweBadgeClass}">${escapeHtml(f.cwe)}</span>
                                                 </div>
                                                 <div class="flex items-center gap-2">
                                                     <span class="text-[10px] font-mono font-bold px-2 py-0.5 rounded-full border ${confColor}">${escapeHtml(f.confidence_label)}</span>
@@ -2600,15 +2686,15 @@ jobs:
                                             <h4 class="text-sm font-bold text-white font-mono group-hover:text-cyan-300 transition-colors">
                                                 ${escapeHtml((f.category || '').replace(/_/g, ' '))}
                                             </h4>
-                                            ${f.code_snippet ? `
-                                                <div class="mt-2 p-2 rounded-lg bg-black/60 border border-red-500/20 text-red-300 font-mono text-[11px] truncate">
-                                                    <code>${escapeHtml(f.code_snippet)}</code>
+                                            ${(f.masked_value || f.code_snippet) ? `
+                                                <div class="mt-2 p-2 rounded-lg bg-black/60 border ${snippetBorder} font-mono text-[11px] truncate">
+                                                    <code>${escapeHtml(f.masked_value || f.code_snippet)}</code>
                                                 </div>
                                             ` : ''}
                                             <div class="mt-2.5 pt-2 border-t border-white/5 flex items-center justify-between text-[11px] font-mono text-gray-400">
-                                                <span class="text-gray-400">Click to view Proof Graph</span>
-                                                <span class="text-cyan-400 font-bold group-hover:translate-x-1 transition-transform flex items-center gap-1">
-                                                    Inspect Flow →
+                                                <span class="text-gray-400">${actionText}</span>
+                                                <span class="${actionColor} font-bold group-hover:translate-x-1 transition-transform flex items-center gap-1">
+                                                    ${actionBtnText}
                                                 </span>
                                             </div>
                                         </div>
@@ -2623,7 +2709,7 @@ jobs:
                                 <div class="flex items-center justify-between pb-3.5 border-b border-white/10 mb-4 flex-wrap gap-2">
                                     <div class="flex items-center gap-2">
                                         <span class="w-2.5 h-2.5 rounded-full bg-cyan-400 animate-pulse"></span>
-                                        <h4 class="text-xs font-bold uppercase tracking-widest text-cyan-300 font-mono">
+                                        <h4 id="proofGraphHeaderTitle" class="text-xs font-bold uppercase tracking-widest text-cyan-300 font-mono">
                                             Deterministic AST Dataflow Proof
                                         </h4>
                                     </div>

@@ -396,6 +396,35 @@ CWE_1336_RULE = SecurityRule(
     safety_filter=None
 )
 
+CWE_798_RULE = SecurityRule(
+    cwe_id="CWE-798",
+    name="HardcodedCredentials",
+    category="HARDCODED_CREDENTIALS",
+    operation="CREDENTIAL_EXPOSURE",
+    confirmed_severity="CRITICAL",
+    potential_severity="HIGH",
+    remediation="Never commit plaintext credentials. Rotate secret immediately and move to environment variables or vault.",
+    sarif_metadata={
+        "id": "CWE-798",
+        "name": "HardcodedCredentials",
+        "shortDescription": {
+            "text": "Use of Hard-coded Credentials"
+        },
+        "fullDescription": {
+            "text": "The software contains hard-coded credentials, such as a password or cryptographic key, which can be compromised if the source code is accessed."
+        },
+        "helpUri": "https://cwe.mitre.org/data/definitions/798.html",
+        "defaultConfiguration": {
+            "level": "error"
+        },
+        "properties": {
+            "precision": "very-high",
+            "security-severity": "9.8",
+            "tags": ["security", "external/cwe/cwe-798"]
+        }
+    }
+)
+
 # Global Registry instance initialized with migrated security rules
 GLOBAL_RULE_REGISTRY = RuleRegistry()
 GLOBAL_RULE_REGISTRY.register(CWE_89_RULE)
@@ -404,6 +433,7 @@ GLOBAL_RULE_REGISTRY.register(CWE_78_RULE)
 GLOBAL_RULE_REGISTRY.register(CWE_22_RULE)
 GLOBAL_RULE_REGISTRY.register(CWE_502_RULE)
 GLOBAL_RULE_REGISTRY.register(CWE_1336_RULE)
+GLOBAL_RULE_REGISTRY.register(CWE_798_RULE)
 
 
 def get_rule(cwe_id: str) -> Optional[SecurityRule]:
