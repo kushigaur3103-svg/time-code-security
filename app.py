@@ -1585,7 +1585,18 @@ def detect_safe_patterns(files: Dict[str, str]) -> List[Dict[str, Any]]:
                     })
     return safe_patterns
 
-def execute_tcs_ast_scan(normalized_files: Dict[str, str]) -> Dict[str, Any]:
+def execute_tcs_ast_scan(
+    files_or_code: Union[Dict[str, str], str],
+    filename: str = "target.py",
+    audit_all: bool = True
+) -> Dict[str, Any]:
+    if isinstance(files_or_code, str):
+        normalized_files = {filename: files_or_code}
+    elif isinstance(files_or_code, dict):
+        normalized_files = {str(k): str(v) for k, v in files_or_code.items()}
+    else:
+        normalized_files = {filename: str(files_or_code)}
+
     syntax_errors = []
     for fpath, code in normalized_files.items():
         try:
@@ -1593,7 +1604,7 @@ def execute_tcs_ast_scan(normalized_files: Dict[str, str]) -> Dict[str, Any]:
         except SyntaxError as se:
             syntax_errors.append(f"{fpath}:{se.lineno}: {se.msg}")
             
-    tracker = TaintTracker(files=normalized_files, audit_all=True)
+    tracker = TaintTracker(files=normalized_files, audit_all=audit_all)
     sources, sinks, edges = tracker.analyze()
     
     sinks_by_id = {s.id: s for s in sinks}
@@ -1856,7 +1867,7 @@ async def scan_code(request: Request, authorization: str = Header(None)):
     if files and isinstance(files, dict):
         normalized_files = {str(k): str(v) for k, v in files.items()}
     elif code and isinstance(code, str):
-        normalized_files = {"app.py": code}
+        normalized_files = {"target.py": code}
     else:
         raise HTTPException(status_code=400, detail="Invalid code or files format.")
         
