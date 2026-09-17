@@ -28,6 +28,9 @@ from sarif_adapter import to_sarif
 from suppression_resolver import resolve_suppressions
 from rule_engine import GLOBAL_RULE_REGISTRY
 import secret_scanner
+import tempfile
+from pathlib import Path
+from sca_reachability.engine import analyze_dependency_reachability
 
 class DualConfidenceStr(str):
     """String that fuzzy-matches both 'HIGH (PATTERN_MATCH)' and legacy confidence strings."""
@@ -1613,7 +1616,8 @@ def detect_safe_patterns(files: Dict[str, str]) -> List[Dict[str, Any]]:
 def execute_tcs_ast_scan(
     files_or_code: Union[Dict[str, str], str],
     filename: str = "target.py",
-    audit_all: bool = True
+    audit_all: bool = True,
+    manifest: Optional[str] = None
 ) -> Dict[str, Any]:
     if isinstance(files_or_code, str):
         normalized_files = {filename: files_or_code}
@@ -1862,6 +1866,35 @@ def execute_tcs_ast_scan(
         ]
     }
     
+    sca_reachability_findings = []
+    if manifest and isinstance(manifest, str) and manifest.strip():
+        try:
+            with tempfile.TemporaryDirectory() as temp_dir:
+                temp_path = Path(temp_dir)
+                manifest_path = temp_path / "requirements.txt"
+                manifest_path.write_text(manifest, encoding="utf-8")
+
+                app_file = temp_path / "app.py"
+                first_content = list(normalized_files.values())[0] if normalized_files else ""
+                app_file.write_text(first_content, encoding="utf-8")
+                code_paths = [app_file]
+                for fpath, content in normalized_files.items():
+                    target_file = temp_path / Path(fpath).name
+                    if target_file != app_file:
+                        target_file.write_text(content, encoding="utf-8")
+                        code_paths.append(target_file)
+
+                advisory_path = Path(__file__).resolve().parent / "tests" / "fixtures" / "vector_c" / "advisory_fixture.json"
+                reach_findings = analyze_dependency_reachability(
+                    manifest_path=manifest_path,
+                    source_path=code_paths,
+                    advisory_path=advisory_path if advisory_path.exists() else None
+                )
+                sca_reachability_findings = [f.to_dict() for f in reach_findings]
+        except Exception as e:
+            print(f"SCA Reachability Error in execute_tcs_ast_scan: {e}")
+            sca_reachability_findings = []
+
     return {
         "status": "success",
         "syntax_errors": syntax_errors,
@@ -1900,7 +1933,8 @@ def execute_tcs_ast_scan(
         "secret_findings": secret_findings,
         "total_flaws": total_flaws,
         "safe_patterns": safe_patterns,
-        "raw_evidence": raw_evidence
+        "raw_evidence": raw_evidence,
+        "sca_reachability_findings": sca_reachability_findings
     }
 
 @app.post("/api/scan")
@@ -1958,7 +1992,8 @@ async def scan_code(request: Request, authorization: str = Header(None)):
         except Exception:
             pass
             
-    results = execute_tcs_ast_scan(normalized_files, filename=scan_filename)
+    manifest = data.get("manifest")
+    results = execute_tcs_ast_scan(normalized_files, filename=scan_filename, manifest=manifest)
     if str(data.get("format", "")).lower() == "sarif":
         return to_sarif(results)
     return results

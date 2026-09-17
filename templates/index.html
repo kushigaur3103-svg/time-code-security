@@ -305,6 +305,31 @@
 
                 <textarea id="codeInput" spellcheck="false" class="w-full h-[320px] bg-[#030712]/85 backdrop-blur-md text-emerald-400 font-mono text-sm leading-relaxed p-5 rounded-xl border border-white/10 focus:outline-none focus:border-cyan-500 focus:ring-1 focus:ring-cyan-500 transition-all resize-none shadow-inner" placeholder="// Paste your code here for vulnerability analysis..."></textarea>
                 
+                <!-- Vector C: Dependency Manifest Accordion (Optional) -->
+                <div class="mt-4">
+                    <button type="button" id="toggleManifestBtn" onclick="toggleManifestPanel()" class="flex items-center gap-2 text-xs font-mono text-cyan-400 hover:text-cyan-300 font-bold tracking-wide transition-all cursor-pointer select-none bg-cyan-950/30 hover:bg-cyan-950/50 border border-cyan-500/30 hover:border-cyan-500/50 px-3.5 py-2 rounded-xl">
+                        <svg id="manifestToggleIcon" class="w-4 h-4 transition-transform duration-200" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                            <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M12 4v16m8-8H4"></path>
+                        </svg>
+                        <span id="manifestToggleLabel">+ Add requirements.txt / Dependencies (Optional)</span>
+                    </button>
+                    <div id="manifestContainer" class="hidden mt-3 p-4 rounded-xl bg-[#030712]/85 backdrop-blur-md border border-cyan-500/30 shadow-inner animate-fade-in">
+                        <div class="flex items-center justify-between mb-2">
+                            <label for="manifestInput" class="text-xs font-mono font-bold text-cyan-400 uppercase tracking-wider flex items-center gap-2">
+                                <svg class="w-4 h-4 text-cyan-400" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                                    <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M9 12h6m-6 4h6m2 5H7a2 2 0 01-2-2V5a2 2 0 012-2h5.586a1 1 0 01.707.293l5.414 5.414a1 1 0 01.293.707V19a2 2 0 01-2 2z"></path>
+                                </svg>
+                                Dependency Manifest (Vector C SCA Reachability)
+                            </label>
+                            <span class="text-[10px] font-mono text-gray-500">requirements.txt format</span>
+                        </div>
+                        <textarea id="manifestInput" spellcheck="false" class="w-full h-[120px] bg-black/70 text-cyan-300 font-mono text-xs leading-relaxed p-3 rounded-lg border border-white/10 focus:outline-none focus:border-cyan-400 focus:ring-1 focus:ring-cyan-400 transition-all resize-y placeholder:text-gray-600" placeholder="e.g.&#10;vulnlib==1.2.0&#10;urllib3>=1.26.0&#10;requests~=2.28.0"></textarea>
+                        <p class="text-[11px] font-mono text-gray-400 mt-2">
+                            Vector C correlates declared dependencies against the AST call graph to mathematically verify whether vulnerable library APIs are directly reachable from active execution paths.
+                        </p>
+                    </div>
+                </div>
+                
                 <!-- Scan Button -->
                 <button id="scanBtn" class="mt-8 w-full bg-gradient-to-r from-emerald-500 to-cyan-600 hover:from-emerald-400 hover:to-cyan-500 text-white font-bold py-4 px-4 rounded-xl shadow-[0_0_25px_rgba(16,185,129,0.35)] hover:shadow-[0_0_35px_rgba(16,185,129,0.55)] transition-all duration-300 flex justify-center items-center gap-3 tracking-wide cursor-pointer active:scale-[0.99]">
                     <svg xmlns="http://www.w3.org/2000/svg" class="h-6 w-6" fill="none" viewBox="0 0 24 24" stroke="currentColor">
@@ -2384,6 +2409,21 @@ jobs:
             if (f.remediation) lines.push(`    Fix Advice: ${f.remediation}`);
             if (f.suppressed) lines.push(`    Status:     SUPPRESSED (${f.suppression_justification || 'In-source ignore'})`);
         });
+
+        const scaFindings = d.sca_reachability_findings || [];
+        if (scaFindings.length) {
+            lines.push("\n-------------------------------------------------------");
+            lines.push("VECTOR C — DEPENDENCY REACHABILITY FINDINGS:");
+            lines.push("-------------------------------------------------------");
+            scaFindings.forEach((sf, idx) => {
+                lines.push(`\n[SCA-${idx + 1}] ${sf.package_name}@${sf.declared_version} | ${sf.reachability_classification} | ${sf.severity || 'N/A'}`);
+                if (sf.advisory_id) lines.push(`    Advisory:   ${sf.advisory_id} (${sf.advisory_summary || ''})`);
+                lines.push(`    Import:     ${sf.import_status} | API: ${sf.api_status}`);
+                if (sf.call_path && sf.call_path.length) lines.push(`    Call Path:  ${sf.call_path.join(' -> ')}`);
+                if (sf.limitations && sf.limitations.length) lines.push(`    Note:       ${sf.limitations.join('; ')}`);
+            });
+        }
+
         lines.push("\n=======================================================");
         const fullText = lines.join('\n');
         navigator.clipboard.writeText(fullText).then(() => {
@@ -2409,6 +2449,24 @@ jobs:
             alert('Failed to copy report to clipboard.');
         });
     };
+
+    function toggleManifestPanel() {
+        const container = document.getElementById('manifestContainer');
+        const icon = document.getElementById('manifestToggleIcon');
+        const label = document.getElementById('manifestToggleLabel');
+        if (!container) return;
+        const isHidden = container.classList.contains('hidden');
+        if (isHidden) {
+            container.classList.remove('hidden');
+            if (label) label.textContent = '− Hide requirements.txt / Dependencies';
+            if (icon) icon.innerHTML = '<path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M20 12H4"></path>';
+        } else {
+            container.classList.add('hidden');
+            if (label) label.textContent = '+ Add requirements.txt / Dependencies (Optional)';
+            if (icon) icon.innerHTML = '<path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M12 4v16m8-8H4"></path>';
+        }
+    }
+    window.toggleManifestPanel = toggleManifestPanel;
 
     function renderSecurityAuditReport(data) {
         const reportContainer = document.getElementById('reportContainer');
@@ -2797,6 +2855,127 @@ jobs:
             `;
         }
 
+        // Vector C: Dependency Reachability Section
+        const scaFindings = data.sca_reachability_findings || [];
+        if (scaFindings.length > 0) {
+            html += `
+                <div class="my-6 p-6 rounded-2xl bg-gradient-to-br from-slate-900/90 to-slate-950/90 border border-cyan-500/30 shadow-2xl backdrop-blur-xl">
+                    <div class="flex flex-col sm:flex-row sm:items-center justify-between gap-3 mb-4 pb-4 border-b border-white/[0.08]">
+                        <div class="flex items-center gap-3">
+                            <div class="w-8 h-8 rounded-lg bg-cyan-500/20 border border-cyan-500/40 flex items-center justify-center text-cyan-400">
+                                <svg class="w-5 h-5" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                                    <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M13 10V3L4 14h7v7l9-11h-7z"></path>
+                                </svg>
+                            </div>
+                            <div>
+                                <h3 class="text-lg font-black text-white font-mono flex items-center gap-2">
+                                    Vector C: Dependency Reachability Analysis
+                                    <span class="text-xs font-mono font-bold px-2.5 py-0.5 rounded-full bg-cyan-500/20 text-cyan-400 border border-cyan-500/40">
+                                        ${scaFindings.length} Evaluated
+                                    </span>
+                                </h3>
+                                <p class="text-xs text-gray-400 font-mono mt-0.5">
+                                    Lexical-scope AST call-graph reachability ground-truth for declared third-party packages.
+                                </p>
+                            </div>
+                        </div>
+                    </div>
+
+                    <div class="space-y-4">
+                        ${scaFindings.map(f => {
+                            let classBadgeColor = 'bg-slate-500/20 text-slate-300 border-slate-500/40';
+                            let classLabel = f.reachability_classification || 'UNKNOWN';
+                            if (classLabel === 'REACHABLE_API_USE') {
+                                classBadgeColor = 'bg-red-500/20 text-red-400 border-red-500/50 shadow-[0_0_15px_rgba(239,68,68,0.25)]';
+                            } else if (classLabel === 'DEPENDENCY_ACTIVE') {
+                                classBadgeColor = 'bg-yellow-500/20 text-yellow-400 border-yellow-500/50';
+                            } else if (classLabel === 'DEPENDENCY_DORMANT' || classLabel === 'UNREACHABLE_PACKAGE') {
+                                classBadgeColor = 'bg-emerald-500/20 text-emerald-400 border-emerald-500/40';
+                            } else if (classLabel === 'TRANSITIVE_VULNERABLE') {
+                                classBadgeColor = 'bg-purple-500/20 text-purple-400 border-purple-500/40';
+                            } else if (classLabel === 'REACHABILITY_UNRESOLVED') {
+                                classBadgeColor = 'bg-orange-500/20 text-orange-400 border-orange-500/50';
+                            } else if (classLabel === 'NOT_VULNERABLE') {
+                                classBadgeColor = 'bg-teal-500/20 text-teal-400 border-teal-500/40';
+                            }
+
+                            let sevBadgeColor = 'bg-slate-500/20 text-slate-300 border-slate-500/40';
+                            const sev = (f.severity || '').toUpperCase();
+                            if (sev === 'CRITICAL' || sev === 'HIGH') {
+                                sevBadgeColor = 'bg-red-500/20 text-red-400 border-red-500/40';
+                            } else if (sev === 'MEDIUM') {
+                                sevBadgeColor = 'bg-yellow-500/20 text-yellow-400 border-yellow-500/40';
+                            } else if (sev === 'LOW') {
+                                sevBadgeColor = 'bg-blue-500/20 text-blue-400 border-blue-500/40';
+                            }
+
+                            const callPathStr = (f.call_path && f.call_path.length > 0)
+                                ? f.call_path.join(' → ')
+                                : null;
+
+                            return `
+                                <div class="p-4 rounded-xl bg-black/50 border border-white/10 hover:border-cyan-500/40 transition-all font-mono">
+                                    <div class="flex flex-wrap items-center justify-between gap-2 mb-2.5">
+                                        <div class="flex flex-wrap items-center gap-2">
+                                            <!-- Package & Version -->
+                                            <span class="text-sm font-bold text-white bg-slate-800/80 px-2.5 py-1 rounded-lg border border-white/10 flex items-center gap-1.5">
+                                                <svg class="w-3.5 h-3.5 text-cyan-400" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M20 7l-8-4-8 4m16 0l-8 4m8-4v10l-8 4m0-10L4 7m8 4v10M4 7v10l8 4"></path></svg>
+                                                ${escapeHtml(f.package_name || 'unknown')}
+                                                <span class="text-xs text-gray-400 font-normal">@ ${escapeHtml(f.declared_version || 'unknown')}</span>
+                                            </span>
+
+                                            <!-- Classification Badge -->
+                                            <span class="text-xs font-bold px-2.5 py-1 rounded-full border ${classBadgeColor}">
+                                                ${escapeHtml(classLabel)}
+                                            </span>
+
+                                            <!-- Advisory ID & Severity -->
+                                            ${f.advisory_id ? `
+                                                <span class="text-xs px-2.5 py-1 rounded-full border ${sevBadgeColor} font-bold">
+                                                    ${escapeHtml(f.advisory_id)} (${escapeHtml(f.severity || 'UNKNOWN')})
+                                                </span>
+                                            ` : ''}
+                                        </div>
+
+                                        <!-- Import / Call Status -->
+                                        <div class="flex items-center gap-2 text-[11px] text-gray-400">
+                                            <span>Import: <strong class="${f.import_status === 'PACKAGE_IMPORTED' ? 'text-cyan-400' : 'text-gray-500'}">${escapeHtml(f.import_status || 'NONE')}</strong></span>
+                                            <span>•</span>
+                                            <span>API: <strong class="${f.api_status === 'API_CALLED' ? 'text-red-400' : f.api_status === 'API_NOT_CALLED' ? 'text-emerald-400' : 'text-yellow-400'}">${escapeHtml(f.api_status || 'NONE')}</strong></span>
+                                        </div>
+                                    </div>
+
+                                    ${f.advisory_summary ? `
+                                        <p class="text-xs text-gray-300 mb-2 leading-relaxed">
+                                            ${escapeHtml(f.advisory_summary)}
+                                        </p>
+                                    ` : ''}
+
+                                    <!-- Call Path Trace (if available) -->
+                                    ${callPathStr ? `
+                                        <div class="mt-2.5 p-2.5 rounded-lg bg-[#040814] border border-cyan-500/30 text-xs">
+                                            <span class="text-[10px] uppercase tracking-wider text-cyan-400 font-bold block mb-1">AST Call Graph Execution Trace:</span>
+                                            <div class="flex items-center gap-1.5 text-emerald-400 font-bold overflow-x-auto py-0.5">
+                                                <code>${escapeHtml(callPathStr)}</code>
+                                            </div>
+                                        </div>
+                                    ` : ''}
+
+                                    <!-- Limitations (if any) -->
+                                    ${(f.limitations && f.limitations.length > 0) ? `
+                                        <div class="mt-2 text-[11px] text-amber-400/80 flex items-start gap-1.5">
+                                            <span class="font-bold">Notice:</span>
+                                            <span>${escapeHtml(f.limitations.join('; '))}</span>
+                                        </div>
+                                    ` : ''}
+                                </div>
+                            `;
+                        }).join('')}
+                    </div>
+                </div>
+            `;
+        }
+
         // Collapsible Raw Evidence Drawer
         const evidenceJsonStr = JSON.stringify(rawEvidence, null, 2);
         html += `
@@ -2874,11 +3053,17 @@ jobs:
                     headers['Authorization'] = `Bearer ${currentToken}`;
                 }
 
+                const manifestInput = document.getElementById('manifestInput');
+                const scanPayload = { code: code };
+                if (manifestInput && manifestInput.value.trim()) {
+                    scanPayload.manifest = manifestInput.value.trim();
+                }
+
                 const startTime = Date.now();
                 const response = await fetch('/api/scan', {
                     method: 'POST',
                     headers: headers,
-                    body: JSON.stringify({ code: code })
+                    body: JSON.stringify(scanPayload)
                 });
 
                 if (response.status === 413) {
