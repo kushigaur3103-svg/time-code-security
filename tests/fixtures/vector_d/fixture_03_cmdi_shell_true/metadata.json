@@ -1,0 +1,14 @@
+{
+  "fixture_id": "fixture_03_cmdi_shell_true",
+  "cwe": "CWE-78",
+  "remediation_rule": "CMD_INJECTION_SPLIT",
+  "expected_security_property": "Command execution bypasses system shell parser (/bin/sh or cmd.exe) by utilizing direct execve array invocation with shell=False.",
+  "input_ast_pattern": "ast.Call to subprocess.{call,run,Popen,check_output} with keyword argument shell=ast.Constant(value=True).",
+  "vulnerable_sink": "subprocess.call(cmd, shell=True)",
+  "expected_ast_transformation": "Transform string command into structured argument list (via static tokenization or shlex.split), set keyword argument shell=False (or omit shell default).",
+  "command_splitting_mechanism": "Decompose command string into argument list [executable, arg1, arg2, ...] while preserving argument boundaries so shell metacharacters (; | & ` $ ()) cannot alter execution topology.",
+  "assumptions_and_limitations": [
+    "Bypasses shell built-ins (cd, echo) which require explicit executable binaries",
+    "Shell pipelines (|) or redirection (>, <) require multi-process piping or file descriptors"
+  ]
+}

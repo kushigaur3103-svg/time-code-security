@@ -1,0 +1,16 @@
+{
+  "fixture_id": "fixture_04_path_traversal_open",
+  "cwe": "CWE-22",
+  "remediation_rule": "PATH_TRAVERSAL_RESOLVE",
+  "expected_security_property": "Canonicalized target path is mathematically guaranteed to remain within the trusted base directory boundary via is_relative_to.",
+  "input_ast_pattern": "ast.Call to open() or os.path operations concatenating untrusted filename to a base directory.",
+  "vulnerable_sink": "open(base_dir + filename)",
+  "expected_ast_transformation": "Resolve trusted base directory (Path(base_dir).resolve()), resolve candidate target path ((safe_base / filename).resolve()), and insert containment guard (if not target_path.is_relative_to(safe_base): raise ValueError).",
+  "resolution_step": "Both base directory and target path are fully canonicalized with Path.resolve() to collapse symlinks and '..' traversal segments.",
+  "containment_check": "target_path.is_relative_to(safe_base) verifies prefix containment.",
+  "failure_behavior": "Explicitly raises ValueError or SecurityException when target path resolves outside trusted base directory boundary.",
+  "assumptions_and_limitations": [
+    "Requires Python 3.9+ for Path.is_relative_to",
+    "Calling resolve() alone is insufficient without the containment check against safe_base"
+  ]
+}

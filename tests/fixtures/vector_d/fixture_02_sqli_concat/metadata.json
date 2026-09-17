@@ -1,0 +1,14 @@
+{
+  "fixture_id": "fixture_02_sqli_concat",
+  "cwe": "CWE-89",
+  "remediation_rule": "SQLI_PARAMETERIZE",
+  "expected_security_property": "Dynamic concatenation operands are stripped from query string construction and bound as SQL query parameters.",
+  "input_ast_pattern": "ast.BinOp(op=ast.Add()) constructing SQL query string passed to cursor.execute.",
+  "vulnerable_sink": "cursor.execute(query) where query = '...' + str(order_id)",
+  "expected_ast_transformation": "Decompose binary addition tree: replace dynamic operands (e.g. str(order_id) or order_id) with driver placeholder (?), strip surrounding quote delimiters if present, and bind dynamic operand expressions as a tuple argument to cursor.execute.",
+  "operands_becoming_parameters": "Right-hand dynamic operand 'order_id' (with redundant type conversions unwrapped if present).",
+  "assumptions_and_limitations": [
+    "Operands must represent scalar data values, not SQL keywords or table names",
+    "Preserves underlying operand evaluation order in parameter tuple"
+  ]
+}

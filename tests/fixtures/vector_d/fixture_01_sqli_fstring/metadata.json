@@ -1,0 +1,16 @@
+{
+  "fixture_id": "fixture_01_sqli_fstring",
+  "cwe": "CWE-89",
+  "remediation_rule": "SQLI_PARAMETERIZE",
+  "expected_security_property": "SQL data MUST NOT remain concatenated/interpolated into SQL text; user input is bound via driver placeholder tuple.",
+  "input_ast_pattern": "ast.Call to cursor.execute where query argument is an ast.JoinedStr (f-string).",
+  "vulnerable_sink": "cursor.execute(f\"SELECT * FROM users WHERE username = '{username}'\")",
+  "expected_ast_transformation": "Extract string constant literal fragments, replace formatted values ({username}) with driver placeholders (?), strip surrounding quotes from SQL text, and append tuple of interpolated expressions as second argument to cursor.execute.",
+  "placeholder_style": "?",
+  "parameter_ordering": "Positional tuple matches left-to-right order of ast.FormattedValue expressions in ast.JoinedStr.",
+  "assumptions_and_limitations": [
+    "Assumes SQLite parameter syntax '?'",
+    "Does not support dynamic table/column identifiers via query parameters",
+    "Only handles inline FormattedValue expressions"
+  ]
+}
