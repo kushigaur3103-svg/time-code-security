@@ -31,6 +31,7 @@ import secret_scanner
 import tempfile
 from pathlib import Path
 from sca_reachability.engine import analyze_dependency_reachability
+import remediation
 
 class DualConfidenceStr(str):
     """String that fuzzy-matches both 'HIGH (PATTERN_MATCH)' and legacy confidence strings."""
@@ -1994,6 +1995,31 @@ async def scan_code(request: Request, authorization: str = Header(None)):
             
     manifest = data.get("manifest")
     results = execute_tcs_ast_scan(normalized_files, filename=scan_filename, manifest=manifest)
+
+    # Vector D Auto-Remediation Integration
+    target_code = code if (code and isinstance(code, str)) else (list(normalized_files.values())[0] if normalized_files else "")
+    remediation_engine = None
+    for finding in results.get("findings", []):
+        cwe = finding.get("cwe")
+        if cwe in ("CWE-89", "CWE-78", "CWE-22") and target_code:
+            try:
+                if remediation_engine is None:
+                    remediation_engine = remediation.RemediationEngine()
+                rec = remediation_engine.remediate(finding, target_code, file_path="snippet.py")
+                if rec.patch_status == remediation.PatchStatus.SUCCESS:
+                    finding["remediation"] = {
+                        "rule": rec.remediation_rule.value,
+                        "unified_diff": rec.unified_diff,
+                        "patched_source": rec.patched_source,
+                        "status": rec.patch_status.value
+                    }
+                else:
+                    finding["remediation"] = None
+            except Exception:
+                finding["remediation"] = None
+        else:
+            finding["remediation"] = None
+
     if str(data.get("format", "")).lower() == "sarif":
         return to_sarif(results)
     return results

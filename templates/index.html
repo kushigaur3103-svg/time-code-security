@@ -2253,7 +2253,7 @@ jobs:
                     ` : ''}
                     ${isSink && finding.remediation ? `
                         <div class="mt-2.5 p-2 rounded-lg bg-red-950/40 border border-red-500/30 text-[11px] font-mono text-red-300">
-                            <span class="font-bold text-red-200">Remediation:</span> ${escapeHtml(finding.remediation)}
+                            <span class="font-bold text-red-200">Remediation:</span> ${escapeHtml(typeof finding.remediation === 'string' ? finding.remediation : (finding.remediation.rule || 'Auto-remediation available'))}
                         </div>
                     ` : ''}
                 </div>
@@ -2271,19 +2271,59 @@ jobs:
         });
 
         if (finding.remediation) {
+            const remAdvice = typeof finding.remediation === 'string'
+                ? finding.remediation
+                : (finding.remediation.rule ? `Auto-Fix Rule: ${finding.remediation.rule}` : 'Auto-remediation available');
             graphHtml += `
                 <div class="mt-4 p-4 rounded-xl bg-emerald-950/20 border border-emerald-500/30 font-mono text-xs">
                     <div class="flex items-center gap-2 text-emerald-400 font-bold uppercase tracking-wider text-[11px] mb-1.5">
                         <svg class="w-4 h-4" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M9 12l2 2 4-4m5.618-4.016A11.955 11.955 0 0112 2.944a11.955 11.955 0 01-8.618 3.04A12.02 12.02 0 003 9c0 5.591 3.824 10.29 9 11.622 5.176-1.332 9-6.03 9-11.622 0-1.042-.133-2.052-.382-3.016z"></path></svg>
                         Prescriptive Remediation & Patch Advice
                     </div>
-                    <p class="text-gray-300 leading-relaxed">${escapeHtml(finding.remediation)}</p>
+                    <p class="text-gray-300 leading-relaxed">${escapeHtml(remAdvice)}</p>
                 </div>
             `;
         }
 
         graphHtml += `</div>`;
         container.innerHTML = graphHtml;
+    };
+
+    window.renderUnifiedDiffHtml = function(diffText) {
+        if (!diffText) return '<div class="text-gray-500 text-xs italic">No diff available</div>';
+        const lines = diffText.split('\n');
+        return lines.map(line => {
+            const escaped = escapeHtml(line);
+            if (line.startsWith('+') && !line.startsWith('+++')) {
+                return `<div class="bg-emerald-950/70 text-emerald-300 px-2 py-0.5 border-l-2 border-emerald-400 whitespace-pre font-mono text-[11px]">${escaped}</div>`;
+            } else if (line.startsWith('-') && !line.startsWith('---')) {
+                return `<div class="bg-red-950/70 text-red-300 px-2 py-0.5 border-l-2 border-red-400 whitespace-pre font-mono text-[11px]">${escaped}</div>`;
+            } else if (line.startsWith('@@')) {
+                return `<div class="bg-cyan-950/40 text-cyan-400 px-2 py-0.5 font-bold whitespace-pre font-mono text-[11px]">${escaped}</div>`;
+            } else {
+                return `<div class="text-gray-400 px-2 py-0.5 whitespace-pre font-mono text-[11px]">${escaped}</div>`;
+            }
+        }).join('');
+    };
+
+    window.applyRemediationPatch = function(findingIndex) {
+        if (!window.currentScanFindings || !window.currentScanFindings[findingIndex]) return;
+        const finding = window.currentScanFindings[findingIndex];
+        if (!finding.remediation || !finding.remediation.patched_source) {
+            if (typeof showToast === 'function') {
+                showToast('No patched source available to apply.', 'error');
+            }
+            return;
+        }
+        const codeInput = document.getElementById('codeInput');
+        if (codeInput) {
+            codeInput.value = finding.remediation.patched_source;
+            codeInput.dispatchEvent(new Event('input', { bubbles: true }));
+            codeInput.scrollIntoView({ behavior: 'smooth', block: 'center' });
+        }
+        if (typeof showToast === 'function') {
+            showToast('Patch applied to editor! Re-scan to verify.', 'success');
+        }
     };
 
     window.selectVulnerabilityForProofGraph = function(idx) {
@@ -2406,7 +2446,10 @@ jobs:
             lines.push(`    Confidence: ${f.confidence_label} (${Math.round((f.confidence || 1) * 100)}%)`);
             if (f.code_snippet) lines.push(`    Snippet:    ${f.code_snippet}`);
             if (f.flow_trace && f.flow_trace.length) lines.push(`    Dataflow:   ${f.flow_trace.join(' -> ')}`);
-            if (f.remediation) lines.push(`    Fix Advice: ${f.remediation}`);
+            if (f.remediation) {
+                const remStr = typeof f.remediation === 'string' ? f.remediation : (f.remediation.rule ? `Auto-Fix Rule: ${f.remediation.rule}` : 'Auto-remediation available');
+                lines.push(`    Fix Advice: ${remStr}`);
+            }
             if (f.suppressed) lines.push(`    Status:     SUPPRESSED (${f.suppression_justification || 'In-source ignore'})`);
         });
 
@@ -2714,6 +2757,30 @@ jobs:
                                     ? 'bg-emerald-500/20 text-emerald-400 border-emerald-500/40'
                                     : 'bg-amber-500/20 text-amber-400 border-amber-500/40';
 
+                                const hasAutoFix = Boolean(f.remediation && typeof f.remediation === 'object' && f.remediation.status === 'SUCCESS');
+                                const autoFixHtml = hasAutoFix ? `
+                                    <div class="mt-3" onclick="event.stopPropagation();">
+                                        <details class="group/fix rounded-xl bg-slate-950/90 border border-emerald-500/30 overflow-hidden text-xs font-mono">
+                                            <summary class="px-3 py-2 bg-emerald-950/40 hover:bg-emerald-950/60 cursor-pointer flex items-center justify-between font-bold text-emerald-400 select-none transition-colors">
+                                                <span class="flex items-center gap-1.5">
+                                                    ✨ One-Click Auto Fix Available (Vector D)
+                                                </span>
+                                                <span class="text-[10px] text-emerald-300/80 group-open/fix:rotate-180 transition-transform">▼</span>
+                                            </summary>
+                                            <div class="p-3 space-y-2.5 border-t border-emerald-500/20 bg-black/60">
+                                                <div class="text-[10px] uppercase tracking-wider text-gray-400 font-bold">Unified Diff:</div>
+                                                <div class="rounded-lg bg-black/90 border border-white/10 p-2 overflow-x-auto max-h-60 leading-tight">
+                                                    ${window.renderUnifiedDiffHtml(f.remediation.unified_diff)}
+                                                </div>
+                                                <button type="button" onclick="event.stopPropagation(); window.applyRemediationPatch(${idx});" class="w-full flex items-center justify-center gap-2 px-3 py-2 rounded-lg bg-emerald-500/20 hover:bg-emerald-500/30 text-emerald-300 hover:text-white border border-emerald-500/40 font-mono font-bold text-xs transition-all shadow-md cursor-pointer">
+                                                    <svg class="w-4 h-4 text-emerald-400" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M5 13l4 4L19 7"></path></svg>
+                                                    Apply Fix to Editor
+                                                </button>
+                                            </div>
+                                        </details>
+                                    </div>
+                                ` : '';
+
                                 if (isSuppressed) {
                                     return `
                                         <div id="vuln-card-${idx}" onclick="selectVulnerabilityForProofGraph(${idx})" class="vuln-card cursor-pointer p-4 rounded-xl bg-[#090e1a] border border-dashed border-slate-700/90 hover:border-slate-500 transition-all shadow-md group">
@@ -2734,6 +2801,7 @@ jobs:
                                                     <code>${escapeHtml(f.code_snippet)}</code>
                                                 </div>
                                             ` : ''}
+                                            ${autoFixHtml}
                                             <div class="mt-2.5 pt-2 border-t border-white/5 flex items-center justify-between text-[11px] font-mono text-slate-400">
                                                 <span class="truncate max-w-[200px]">Suppressed: ${escapeHtml(f.suppression_justification || 'In-source comment')}</span>
                                                 <span class="text-slate-400 group-hover:text-cyan-400 group-hover:translate-x-0.5 transition-all">Inspect Flow →</span>
@@ -2771,6 +2839,7 @@ jobs:
                                                     <code>${escapeHtml(f.masked_value || f.code_snippet)}</code>
                                                 </div>
                                             ` : ''}
+                                            ${autoFixHtml}
                                             <div class="mt-2.5 pt-2 border-t border-white/5 flex items-center justify-between text-[11px] font-mono text-gray-400">
                                                 <span class="text-gray-400">${actionText}</span>
                                                 <span class="${actionColor} font-bold group-hover:translate-x-1 transition-transform flex items-center gap-1">
