@@ -56,6 +56,9 @@ MAX_FILE_SIZE_BYTES = 5 * 1024 * 1024  # 5 MB
 MAX_LINE_LENGTH_CHARS = 10000
 BINARY_PREFIX_BYTES = 8192
 
+# Test orchestration seam: invoked immediately before stale-source check
+_PRE_WRITE_HOOK: Optional[Any] = None
+
 
 def check_file_resilience(file_path: Path, display_path: str) -> Optional[str]:
     """
@@ -820,15 +823,24 @@ def format_table(
     return "\n".join(lines)
 
 
+from remediation import (
+    PatchStatus,
+    RemediationRecord,
+    ProjectRemediationResult,
+    format_remediation_section,
+    remediate_project,
+)
+
+
 def main():
     parser = argparse.ArgumentParser(
         description="TimeCodeSecurity (TCS) SAST & SCA Scanner CLI",
         prog="tcs_cli.py"
     )
     parser.add_argument(
-        "target",
-        nargs="?",
-        default=None,
+        "targets",
+        nargs="*",
+        default=[],
         help="Target Python file, manifest, or directory to scan"
     )
     parser.add_argument(
@@ -914,8 +926,45 @@ def main():
         action="store_true",
         help="Emit speculative POTENTIAL findings for unresolved function parameters without known taint bindings"
     )
+    parser.add_argument(
+        "--fix", "--remediate",
+        dest="fix",
+        action="store_true",
+        default=False,
+        help="Generate automated AST remediation patches for eligible vulnerabilities"
+    )
+    parser.add_argument(
+        "--dry-run",
+        action="store_true",
+        default=False,
+        help="Preview remediation patches without modifying files (default behavior for --fix)"
+    )
+    parser.add_argument(
+        "--write",
+        action="store_true",
+        default=False,
+        help="Authorize writing verified remediation patches to disk"
+    )
 
     args = parser.parse_args()
+
+    fix_active = getattr(args, "fix", False) or getattr(args, "remediate", False)
+    args.fix = fix_active
+    args.remediate = fix_active
+
+    if args.dry_run and args.write:
+        print("[ERROR] Cannot specify both --dry-run and --write.", file=sys.stderr)
+        sys.exit(2)
+
+    if getattr(args, "staged", False) and fix_active:
+        print("Error: --fix/--remediate is currently not supported with --staged mode. Run on working tree targets directly.", file=sys.stderr)
+        sys.exit(2)
+
+    raw_targets = [t for t in args.targets if t != "scan"]
+    if len(raw_targets) == 0:
+        args.target = "scan" if "scan" in args.targets else None
+    else:
+        args.target = raw_targets[0]
 
     # Load configuration
     try:
@@ -1248,6 +1297,35 @@ def main():
 
         export_data["sca_reachability_findings"] = reachability_findings
 
+    # ---------------------------------------------------------
+    # Vector D Remediation Engine (delegated to remediation.orchestrator)
+    # ---------------------------------------------------------
+    remediation_res: Optional[ProjectRemediationResult] = None
+    remediation_records: List[RemediationRecord] = []
+    written_files: List[str] = []
+    stale_files: List[str] = []
+    unwritten_eligible_files: List[str] = []
+    remediation_candidates = [f for f in effective_findings if not f.get("suppressed", False)]
+    findings_by_file: Dict[str, List[Dict[str, Any]]] = {}
+
+    if args.fix:
+        remediation_res = remediate_project(
+            files=files,
+            effective_findings=effective_findings,
+            target=target,
+            base_dir=base_dir,
+            is_write=args.write,
+            pre_write_hook=_PRE_WRITE_HOOK
+        )
+        export_data["remediations"] = [rec.to_dict() for rec in remediation_res.remediation_records]
+        export_data["remediation_summary"] = remediation_res.summary
+        remediation_records = remediation_res.remediation_records
+        written_files = remediation_res.written_files
+        stale_files = remediation_res.stale_files
+        unwritten_eligible_files = remediation_res.unwritten_eligible_files
+        remediation_candidates = getattr(remediation_res, "remediation_candidates", remediation_candidates)
+        findings_by_file = getattr(remediation_res, "findings_by_file", findings_by_file)
+
     if args.format.lower() == "sarif":
         sarif_doc = to_sarif(export_data, enabled_rule_ids=config.effective_rules if config else None)
         output_text = json.dumps(sarif_doc, indent=2)
@@ -1264,6 +1342,12 @@ def main():
             reachability_findings=reachability_findings,
             reachability_enabled=args.sca_reachability
         )
+        if args.fix:
+            output_text += "\n\n" + format_remediation_section(
+                remediation_records,
+                written_files=written_files,
+                is_write=args.write
+            )
 
     if args.output:
         out_path = Path(args.output).resolve()
@@ -1337,16 +1421,41 @@ def main():
             file=sys.stderr
         )
 
+    if args.fix:
+        if args.write:
+            success_rems = sum(1 for r in remediation_records if r.patch_status == PatchStatus.SUCCESS and r.original_file in written_files)
+            print(f"[TCS REMEDIATION] Wrote {len(written_files)} verified file(s) ({success_rems} patch(es) applied).", file=sys.stderr)
+        else:
+            success_rems = sum(1 for r in remediation_records if r.patch_status == PatchStatus.SUCCESS)
+            print(f"[TCS REMEDIATION] Dry-run preview: {success_rems} verified patch(es) available. Run with --write to apply.", file=sys.stderr)
+
     has_sast_failure = len(effective_findings) > 0
     has_sca_failure = (len(sca_findings) > 0) if args.sca else False
     has_secret_failure = (len(secret_findings) > 0) if args.secrets else False
 
-    if has_sast_failure or has_sca_failure or has_secret_failure:
-        sys.exit(1)
-    elif staged_unresolved_deps:
-        sys.exit(2)
+    if args.fix:
+        total_eligible = len(remediation_candidates)
+        all_remediated = (
+            total_eligible > 0
+            and len(remediation_records) == total_eligible
+            and all(r.patch_status == PatchStatus.SUCCESS and r.verification_passed for r in remediation_records)
+            and len(stale_files) == 0
+            and len(unwritten_eligible_files) == 0
+            and len(written_files) == len(findings_by_file)
+        )
+        if args.write and all_remediated and not has_sca_failure and not has_secret_failure:
+            sys.exit(0)
+        elif total_eligible == 0 and not has_sast_failure and not has_sca_failure and not has_secret_failure:
+            sys.exit(0)
+        else:
+            sys.exit(1)
     else:
-        sys.exit(0)
+        if has_sast_failure or has_sca_failure or has_secret_failure:
+            sys.exit(1)
+        elif staged_unresolved_deps:
+            sys.exit(2)
+        else:
+            sys.exit(0)
 
 
 if __name__ == "__main__":

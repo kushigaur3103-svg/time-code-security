@@ -344,6 +344,7 @@ class TestVectorDPhase1ScopeEnforcement(unittest.TestCase):
             "dispatcher.py",
             "patch_engine.py",
             "verification.py",
+            "orchestrator.py",
         }
         self.assertEqual(
             set(p.name for p in py_files),

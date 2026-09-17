@@ -15,6 +15,11 @@ from remediation.cwe22_path_traversal import Cwe22PathTraversalTransformer
 from remediation.dispatcher import RuleDispatcher
 from remediation.verification import RemediationVerifier
 from remediation.patch_engine import RemediationEngine
+from remediation.orchestrator import (
+    ProjectRemediationResult,
+    format_remediation_section,
+    remediate_project,
+)
 
 __all__ = [
     "PatchStatus",
@@ -28,4 +33,7 @@ __all__ = [
     "RuleDispatcher",
     "RemediationVerifier",
     "RemediationEngine",
+    "ProjectRemediationResult",
+    "format_remediation_section",
+    "remediate_project",
 ]

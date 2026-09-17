@@ -7,7 +7,62 @@ to prove that:
 """
 
 from typing import Any, Dict, List, Optional, Tuple
-from tcs_cli import execute_tcs_scan
+from ast_scanner import TaintTracker
+
+
+def scan_source_for_verification(file_path: str, source_code: str) -> List[Dict[str, Any]]:
+    """
+    Authoritative SAST re-scan invocation using core Vector B TaintTracker directly.
+    Completely decoupled from CLI presentation layers.
+    """
+    tracker = TaintTracker(files={file_path: source_code}, audit_all=True)
+    sources, sinks, edges = tracker.analyze()
+
+    sinks_by_id = {s.id: s for s in sinks}
+    sources_by_id = {s.id: s for s in sources}
+
+    findings = []
+    seen = set()
+    vuln_idx = 1
+    target_lines = source_code.splitlines()
+
+    for edge in edges:
+        sink = sinks_by_id.get(edge.target_id)
+        if not sink:
+            continue
+
+        cwe = sink.metadata.get("cwe", "UNKNOWN_CWE")
+        sink_loc = sink.location
+        dedup_key = (sink_loc.file, sink_loc.line_start, cwe)
+        if dedup_key in seen:
+            continue
+        seen.add(dedup_key)
+
+        code_snippet = ""
+        if 1 <= sink_loc.line_start <= len(target_lines):
+            code_snippet = target_lines[sink_loc.line_start - 1].strip()
+
+        source_node = sources_by_id.get(edge.source_id)
+        source_loc = source_node.location if source_node else None
+
+        pg_dict = edge.proof_graph.to_dict() if edge.proof_graph else None
+
+        findings.append({
+            "id": f"TCS-VULN-{vuln_idx:03d}",
+            "cwe": cwe,
+            "category": sink.metadata.get("sink_type", "UNKNOWN_VULNERABILITY"),
+            "file": sink_loc.file,
+            "line_number": sink_loc.line_start,
+            "sink_symbol": sink.symbol,
+            "source_symbol": source_node.symbol if source_node else "USER_INPUT",
+            "source_line": source_loc.line_start if source_loc else None,
+            "code_snippet": code_snippet,
+            "proof_graph": pg_dict,
+            "confidence": float(edge.confidence),
+        })
+        vuln_idx += 1
+
+    return findings
 
 
 class RemediationVerifier:
@@ -104,13 +159,11 @@ class RemediationVerifier:
         Returns:
             (verification_passed, error_message_if_any)
         """
-        # 1. Authoritative scan on original source
-        orig_scan = execute_tcs_scan({original_file: original_source}, audit_all=True)
-        orig_findings: List[Dict[str, Any]] = orig_scan.get("findings", [])
+        # 1. Authoritative scan on original source via core TaintTracker
+        orig_findings = scan_source_for_verification(original_file, original_source)
 
-        # 2. Authoritative scan on patched source
-        patched_scan = execute_tcs_scan({original_file: patched_source}, audit_all=True)
-        patched_findings: List[Dict[str, Any]] = patched_scan.get("findings", [])
+        # 2. Authoritative scan on patched source via core TaintTracker
+        patched_findings = scan_source_for_verification(original_file, patched_source)
 
         # 3. Verify that the target finding disappears in patched source
         for pf in patched_findings:

@@ -156,11 +156,12 @@ class RemediationEngine:
         # 7. Unified Diff Generation
         orig_lines = source_code.splitlines(keepends=True)
         patched_lines = patched_source.splitlines(keepends=True)
+        norm_file = original_file.replace("\\", "/")
         diff_lines = list(difflib.unified_diff(
             orig_lines,
             patched_lines,
-            fromfile=f"a/{original_file}",
-            tofile=f"b/{original_file}"
+            fromfile=f"a/{norm_file}",
+            tofile=f"b/{norm_file}"
         ))
         diff_str = "".join(diff_lines)
 
@@ -176,5 +177,6 @@ class RemediationEngine:
             patched_code_snippet=patched_snippet or "",
             unified_diff=diff_str,
             verification_passed=True,
-            limitations=limitations
+            limitations=limitations,
+            patched_source=patched_source
         )

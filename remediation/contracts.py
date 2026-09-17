@@ -41,6 +41,7 @@ class RemediationRecord:
     unified_diff: str
     verification_passed: bool
     limitations: Tuple[str, ...] = ()
+    patched_source: Optional[str] = None
 
     def __post_init__(self):
         # Blocker 1 & Contract Validation: Type integrity
@@ -72,7 +73,7 @@ class RemediationRecord:
 
     def to_dict(self) -> Dict[str, Any]:
         """Serializes the record to a standard JSON-compatible dictionary."""
-        return {
+        d = {
             "finding_id": self.finding_id,
             "cwe": self.cwe,
             "remediation_rule": self.remediation_rule.value if isinstance(self.remediation_rule, Enum) else str(self.remediation_rule),
@@ -85,6 +86,9 @@ class RemediationRecord:
             "verification_passed": self.verification_passed,
             "limitations": list(self.limitations),
         }
+        if self.patched_source is not None:
+            d["patched_source"] = self.patched_source
+        return d
 
     @classmethod
     def from_dict(cls, data: Dict[str, Any]) -> "RemediationRecord":
@@ -109,6 +113,7 @@ class RemediationRecord:
             unified_diff=str(data.get("unified_diff", "")),
             verification_passed=bool(data.get("verification_passed", False)),
             limitations=tuple(data.get("limitations", ())),
+            patched_source=data.get("patched_source"),
         )
 
 
