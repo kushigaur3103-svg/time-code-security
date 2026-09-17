@@ -122,6 +122,55 @@ class TestVectorDPhase3FinalHardening(unittest.TestCase):
         )
         self.assertTrue(is_absent, "Original unconstrained path concatenation finding must be absent")
 
+    def test_gate1_inverted_containment_guard_neutralizes_cwe22(self):
+        """GATE 1b: Verify that inverted guard clauses (if not target.is_relative_to(base): raise ...) safely neutralize CWE-22."""
+        safe_guarded_code = (
+            "from pathlib import Path\n\n"
+            "def read_doc(filename):\n"
+            '    base_dir = "/var/data/storage"\n'
+            "    safe_base = Path(base_dir).resolve()\n"
+            "    target_path = (safe_base / filename).resolve()\n"
+            "    if not target_path.is_relative_to(safe_base):\n"
+            '        raise ValueError("Path traversal attempt detected")\n'
+            '    with open(target_path, "r") as f:\n'
+            "        return f.read()\n"
+        )
+
+        # 1. Authoritative scan with inverted guard clause -> 0 CWE-22 findings
+        scan_guarded = execute_tcs_scan({"doc.py": safe_guarded_code}, audit_all=True)
+        cwe22_findings = [f for f in scan_guarded.get("findings", []) if f.get("cwe") == "CWE-22"]
+        self.assertEqual(len(cwe22_findings), 0, f"Inverted guard clause must neutralize CWE-22 finding: {cwe22_findings}")
+
+        # 2. Counter-factual check: without the guard, CWE-22 MUST be detected
+        unguarded_code = (
+            "from pathlib import Path\n\n"
+            "def read_doc(filename):\n"
+            '    base_dir = "/var/data/storage"\n'
+            "    safe_base = Path(base_dir).resolve()\n"
+            "    target_path = (safe_base / filename).resolve()\n"
+            '    with open(target_path, "r") as f:\n'
+            "        return f.read()\n"
+        )
+        scan_unguarded = execute_tcs_scan({"doc.py": unguarded_code}, audit_all=True)
+        cwe22_unguarded = [f for f in scan_unguarded.get("findings", []) if f.get("cwe") == "CWE-22"]
+        self.assertGreaterEqual(len(cwe22_unguarded), 1, "Unguarded open() on user input must trigger CWE-22")
+
+        # 3. Non-terminating body check: if body does not raise or return, CWE-22 MUST remain active
+        non_terminating_code = (
+            "from pathlib import Path\n\n"
+            "def read_doc(filename):\n"
+            '    base_dir = "/var/data/storage"\n'
+            "    safe_base = Path(base_dir).resolve()\n"
+            "    target_path = (safe_base / filename).resolve()\n"
+            "    if not target_path.is_relative_to(safe_base):\n"
+            "        pass\n"
+            '    with open(target_path, "r") as f:\n'
+            "        return f.read()\n"
+        )
+        scan_non_term = execute_tcs_scan({"doc.py": non_terminating_code}, audit_all=True)
+        cwe22_non_term = [f for f in scan_non_term.get("findings", []) if f.get("cwe") == "CWE-22"]
+        self.assertGreaterEqual(len(cwe22_non_term), 1, "Non-terminating inverted check must not neutralize CWE-22")
+
     # ======================================================================
     # GATE 2: CONSERVATIVE CWE-78 REJECTION RULES
     # ======================================================================

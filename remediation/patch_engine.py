@@ -154,8 +154,11 @@ class RemediationEngine:
             )
 
         # 7. Unified Diff Generation
-        orig_lines = source_code.splitlines(keepends=True)
-        patched_lines = patched_source.splitlines(keepends=True)
+        is_crlf = "\r\n" in source_code
+        eol = "\r\n" if is_crlf else "\n"
+
+        orig_lines = [l if (l.endswith("\n") or l.endswith("\r\n")) else l + eol for l in source_code.splitlines(keepends=True)]
+        patched_lines = [l if (l.endswith("\n") or l.endswith("\r\n")) else l + eol for l in patched_source.splitlines(keepends=True)]
         norm_file = original_file.replace("\\", "/")
         diff_lines = list(difflib.unified_diff(
             orig_lines,
@@ -163,7 +166,13 @@ class RemediationEngine:
             fromfile=f"a/{norm_file}",
             tofile=f"b/{norm_file}"
         ))
-        diff_str = "".join(diff_lines)
+        cleaned_diff_lines = []
+        for dl in diff_lines:
+            if not (dl.endswith("\n") or dl.endswith("\r\n")):
+                cleaned_diff_lines.append(dl + eol)
+            else:
+                cleaned_diff_lines.append(dl)
+        diff_str = "".join(cleaned_diff_lines)
 
         # 8. Success Record
         return RemediationRecord(

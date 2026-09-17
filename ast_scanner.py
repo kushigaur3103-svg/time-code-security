@@ -714,6 +714,9 @@ class TaintTracker:
                     target_name = self._extract_target_from_parents_attr(comp)
                     if target_name:
                         pairs.append((target_name, test_node.left))
+        elif isinstance(test_node, ast.UnaryOp) and isinstance(test_node.op, ast.Not):
+            # Inverted containment check (e.g., `if not target.is_relative_to(base):`)
+            return self._extract_containment_pairs(test_node.operand)
         elif isinstance(test_node, ast.Call):
             if isinstance(test_node.func, ast.Attribute) and test_node.func.attr == "is_relative_to":
                 target_name = self._extract_target_from_relative_to(test_node)
@@ -999,18 +1002,35 @@ class TaintTracker:
                 self.scan_for_sinks(stmt.test, scope_id, stmt.lineno)
                 self._collect_calls_in_expr(stmt.test, scope_id, stmt.lineno)
                 pairs = self._extract_containment_pairs(stmt.test)
-                if pairs and stmt.body:
-                    body_start = stmt.body[0].lineno
-                    body_end = max(getattr(s, "end_lineno", s.lineno) for s in stmt.body)
-                    for target_name, base_node in pairs:
-                        self.containment_guards.append({
-                            "var_name": target_name,
-                            "base_node": base_node,
-                            "scope_id": scope_id,
-                            "check_line": stmt.lineno,
-                            "start_line": body_start,
-                            "end_line": body_end,
-                        })
+                if pairs:
+                    is_inverted = isinstance(stmt.test, ast.UnaryOp) and isinstance(stmt.test.op, ast.Not)
+                    body_terminates = any(isinstance(s, (ast.Raise, ast.Return)) for s in stmt.body)
+                    if is_inverted and body_terminates:
+                        # Control-flow static analysis for guard clauses:
+                        # When `if not target.is_relative_to(safe_base):` terminates unconditionally
+                        # via raise or return, all subsequent statements in the scope are guaranteed
+                        # to execute only if containment was satisfied.
+                        for target_name, base_node in pairs:
+                            self.containment_guards.append({
+                                "var_name": target_name,
+                                "base_node": base_node,
+                                "scope_id": scope_id,
+                                "check_line": stmt.lineno,
+                                "start_line": stmt.lineno + 1,
+                                "end_line": 999999,
+                            })
+                    elif stmt.body:
+                        body_start = stmt.body[0].lineno
+                        body_end = max(getattr(s, "end_lineno", s.lineno) for s in stmt.body)
+                        for target_name, base_node in pairs:
+                            self.containment_guards.append({
+                                "var_name": target_name,
+                                "base_node": base_node,
+                                "scope_id": scope_id,
+                                "check_line": stmt.lineno,
+                                "start_line": body_start,
+                                "end_line": body_end,
+                            })
                 self.collect_statements(stmt.body, scope_id=scope_id, is_conditional=True)
                 self.collect_statements(stmt.orelse, scope_id=scope_id, is_conditional=True)
             elif isinstance(stmt, (ast.For, ast.AsyncFor, ast.While)):
