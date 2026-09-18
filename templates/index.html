@@ -303,6 +303,43 @@
                     <span id="fileErrorText" class="font-bold">Error: File exceeds 5MB Microservice Limit. Massive monolithic codebases require Enterprise Dedicated Clusters. Contact Founder for upgrade.</span>
                 </div>
 
+                <!-- CLI Promotion & Heavy Scan Callout Banner -->
+                <div id="cliPromoBanner" class="my-3 p-3.5 sm:p-4 rounded-xl bg-gradient-to-r from-emerald-950/40 via-[#030712]/95 to-indigo-950/40 border border-emerald-500/30 hover:border-emerald-500/50 shadow-[0_0_20px_rgba(16,185,129,0.08)] transition-all duration-200">
+                    <div class="flex items-start justify-between gap-3">
+                        <div class="flex-1 min-w-0">
+                            <div class="flex items-center flex-wrap gap-2 mb-1">
+                                <span class="inline-flex items-center gap-1.5 px-2 py-0.5 rounded bg-emerald-500/20 text-emerald-400 border border-emerald-500/30 text-[10px] font-mono font-bold tracking-wider uppercase">
+                                    <svg class="w-3 h-3 text-emerald-400" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                                        <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M8 9l3 3-3 3m5 0h3M5 20h14a2 2 0 002-2V6a2 2 0 00-2-2H5a2 2 0 00-2 2v12a2 2 0 002 2z" />
+                                    </svg>
+                                    FREE CLI TOOL
+                                </span>
+                                <h3 class="text-xs sm:text-sm font-bold text-gray-100 tracking-wide">Scanning a full repository or heavy codebase?</h3>
+                            </div>
+                            <p class="text-[11px] sm:text-xs text-gray-300 font-sans leading-relaxed">
+                                Web demo is rate-limited to 3 scans per session. For unlimited scans, CI/CD pipelines, and one-click in-place code remediation, install the global CLI:
+                            </p>
+                        </div>
+                        <button type="button" onclick="dismissCliBanner()" aria-label="Dismiss CLI promotion banner" class="text-gray-400 hover:text-gray-200 p-1 rounded-lg hover:bg-white/10 transition-colors cursor-pointer flex-shrink-0" title="Dismiss banner">
+                            <svg class="w-4 h-4" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                                <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M6 18L18 6M6 6l12 12"/>
+                            </svg>
+                        </button>
+                    </div>
+
+                    <!-- Code Snippet Box with One-Click Copy -->
+                    <div class="mt-2.5 flex flex-col sm:flex-row sm:items-center justify-between bg-black/85 border border-white/10 rounded-lg p-2.5 sm:px-3 gap-2.5">
+                        <div class="font-mono text-[11px] sm:text-xs text-emerald-400 overflow-x-auto whitespace-pre leading-relaxed select-all" id="cliSnippetCode">pip install time-code-security  # or: pip install -e .
+tcs scan ./your-project --fix</div>
+                        <button type="button" id="copyCliSnippetBtn" onclick="copyCliSnippet()" class="self-start sm:self-center flex items-center gap-1.5 text-xs font-mono font-medium text-gray-300 hover:text-white bg-gray-800/80 hover:bg-gray-700/80 border border-white/10 hover:border-emerald-500/40 px-3 py-1.5 rounded-md transition-all cursor-pointer flex-shrink-0 active:scale-95 shadow-sm">
+                            <svg id="copyCliSnippetIcon" class="w-3.5 h-3.5 text-cyan-400" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                                <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M8 16H6a2 2 0 01-2-2V6a2 2 0 012-2h8a2 2 0 012 2v2m-6 12h8a2 2 0 002-2v-8a2 2 0 00-2-2h-8a2 2 0 00-2 2v8a2 2 0 002 2z"></path>
+                            </svg>
+                            <span id="copyCliSnippetLabel">Copy</span>
+                        </button>
+                    </div>
+                </div>
+
                 <textarea id="codeInput" spellcheck="false" class="w-full h-[320px] bg-[#030712]/85 backdrop-blur-md text-emerald-400 font-mono text-sm leading-relaxed p-5 rounded-xl border border-white/10 focus:outline-none focus:border-cyan-500 focus:ring-1 focus:ring-cyan-500 transition-all resize-none shadow-inner" placeholder="// Paste your code here for vulnerability analysis..."></textarea>
                 
                 <!-- Vector C: Dependency Manifest Accordion (Optional) -->
@@ -2511,6 +2548,55 @@ jobs:
     }
     window.toggleManifestPanel = toggleManifestPanel;
 
+    function dismissCliBanner() {
+        const banner = document.getElementById('cliPromoBanner');
+        if (banner) {
+            banner.classList.add('hidden');
+            try {
+                sessionStorage.setItem('tcs_cli_banner_dismissed', 'true');
+            } catch (e) {}
+        }
+    }
+    window.dismissCliBanner = dismissCliBanner;
+
+    function copyCliSnippet() {
+        const snippet = "pip install time-code-security\ntcs scan ./your-project --fix";
+        const copySuccess = () => {
+            const label = document.getElementById('copyCliSnippetLabel');
+            if (label) {
+                const orig = label.textContent;
+                label.textContent = 'Copied! ✅';
+                setTimeout(() => { label.textContent = orig; }, 2000);
+            }
+        };
+
+        if (navigator.clipboard && navigator.clipboard.writeText) {
+            navigator.clipboard.writeText(snippet).then(copySuccess).catch(() => {
+                fallbackCopy();
+            });
+        } else {
+            fallbackCopy();
+        }
+
+        function fallbackCopy() {
+            try {
+                const textarea = document.createElement('textarea');
+                textarea.value = snippet;
+                textarea.setAttribute('readonly', '');
+                textarea.style.position = 'absolute';
+                textarea.style.left = '-9999px';
+                document.body.appendChild(textarea);
+                textarea.select();
+                document.execCommand('copy');
+                document.body.removeChild(textarea);
+                copySuccess();
+            } catch (err) {
+                console.error('Failed to copy CLI command: ', err);
+            }
+        }
+    }
+    window.copyCliSnippet = copyCliSnippet;
+
     function renderSecurityAuditReport(data) {
         const reportContainer = document.getElementById('reportContainer');
         const scanResult = document.getElementById('scanResult');
@@ -3874,6 +3960,12 @@ jobs:
     // ROBUST DASHBOARD INITIALIZATION
     // ==========================================
     async function initDashboard() {
+        try {
+            if (sessionStorage.getItem('tcs_cli_banner_dismissed') === 'true') {
+                const banner = document.getElementById('cliPromoBanner');
+                if (banner) banner.classList.add('hidden');
+            }
+        } catch (e) {}
         checkVipMagicLink();
         try {
             await fetchPlan();
