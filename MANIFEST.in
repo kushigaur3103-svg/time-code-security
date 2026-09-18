@@ -1,0 +1,26 @@
+include README.md
+include requirements.txt
+include pyproject.toml
+recursive-include remediation *.py
+recursive-include sca_reachability *.py
+recursive-include templates *.html
+exclude *.png
+exclude *.db
+exclude *.bat
+exclude *.sh
+exclude turbo.json
+exclude package.json
+exclude package-lock.json
+prune scratch
+prune fixtures
+prune test_environment
+prune tests/fixtures
+prune .gemini
+prune .github
+prune apps
+prune packages
+prune vscode_extension
+prune infrastructure
+prune compliance_engine
+prune github_app_integration
+prune rag_engine

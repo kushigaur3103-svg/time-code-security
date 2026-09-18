@@ -34,6 +34,12 @@ from staged_scanner import (
 )
 from sca_reachability.engine import analyze_dependency_reachability
 
+try:
+    from importlib.metadata import version as _get_version
+    __version__ = _get_version("time-code-security")
+except Exception:
+    __version__ = "1.0.0"
+
 
 IGNORED_DIRS = {
     ".git",
@@ -832,10 +838,16 @@ from remediation import (
 )
 
 
-def main():
+def main(argv: Optional[List[str]] = None):
     parser = argparse.ArgumentParser(
         description="TimeCodeSecurity (TCS) SAST & SCA Scanner CLI",
-        prog="tcs_cli.py"
+        prog="tcs"
+    )
+    parser.add_argument(
+        "--version",
+        action="version",
+        version=__version__,
+        help="Show program's version number and exit"
     )
     parser.add_argument(
         "targets",
@@ -946,7 +958,7 @@ def main():
         help="Authorize writing verified remediation patches to disk"
     )
 
-    args = parser.parse_args()
+    args = parser.parse_args(argv)
 
     fix_active = getattr(args, "fix", False) or getattr(args, "remediate", False)
     args.fix = fix_active

@@ -1,0 +1,83 @@
+[build-system]
+requires = ["setuptools>=77"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "time-code-security"
+version = "1.0.0"
+description = "Deterministic AST Security Scanner, Proof Graph Engine & Automated Remediation Framework"
+readme = "README.md"
+requires-python = ">=3.9"
+license = "MIT"
+dependencies = [
+    "fastapi",
+    "uvicorn[standard]",
+    "gunicorn>=21.2.0",
+    "requests",
+    "jinja2",
+    "python-dotenv",
+    "pyyaml>=6.0",
+    "passlib[bcrypt]",
+    "bcrypt==3.2.2",
+    "PyJWT",
+    "fpdf",
+    "SQLAlchemy",
+    "psycopg2-binary",
+    "google-generativeai",
+    "openai",
+    "cohere",
+    "celery",
+    "redis",
+    "pydantic",
+    "packaging",
+    "python-multipart",
+    "tree-sitter",
+    "tree-sitter-python",
+    "tomli; python_version < '3.11'",
+]
+
+[project.scripts]
+tcs = "tcs_cli:main"
+
+[tool.setuptools]
+py-modules = [
+    "app",
+    "ast_scanner",
+    "ci_reporter",
+    "config_loader",
+    "delivery_models",
+    "delivery_repository",
+    "durable_delivery_sink",
+    "event_bus",
+    "event_publisher",
+    "event_taxonomy",
+    "in_app_adapter",
+    "manifest_parser",
+    "notification_models",
+    "notification_policy",
+    "notification_repository",
+    "notification_routes",
+    "notification_service",
+    "osv_client",
+    "rule_engine",
+    "sarif_adapter",
+    "secret_filters",
+    "secret_scanner",
+    "sqlite_delivery_repository",
+    "sqlite_notification_repository",
+    "ssrf_guard",
+    "staged_scanner",
+    "suppression_resolver",
+    "tcs_cli",
+    "version_matcher",
+    "webhook_adapter",
+    "webhook_client",
+    "webhook_formatters",
+]
+packages = [
+    "remediation",
+    "sca_reachability",
+]
+
+[tool.setuptools.package-data]
+"*" = ["*.html", "*.yml", "*.yaml", "*.json"]
