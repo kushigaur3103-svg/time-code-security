@@ -2218,6 +2218,18 @@ jobs:
                               severity === 'HIGH' ? 'bg-orange-500/20 text-orange-400 border-orange-500/40' :
                               'bg-yellow-500/20 text-yellow-400 border-yellow-500/40';
 
+        const confLabel = String(finding.confidence_label || finding.status || (finding.confidence >= 1.0 ? 'CONFIRMED' : 'POTENTIAL')).toUpperCase();
+        const isConfirmed = confLabel.includes('CONFIRMED');
+        const bannerBadgeHtml = isConfirmed
+            ? `<div class="text-[11px] font-mono text-red-400 flex items-center gap-1.5 px-2.5 py-1 rounded-full bg-red-500/10 border border-red-500/30">
+                   <span class="w-1.5 h-1.5 rounded-full bg-red-400 animate-pulse"></span>
+                   <span class="font-bold">CONFIRMED PROOF PATH</span>
+               </div>`
+            : `<div class="text-[11px] font-mono text-amber-400 flex items-center gap-1.5 px-2.5 py-1 rounded-full bg-amber-500/10 border border-amber-500/30">
+                   <span class="w-1.5 h-1.5 rounded-full bg-amber-400 animate-pulse"></span>
+                   <span class="font-bold">POTENTIAL DATAFLOW PATH</span>
+               </div>`;
+
         let graphHtml = `
             <div class="mb-4 p-3.5 rounded-xl bg-[#060a14] border border-white/10 flex flex-col sm:flex-row justify-between items-start sm:items-center gap-2">
                 <div class="flex items-center gap-2 flex-wrap font-mono">
@@ -2226,19 +2238,16 @@ jobs:
                     <span class="text-xs font-bold px-2 py-0.5 rounded-full border ${sevBadgeColor}">${escapeHtml(severity)}</span>
                     <span class="text-xs font-bold px-2 py-0.5 rounded-full border border-cyan-500/30 bg-cyan-500/10 text-cyan-400">${escapeHtml(cwe)}</span>
                 </div>
-                <div class="text-[11px] font-mono text-emerald-400 flex items-center gap-1.5">
-                    <span class="w-1.5 h-1.5 rounded-full bg-emerald-400 animate-pulse"></span>
-                    <span>CONFIRMED PROOF PATH</span>
-                </div>
+                ${bannerBadgeHtml}
             </div>
 
             <div class="space-y-0 py-1">
         `;
 
         nodes.forEach((node, idx) => {
-            const rawType = (node.node_type || (idx === 0 ? 'SOURCE' : (idx === nodes.length - 1 ? 'SINK' : 'ASSIGNMENT'))).toUpperCase();
-            const isSource = idx === 0;
-            const isSink = idx === nodes.length - 1 && nodes.length > 1;
+            const rawType = String(node.node_type || (idx === 0 ? 'SOURCE' : (idx === nodes.length - 1 ? 'SINK' : 'ASSIGNMENT'))).toUpperCase();
+            const isSource = rawType === 'SOURCE' || (idx === 0 && rawType !== 'SINK');
+            const isSink = rawType === 'SINK' || (idx === nodes.length - 1 && nodes.length > 1 && rawType !== 'SOURCE');
             const isIntermediate = !isSource && !isSink;
 
             let borderStyle = 'border: 1.5px solid #64748b; background: #0b1120;';

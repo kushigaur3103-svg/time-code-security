@@ -223,7 +223,8 @@ def execute_tcs_scan(
             "flow_trace_summary": flow_summary,
             "remediation": remediation,
             "proof_graph": edge.proof_graph.to_dict() if edge.proof_graph else None,
-            "proof_graph_ascii": render_proof_graph_ascii(edge.proof_graph) if edge.proof_graph else None
+            "proof_graph_ascii": render_proof_graph_ascii(edge.proof_graph) if edge.proof_graph else None,
+            "discovery_mode": "STANDARD_SCAN"
         })
         vuln_idx += 1
 
@@ -835,7 +836,96 @@ from remediation import (
     ProjectRemediationResult,
     format_remediation_section,
     remediate_project,
+    RemediationEngine,
+    RuleDispatcher,
+    RemediationVerifier,
 )
+
+
+def discover_remediation_findings(
+    files: Dict[str, str],
+    config: Optional[TCSConfig],
+    conservative_findings: List[Dict[str, Any]],
+    start_vuln_idx: int = 1
+) -> List[Dict[str, Any]]:
+    """
+    Dedicated Remediation-Oriented Discovery Pass (v1.0.1).
+
+    Discovers findings eligible for automated remediation when conservative scan
+    classified the flow as uncalled function parameter / POTENTIAL taint.
+
+    Hard Invariants:
+    1. Reuses existing execute_tcs_scan(files, config=config, audit_all=True) as candidate discovery feeder.
+    2. UNKNOWN findings are NEVER auto-remediated (strictly prohibited).
+    3. POTENTIAL findings are eligible ONLY for explicitly approved CWE patterns (CWE-89, CWE-78, CWE-22).
+    4. Strict Semantic Correlation: Reuses RemediationVerifier.is_matching_finding to avoid duplicate admission.
+    5. Full 7-Stage Verification Gate: Transformer success, syntax validation, semantic re-scan,
+       target disappearance, and negative space check must ALL pass before candidate is admitted.
+    6. Candidate Provenance: Admitted findings preserve their original confidence (CONFIRMED/POTENTIAL)
+       and record discovery_mode = "REMEDIATION_DISCOVERY".
+    """
+    if not files:
+        return []
+
+    discovery_scan_results = execute_tcs_scan(files, config=config, audit_all=True)
+    candidate_findings = discovery_scan_results.get("findings", [])
+    if not candidate_findings:
+        return []
+
+    verifier = RemediationVerifier()
+    engine = RemediationEngine(verifier=verifier)
+    admitted: List[Dict[str, Any]] = []
+    vuln_idx = start_vuln_idx
+
+    for cf in candidate_findings:
+        # Strict semantic duplicate check against existing conservative findings & already admitted candidates
+        is_dup = any(verifier.is_matching_finding(cf, ef) for ef in conservative_findings)
+        if not is_dup:
+            is_dup = any(verifier.is_matching_finding(cf, af) for af in admitted)
+        if is_dup:
+            continue
+
+        # Strict UNKNOWN Policy: UNKNOWN is NEVER auto-remediated under any circumstances
+        conf_label = str(cf.get("confidence_label", "")).strip().upper()
+        status_label = str(cf.get("status", "")).strip().upper()
+        if conf_label == "UNKNOWN" or status_label == "UNKNOWN" or float(cf.get("confidence", 0.0)) <= 0.0:
+            continue
+
+        # Confidence gating: only CONFIRMED and approved POTENTIAL
+        if conf_label not in ("CONFIRMED", "POTENTIAL"):
+            continue
+
+        # Explicit CWE-specific policy: only CWE-89, CWE-78, CWE-22 are supported for automated remediation
+        cwe = str(cf.get("cwe", "")).strip().upper()
+        if cwe not in ("CWE-89", "CWE-78", "CWE-22"):
+            continue
+
+        # Dispatcher check
+        transformer = engine.dispatcher.get_transformer(cwe=cwe)
+        if not transformer:
+            continue
+
+        # Complete 7-stage verification gate via engine.remediate
+        rel_file = cf.get("file")
+        source_code = files.get(rel_file)
+        if source_code is None:
+            continue
+
+        try:
+            rec = engine.remediate(cf, source_code, file_path=rel_file)
+        except Exception:
+            continue
+
+        if rec.patch_status == PatchStatus.SUCCESS and rec.verification_passed and rec.patched_source:
+            admitted_finding = dict(cf)
+            admitted_finding["id"] = f"TCS-VULN-{vuln_idx:03d}"
+            admitted_finding["discovery_mode"] = "REMEDIATION_DISCOVERY"
+            admitted_finding["confidence"] = cf.get("confidence", 0.50)
+            admitted_finding["confidence_label"] = conf_label
+            admitted.append(admitted_finding)
+            vuln_idx += 1
+
+    return admitted
 
 
 def main(argv: Optional[List[str]] = None):
@@ -1207,6 +1297,26 @@ def main(argv: Optional[List[str]] = None):
             raw_findings = scan_text(content, filename=rel_sf)
             passed_findings = filter_findings(raw_findings, file_path=rel_sf, config=filter_cfg)
             secret_findings.extend(passed_findings)
+
+    # ---------------------------------------------------------
+    # Dedicated Remediation Discovery Pass (--fix without --audit-all)
+    # ---------------------------------------------------------
+    if args.fix and not getattr(args, "audit_all", False):
+        admitted = discover_remediation_findings(
+            files=files,
+            config=config,
+            conservative_findings=results.get("findings", []),
+            start_vuln_idx=len(results.get("findings", [])) + 1
+        )
+        if admitted:
+            all_combined = list(results.get("findings", [])) + admitted
+            results["findings"] = all_combined
+            results["summary"] = recompute_summary_metrics(
+                original_summary=results.get("summary", {}),
+                filtered_findings=all_combined,
+                total_files=len(files),
+                lines_scanned=sum(len(c.splitlines()) for c in files.values())
+            )
 
     all_findings = results.get("findings", [])
     if args.exclude_suppressed:

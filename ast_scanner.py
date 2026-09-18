@@ -217,7 +217,7 @@ def render_proof_graph_ascii(proof_graph: ProofGraphIR) -> str:
     
     for idx, node in enumerate(proof_graph.nodes):
         type_str = node.node_type.value if hasattr(node.node_type, "value") else str(node.node_type)
-        if node.node_type == ProofNodeType.SINK:
+        if node.symbol:
             step_hdr = f" [{node.step_index}. {type_str}: {node.symbol}]"
         else:
             step_hdr = f" [{node.step_index}. {type_str}]"
@@ -1286,7 +1286,34 @@ class TaintTracker:
             unknown_parts = [p for p in part_values if p.state != TaintState.CLEAN]
             if unknown_parts:
                 first_u = unknown_parts[0]
-                return TaintValue(state=TaintState.UNKNOWN, source_id=first_u.source_id, confidence=0.50, path=[*first_u.path, f"{file_name}:f_string"], last_operation="f_string_unknown")
+                combined_path = []
+                combined_nodes = []
+                combined_edges = []
+                seen_nids = set()
+                seen_ekeys = set()
+                for p in unknown_parts:
+                    for hop in p.path:
+                        if hop not in combined_path:
+                            combined_path.append(hop)
+                    for pn in p.proof_nodes:
+                        if pn.node_id not in seen_nids:
+                            seen_nids.add(pn.node_id)
+                            combined_nodes.append(pn)
+                    for pe in p.proof_edges:
+                        ek = (pe.from_node_id, pe.to_node_id, pe.edge_type)
+                        if ek not in seen_ekeys:
+                            seen_ekeys.add(ek)
+                            combined_edges.append(pe)
+                combined_path.append(f"{file_name}:f_string")
+                return TaintValue(
+                    state=TaintState.UNKNOWN,
+                    source_id=first_u.source_id,
+                    confidence=0.50,
+                    path=combined_path,
+                    last_operation="f_string_unknown",
+                    proof_nodes=combined_nodes,
+                    proof_edges=combined_edges
+                )
             return TaintValue(state=TaintState.CLEAN, confidence=1.0, last_operation="constant")
 
         if isinstance(node, ast.Call) and self.is_source_call(node, scope_id):
@@ -1583,7 +1610,36 @@ class TaintTracker:
                     # In default high-signal mode (not audit_all), suppress speculative POTENTIAL warnings.
                     # In aggressive mode (--audit-all), emit UNKNOWN (confidence 0.50).
                     if self.audit_all:
-                        return TaintValue(state=TaintState.UNKNOWN, confidence=0.50, path=[f"{file_name}:{node.id}"], last_operation=f"unresolved_param:{node.id}")
+                        param_symbol = f"{node.id} ({target_func_node.name})"
+                        param_pn = self.create_proof_node(
+                            step_index=0,
+                            node_type=ProofNodeType.SOURCE,
+                            file_path=file_name,
+                            node=target_func_node,
+                            symbol=param_symbol,
+                            scope_id=target_scope or scope_id,
+                            lineno=target_func_node.lineno,
+                            override_snippet=self.get_source_snippet(file_name, target_func_node.lineno, target_func_node.lineno, target_func_node) or f"def {target_func_node.name}(..., {node.id}, ...)"
+                        )
+                        source_id = self.next_source_id()
+                        src_node = SecurityNode(
+                            id=source_id,
+                            node_type=NodeType.SOURCE,
+                            symbol=param_symbol,
+                            operation="PARAMETER_INPUT",
+                            location=CodeLocation(file=file_name, line_start=target_func_node.lineno, line_end=target_func_node.lineno, column_start=0, column_end=0),
+                            metadata={"source_type": "FUNCTION_PARAMETER", "parameter": node.id, "function": target_func_node.name}
+                        )
+                        self.sources.append(src_node)
+                        return TaintValue(
+                            state=TaintState.UNKNOWN,
+                            source_id=source_id,
+                            confidence=0.50,
+                            path=[f"{file_name}:{node.id}"],
+                            last_operation=f"unresolved_param:{node.id}",
+                            proof_nodes=[param_pn],
+                            proof_edges=[]
+                        )
                     return TaintValue(state=TaintState.CLEAN, confidence=1.0, path=[f"{file_name}:{node.id}"], last_operation=f"unbound_param:{node.id}")
 
                 # Check known builtins / constants / imports
@@ -2145,10 +2201,56 @@ class TaintTracker:
                     src_id = left.source_id or right.source_id
                     op_label = "path_join" if is_path_div else "binary_op"
                     combined_path = [*left.path, *right.path, op_label]
-                    return TaintValue(state=TaintState.UNKNOWN, source_id=src_id, confidence=0.50, path=combined_path, last_operation=op_label)
+                    combined_nodes = []
+                    seen_nids = set()
+                    combined_edges = []
+                    seen_ekeys = set()
+                    for t in (left, right):
+                        if t.state != TaintState.CLEAN:
+                            for pn in t.proof_nodes:
+                                if pn.node_id not in seen_nids:
+                                    seen_nids.add(pn.node_id)
+                                    combined_nodes.append(pn)
+                            for pe in t.proof_edges:
+                                ek = (pe.from_node_id, pe.to_node_id, pe.edge_type)
+                                if ek not in seen_ekeys:
+                                    seen_ekeys.add(ek)
+                                    combined_edges.append(pe)
+                    return TaintValue(
+                        state=TaintState.UNKNOWN,
+                        source_id=src_id,
+                        confidence=0.50,
+                        path=combined_path,
+                        last_operation=op_label,
+                        proof_nodes=combined_nodes,
+                        proof_edges=combined_edges
+                    )
 
             src_id = left.source_id or right.source_id
-            return TaintValue(state=TaintState.TAINTED if (left.state == TaintState.TAINTED and right.state == TaintState.TAINTED) else TaintState.UNKNOWN, source_id=src_id, confidence=min(left.confidence, right.confidence), path=[*left.path, *right.path, "binary_op"], last_operation="binary_op")
+            combined_nodes = []
+            seen_nids = set()
+            combined_edges = []
+            seen_ekeys = set()
+            for t in (left, right):
+                if t.state != TaintState.CLEAN:
+                    for pn in t.proof_nodes:
+                        if pn.node_id not in seen_nids:
+                            seen_nids.add(pn.node_id)
+                            combined_nodes.append(pn)
+                    for pe in t.proof_edges:
+                        ek = (pe.from_node_id, pe.to_node_id, pe.edge_type)
+                        if ek not in seen_ekeys:
+                            seen_ekeys.add(ek)
+                            combined_edges.append(pe)
+            return TaintValue(
+                state=TaintState.TAINTED if (left.state == TaintState.TAINTED and right.state == TaintState.TAINTED) else TaintState.UNKNOWN,
+                source_id=src_id,
+                confidence=min(left.confidence, right.confidence),
+                path=[*left.path, *right.path, "binary_op"],
+                last_operation="binary_op",
+                proof_nodes=combined_nodes,
+                proof_edges=combined_edges
+            )
         return TaintValue(state=TaintState.UNKNOWN, confidence=0.50, last_operation="unknown_expression")
 
     def resolve_path_provenance(
@@ -2680,10 +2782,22 @@ class TaintTracker:
                             origin_node=node
                         )
                 # Unresolved parameter with no call sites
+                param_symbol = f"{node.id} ({target_func_node.name})"
+                source_id = self.next_source_id()
+                src_node = SecurityNode(
+                    id=source_id,
+                    node_type=NodeType.SOURCE,
+                    symbol=param_symbol,
+                    operation="PARAMETER_INPUT",
+                    location=CodeLocation(file=file_name, line_start=target_func_node.lineno, line_end=target_func_node.lineno, column_start=0, column_end=0),
+                    metadata={"source_type": "FUNCTION_PARAMETER", "parameter": node.id, "function": target_func_node.name}
+                )
+                self.sources.append(src_node)
                 return ProvenanceValue(
                     state=ProvenanceState.UNKNOWN,
                     confidence=0.50,
-                    source_trace=(f"unresolved_param:{node.id}",),
+                    source_id=source_id,
+                    source_trace=(f"unresolved_param:{node.id}", f"{file_name}:{node.id}"),
                     origin_node=node
                 )
 
@@ -2829,10 +2943,51 @@ class TaintTracker:
                     node=None,
                     symbol=src_obj.symbol,
                     scope_id=f"{s_file}:global",
-                    lineno=src_obj.location.line_start
+                    lineno=src_obj.location.line_start,
+                    override_snippet=self.get_source_snippet(s_file, src_obj.location.line_start, src_obj.location.line_start) or f"Source: {src_obj.symbol}"
                 )
                 graph_nodes.append(src_pn)
             graph_nodes.extend(taint.proof_nodes)
+
+        # Invariant: graph_nodes MUST contain a SOURCE node at index 0
+        if not any(n.node_type == ProofNodeType.SOURCE for n in graph_nodes):
+            enc_func = self.functions.get(record.scope_id)
+            matched_param = None
+            if enc_func and enc_func.args.args:
+                for p_str in getattr(taint, "path", []):
+                    for arg_node in enc_func.args.args:
+                        if p_str.endswith(f":{arg_node.arg}") or p_str == arg_node.arg:
+                            matched_param = arg_node
+                            break
+                    if matched_param:
+                        break
+                if not matched_param:
+                    matched_param = enc_func.args.args[0] if enc_func.args.args[0].arg not in ("self", "cls") else (enc_func.args.args[1] if len(enc_func.args.args) > 1 else enc_func.args.args[0])
+
+            if enc_func and matched_param:
+                param_sym = f"{matched_param.arg} ({enc_func.name})"
+                src_pn = self.create_proof_node(
+                    step_index=0,
+                    node_type=ProofNodeType.SOURCE,
+                    file_path=sink_file,
+                    node=enc_func,
+                    symbol=param_sym,
+                    scope_id=record.scope_id,
+                    lineno=enc_func.lineno,
+                    override_snippet=self.get_source_snippet(sink_file, enc_func.lineno, enc_func.lineno, enc_func) or f"def {enc_func.name}(..., {matched_param.arg}, ...)"
+                )
+            else:
+                src_pn = self.create_proof_node(
+                    step_index=0,
+                    node_type=ProofNodeType.SOURCE,
+                    file_path=sink_file,
+                    node=None,
+                    symbol="User Input",
+                    scope_id=record.scope_id,
+                    lineno=max(1, record.lineno - 1),
+                    override_snippet="Untrusted Input Origin"
+                )
+            graph_nodes.insert(0, src_pn)
 
         all_candidate_nodes = [*graph_nodes, sink_pn]
         reindexed_nodes = []
@@ -2921,6 +3076,47 @@ class TaintTracker:
                                     cwe22_nodes.append(assign_pn)
 
         sink_file = sink.location.file
+
+        # Invariant: cwe22_nodes MUST contain a SOURCE node
+        if not any(n.node_type == ProofNodeType.SOURCE for n in cwe22_nodes):
+            enc_func = self.functions.get(record.scope_id)
+            matched_param = None
+            if enc_func and enc_func.args.args:
+                for p_str in getattr(prov, "source_trace", []):
+                    for arg_node in enc_func.args.args:
+                        if p_str.endswith(f":{arg_node.arg}") or p_str == arg_node.arg:
+                            matched_param = arg_node
+                            break
+                    if matched_param:
+                        break
+                if not matched_param:
+                    matched_param = enc_func.args.args[0] if enc_func.args.args[0].arg not in ("self", "cls") else (enc_func.args.args[1] if len(enc_func.args.args) > 1 else enc_func.args.args[0])
+
+            if enc_func and matched_param:
+                param_sym = f"{matched_param.arg} ({enc_func.name})"
+                src_pn = self.create_proof_node(
+                    step_index=0,
+                    node_type=ProofNodeType.SOURCE,
+                    file_path=sink_file,
+                    node=enc_func,
+                    symbol=param_sym,
+                    scope_id=record.scope_id,
+                    lineno=enc_func.lineno,
+                    override_snippet=self.get_source_snippet(sink_file, enc_func.lineno, enc_func.lineno, enc_func) or f"def {enc_func.name}(..., {matched_param.arg}, ...)"
+                )
+            else:
+                src_pn = self.create_proof_node(
+                    step_index=0,
+                    node_type=ProofNodeType.SOURCE,
+                    file_path=sink_file,
+                    node=None,
+                    symbol="User Input",
+                    scope_id=record.scope_id,
+                    lineno=max(1, record.lineno - 1),
+                    override_snippet="Untrusted Input Origin"
+                )
+            cwe22_nodes.insert(0, src_pn)
+
         sink_pn = self.create_proof_node(
             step_index=len(cwe22_nodes),
             node_type=ProofNodeType.SINK,
