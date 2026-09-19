@@ -130,9 +130,9 @@ CWE_89_RULE = SecurityRule(
 # ==============================================================================
 
 def _cwe95_sink_matcher(node: ast.AST, name: str, canon_name: Optional[str] = None) -> bool:
-    """Matches direct and qualified calls to eval and exec."""
+    """Matches direct and qualified calls to eval, exec, and compile."""
     candidates = {c for c in (name, canon_name) if c}
-    return any(c in ("eval", "exec", "builtins.eval", "builtins.exec") for c in candidates)
+    return any(c in ("eval", "exec", "compile", "builtins.eval", "builtins.exec", "builtins.compile") for c in candidates)
 
 
 CWE_95_RULE = SecurityRule(
@@ -294,13 +294,46 @@ CWE502_SINKS = {
     "pickle.load",
     "_pickle.loads",
     "_pickle.load",
+    "yaml.load",
+    "yaml.unsafe_load",
 }
 
 
 def _cwe502_sink_matcher(node: ast.AST, name: str, canon_name: Optional[str] = None) -> bool:
-    """Matches direct and qualified calls to pickle.loads, pickle.load, and _pickle variants."""
+    """Matches direct and qualified calls to pickle.loads, pickle.load, _pickle variants, and yaml.load/unsafe_load."""
     candidates = {c for c in (name, canon_name) if c}
     return bool(candidates & CWE502_SINKS)
+
+
+def _cwe502_safety_filter(node: ast.Call, sink_name: str) -> bool:
+    """
+    Exempts yaml.load when called with safe loaders (e.g. Loader=yaml.SafeLoader or CSafeLoader or BaseLoader).
+    yaml.unsafe_load and pickle.* are never exempted.
+    """
+    if "yaml.load" in sink_name:
+        safe_loaders = {
+            "yaml.SafeLoader", "SafeLoader", "yaml.CSafeLoader", "CSafeLoader",
+            "yaml.BaseLoader", "BaseLoader", "yaml.CBaseLoader", "CBaseLoader"
+        }
+        for kw in getattr(node, "keywords", []):
+            if kw.arg == "Loader":
+                val_str = None
+                if isinstance(kw.value, ast.Name):
+                    val_str = kw.value.id
+                elif isinstance(kw.value, ast.Attribute):
+                    val_str = f"{getattr(kw.value.value, 'id', '')}.{kw.value.attr}"
+                if val_str in safe_loaders:
+                    return True
+        if len(node.args) > 1:
+            arg1 = node.args[1]
+            val_str = None
+            if isinstance(arg1, ast.Name):
+                val_str = arg1.id
+            elif isinstance(arg1, ast.Attribute):
+                val_str = f"{getattr(arg1.value, 'id', '')}.{arg1.attr}"
+            if val_str in safe_loaders:
+                return True
+    return False
 
 
 CWE_502_RULE = SecurityRule(
@@ -331,7 +364,7 @@ CWE_502_RULE = SecurityRule(
         }
     },
     sink_matcher=_cwe502_sink_matcher,
-    safety_filter=None
+    safety_filter=_cwe502_safety_filter
 )
 
 # ==============================================================================
@@ -341,28 +374,27 @@ CWE_502_RULE = SecurityRule(
 CWE1336_DIRECT_SINKS = {
     "render_template_string",
     "flask.render_template_string",
+    "jinja2.Template",
 }
 
 
 def _cwe1336_sink_matcher(node: ast.AST, name: str, canon_name: Optional[str] = None) -> bool:
-    """Matches direct render_template_string calls and template .render() attribute calls."""
+    """Matches direct render_template_string calls, jinja2.Template calls, and template .render() attribute calls."""
     candidates = {c for c in (name, canon_name) if c}
+
+    # Strict exclusion: standard library string.Template must NEVER be flagged
+    if any(c == "string.Template" or c.startswith("string.Template") for c in candidates):
+        return False
 
     # Dynamic attribute method call: template.render(...)
     if isinstance(node, ast.Call) and isinstance(node.func, ast.Attribute) and node.func.attr == "render":
         return True
 
-    # Direct function calls or qualified calls on flask module
-    if isinstance(node, ast.Call):
-        if isinstance(node.func, ast.Name):
-            return bool(candidates & CWE1336_DIRECT_SINKS)
-        elif isinstance(node.func, ast.Attribute):
-            if "flask.render_template_string" in candidates:
-                return True
-            # Reject arbitrary method calls like SomeClass().render_template_string
-            return False
+    # Direct function calls or qualified calls on flask module or jinja2
+    if any(c in CWE1336_DIRECT_SINKS for c in candidates):
+        return True
 
-    return bool(candidates & CWE1336_DIRECT_SINKS)
+    return False
 
 
 CWE_1336_RULE = SecurityRule(

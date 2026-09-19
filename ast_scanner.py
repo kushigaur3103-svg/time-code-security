@@ -311,6 +311,10 @@ PRIMITIVE_NUMERIC_CASTS = {"int", "float", "bool", "math.floor", "math.ceil"}
 SINK_REGISTRY = {
     "eval": {"operation": "ARBITRARY_CODE_EXECUTION", "category": "CODE_EXECUTION", "cwe": "CWE-95"},
     "exec": {"operation": "ARBITRARY_CODE_EXECUTION", "category": "CODE_EXECUTION", "cwe": "CWE-95"},
+    "compile": {"operation": "ARBITRARY_CODE_EXECUTION", "category": "CODE_EXECUTION", "cwe": "CWE-95"},
+    "builtins.eval": {"operation": "ARBITRARY_CODE_EXECUTION", "category": "CODE_EXECUTION", "cwe": "CWE-95"},
+    "builtins.exec": {"operation": "ARBITRARY_CODE_EXECUTION", "category": "CODE_EXECUTION", "cwe": "CWE-95"},
+    "builtins.compile": {"operation": "ARBITRARY_CODE_EXECUTION", "category": "CODE_EXECUTION", "cwe": "CWE-95"},
     "os.system": {"operation": "OS_COMMAND_EXECUTION", "category": "COMMAND_INJECTION", "cwe": "CWE-78"},
     "subprocess.run": {"operation": "OS_COMMAND_EXECUTION", "category": "COMMAND_INJECTION", "cwe": "CWE-78"},
     "subprocess.call": {"operation": "OS_COMMAND_EXECUTION", "category": "COMMAND_INJECTION", "cwe": "CWE-78"},
@@ -319,9 +323,14 @@ SINK_REGISTRY = {
     "subprocess.Popen": {"operation": "OS_COMMAND_EXECUTION", "category": "COMMAND_INJECTION", "cwe": "CWE-78"},
     "pickle.loads": {"operation": "DESERIALIZATION", "category": "UNSAFE_DESERIALIZATION", "cwe": "CWE-502"},
     "pickle.load": {"operation": "DESERIALIZATION", "category": "UNSAFE_DESERIALIZATION", "cwe": "CWE-502"},
+    "_pickle.loads": {"operation": "DESERIALIZATION", "category": "UNSAFE_DESERIALIZATION", "cwe": "CWE-502"},
+    "_pickle.load": {"operation": "DESERIALIZATION", "category": "UNSAFE_DESERIALIZATION", "cwe": "CWE-502"},
+    "yaml.load": {"operation": "DESERIALIZATION", "category": "UNSAFE_DESERIALIZATION", "cwe": "CWE-502"},
+    "yaml.unsafe_load": {"operation": "DESERIALIZATION", "category": "UNSAFE_DESERIALIZATION", "cwe": "CWE-502"},
     "open": {"operation": "FILE_ACCESS", "category": "PATH_TRAVERSAL", "cwe": "CWE-22"},
     "render_template_string": {"operation": "TEMPLATE_EVALUATION", "category": "SSTI", "cwe": "CWE-1336"},
     "flask.render_template_string": {"operation": "TEMPLATE_EVALUATION", "category": "SSTI", "cwe": "CWE-1336"},
+    "jinja2.Template": {"operation": "TEMPLATE_EVALUATION", "category": "SSTI", "cwe": "CWE-1336"},
 }
 
 def location(node: ast.AST, file_path: str) -> CodeLocation:
@@ -1942,9 +1951,9 @@ class TaintTracker:
                 if source_expr is not None:
                     arg_taint = self.resolve_expression(source_expr, sink, scope_id, current_lineno, visited.copy(), call_context)
                     if arg_taint.state == TaintState.TAINTED:
-                        return TaintValue(state=TaintState.TAINTED, source_id=arg_taint.source_id, confidence=arg_taint.confidence, path=[*arg_taint.path, f"{file_name}:compile()"], last_operation="compile")
+                        return TaintValue(state=TaintState.TAINTED, source_id=arg_taint.source_id, confidence=arg_taint.confidence, path=[*arg_taint.path, f"{file_name}:compile()"], last_operation="compile", proof_nodes=arg_taint.proof_nodes, proof_edges=arg_taint.proof_edges)
                     elif arg_taint.state == TaintState.UNKNOWN:
-                        return TaintValue(state=TaintState.UNKNOWN, source_id=arg_taint.source_id, confidence=0.50, path=[*arg_taint.path, f"{file_name}:compile()"], last_operation="compile")
+                        return TaintValue(state=TaintState.UNKNOWN, source_id=arg_taint.source_id, confidence=0.50, path=[*arg_taint.path, f"{file_name}:compile()"], last_operation="compile", proof_nodes=arg_taint.proof_nodes, proof_edges=arg_taint.proof_edges)
                     else:
                         return TaintValue(state=TaintState.CLEAN, confidence=1.0, last_operation="compile")
                 return TaintValue(state=TaintState.CLEAN, confidence=1.0, last_operation="compile")
@@ -1963,9 +1972,9 @@ class TaintTracker:
                 if source_expr is not None:
                     arg_taint = self.resolve_expression(source_expr, sink, scope_id, current_lineno, visited.copy(), call_context)
                     if arg_taint.state == TaintState.TAINTED:
-                        return TaintValue(state=TaintState.TAINTED, source_id=arg_taint.source_id, confidence=arg_taint.confidence, path=[*arg_taint.path, f"{file_name}:Template()"], last_operation="template_construct")
+                        return TaintValue(state=TaintState.TAINTED, source_id=arg_taint.source_id, confidence=arg_taint.confidence, path=[*arg_taint.path, f"{file_name}:Template()"], last_operation="template_construct", proof_nodes=arg_taint.proof_nodes, proof_edges=arg_taint.proof_edges)
                     elif arg_taint.state == TaintState.UNKNOWN:
-                        return TaintValue(state=TaintState.UNKNOWN, source_id=arg_taint.source_id, confidence=0.50, path=[*arg_taint.path, f"{file_name}:Template()"], last_operation="template_construct")
+                        return TaintValue(state=TaintState.UNKNOWN, source_id=arg_taint.source_id, confidence=0.50, path=[*arg_taint.path, f"{file_name}:Template()"], last_operation="template_construct", proof_nodes=arg_taint.proof_nodes, proof_edges=arg_taint.proof_edges)
                     else:
                         return TaintValue(state=TaintState.CLEAN, confidence=1.0, last_operation="template_construct")
                 return TaintValue(state=TaintState.CLEAN, confidence=1.0, last_operation="template_construct")
@@ -1984,9 +1993,9 @@ class TaintTracker:
                 if source_expr is not None:
                     arg_taint = self.resolve_expression(source_expr, sink, scope_id, current_lineno, visited.copy(), call_context)
                     if arg_taint.state == TaintState.TAINTED:
-                        return TaintValue(state=TaintState.TAINTED, source_id=arg_taint.source_id, confidence=arg_taint.confidence, path=[*arg_taint.path, f"{file_name}:from_string()"], last_operation="template_from_string")
+                        return TaintValue(state=TaintState.TAINTED, source_id=arg_taint.source_id, confidence=arg_taint.confidence, path=[*arg_taint.path, f"{file_name}:from_string()"], last_operation="template_from_string", proof_nodes=arg_taint.proof_nodes, proof_edges=arg_taint.proof_edges)
                     elif arg_taint.state == TaintState.UNKNOWN:
-                        return TaintValue(state=TaintState.UNKNOWN, source_id=arg_taint.source_id, confidence=0.50, path=[*arg_taint.path, f"{file_name}:from_string()"], last_operation="template_from_string")
+                        return TaintValue(state=TaintState.UNKNOWN, source_id=arg_taint.source_id, confidence=0.50, path=[*arg_taint.path, f"{file_name}:from_string()"], last_operation="template_from_string", proof_nodes=arg_taint.proof_nodes, proof_edges=arg_taint.proof_edges)
                     else:
                         return TaintValue(state=TaintState.CLEAN, confidence=1.0, last_operation="template_from_string")
                 return TaintValue(state=TaintState.CLEAN, confidence=1.0, last_operation="template_from_string")

@@ -1085,6 +1085,8 @@ def main(argv: Optional[List[str]] = None):
 
     if args.secrets is not None:
         active_secrets = args.secrets
+    elif getattr(args, "audit_all", False):
+        active_secrets = True
     elif config is not None:
         active_secrets = config.scan.secrets
     else:
@@ -1528,7 +1530,7 @@ def main(argv: Optional[List[str]] = None):
         if args.secrets:
             status_items.append(f"{len(secret_files)} secret files")
 
-        findings_items = [f"SAST: {total} (Active: {active}, Suppressed: {suppressed})"]
+        findings_items = [f"Findings: {total} (Active: {active}, Suppressed: {suppressed})"]
         if args.sca:
             sca_count = len(sca_findings)
             sca_confirmed = sum(1 for f in sca_findings if (getattr(f, "status", None) or f.get("status")) == "CONFIRMED")
