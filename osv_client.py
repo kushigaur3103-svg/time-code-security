@@ -142,7 +142,7 @@ class OSVClient:
     ):
         self.api_url = api_url
         self.vuln_api_url = vuln_api_url
-        self.cache_file = cache_file
+        self.cache_file = str(Path(os.path.expanduser(str(cache_file))).resolve()) if cache_file else None
         self.timeout = timeout
         self.max_retries = max_retries
         self.backoff_factor = backoff_factor
@@ -167,7 +167,7 @@ class OSVClient:
         """Loads cached responses from the local cache file."""
         if not self.cache_file:
             return
-        p = Path(self.cache_file)
+        p = Path(os.path.expanduser(str(self.cache_file))).resolve()
         if p.is_file():
             try:
                 data = json.loads(p.read_text(encoding="utf-8"))
@@ -183,7 +183,10 @@ class OSVClient:
         if not self.cache_file:
             return
         try:
-            p = Path(self.cache_file)
+            p = Path(os.path.expanduser(str(self.cache_file))).resolve()
+            # Hard invariant: ensure we never write to a literal '~' directory in the working directory
+            if "~" in p.parts:
+                return
             p.parent.mkdir(parents=True, exist_ok=True)
             p.write_text(json.dumps(self._memory_cache, indent=2), encoding="utf-8")
         except Exception:

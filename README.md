@@ -1,13 +1,33 @@
 # TimeCodeSecurity (TCS) 🛡️
 
-[![Version](https://img.shields.io/badge/version-1.0.0-blue.svg)](https://github.com/kushigaur3103-svg/time-code-security)
-[![Tests](https://img.shields.io/badge/tests-266%2F266%20passed-success.svg)](https://github.com/kushigaur3103-svg/time-code-security)
+[![Version](https://img.shields.io/badge/version-1.1.0-blue.svg)](https://github.com/kushigaur3103-svg/time-code-security)
+[![Tests](https://img.shields.io/badge/tests-271%2F271%20passed-success.svg)](https://github.com/kushigaur3103-svg/time-code-security)
 [![Python](https://img.shields.io/badge/python-3.9%20%7C%203.10%20%7C%203.11-blue.svg)](https://github.com/kushigaur3103-svg/time-code-security)
 [![License](https://img.shields.io/badge/license-MIT-green.svg)](https://github.com/kushigaur3103-svg/time-code-security)
 
 > **Deterministic AST SAST Scanner, Proof Graph Engine & Automated Closed-Loop Remediation Framework.**
 
 TCS scans source code for high-risk vulnerabilities, tracks taint flows across call graphs, verifies reachability in dependencies, and **automatically writes syntactically valid patches** back to disk with zero hallucinations.
+
+---
+
+## 🎯 Authoritative Coverage Matrix
+
+| CWE | Vulnerability Class | Primary Sinks | Detection Engine | Proof Graph | Vector D Auto-Remediation |
+| :--- | :--- | :--- | :---: | :---: | :---: |
+| **CWE-89** | SQL Injection | `cursor.execute`, `engine.execute`, `raw` | ✅ Active | ✅ Deterministic AST Proof | ✅ One-Click / `--fix` |
+| **CWE-78** | OS Command Injection | `subprocess.run`, `subprocess.call`, `os.system`, `os.popen` | ✅ Active | ✅ Deterministic AST Proof | ✅ One-Click / `--fix` |
+| **CWE-22** | Path Traversal | `open`, `os.remove`, `shutil.rmtree`, `os.unlink`, etc. | ✅ Active | ✅ Deterministic AST Proof | ✅ One-Click / `--fix` |
+| **CWE-95** | Code Injection | `eval`, `exec`, `compile` | ✅ Active | ✅ Deterministic AST Proof | 🔒 Detection & Proof Only |
+| **CWE-502** | Deserialization of Untrusted Data | `pickle.loads`, `yaml.unsafe_load`, `yaml.load(..., Loader!=SafeLoader)` | ✅ Active | ✅ Deterministic AST Proof | 🔒 Detection & Proof Only |
+| **CWE-1336** | Server-Side Template Injection (SSTI) | `jinja2.Template`, `flask.render_template_string` | ✅ Active | ✅ Deterministic AST Proof | 🔒 Detection & Proof Only |
+| **CWE-798** | Hardcoded Secrets / API Keys | High-entropy offline regex patterns (AWS, Stripe, Slack, RSA) | ✅ Active | 🔐 Secret Evidence (Masked) | 🔒 Prescriptive Rotation Only |
+
+### Vector D Auto-Remediation Boundary
+Auto-remediation (`tcs scan --fix --write` or the Web UI one-click patch applicator) is strictly governed by closed-loop, AST-verified rewrite rules:
+- **Eligible Vectors (Remediable)**: **CWE-89** (SQL query parameterization), **CWE-78** (Shell-safe list decomposition), and **CWE-22** (Path resolve and containment verification).
+- **Protected Vectors (Detection-Only)**: **CWE-95**, **CWE-502**, and **CWE-1336** produce complete dataflow traces and deterministic AST proof graphs, but are intentionally excluded from automated AST rewriting to eliminate syntax and semantic distortion risks.
+- **Audit-All Secret Inclusion**: Running `tcs scan . --audit-all` automatically enables offline secret scanning (CWE-798) alongside taint analysis. Secret scanning can be explicitly configured using `--secrets` or `--no-secrets`.
 
 ---
 
@@ -34,7 +54,7 @@ tcs scan ./my_project
 | Command | Purpose | Disk State | Exit Code |
 | :--- | :--- | :--- | :--- |
 | `tcs scan .` | Standard conservative scan (zero false alarms on uncalled library parameters) | Unchanged | `0` if clean, `1` if active findings |
-| `tcs scan . --audit-all` | Speculative deep audit (evaluates uncalled parameters as POTENTIAL) | Unchanged | `0` if clean, `1` if findings |
+| `tcs scan . --audit-all` | Speculative deep audit (evaluates uncalled parameters as POTENTIAL; includes secrets by default) | Unchanged | `0` if clean, `1` if findings |
 | `tcs scan . --fix` | Remediation discovery + verified unified diff preview | **Unchanged (0 bytes altered)** | `1` if fixes available |
 | `tcs scan . --fix --write` | Authoritative closed-loop remediation applied atomically | **Safely Patched** | `0` on verified write |
 

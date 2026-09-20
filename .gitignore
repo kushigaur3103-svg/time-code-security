@@ -5,6 +5,8 @@ __pycache__/
 
 # Local scratch scripts and temporary artifacts
 scratch/
+# Allow canonical test files inside scratch
+!scratch/test_*.py
 test.py
 
 # Local database files

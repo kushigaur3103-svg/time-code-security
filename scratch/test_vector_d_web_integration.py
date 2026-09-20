@@ -159,6 +159,10 @@ class TestVectorDWebIntegration(unittest.TestCase):
         # 5. Toast notification string
         self.assertIn("Patch applied to editor! Re-scan to verify.", content)
 
+        # 6. Web UI Safeguard for non-remediable vectors (CWE-95, CWE-502, CWE-1336)
+        self.assertIn("Auto-remediation not supported for this vector", content)
+        self.assertIn("['CWE-95', 'CWE-502', 'CWE-1336']", content)
+
     def test_07_vector_c_reachability_zero_regression(self):
         """Verify Vector C reachability still operates seamlessly alongside Vector D."""
         code = (

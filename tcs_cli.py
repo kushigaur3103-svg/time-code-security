@@ -38,7 +38,7 @@ try:
     from importlib.metadata import version as _get_version
     __version__ = _get_version("time-code-security")
 except Exception:
-    __version__ = "1.0.0"
+    __version__ = "1.1.0"
 
 
 IGNORED_DIRS = {
@@ -1115,7 +1115,7 @@ def main(argv: Optional[List[str]] = None):
         if args.target is None or args.target == "scan":
             target = base_dir
         else:
-            target = Path(args.target).resolve()
+            target = Path(os.path.expanduser(str(args.target))).resolve()
             if not target.exists():
                 print(f"[ERROR] Target path does not exist: {args.target}", file=sys.stderr)
                 sys.exit(2)
@@ -1212,7 +1212,7 @@ def main(argv: Optional[List[str]] = None):
             parser.print_help(sys.stderr)
             sys.exit(2)
 
-        target = Path(args.target).resolve()
+        target = Path(os.path.expanduser(str(args.target))).resolve()
         if not target.exists():
             print(f"[ERROR] Target path does not exist: {args.target}", file=sys.stderr)
             sys.exit(2)
@@ -1233,17 +1233,17 @@ def main(argv: Optional[List[str]] = None):
         for err in results["syntax_errors"]:
             print(f"[WARN] Skipping AST analysis for unparseable file: {err}", file=sys.stderr)
         if getattr(args, "strict", False):
+            print("[ERROR] Strict mode enabled and syntax errors encountered. Aborting.", file=sys.stderr)
             sys.exit(2)
 
     # ---------------------------------------------------------
-    # SCA Analysis (if requested)
+    # Software Composition Analysis (SCA) - (if requested)
     # ---------------------------------------------------------
     sca_findings: List[SCAFinding] = []
     manifest_files: List[Path] = []
-
+    all_deps: List[DependencyRecord] = []
     if args.sca:
         manifest_files = discover_manifest_files(target, base_dir, skipped_files=all_skipped_files)
-        all_deps: List[DependencyRecord] = []
         for mf in manifest_files:
             if target.is_dir():
                 try:
@@ -1264,7 +1264,13 @@ def main(argv: Optional[List[str]] = None):
 
         if all_deps:
             package_names = [dep.name for dep in all_deps]
-            cache_file = args.sca_cache or os.environ.get("TCS_OSV_CACHE", os.path.expanduser("~/.tcs/osv_cache.json"))
+            raw_cache = args.sca_cache or os.environ.get("TCS_OSV_CACHE")
+            if raw_cache:
+                cache_file = str(Path(os.path.expanduser(str(raw_cache))).resolve())
+            else:
+                cache_dir = (Path.home() / ".tcs").resolve()
+                cache_dir.mkdir(parents=True, exist_ok=True)
+                cache_file = str(cache_dir / "osv_cache.json")
             osv_client = OSVClient(cache_file=cache_file, offline_mode=args.sca_offline)
             osv_results = osv_client.query_packages(package_names)
             sca_findings = match_dependencies(all_deps, osv_results)
@@ -1474,7 +1480,7 @@ def main(argv: Optional[List[str]] = None):
             )
 
     if args.output:
-        out_path = Path(args.output).resolve()
+        out_path = Path(os.path.expanduser(str(args.output))).resolve()
         out_path.parent.mkdir(parents=True, exist_ok=True)
         out_path.write_text(output_text, encoding="utf-8")
         print(f"[TCS CLI] Results written to: {args.output} (Format: {args.format})", file=sys.stderr)
@@ -1493,7 +1499,7 @@ def main(argv: Optional[List[str]] = None):
         if summary_file:
             try:
                 summary_md = generate_step_summary(export_data)
-                sum_path = Path(summary_file).resolve()
+                sum_path = Path(os.path.expanduser(str(summary_file))).resolve()
                 sum_path.parent.mkdir(parents=True, exist_ok=True)
                 with open(sum_path, "a", encoding="utf-8") as f:
                     f.write(summary_md)

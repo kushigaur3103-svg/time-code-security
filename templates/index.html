@@ -2331,6 +2331,21 @@ jobs:
             `;
         }
 
+        const isNonRemediableDetail = ['CWE-95', 'CWE-502', 'CWE-1336'].includes(finding.cwe);
+        if (isNonRemediableDetail) {
+            graphHtml += `
+                <div class="mt-4 p-3.5 rounded-xl bg-slate-900/60 border border-slate-700/50 font-mono text-xs flex items-center justify-between gap-3" title="Auto-remediation not supported for this vector">
+                    <div class="flex items-center gap-2 text-slate-400">
+                        <svg class="w-4 h-4 text-slate-500 shrink-0" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M13 16h-1v-4h-1m1-4h.01M21 12a9 9 0 11-18 0 9 9 0 0118 0z"></path></svg>
+                        <span class="text-[11px] text-slate-400 font-medium">Vector D Auto-Remediation:</span>
+                    </div>
+                    <button type="button" disabled class="px-2.5 py-1 rounded-lg bg-slate-800/80 text-slate-500 border border-slate-700/60 text-[11px] font-mono cursor-not-allowed select-none shadow-none" title="Auto-remediation not supported for this vector">
+                        Remediate / Fix (Unsupported)
+                    </button>
+                </div>
+            `;
+        }
+
         graphHtml += `</div>`;
         container.innerHTML = graphHtml;
     };
@@ -2853,7 +2868,10 @@ jobs:
                                     : 'bg-amber-500/20 text-amber-400 border-amber-500/40';
 
                                 const hasAutoFix = Boolean(f.remediation && typeof f.remediation === 'object' && f.remediation.status === 'SUCCESS');
-                                const autoFixHtml = hasAutoFix ? `
+                                const isNonRemediableCWE = ['CWE-95', 'CWE-502', 'CWE-1336'].includes(f.cwe);
+                                let autoFixHtml = '';
+                                if (hasAutoFix) {
+                                    autoFixHtml = `
                                     <div class="mt-3" onclick="event.stopPropagation();">
                                         <details class="group/fix rounded-xl bg-slate-950/90 border border-emerald-500/30 overflow-hidden text-xs font-mono">
                                             <summary class="px-3 py-2 bg-emerald-950/40 hover:bg-emerald-950/60 cursor-pointer flex items-center justify-between font-bold text-emerald-400 select-none transition-colors">
@@ -2874,7 +2892,18 @@ jobs:
                                             </div>
                                         </details>
                                     </div>
-                                ` : '';
+                                    `;
+                                } else if (isNonRemediableCWE) {
+                                    autoFixHtml = `
+                                    <div class="mt-3" onclick="event.stopPropagation();" title="Auto-remediation not supported for this vector">
+                                        <button type="button" disabled class="w-full flex items-center justify-center gap-2 px-3 py-2 rounded-lg bg-slate-800/40 text-slate-500 border border-slate-700/50 font-mono text-xs cursor-not-allowed select-none transition-all shadow-none" title="Auto-remediation not supported for this vector">
+                                            <svg class="w-3.5 h-3.5 text-slate-500" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M18.364 18.364A9 9 0 005.636 5.636m12.728 12.728A9 9 0 015.636 5.636m12.728 12.728L5.636 5.636"></path></svg>
+                                            <span>Remediate / Fix</span>
+                                            <span class="text-[10px] text-slate-500/80 font-semibold">(Unsupported for ${escapeHtml(f.cwe)})</span>
+                                        </button>
+                                    </div>
+                                    `;
+                                }
 
                                 if (isSuppressed) {
                                     return `

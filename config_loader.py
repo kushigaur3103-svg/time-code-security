@@ -278,7 +278,7 @@ def load_config(
     - If `path` is None: looks for `./.tcs.yml` under `base_dir` (or cwd). Returns DEFAULT_CONFIG if absent.
     """
     if path is not None:
-        p = Path(path).resolve()
+        p = Path(os.path.expanduser(str(path))).resolve()
         if not p.exists() or not p.is_file():
             raise ConfigValidationError(f"Configuration file not found: {path}")
         try:

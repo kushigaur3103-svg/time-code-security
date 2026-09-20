@@ -4,7 +4,7 @@ build-backend = "setuptools.build_meta"
 
 [project]
 name = "time-code-security"
-version = "1.0.0"
+version = "1.1.0"
 description = "Deterministic AST Security Scanner, Proof Graph Engine & Automated Remediation Framework"
 readme = "README.md"
 requires-python = ">=3.9"
@@ -81,3 +81,7 @@ packages = [
 
 [tool.setuptools.package-data]
 "*" = ["*.html", "*.yml", "*.yaml", "*.json"]
+
+[tool.pytest.ini_options]
+testpaths = ["scratch"]
+norecursedirs = [".git", ".venv", "build", "dist", "node_modules", "__pycache__", ".*"]
