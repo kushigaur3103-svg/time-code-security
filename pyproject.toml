@@ -4,7 +4,7 @@ build-backend = "setuptools.build_meta"
 
 [project]
 name = "time-code-security"
-version = "1.5.0"
+version = "2.0.0"
 description = "Deterministic AST Security Scanner, Proof Graph Engine & Automated Remediation Framework"
 readme = "README.md"
 requires-python = ">=3.9"

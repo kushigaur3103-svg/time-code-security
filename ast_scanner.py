@@ -556,6 +556,44 @@ class TaintTracker:
                     break
         return None
 
+    def _eval_const_str(self, node: Optional[ast.AST], scope_id: Optional[str] = None, visited: Optional[set[str]] = None) -> Optional[str]:
+        if node is None:
+            return None
+        if visited is None:
+            visited = set()
+        if isinstance(node, ast.Constant) and isinstance(node.value, str):
+            return str(node.value)
+        if hasattr(ast, "Str") and isinstance(node, ast.Str):
+            return str(node.s)
+        if isinstance(node, ast.BinOp) and isinstance(node.op, ast.Add):
+            left = self._eval_const_str(node.left, scope_id, visited)
+            right = self._eval_const_str(node.right, scope_id, visited)
+            if left is not None and right is not None:
+                return left + right
+            return None
+        if isinstance(node, ast.Name) and scope_id:
+            curr = scope_id
+            mod_name = scope_id.split(":")[0] if ":" in scope_id else scope_id
+            var_key = f"{scope_id}:{node.id}"
+            if var_key in visited:
+                return None
+            visited.add(var_key)
+            while curr:
+                recs = self.assignments_by_scope.get((curr, node.id), [])
+                if recs:
+                    latest = [r for r in recs if not r.is_conditional]
+                    rec = latest[-1] if latest else recs[-1]
+                    return self._eval_const_str(rec.value_node, rec.scope_id, visited)
+                if "." in curr and "function" in curr:
+                    curr = curr.rsplit(".", 1)[0]
+                elif ":function" in curr:
+                    curr = f"{mod_name}:global"
+                elif curr != f"{mod_name}:global":
+                    curr = f"{mod_name}:global"
+                else:
+                    break
+        return None
+
     def resolve_canonical_name(self, node: ast.AST, scope_id: str = "", visited: Optional[set[str]] = None) -> Optional[str]:
         if visited is None:
             visited = set()
@@ -644,6 +682,50 @@ class TaintTracker:
 
         if isinstance(node, ast.Call):
             call_name = dotted_name(node.func)
+
+            # 1. getattr(target, attr_name) dynamic resolution
+            if (call_name in ("getattr", "builtins.getattr") or (call_name and call_name.endswith(".getattr"))) and len(node.args) >= 2:
+                target_canon = self.resolve_canonical_name(node.args[0], scope_id, visited) or dotted_name(node.args[0])
+                attr_str = self._eval_const_str(node.args[1], scope_id)
+                if target_canon and attr_str:
+                    return f"{target_canon}.{attr_str}"
+
+            # 2. __import__("mod") dynamic module import
+            if (call_name in ("__import__", "builtins.__import__") or (call_name and call_name.endswith(".__import__"))) and node.args:
+                mod_target = self._eval_const_str(node.args[0], scope_id)
+                if mod_target:
+                    return mod_target
+
+            # 3. globals().get("key") / locals().get("key") reflection
+            if isinstance(node.func, ast.Attribute) and node.func.attr == "get" and node.args:
+                if isinstance(node.func.value, ast.Call) and dotted_name(node.func.value.func) in ("globals", "locals", "builtins.globals", "builtins.locals"):
+                    key_str = self._eval_const_str(node.args[0], scope_id)
+                    if key_str:
+                        if mod_name and mod_name in self.imports and key_str in self.imports[mod_name]:
+                            return self.imports[mod_name][key_str]
+                        func_cand = f"{mod_name}:function:{key_str}"
+                        if func_cand in self.functions:
+                            return f"{mod_name}.{key_str}"
+                        curr = scope_id
+                        while curr:
+                            recs = self.assignments_by_scope.get((curr, key_str), [])
+                            if recs:
+                                uncond = [r for r in recs if not r.is_conditional]
+                                found = uncond[-1] if uncond else recs[-1]
+                                resolved = self.resolve_canonical_name(found.value_node, found.scope_id, visited)
+                                if resolved:
+                                    return resolved
+                                break
+                            if "." in curr and "function" in curr:
+                                curr = curr.rsplit(".", 1)[0]
+                            elif ":function" in curr:
+                                curr = f"{mod_name}:global"
+                            elif curr != f"{mod_name}:global":
+                                curr = f"{mod_name}:global"
+                            else:
+                                break
+                        return key_str
+
             if call_name:
                 func_scope = self._resolve_function_scope(call_name, scope_id)
                 if func_scope and func_scope not in visited:
@@ -655,6 +737,35 @@ class TaintTracker:
                             return ret_canons[0]
 
         if isinstance(node, ast.Subscript):
+            # Check globals()["key"] / locals()["key"] reflection
+            if isinstance(node.value, ast.Call) and dotted_name(node.value.func) in ("globals", "locals", "builtins.globals", "builtins.locals"):
+                key_str = self._eval_const_str(node.slice, scope_id)
+                if key_str:
+                    if mod_name and mod_name in self.imports and key_str in self.imports[mod_name]:
+                        return self.imports[mod_name][key_str]
+                    func_cand = f"{mod_name}:function:{key_str}"
+                    if func_cand in self.functions:
+                        return f"{mod_name}.{key_str}"
+                    curr = scope_id
+                    while curr:
+                        recs = self.assignments_by_scope.get((curr, key_str), [])
+                        if recs:
+                            uncond = [r for r in recs if not r.is_conditional]
+                            found = uncond[-1] if uncond else recs[-1]
+                            resolved = self.resolve_canonical_name(found.value_node, found.scope_id, visited)
+                            if resolved:
+                                return resolved
+                            break
+                        if "." in curr and "function" in curr:
+                            curr = curr.rsplit(".", 1)[0]
+                        elif ":function" in curr:
+                            curr = f"{mod_name}:global"
+                        elif curr != f"{mod_name}:global":
+                            curr = f"{mod_name}:global"
+                        else:
+                            break
+                    return key_str
+
             key = self._extract_subscript_key(node.slice, scope_id)
             base_var = node.value.id if isinstance(node.value, ast.Name) else None
 

@@ -1,6 +1,6 @@
 # TimeCodeSecurity (TCS) 🛡️
 
-[![Version](https://img.shields.io/badge/version-1.5.0-blue.svg)](https://github.com/kushigaur3103-svg/time-code-security)
+[![Version](https://img.shields.io/badge/version-2.0.0-blue.svg)](https://github.com/kushigaur3103-svg/time-code-security)
 [![Tests](https://img.shields.io/badge/tests-271%2F271%20passed-success.svg)](https://github.com/kushigaur3103-svg/time-code-security)
 [![Python](https://img.shields.io/badge/python-3.9%20%7C%203.10%20%7C%203.11-blue.svg)](https://github.com/kushigaur3103-svg/time-code-security)
 [![License](https://img.shields.io/badge/license-MIT-green.svg)](https://github.com/kushigaur3103-svg/time-code-security)
@@ -8,6 +8,23 @@
 > **Deterministic AST SAST Scanner, Proof Graph Engine & Automated Closed-Loop Remediation Framework.**
 
 TCS scans source code for high-risk vulnerabilities, tracks taint flows across call graphs, verifies reachability in dependencies, and **automatically writes syntactically valid patches** back to disk with zero hallucinations.
+
+---
+
+## 🔮 Phase 6 Metaprogramming & Dynamic Reflection Shield
+
+Version 2.0.0 introduces metaprogramming and dynamic reflection detection into the core AST engine:
+
+- **AST Constant Folding**:
+  - Fold constant string expressions (e.g. `"sys" + "tem"` $\rightarrow$ `"system"`) in dynamic dispatch calls, evaluating variable references and binary string concatenations at scan-time.
+- **Dynamic Attribute Resolution**:
+  - Tracking `getattr(module, "func")` calls to canonical sink symbols (e.g. `getattr(subprocess, "run")` $\rightarrow$ `subprocess.run`), preserving full proof graph traceability.
+- **Dynamic Import Reflection**:
+  - Resolving `__import__("module")` aliases in AST symbol tables and tracking cross-module references.
+- **Global Namespace Dispatch**:
+  - Resolving `globals().get(...)` and `globals()[...]` module references and container lookups to their underlying canonical targets.
+- **Safe Negative Space Preservation**:
+  - Distinguishes benign dynamic property access from dangerous reflection sinks, ensuring zero false positives on safe reflection patterns.
 
 ---
 

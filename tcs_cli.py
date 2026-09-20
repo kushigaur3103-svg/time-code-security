@@ -38,7 +38,7 @@ try:
     from importlib.metadata import version as _get_version
     __version__ = _get_version("time-code-security")
 except Exception:
-    __version__ = "1.5.0"
+    __version__ = "2.0.0"
 
 
 IGNORED_DIRS = {
