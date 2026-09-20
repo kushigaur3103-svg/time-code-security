@@ -38,7 +38,7 @@ try:
     from importlib.metadata import version as _get_version
     __version__ = _get_version("time-code-security")
 except Exception:
-    __version__ = "1.3.0"
+    __version__ = "1.4.0"
 
 
 IGNORED_DIRS = {
@@ -119,7 +119,8 @@ def extract_remediation_advice(cwe: str, sink_symbol: str) -> str:
 def execute_tcs_scan(
     normalized_files: Dict[str, str],
     config: Optional[TCSConfig] = None,
-    audit_all: bool = False
+    audit_all: bool = False,
+    secrets: bool = False
 ) -> Dict[str, Any]:
     """
     Executes AST taint tracking, resolves suppressions, and computes risk scores.
@@ -228,6 +229,43 @@ def execute_tcs_scan(
         })
         vuln_idx += 1
 
+    secret_findings_list = []
+    if secrets:
+        from secret_scanner import scan_text
+        from secret_filters import filter_findings, FilterConfig
+        filter_cfg = FilterConfig()
+        for fpath, code in normalized_files.items():
+            raw_sec = scan_text(code, filename=fpath)
+            passed_sec = filter_findings(raw_sec, file_path=fpath, config=filter_cfg)
+            for sf in passed_sec:
+                sec_dict = {
+                    "id": f"TCS-SEC-{vuln_idx:03d}",
+                    "category": "HARDCODED_SECRET",
+                    "cwe": "CWE-798",
+                    "severity": "HIGH",
+                    "confidence": 1.0,
+                    "confidence_label": "CONFIRMED",
+                    "file": sf.file,
+                    "line_number": sf.line_number,
+                    "column_start": sf.column_start,
+                    "column_end": sf.column_end,
+                    "masked_value": sf.masked_value,
+                    "secret_type": sf.secret_type,
+                    "detector": sf.detector,
+                    "pattern": getattr(sf, "pattern", None) or sf.detector or "hardcoded_credential_variable",
+                    "code_snippet": sf.context or "",
+                    "flow_trace": [f"Secret: {sf.secret_type} ({sf.file}:{sf.line_number})"],
+                    "flow_trace_summary": f"[{sf.secret_type} (L{sf.line_number})] -> [Hardcoded Secret] -> [CWE-798]",
+                    "remediation": "Revoke and rotate the exposed credential immediately. Store secrets in environment variables or a dedicated secret management service.",
+                    "proof_graph": None,
+                    "proof_graph_ascii": None,
+                    "discovery_mode": "STANDARD_SCAN",
+                    "is_secret": True
+                }
+                findings.append(sec_dict)
+                vuln_idx += 1
+                secret_findings_list.append(sec_dict)
+
     suppression_enabled = True if config is None else config.suppression.enabled
     if suppression_enabled:
         findings = resolve_suppressions(findings, normalized_files)
@@ -302,6 +340,9 @@ def execute_tcs_scan(
         },
         "findings": findings
     }
+    if secrets:
+        ret["secret_findings"] = secret_findings_list
+    return ret
 
 
 SECRET_EXTS = {".py", ".env", ".json", ".yaml", ".yml", ".toml", ".ini", ".conf", ".txt"}
@@ -1361,7 +1402,7 @@ def main(argv: Optional[List[str]] = None):
                 "line_number": sf.line_number,
                 "column_start": sf.column_start,
                 "column_end": sf.column_end,
-                "confidence": sf.confidence,
+                "confidence": "HIGH" if "HIGH" in str(sf.confidence) else str(sf.confidence),
                 "detector": sf.detector,
                 "context": sf.context,
                 "cwe": "CWE-798"

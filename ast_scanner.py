@@ -299,6 +299,11 @@ SOURCE_REGISTRY = {
     "request.get_json": {"operation": "HTTP_BODY_JSON_ACCESS", "source_type": "USER_CONTROLLED"},
     "request.headers.get": {"operation": "HTTP_HEADER_ACCESS", "source_type": "USER_CONTROLLED"},
     "request.cookies.get": {"operation": "HTTP_COOKIE_ACCESS", "source_type": "USER_CONTROLLED"},
+    "request.GET.get": {"operation": "HTTP_QUERY_PARAMETER_ACCESS", "source_type": "USER_CONTROLLED"},
+    "request.GET.getlist": {"operation": "HTTP_QUERY_PARAMETER_ACCESS", "source_type": "USER_CONTROLLED"},
+    "request.POST.get": {"operation": "HTTP_BODY_PARAMETER_ACCESS", "source_type": "USER_CONTROLLED"},
+    "request.POST.getlist": {"operation": "HTTP_BODY_PARAMETER_ACCESS", "source_type": "USER_CONTROLLED"},
+    "request.query_params.get": {"operation": "HTTP_QUERY_PARAMETER_ACCESS", "source_type": "USER_CONTROLLED"},
     "sys.argv": {"operation": "CLI_ARGUMENT_ACCESS", "source_type": "USER_CONTROLLED"},
 }
 
@@ -353,6 +358,11 @@ SINK_REGISTRY = {
     "render_template_string": {"operation": "TEMPLATE_EVALUATION", "category": "SSTI", "cwe": "CWE-1336"},
     "flask.render_template_string": {"operation": "TEMPLATE_EVALUATION", "category": "SSTI", "cwe": "CWE-1336"},
     "jinja2.Template": {"operation": "TEMPLATE_EVALUATION", "category": "SSTI", "cwe": "CWE-1336"},
+    "raw": {"operation": "SQL_EXECUTION", "category": "SQL_INJECTION", "cwe": "CWE-89"},
+    "extra": {"operation": "SQL_EXECUTION", "category": "SQL_INJECTION", "cwe": "CWE-89"},
+    "RawSQL": {"operation": "SQL_EXECUTION", "category": "SQL_INJECTION", "cwe": "CWE-89"},
+    "objects.raw": {"operation": "SQL_EXECUTION", "category": "SQL_INJECTION", "cwe": "CWE-89"},
+    "objects.extra": {"operation": "SQL_EXECUTION", "category": "SQL_INJECTION", "cwe": "CWE-89"},
 }
 
 def location(node: ast.AST, file_path: str) -> CodeLocation:
@@ -1606,7 +1616,7 @@ class TaintTracker:
                 return TaintValue(state=TaintState.CLEAN, confidence=1.0, path=[f"{file_name}:{attr_name}", "path_containment_proven"], last_operation="path_containment_proven")
             canon_attr = self.resolve_canonical_name(node, scope_id) or attr_name
             norm_attr = canon_attr[6:] if (canon_attr and canon_attr.startswith("flask.")) else canon_attr
-            if norm_attr in ("request.data", "request.json", "request.query_string") or (attr_name in ("request.data", "request.json", "request.query_string")):
+            if norm_attr in ("request.data", "request.json", "request.query_string", "request.body") or (attr_name in ("request.data", "request.json", "request.query_string", "request.body")):
                 loc = location(node, file_name)
                 for existing in self.sources:
                     if existing.location == loc:
@@ -2480,7 +2490,11 @@ class TaintTracker:
             canon_val = self.resolve_canonical_name(node.value, scope_id) or dotted_name(node.value)
             norm_val = canon_val[6:] if (canon_val and canon_val.startswith("flask.")) else canon_val
             dname_val = dotted_name(node.value)
-            if norm_val in ("request.args", "request.form", "request.values", "request.headers", "request.cookies", "sys.argv") or dname_val in ("request.args", "request.form", "request.values", "request.headers", "request.cookies", "sys.argv"):
+            framework_sources = (
+                "request.args", "request.form", "request.values", "request.headers",
+                "request.cookies", "request.GET", "request.POST", "request.query_params", "sys.argv"
+            )
+            if norm_val in framework_sources or dname_val in framework_sources:
                 loc = location(node, file_name)
                 is_sys_argv = (norm_val == "sys.argv" or dname_val == "sys.argv")
                 target_state = TaintState.UNKNOWN if is_sys_argv else TaintState.TAINTED

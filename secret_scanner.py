@@ -10,6 +10,7 @@ Non-negotiable invariants:
 - Deterministic output sorted by (line_number, column_start, detector, secret_type).
 """
 
+import ast
 import os
 from collections import Counter
 from dataclasses import dataclass
@@ -58,6 +59,7 @@ class SecretFinding:
     detector: str
     context: Optional[str] = None
     proof_type: str = "PATTERN_MATCH"
+    pattern: Optional[str] = None
 
 
 def mask_secret(value: str) -> str:
@@ -356,6 +358,62 @@ def scan_text(text: str, filename: str = "<string>") -> List[SecretFinding]:
                 proof_type="PATTERN_MATCH",
             )
             all_findings.append(finding)
+
+    # 7. AST Hardcoded Credential Variable Assignment Heuristic
+    if not any(filename.endswith(ext) for ext in (".env", ".ini", ".conf", ".yaml", ".yml", ".json", ".toml", ".txt")):
+        try:
+            parsed_tree = ast.parse(text, filename=filename)
+            cred_var_regex = re.compile(r"(?i)(.*password.*|.*secret.*|.*api_key.*|.*auth_token.*|.*private_key.*)")
+            dummy_regex = re.compile(r"(?i)(^<.*>$|test|dummy|example|fake|sample|placeholder|change_me|insert|your_|_here)")
+            lines = text.splitlines()
+
+            for node in ast.walk(parsed_tree):
+                target_names = []
+                if isinstance(node, ast.Assign):
+                    for t in node.targets:
+                        if isinstance(t, ast.Name):
+                            target_names.append((t.id, getattr(t, "col_offset", 0)))
+                elif isinstance(node, ast.AnnAssign) and isinstance(node.target, ast.Name):
+                    target_names.append((node.target.id, getattr(node.target, "col_offset", 0)))
+
+                val_node = getattr(node, "value", None)
+                if not val_node or not target_names:
+                    continue
+
+                val_str = None
+                if isinstance(val_node, ast.Constant) and isinstance(val_node.value, str):
+                    val_str = val_node.value
+                elif isinstance(val_node, ast.Str):
+                    val_str = val_node.s
+
+                if val_str and len(val_str) >= 8:
+                    if not dummy_regex.search(val_str):
+                        for var_name, var_col in target_names:
+                            if cred_var_regex.search(var_name):
+                                line_no = getattr(node, "lineno", 1)
+                                if any(f.line_number == line_no and f.detector != "hardcoded_credential_variable" for f in all_findings):
+                                    continue
+                                raw_line = lines[line_no - 1] if 1 <= line_no <= len(lines) else ""
+                                masked_val = mask_secret(val_str)
+                                redacted_ctx = raw_line.replace(val_str, masked_val) if val_str in raw_line else raw_line
+                                col_start = getattr(val_node, "col_offset", var_col) + 1
+                                col_end = getattr(val_node, "end_col_offset", col_start + len(val_str))
+                                finding = SecretFinding(
+                                    secret_type="hardcoded_credential_variable",
+                                    masked_value=masked_val,
+                                    file=filename,
+                                    line_number=line_no,
+                                    column_start=col_start,
+                                    column_end=col_end,
+                                    confidence=ConfidenceStr("HIGH (PATTERN_MATCH)"),
+                                    detector="hardcoded_credential_variable",
+                                    context=redacted_ctx,
+                                    proof_type="PATTERN_MATCH",
+                                    pattern="hardcoded_credential_variable",
+                                )
+                                all_findings.append(finding)
+        except Exception:
+            pass
 
     # Sort deterministically
     all_findings.sort(

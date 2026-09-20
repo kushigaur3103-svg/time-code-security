@@ -1,6 +1,6 @@
 # TimeCodeSecurity (TCS) 🛡️
 
-[![Version](https://img.shields.io/badge/version-1.3.0-blue.svg)](https://github.com/kushigaur3103-svg/time-code-security)
+[![Version](https://img.shields.io/badge/version-1.4.0-blue.svg)](https://github.com/kushigaur3103-svg/time-code-security)
 [![Tests](https://img.shields.io/badge/tests-271%2F271%20passed-success.svg)](https://github.com/kushigaur3103-svg/time-code-security)
 [![Python](https://img.shields.io/badge/python-3.9%20%7C%203.10%20%7C%203.11-blue.svg)](https://github.com/kushigaur3103-svg/time-code-security)
 [![License](https://img.shields.io/badge/license-MIT-green.svg)](https://github.com/kushigaur3103-svg/time-code-security)
@@ -8,6 +8,22 @@
 > **Deterministic AST SAST Scanner, Proof Graph Engine & Automated Closed-Loop Remediation Framework.**
 
 TCS scans source code for high-risk vulnerabilities, tracks taint flows across call graphs, verifies reachability in dependencies, and **automatically writes syntactically valid patches** back to disk with zero hallucinations.
+
+---
+
+## 🌐 Phase 4 Web Framework Sources, ORM Shield & Low-Entropy Secret Detection
+
+Version 1.4.0 expands taint tracking to modern web application frameworks, implements ORM safety boundaries, and introduces AST-guided low-entropy secret discovery:
+
+- **Web Framework Sources Expansion**:
+  - Comprehensive source modeling for modern Python web frameworks: Django (`request.GET`, `request.POST`, `request.body`), Flask (`request.form`, `request.json`, `request.values`), and FastAPI / Starlette (`request.query_params`).
+  - Seamless propagation across web parameter extraction methods (`.get()`, `.getlist()`, and direct dictionary subscripts).
+- **ORM False-Positive Shield & Raw Sinks**:
+  - **Negative Space Protection**: Safe parameterized ORM methods (`.filter()`, `.exclude()`, `.get()`) remain strictly unflagged, preventing false positives on standard ORM database queries.
+  - **Raw Query Escape Hatches (CWE-89)**: Flags unparameterized raw SQL queries executed via `.raw()`, `.extra()`, and `RawSQL` when untrusted taint reaches Argument 0 (the SQL template), while preserving safety exemptions for parameterized query calls (`raw("SELECT ... %s", [params])`).
+- **Low-Entropy Credential Detection (CWE-798)**:
+  - AST variable heuristic scanning detects hardcoded passwords, tokens, API keys, and auth secrets assigned to sensitive identifier names (`password`, `secret`, `api_key`, `auth_token`, `private_key`).
+  - Automatically filters dummy placeholders, templates, and environment fallbacks (`<insert-...>`, `CHANGE_ME`, etc.) to prevent false alarms while capturing non-randomized developer secrets.
 
 ---
 
@@ -45,13 +61,13 @@ Version 1.2.0 introduces field-sensitive taint tracking, container-aware dataflo
 
 | CWE | Vulnerability Class | Primary Sinks | Detection Engine | Proof Graph | Vector D Auto-Remediation |
 | :--- | :--- | :--- | :---: | :---: | :---: |
-| **CWE-89** | SQL Injection | `cursor.execute`, `engine.execute`, `raw` | ✅ Active | ✅ Deterministic AST Proof | ✅ One-Click / `--fix` |
+| **CWE-89** | SQL Injection | `cursor.execute`, `engine.execute`, `raw`, `extra`, `RawSQL` | ✅ Active | ✅ Deterministic AST Proof | ✅ One-Click / `--fix` |
 | **CWE-78** | OS Command Injection | `subprocess.run`, `subprocess.call`, `os.system`, `os.popen` | ✅ Active | ✅ Deterministic AST Proof | ✅ One-Click / `--fix` |
 | **CWE-22** | Path Traversal | `open`, `os.remove`, `shutil.rmtree`, `os.unlink`, etc. | ✅ Active | ✅ Deterministic AST Proof | ✅ One-Click / `--fix` |
 | **CWE-95** | Code Injection | `eval`, `exec`, `compile` | ✅ Active | ✅ Deterministic AST Proof | 🔒 Detection & Proof Only |
 | **CWE-502** | Deserialization of Untrusted Data | `pickle.loads`, `yaml.unsafe_load`, `yaml.load(..., Loader!=SafeLoader)` | ✅ Active | ✅ Deterministic AST Proof | 🔒 Detection & Proof Only |
 | **CWE-1336** | Server-Side Template Injection (SSTI) | `jinja2.Template`, `flask.render_template_string` | ✅ Active | ✅ Deterministic AST Proof | 🔒 Detection & Proof Only |
-| **CWE-798** | Hardcoded Secrets / API Keys | High-entropy offline regex patterns (AWS, Stripe, Slack, RSA) | ✅ Active | 🔐 Secret Evidence (Masked) | 🔒 Prescriptive Rotation Only |
+| **CWE-798** | Hardcoded Secrets / API Keys | High-entropy offline patterns & low-entropy AST variable heuristic | ✅ Active | 🔐 Secret Evidence (Masked) | 🔒 Prescriptive Rotation Only |
 
 ### Vector D Auto-Remediation Boundary
 Auto-remediation (`tcs scan --fix --write` or the Web UI one-click patch applicator) is strictly governed by closed-loop, AST-verified rewrite rules:

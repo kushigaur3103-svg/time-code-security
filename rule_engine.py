@@ -70,27 +70,44 @@ class RuleRegistry:
 # ==============================================================================
 
 def _cwe89_sink_matcher(node: ast.AST, name: str, canon_name: Optional[str] = None) -> bool:
-    """Matches method calls ending with .execute (e.g. cursor.execute, db.execute, conn.cursor().execute)."""
-    if name and name.endswith(".execute"):
-        return True
-    if canon_name and canon_name.endswith(".execute"):
-        return True
-    if isinstance(node, ast.Call) and isinstance(node.func, ast.Attribute) and node.func.attr == "execute":
-        val = node.func.value
-        while isinstance(val, ast.Call) and isinstance(val.func, ast.Attribute):
-            if val.func.attr == "cursor":
+    """Matches method calls for SQL execution (execute, raw, extra, RawSQL)."""
+    target_names = {"execute", "raw", "extra", "RawSQL"}
+    for candidate in (name, canon_name):
+        if candidate:
+            if candidate in target_names or any(candidate.endswith(f".{t}") for t in target_names):
                 return True
-            val = val.func.value
+    if isinstance(node, ast.Call):
+        if isinstance(node.func, ast.Attribute) and node.func.attr in target_names:
+            return True
+        if isinstance(node.func, ast.Name) and node.func.id in target_names:
+            return True
+        if isinstance(node.func, ast.Attribute) and node.func.attr == "execute":
+            val = node.func.value
+            while isinstance(val, ast.Call) and isinstance(val.func, ast.Attribute):
+                if val.func.attr == "cursor":
+                    return True
+                val = val.func.value
     return False
 
 
 def _cwe89_safety_filter(node: ast.Call, sink_name: str) -> bool:
     """
-    Exempts parameterized queries: calls to .execute with > 1 argument or keyword bindings.
+    Exempts parameterized queries: calls to .execute with > 1 argument or keyword bindings,
+    or .raw with params, or RawSQL with params.
     """
-    if sink_name and sink_name.endswith(".execute"):
-        if len(node.args) > 1 or getattr(node, "keywords", []):
-            return True
+    if sink_name:
+        if sink_name.endswith(".execute") or sink_name == "execute":
+            if len(node.args) > 1 or getattr(node, "keywords", []):
+                return True
+        if sink_name.endswith(".raw") or sink_name == "raw":
+            if len(node.args) > 1 or any(kw.arg == "params" for kw in getattr(node, "keywords", [])):
+                return True
+        if sink_name.endswith(".RawSQL") or sink_name == "RawSQL":
+            if len(node.args) > 1 or any(kw.arg == "params" for kw in getattr(node, "keywords", [])):
+                return True
+        if sink_name.endswith(".extra") or sink_name == "extra":
+            if any(kw.arg == "params" for kw in getattr(node, "keywords", [])):
+                return True
     return False
 
 
@@ -99,7 +116,7 @@ CWE_89_RULE = SecurityRule(
     name="SqlInjection",
     category="SQL_INJECTION",
     operation="SQL_EXECUTION",
-    confirmed_severity="HIGH",
+    confirmed_severity="CRITICAL",
     potential_severity="MEDIUM",
     remediation="Use parameterized SQL queries with bind variables instead of string concatenation/formatting, e.g., cursor.execute('SELECT * FROM tbl WHERE id = ?', (user_id,)).",
     sarif_metadata={

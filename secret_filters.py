@@ -67,6 +67,8 @@ class FilterConfig:
     )
     dummy_patterns: Tuple[str, ...] = (
         r"(?i)\b(dummy|fake|placeholder|example|test|sample|change_me|your_token_here|my_secret_token|your_password_here|your_secret_here|your_api_key_here|your_key_here)[\w]*",
+        r"(?i)<[^>]+>",
+        r"(?i)\binsert[_-][\w-]*\b",
         r"(?i)\b(00000+|11111+|xxxxxx+|abcdef)\b",
         r"AKIA0{10,}",
         r"ghp_0{10,}",
