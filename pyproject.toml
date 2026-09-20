@@ -38,6 +38,7 @@ dependencies = [
 
 [project.scripts]
 tcs = "tcs_cli:main"
+tcs-gui = "tcs_gui:launch_gui"
 
 [tool.setuptools]
 py-modules = [
@@ -69,6 +70,7 @@ py-modules = [
     "staged_scanner",
     "suppression_resolver",
     "tcs_cli",
+    "tcs_gui",
     "version_matcher",
     "webhook_adapter",
     "webhook_client",

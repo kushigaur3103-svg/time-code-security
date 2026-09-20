@@ -180,6 +180,14 @@ Start the local security management interface and API:
 uvicorn app:app --port 8000
 ```
 
+### Desktop GUI (Flet)
+
+Launch the interactive native desktop dashboard:
+
+```bash
+tcs-gui
+```
+
 ## GitHub Actions Integration
 
 ```yaml
