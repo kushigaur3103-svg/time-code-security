@@ -1,6 +1,6 @@
 # TimeCodeSecurity (TCS) 🛡️
 
-[![Version](https://img.shields.io/badge/version-1.1.0-blue.svg)](https://github.com/kushigaur3103-svg/time-code-security)
+[![Version](https://img.shields.io/badge/version-1.2.0-blue.svg)](https://github.com/kushigaur3103-svg/time-code-security)
 [![Tests](https://img.shields.io/badge/tests-271%2F271%20passed-success.svg)](https://github.com/kushigaur3103-svg/time-code-security)
 [![Python](https://img.shields.io/badge/python-3.9%20%7C%203.10%20%7C%203.11-blue.svg)](https://github.com/kushigaur3103-svg/time-code-security)
 [![License](https://img.shields.io/badge/license-MIT-green.svg)](https://github.com/kushigaur3103-svg/time-code-security)
@@ -8,6 +8,23 @@
 > **Deterministic AST SAST Scanner, Proof Graph Engine & Automated Closed-Loop Remediation Framework.**
 
 TCS scans source code for high-risk vulnerabilities, tracks taint flows across call graphs, verifies reachability in dependencies, and **automatically writes syntactically valid patches** back to disk with zero hallucinations.
+
+---
+
+## ⚡ Phase 2 Advanced AST Taint Engine
+
+Version 1.2.0 introduces field-sensitive taint tracking, container-aware dataflow analysis, and modern Python syntax support:
+
+- **Field-sensitive Container Tracking (dict subscript, list indexing, .get() parity)**:
+  - Independent taint tracking for dictionary keys (`d["tainted"]` vs `d["safe"]`), list indexing, and tuple unpacking.
+  - Complete `.get()` method parity with static literal key resolution and negative space preservation (clean keys in tainted dicts remain strictly CLEAN).
+- **Function Pointer & Callback Aliasing (local, chained, higher-order)**:
+  - Higher-order function callbacks (`exec_fn = subprocess.run`), module-level aliases, and dispatch tables (`handlers["run"](cmd)`).
+  - Context-isolated call-site parameter binding preventing cross-call taint leakage.
+- **Modern Python Syntax (walrus `:=`, ternary `if-else`, comprehensions)**:
+  - **Walrus Operator (`:=`)**: Captures assignment expressions inside `if`, `while`, and return expressions with out-of-block scope persistence.
+  - **Ternary Expressions (`a if cond else b`)**: Dual-branch taint evaluation propagating taint if either branch is untrusted, while preserving CLEAN status if both branches are safe.
+  - **Comprehensions**: Full element taint propagation across list, set, generator, and dict comprehensions with direct subscript indexing support.
 
 ---
 

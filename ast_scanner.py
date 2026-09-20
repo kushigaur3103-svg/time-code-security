@@ -287,6 +287,7 @@ class SinkRecord:
     security_node: SecurityNode
     lineno: int
     scope_id: str
+    call_context: Optional[dict[str, Any]] = None
 
 SOURCE_REGISTRY = {
     "request.args.get": {"operation": "HTTP_QUERY_PARAMETER_ACCESS", "source_type": "USER_CONTROLLED"},
@@ -298,6 +299,7 @@ SOURCE_REGISTRY = {
     "request.get_json": {"operation": "HTTP_BODY_JSON_ACCESS", "source_type": "USER_CONTROLLED"},
     "request.headers.get": {"operation": "HTTP_HEADER_ACCESS", "source_type": "USER_CONTROLLED"},
     "request.cookies.get": {"operation": "HTTP_COOKIE_ACCESS", "source_type": "USER_CONTROLLED"},
+    "sys.argv": {"operation": "CLI_ARGUMENT_ACCESS", "source_type": "USER_CONTROLLED"},
 }
 
 SANITIZER_REGISTRY = {
@@ -376,6 +378,28 @@ def dotted_name(node: ast.AST) -> Optional[str]:
         parent = dotted_name(node.value)
         if parent: return f"{parent}.{node.attr}"
         return node.attr
+    return None
+
+def extract_subscript_key(slice_node: ast.AST) -> Optional[Union[str, int]]:
+    """Extracts a static string or integer key from a subscript slice (Python 3.8-3.12 compatible)."""
+    if slice_node is None:
+        return None
+    curr = slice_node
+    if hasattr(ast, "Index") and isinstance(curr, ast.Index):
+        curr = curr.value
+    if isinstance(curr, ast.Constant):
+        if isinstance(curr.value, (str, int)):
+            return curr.value
+    elif isinstance(curr, ast.Str):
+        return curr.s
+    elif isinstance(curr, ast.Num):
+        if isinstance(curr.n, int):
+            return curr.n
+    elif isinstance(curr, ast.UnaryOp) and isinstance(curr.op, ast.USub):
+        if isinstance(curr.operand, ast.Constant) and isinstance(curr.operand.value, int):
+            return -curr.operand.value
+        elif isinstance(curr.operand, ast.Num) and isinstance(curr.operand.n, int):
+            return -curr.operand.n
     return None
 
 class TaintTracker:
@@ -473,6 +497,35 @@ class TaintTracker:
             scope_id=scope_id
         )
 
+    def _extract_subscript_key(self, slice_node: ast.AST, scope_id: str = "") -> Optional[Union[str, int]]:
+        """Extracts static or statically resolved variable key from subscript slice."""
+        key = extract_subscript_key(slice_node)
+        if key is not None:
+            return key
+        curr = slice_node
+        if hasattr(ast, "Index") and isinstance(curr, ast.Index):
+            curr = curr.value
+        if isinstance(curr, ast.Name) and scope_id:
+            current_scope = scope_id
+            mod_name = scope_id.split(":")[0] if scope_id else ""
+            while current_scope:
+                recs = self.assignments_by_scope.get((current_scope, curr.id), [])
+                if recs:
+                    latest = recs[-1]
+                    k_val = extract_subscript_key(latest.value_node)
+                    if k_val is not None:
+                        return k_val
+                    break
+                if "." in current_scope and "function" in current_scope:
+                    current_scope = current_scope.rsplit(".", 1)[0]
+                elif ":function" in current_scope:
+                    current_scope = f"{mod_name}:global"
+                elif current_scope != f"{mod_name}:global":
+                    current_scope = f"{mod_name}:global"
+                else:
+                    break
+        return None
+
     def resolve_canonical_name(self, node: ast.AST, scope_id: str = "", visited: Optional[set[str]] = None) -> Optional[str]:
         if visited is None:
             visited = set()
@@ -509,6 +562,41 @@ class TaintTracker:
                     if node.id in ("exec", "eval", "open"):
                         return f"shadowed:{node.id}"
 
+                # Higher-order function parameter lookup (if node.id is a parameter of enclosing function)
+                enc_scope = scope_id
+                while enc_scope:
+                    f_node = self.functions.get(enc_scope)
+                    if f_node and any(a.arg == node.id for a in f_node.args.args):
+                        param_names = [a.arg for a in f_node.args.args]
+                        param_idx = param_names.index(node.id)
+                        call_sites = self.call_sites_by_target.get(enc_scope, [])
+                        if call_sites:
+                            for call_node, caller_scope, call_lineno in call_sites:
+                                arg_expr = None
+                                for kw in getattr(call_node, "keywords", []):
+                                    if kw.arg == node.id:
+                                        arg_expr = kw.value
+                                        break
+                                if arg_expr is None:
+                                    pos_idx = param_idx
+                                    if param_names and param_names[0] in ("self", "cls"):
+                                        pos_idx = param_idx - 1
+                                    if 0 <= pos_idx < len(call_node.args):
+                                        arg_expr = call_node.args[pos_idx]
+                                if arg_expr is not None:
+                                    p_key = f"param_canon:{enc_scope}:{node.id}:{caller_scope}:{call_lineno}"
+                                    if p_key not in visited:
+                                        v_copy = visited.copy()
+                                        v_copy.add(p_key)
+                                        resolved_param = self.resolve_canonical_name(arg_expr, caller_scope, v_copy)
+                                        if resolved_param:
+                                            return resolved_param
+                        break
+                    if "." in enc_scope and "function" in enc_scope:
+                        enc_scope = enc_scope.rsplit(".", 1)[0]
+                    else:
+                        break
+
             return node.id
 
         if isinstance(node, ast.Attribute):
@@ -535,6 +623,85 @@ class TaintTracker:
                         ret_canons = [self.resolve_canonical_name(r.value, func_scope, visited) for r in returns if r.value]
                         if ret_canons and all(c == ret_canons[0] and c is not None for c in ret_canons):
                             return ret_canons[0]
+
+        if isinstance(node, ast.Subscript):
+            key = self._extract_subscript_key(node.slice, scope_id)
+            base_var = node.value.id if isinstance(node.value, ast.Name) else None
+
+            # 1. Composite key in assignments_by_scope: dispatcher["run"] = ...
+            if base_var and key is not None:
+                comp_key = f"{base_var}[{key}]"
+                current_scope = scope_id
+                found_record = None
+                while current_scope:
+                    recs = self.assignments_by_scope.get((current_scope, comp_key), [])
+                    if recs:
+                        uncond = [r for r in recs if not r.is_conditional]
+                        found_record = uncond[-1] if uncond else recs[-1]
+                        break
+                    if "." in current_scope and "function" in current_scope:
+                        current_scope = current_scope.rsplit(".", 1)[0]
+                    elif ":function" in current_scope:
+                        current_scope = f"{mod_name}:global"
+                    elif current_scope != f"{mod_name}:global":
+                        current_scope = f"{mod_name}:global"
+                    else:
+                        break
+                if found_record:
+                    sub_key = f"{scope_id}:{comp_key}"
+                    if sub_key not in visited:
+                        v_copy = visited.copy()
+                        v_copy.add(sub_key)
+                        resolved = self.resolve_canonical_name(found_record.value_node, found_record.scope_id, v_copy)
+                        if resolved:
+                            return resolved
+
+            # 2. Base variable initialized with a dict, list, or tuple literal
+            if base_var:
+                current_scope = scope_id
+                found_record = None
+                while current_scope:
+                    recs = self.assignments_by_scope.get((current_scope, base_var), [])
+                    if recs:
+                        uncond = [r for r in recs if not r.is_conditional]
+                        found_record = uncond[-1] if uncond else recs[-1]
+                        break
+                    if "." in current_scope and "function" in current_scope:
+                        current_scope = current_scope.rsplit(".", 1)[0]
+                    elif ":function" in current_scope:
+                        current_scope = f"{mod_name}:global"
+                    elif current_scope != f"{mod_name}:global":
+                        current_scope = f"{mod_name}:global"
+                    else:
+                        break
+                if found_record:
+                    val_node = found_record.value_node
+                    if isinstance(val_node, ast.Dict) and key is not None:
+                        for k, v in zip(val_node.keys, val_node.values):
+                            k_val = self._extract_subscript_key(k, found_record.scope_id)
+                            if k_val == key:
+                                resolved = self.resolve_canonical_name(v, found_record.scope_id, visited)
+                                if resolved:
+                                    return resolved
+                    elif isinstance(val_node, (ast.List, ast.Tuple)) and isinstance(key, int):
+                        if -len(val_node.elts) <= key < len(val_node.elts):
+                            resolved = self.resolve_canonical_name(val_node.elts[key], found_record.scope_id, visited)
+                            if resolved:
+                                return resolved
+
+            # 3. Direct Dict or List/Tuple literal
+            if isinstance(node.value, ast.Dict) and key is not None:
+                for k, v in zip(node.value.keys, node.value.values):
+                    k_val = self._extract_subscript_key(k, scope_id)
+                    if k_val == key:
+                        resolved = self.resolve_canonical_name(v, scope_id, visited)
+                        if resolved:
+                            return resolved
+            elif isinstance(node.value, (ast.List, ast.Tuple)) and isinstance(key, int):
+                if -len(node.value.elts) <= key < len(node.value.elts):
+                    resolved = self.resolve_canonical_name(node.value.elts[key], scope_id, visited)
+                    if resolved:
+                        return resolved
 
         return None
 
@@ -948,6 +1115,24 @@ class TaintTracker:
             if isinstance(subnode, ast.Call):
                 self.raw_calls.append((subnode, scope_id, getattr(subnode, "lineno", lineno)))
 
+    def _collect_named_exprs(self, expr: ast.AST, scope_id: str, lineno: int, is_conditional: bool = False):
+        if not expr:
+            return
+        for subnode in ast.walk(expr):
+            if isinstance(subnode, ast.NamedExpr):
+                if isinstance(subnode.target, ast.Name):
+                    t_lineno = getattr(subnode, "lineno", lineno)
+                    record = AssignmentRecord(
+                        target_name=subnode.target.id,
+                        value_node=subnode.value,
+                        lineno=t_lineno,
+                        scope_id=scope_id,
+                        is_conditional=is_conditional
+                    )
+                    self.assignments_by_scope.setdefault((scope_id, subnode.target.id), []).append(record)
+                    if scope_id in self.classes:
+                        self.class_field_assignments.setdefault((scope_id, subnode.target.id), []).append(record)
+
     def collect_statements(self, statements: list[ast.stmt], scope_id: str, is_conditional: bool = False):
         for stmt in statements:
             if isinstance(stmt, (ast.FunctionDef, ast.AsyncFunctionDef)):
@@ -977,6 +1162,19 @@ class TaintTracker:
                         if cls_scope:
                             record = AssignmentRecord(target_name=target.attr, value_node=stmt.value, lineno=stmt.lineno, scope_id=scope_id, is_conditional=is_conditional)
                             self.class_field_assignments.setdefault((cls_scope, target.attr), []).append(record)
+                    elif isinstance(target, ast.Subscript):
+                        key = self._extract_subscript_key(target.slice, scope_id)
+                        if key is not None:
+                            if isinstance(target.value, ast.Name):
+                                comp_key = f"{target.value.id}[{key}]"
+                                record = AssignmentRecord(target_name=comp_key, value_node=stmt.value, lineno=stmt.lineno, scope_id=scope_id, is_conditional=is_conditional)
+                                self.assignments_by_scope.setdefault((scope_id, comp_key), []).append(record)
+                            elif isinstance(target.value, ast.Attribute) and isinstance(target.value.value, ast.Name) and target.value.value.id in ("self", "cls"):
+                                cls_scope = self._get_enclosing_class_scope(scope_id)
+                                if cls_scope:
+                                    comp_key = f"{target.value.attr}[{key}]"
+                                    record = AssignmentRecord(target_name=comp_key, value_node=stmt.value, lineno=stmt.lineno, scope_id=scope_id, is_conditional=is_conditional)
+                                    self.class_field_assignments.setdefault((cls_scope, comp_key), []).append(record)
                     elif isinstance(target, (ast.Tuple, ast.List)):
                         for idx, elt in enumerate(target.elts):
                             val_node = stmt.value.elts[idx] if (isinstance(stmt.value, (ast.Tuple, ast.List)) and idx < len(stmt.value.elts)) else stmt.value
@@ -990,26 +1188,47 @@ class TaintTracker:
                                 if cls_scope:
                                     record = AssignmentRecord(target_name=elt.attr, value_node=val_node, lineno=stmt.lineno, scope_id=scope_id, is_conditional=is_conditional)
                                     self.class_field_assignments.setdefault((cls_scope, elt.attr), []).append(record)
+                            elif isinstance(elt, ast.Subscript):
+                                key = self._extract_subscript_key(elt.slice, scope_id)
+                                if key is not None and isinstance(elt.value, ast.Name):
+                                    comp_key = f"{elt.value.id}[{key}]"
+                                    record = AssignmentRecord(target_name=comp_key, value_node=val_node, lineno=stmt.lineno, scope_id=scope_id, is_conditional=is_conditional)
+                                    self.assignments_by_scope.setdefault((scope_id, comp_key), []).append(record)
                 self.scan_for_sinks(stmt.value, scope_id, stmt.lineno)
                 self._collect_calls_in_expr(stmt.value, scope_id, stmt.lineno)
+                self._collect_named_exprs(stmt.value, scope_id, stmt.lineno, is_conditional=is_conditional)
             elif isinstance(stmt, ast.AnnAssign):
                 if isinstance(stmt.target, ast.Name) and stmt.value:
                     record = AssignmentRecord(target_name=stmt.target.id, value_node=stmt.value, lineno=stmt.lineno, scope_id=scope_id, is_conditional=is_conditional)
                     self.assignments_by_scope.setdefault((scope_id, stmt.target.id), []).append(record)
                     if scope_id in self.classes:
                         self.class_field_assignments.setdefault((scope_id, stmt.target.id), []).append(record)
-                    self.scan_for_sinks(stmt.value, scope_id, stmt.lineno)
-                    self._collect_calls_in_expr(stmt.value, scope_id, stmt.lineno)
                 elif isinstance(stmt.target, ast.Attribute) and isinstance(stmt.target.value, ast.Name) and stmt.target.value.id in ("self", "cls") and stmt.value:
                     cls_scope = self._get_enclosing_class_scope(scope_id)
                     if cls_scope:
                         record = AssignmentRecord(target_name=stmt.target.attr, value_node=stmt.value, lineno=stmt.lineno, scope_id=scope_id, is_conditional=is_conditional)
                         self.class_field_assignments.setdefault((cls_scope, stmt.target.attr), []).append(record)
+                elif isinstance(stmt.target, ast.Subscript) and stmt.value:
+                    key = self._extract_subscript_key(stmt.target.slice, scope_id)
+                    if key is not None:
+                        if isinstance(stmt.target.value, ast.Name):
+                            comp_key = f"{stmt.target.value.id}[{key}]"
+                            record = AssignmentRecord(target_name=comp_key, value_node=stmt.value, lineno=stmt.lineno, scope_id=scope_id, is_conditional=is_conditional)
+                            self.assignments_by_scope.setdefault((scope_id, comp_key), []).append(record)
+                        elif isinstance(stmt.target.value, ast.Attribute) and isinstance(stmt.target.value.value, ast.Name) and stmt.target.value.value.id in ("self", "cls"):
+                            cls_scope = self._get_enclosing_class_scope(scope_id)
+                            if cls_scope:
+                                comp_key = f"{stmt.target.value.attr}[{key}]"
+                                record = AssignmentRecord(target_name=comp_key, value_node=stmt.value, lineno=stmt.lineno, scope_id=scope_id, is_conditional=is_conditional)
+                                self.class_field_assignments.setdefault((cls_scope, comp_key), []).append(record)
+                if stmt.value:
                     self.scan_for_sinks(stmt.value, scope_id, stmt.lineno)
                     self._collect_calls_in_expr(stmt.value, scope_id, stmt.lineno)
+                    self._collect_named_exprs(stmt.value, scope_id, stmt.lineno, is_conditional=is_conditional)
             elif isinstance(stmt, ast.If):
                 self.scan_for_sinks(stmt.test, scope_id, stmt.lineno)
                 self._collect_calls_in_expr(stmt.test, scope_id, stmt.lineno)
+                self._collect_named_exprs(stmt.test, scope_id, stmt.lineno, is_conditional=False)
                 pairs = self._extract_containment_pairs(stmt.test)
                 if pairs:
                     is_inverted = isinstance(stmt.test, ast.UnaryOp) and isinstance(stmt.test.op, ast.Not)
@@ -1046,9 +1265,11 @@ class TaintTracker:
                 if isinstance(stmt, ast.While):
                     self.scan_for_sinks(stmt.test, scope_id, stmt.lineno)
                     self._collect_calls_in_expr(stmt.test, scope_id, stmt.lineno)
+                    self._collect_named_exprs(stmt.test, scope_id, stmt.lineno, is_conditional=False)
                 else:
                     self.scan_for_sinks(stmt.iter, scope_id, stmt.lineno)
                     self._collect_calls_in_expr(stmt.iter, scope_id, stmt.lineno)
+                    self._collect_named_exprs(stmt.iter, scope_id, stmt.lineno, is_conditional=is_conditional)
                     targets = []
                     if isinstance(stmt.target, ast.Name):
                         targets.append(stmt.target.id)
@@ -1070,6 +1291,7 @@ class TaintTracker:
                 for item in stmt.items:
                     self.scan_for_sinks(item.context_expr, scope_id, stmt.lineno)
                     self._collect_calls_in_expr(item.context_expr, scope_id, stmt.lineno)
+                    self._collect_named_exprs(item.context_expr, scope_id, stmt.lineno, is_conditional=is_conditional)
                     if item.optional_vars:
                         targets = []
                         if isinstance(item.optional_vars, ast.Name):
@@ -1087,9 +1309,11 @@ class TaintTracker:
                 if stmt.value:
                     self.scan_for_sinks(stmt.value, scope_id, stmt.lineno)
                     self._collect_calls_in_expr(stmt.value, scope_id, stmt.lineno)
+                    self._collect_named_exprs(stmt.value, scope_id, stmt.lineno, is_conditional=is_conditional)
             elif isinstance(stmt, ast.Expr):
                 self.scan_for_sinks(stmt.value, scope_id, stmt.lineno)
                 self._collect_calls_in_expr(stmt.value, scope_id, stmt.lineno)
+                self._collect_named_exprs(stmt.value, scope_id, stmt.lineno, is_conditional=is_conditional)
 
     def scan_for_sinks(self, expr: ast.AST, scope_id: str, lineno: int):
         mod_name = scope_id.split(":")[0]
@@ -1608,7 +1832,14 @@ class TaintTracker:
                             )
                         elif caller_matches:
                             merged = self.merge_taints([m[0] for m in caller_matches], f"{file_name}:{node.id}")
-                            if not self.audit_all and merged.state == TaintState.UNKNOWN:
+                            is_cli_arg = any(
+                                any(
+                                    dotted_name(a) == "sys.argv" or (isinstance(a, ast.Subscript) and dotted_name(a.value) == "sys.argv")
+                                    for a in getattr(call_n, "args", [])
+                                )
+                                for _, call_n, _, _ in caller_matches
+                            )
+                            if not self.audit_all and merged.state == TaintState.UNKNOWN and not is_cli_arg:
                                 return TaintValue(state=TaintState.CLEAN, confidence=1.0, path=merged.path, last_operation=f"unbound_param:{node.id}")
                             return merged
 
@@ -1807,11 +2038,121 @@ class TaintTracker:
                 if first_tainted:
                     return TaintValue(state=TaintState.TAINTED, source_id=first_tainted.source_id, confidence=0.50, path=[*first_tainted.path, f"{file_name}:{function_name}()"], last_operation=f"irrelevant_sanitizer:{function_name}")
 
-            # Receiver .get() / .getlist() / .pop() on tainted dictionary or object (e.g. payload = request.get_json(); payload.get("x"))
+            # Receiver .get() / .getlist() / .pop() on dictionary or object (e.g. d.get("key"), payload = request.get_json(); payload.get("x"))
             if isinstance(node.func, ast.Attribute) and node.func.attr in ("get", "getlist", "pop"):
+                # Field-sensitive dictionary lookup when key is extractable
+                if node.args:
+                    key = self._extract_subscript_key(node.args[0], scope_id)
+                    base_var = node.func.value.id if isinstance(node.func.value, ast.Name) else None
+
+                    # 1. Composite key in assignments: d["cmd"] = ...
+                    if base_var and key is not None:
+                        comp_key = f"{base_var}[{key}]"
+                        current_scope = scope_id
+                        found_record = None
+                        while current_scope:
+                            recs = self.assignments_by_scope.get((current_scope, comp_key), [])
+                            recs_before = [r for r in recs if r.lineno < current_lineno]
+                            if recs_before:
+                                uncond = [r for r in recs_before if not r.is_conditional]
+                                found_record = uncond[-1] if uncond else recs_before[-1]
+                                break
+                            if "." in current_scope and "function" in current_scope:
+                                current_scope = current_scope.rsplit(".", 1)[0]
+                            elif ":function" in current_scope:
+                                current_scope = f"{mod_name}:global"
+                            elif current_scope != f"{mod_name}:global":
+                                current_scope = f"{mod_name}:global"
+                            else:
+                                break
+                        if found_record:
+                            comp_v_key = f"{scope_id}:{comp_key}:{found_record.lineno}"
+                            if comp_v_key not in visited:
+                                v_copy = visited.copy()
+                                v_copy.add(comp_v_key)
+                                res = self.resolve_expression(found_record.value_node, sink, found_record.scope_id, found_record.lineno, v_copy, call_context)
+                                if res.state != TaintState.CLEAN:
+                                    step_idx = len(res.proof_nodes)
+                                    cont_pn = self.create_proof_node(
+                                        step_index=step_idx,
+                                        node_type=ProofNodeType.ASSIGNMENT,
+                                        file_path=file_name,
+                                        node=found_record.value_node,
+                                        symbol=comp_key,
+                                        scope_id=found_record.scope_id,
+                                        lineno=found_record.lineno,
+                                        override_snippet=self.get_source_snippet(file_name, found_record.lineno, found_record.lineno) or f"{comp_key} = ..."
+                                    )
+                                    new_edges = list(res.proof_edges)
+                                    if res.proof_nodes:
+                                        new_edges.append(ProofEdge(from_node_id=res.proof_nodes[-1].node_id, to_node_id=cont_pn.node_id, edge_type="ASSIGNMENT"))
+                                    return TaintValue(
+                                        state=res.state,
+                                        source_id=res.source_id,
+                                        confidence=res.confidence,
+                                        path=[*res.path, f"{file_name}:{comp_key}"],
+                                        last_operation=f"container_key:{comp_key}",
+                                        proof_nodes=[*res.proof_nodes, cont_pn],
+                                        proof_edges=new_edges
+                                    )
+                                else:
+                                    return TaintValue(state=TaintState.CLEAN, confidence=1.0, last_operation=f"container_key:{comp_key}")
+
+                    # 2. Check base variable definition if initialized as dict literal
+                    if base_var and key is not None:
+                        current_scope = scope_id
+                        found_base_record = None
+                        while current_scope:
+                            recs = self.assignments_by_scope.get((current_scope, base_var), [])
+                            recs_before = [r for r in recs if r.lineno < current_lineno]
+                            if recs_before:
+                                uncond = [r for r in recs_before if not r.is_conditional]
+                                found_base_record = uncond[-1] if uncond else recs_before[-1]
+                                break
+                            if "." in current_scope and "function" in current_scope:
+                                current_scope = current_scope.rsplit(".", 1)[0]
+                            elif ":function" in current_scope:
+                                current_scope = f"{mod_name}:global"
+                            elif current_scope != f"{mod_name}:global":
+                                current_scope = f"{mod_name}:global"
+                            else:
+                                break
+                        if found_base_record:
+                            val_node = found_base_record.value_node
+                            if isinstance(val_node, ast.Dict):
+                                matched_key_val = None
+                                for k, v in zip(val_node.keys, val_node.values):
+                                    k_val = self._extract_subscript_key(k, found_base_record.scope_id)
+                                    if k_val == key:
+                                        matched_key_val = v
+                                        break
+                                if matched_key_val is not None:
+                                    key_v_key = f"{found_base_record.scope_id}:{base_var}[{key}]:{found_base_record.lineno}"
+                                    if key_v_key not in visited:
+                                        v_copy = visited.copy()
+                                        v_copy.add(key_v_key)
+                                        return self.resolve_expression(matched_key_val, sink, found_base_record.scope_id, found_base_record.lineno, v_copy, call_context)
+                                else:
+                                    if len(node.args) > 1:
+                                        return self.resolve_expression(node.args[1], sink, scope_id, current_lineno, visited.copy(), call_context)
+                                    return TaintValue(state=TaintState.CLEAN, confidence=1.0, last_operation=f"container_key_missing:{base_var}[{key}]")
+
+                    # 3. Check direct literal: {"a": val}.get("a")
+                    if isinstance(node.func.value, ast.Dict) and key is not None:
+                        for k, v in zip(node.func.value.keys, node.func.value.values):
+                            k_val = self._extract_subscript_key(k, scope_id)
+                            if k_val == key:
+                                return self.resolve_expression(v, sink, scope_id, current_lineno, visited.copy(), call_context)
+                        if len(node.args) > 1:
+                            return self.resolve_expression(node.args[1], sink, scope_id, current_lineno, visited.copy(), call_context)
+                        return TaintValue(state=TaintState.CLEAN, confidence=1.0, last_operation=f"container_key_missing:[{key}]")
+
+                # Fallback: receiver taint propagation
                 recv_taint = self.resolve_expression(node.func.value, sink, scope_id, current_lineno, visited.copy(), call_context)
                 if recv_taint.state != TaintState.CLEAN and recv_taint.source_id:
                     return TaintValue(state=recv_taint.state, source_id=recv_taint.source_id, confidence=recv_taint.confidence, path=[*recv_taint.path, f"{file_name}:{node.func.attr}()"], last_operation=f"{node.func.attr}()", proof_nodes=recv_taint.proof_nodes, proof_edges=recv_taint.proof_edges)
+                if recv_taint.state == TaintState.CLEAN:
+                    return TaintValue(state=TaintState.CLEAN, confidence=1.0, last_operation=f"{node.func.attr}()")
 
             # Format calls on string literals or templates
             if isinstance(node.func, ast.Attribute) and node.func.attr == "format" and self._is_string_expr(node.func.value, scope_id):
@@ -2098,14 +2439,15 @@ class TaintTracker:
             return TaintValue(state=TaintState.UNKNOWN, source_id=first_tainted.source_id, confidence=0.50, path=[*first_tainted.path, f"{file_name}:{function_name}()"], last_operation=f"unknown_wrapper:{function_name}")
 
         if isinstance(node, ast.Subscript):
-            val_taint = self.resolve_expression(node.value, sink, scope_id, current_lineno, visited.copy(), call_context)
-            if val_taint.state != TaintState.CLEAN and val_taint.source_id:
-                return TaintValue(state=val_taint.state, source_id=val_taint.source_id, confidence=val_taint.confidence, path=[*val_taint.path, f"{file_name}:subscript"], last_operation="subscript")
             canon_val = self.resolve_canonical_name(node.value, scope_id) or dotted_name(node.value)
             norm_val = canon_val[6:] if (canon_val and canon_val.startswith("flask.")) else canon_val
             dname_val = dotted_name(node.value)
-            if norm_val in ("request.args", "request.form", "request.values", "request.headers", "request.cookies") or dname_val in ("request.args", "request.form", "request.values", "request.headers", "request.cookies"):
+            if norm_val in ("request.args", "request.form", "request.values", "request.headers", "request.cookies", "sys.argv") or dname_val in ("request.args", "request.form", "request.values", "request.headers", "request.cookies", "sys.argv"):
                 loc = location(node, file_name)
+                is_sys_argv = (norm_val == "sys.argv" or dname_val == "sys.argv")
+                target_state = TaintState.UNKNOWN if is_sys_argv else TaintState.TAINTED
+                target_conf = 0.50 if is_sys_argv else 1.0
+                target_op = "CLI_ARGUMENT_ACCESS" if is_sys_argv else "HTTP_PARAMETER_ACCESS"
                 for existing in self.sources:
                     if existing.location == loc:
                         src_pn = self.create_proof_node(
@@ -2116,9 +2458,9 @@ class TaintTracker:
                             symbol=f"{norm_val}[]",
                             scope_id=scope_id
                         )
-                        return TaintValue(state=TaintState.TAINTED, source_id=existing.id, confidence=1.0, path=[existing.id], last_operation=f"{norm_val}[]", proof_nodes=[src_pn], proof_edges=[])
+                        return TaintValue(state=target_state, source_id=existing.id, confidence=target_conf, path=[existing.id], last_operation=f"{norm_val}[]", proof_nodes=[src_pn], proof_edges=[])
                 source_id = self.next_source_id()
-                src = SecurityNode(id=source_id, node_type=NodeType.SOURCE, symbol=f"{norm_val}[...]", operation="HTTP_PARAMETER_ACCESS", location=loc, metadata={"source_type": "USER_CONTROLLED"})
+                src = SecurityNode(id=source_id, node_type=NodeType.SOURCE, symbol=f"{norm_val}[...]", operation=target_op, location=loc, metadata={"source_type": "USER_CONTROLLED"})
                 self.sources.append(src)
                 src_pn = self.create_proof_node(
                     step_index=0,
@@ -2128,9 +2470,235 @@ class TaintTracker:
                     symbol=f"{norm_val}[]",
                     scope_id=scope_id
                 )
-                return TaintValue(state=TaintState.TAINTED, source_id=source_id, confidence=1.0, path=[source_id], last_operation=f"{norm_val}[]", proof_nodes=[src_pn], proof_edges=[])
+                return TaintValue(state=target_state, source_id=source_id, confidence=target_conf, path=[source_id], last_operation=f"{norm_val}[]", proof_nodes=[src_pn], proof_edges=[])
+
+            # Field-sensitive container taint tracking
+            key = self._extract_subscript_key(node.slice, scope_id)
+            base_var = node.value.id if isinstance(node.value, ast.Name) else None
+
+            # 1. Composite key in assignments: d["cmd"] = ...
+            if base_var and key is not None:
+                comp_key = f"{base_var}[{key}]"
+                current_scope = scope_id
+                found_record = None
+                while current_scope:
+                    recs = self.assignments_by_scope.get((current_scope, comp_key), [])
+                    recs_before = [r for r in recs if r.lineno < current_lineno]
+                    if recs_before:
+                        uncond = [r for r in recs_before if not r.is_conditional]
+                        found_record = uncond[-1] if uncond else recs_before[-1]
+                        break
+                    if "." in current_scope and "function" in current_scope:
+                        current_scope = current_scope.rsplit(".", 1)[0]
+                    elif ":function" in current_scope:
+                        current_scope = f"{mod_name}:global"
+                    elif current_scope != f"{mod_name}:global":
+                        current_scope = f"{mod_name}:global"
+                    else:
+                        break
+                if found_record:
+                    comp_v_key = f"{scope_id}:{comp_key}:{found_record.lineno}"
+                    if comp_v_key not in visited:
+                        v_copy = visited.copy()
+                        v_copy.add(comp_v_key)
+                        res = self.resolve_expression(found_record.value_node, sink, found_record.scope_id, found_record.lineno, v_copy, call_context)
+                        if res.state != TaintState.CLEAN:
+                            step_idx = len(res.proof_nodes)
+                            cont_pn = self.create_proof_node(
+                                step_index=step_idx,
+                                node_type=ProofNodeType.ASSIGNMENT,
+                                file_path=file_name,
+                                node=found_record.value_node,
+                                symbol=comp_key,
+                                scope_id=found_record.scope_id,
+                                lineno=found_record.lineno,
+                                override_snippet=self.get_source_snippet(file_name, found_record.lineno, found_record.lineno) or f"{comp_key} = ..."
+                            )
+                            new_edges = list(res.proof_edges)
+                            if res.proof_nodes:
+                                new_edges.append(ProofEdge(from_node_id=res.proof_nodes[-1].node_id, to_node_id=cont_pn.node_id, edge_type="ASSIGNMENT"))
+                            return TaintValue(
+                                state=res.state,
+                                source_id=res.source_id,
+                                confidence=res.confidence,
+                                path=[*res.path, f"{file_name}:{comp_key}"],
+                                last_operation=f"container_key:{comp_key}",
+                                proof_nodes=[*res.proof_nodes, cont_pn],
+                                proof_edges=new_edges
+                            )
+                        else:
+                            return TaintValue(state=TaintState.CLEAN, confidence=1.0, last_operation=f"container_key:{comp_key}")
+
+            # 2. Check base variable definition if initialized as dict/list literal
+            if base_var and key is not None:
+                current_scope = scope_id
+                found_base_record = None
+                while current_scope:
+                    recs = self.assignments_by_scope.get((current_scope, base_var), [])
+                    recs_before = [r for r in recs if r.lineno < current_lineno]
+                    if recs_before:
+                        uncond = [r for r in recs_before if not r.is_conditional]
+                        found_base_record = uncond[-1] if uncond else recs_before[-1]
+                        break
+                    if "." in current_scope and "function" in current_scope:
+                        current_scope = current_scope.rsplit(".", 1)[0]
+                    elif ":function" in current_scope:
+                        current_scope = f"{mod_name}:global"
+                    elif current_scope != f"{mod_name}:global":
+                        current_scope = f"{mod_name}:global"
+                    else:
+                        break
+                if found_base_record:
+                    val_node = found_base_record.value_node
+                    if isinstance(val_node, ast.Dict):
+                        matched_key_val = None
+                        for k, v in zip(val_node.keys, val_node.values):
+                            k_val = self._extract_subscript_key(k, found_base_record.scope_id)
+                            if k_val == key:
+                                matched_key_val = v
+                                break
+                        if matched_key_val is not None:
+                            key_v_key = f"{found_base_record.scope_id}:{base_var}[{key}]:{found_base_record.lineno}"
+                            if key_v_key not in visited:
+                                v_copy = visited.copy()
+                                v_copy.add(key_v_key)
+                                return self.resolve_expression(matched_key_val, sink, found_base_record.scope_id, found_base_record.lineno, v_copy, call_context)
+                    elif isinstance(val_node, (ast.List, ast.Tuple)) and isinstance(key, int):
+                        if -len(val_node.elts) <= key < len(val_node.elts):
+                            matched_elt = val_node.elts[key]
+                            elt_v_key = f"{found_base_record.scope_id}:{base_var}[{key}]:{found_base_record.lineno}"
+                            if elt_v_key not in visited:
+                                v_copy = visited.copy()
+                                v_copy.add(elt_v_key)
+                                return self.resolve_expression(matched_elt, sink, found_base_record.scope_id, found_base_record.lineno, v_copy, call_context)
+                    elif isinstance(val_node, (ast.ListComp, ast.GeneratorExp)):
+                        elt_v_key = f"{found_base_record.scope_id}:{base_var}[*]:{found_base_record.lineno}"
+                        if elt_v_key not in visited:
+                            v_copy = visited.copy()
+                            v_copy.add(elt_v_key)
+                            return self.resolve_expression(val_node.elt, sink, found_base_record.scope_id, found_base_record.lineno, v_copy, call_context)
+
+            # 3. Check direct literal
+            if isinstance(node.value, ast.Dict) and key is not None:
+                for k, v in zip(node.value.keys, node.value.values):
+                    k_val = self._extract_subscript_key(k, scope_id)
+                    if k_val == key:
+                        return self.resolve_expression(v, sink, scope_id, current_lineno, visited.copy(), call_context)
+            elif isinstance(node.value, (ast.List, ast.Tuple)) and isinstance(key, int):
+                if -len(node.value.elts) <= key < len(node.value.elts):
+                    return self.resolve_expression(node.value.elts[key], sink, scope_id, current_lineno, visited.copy(), call_context)
+            elif isinstance(node.value, (ast.ListComp, ast.GeneratorExp)):
+                return self.resolve_expression(node.value.elt, sink, scope_id, current_lineno, visited.copy(), call_context)
+
+            # 4. Fallback: evaluate base container value (unions all keys or dynamic subscript)
+            val_taint = self.resolve_expression(node.value, sink, scope_id, current_lineno, visited.copy(), call_context)
+            if val_taint.state != TaintState.CLEAN and val_taint.source_id:
+                return TaintValue(state=val_taint.state, source_id=val_taint.source_id, confidence=val_taint.confidence, path=[*val_taint.path, f"{file_name}:subscript"], last_operation="subscript")
             if val_taint.state == TaintState.CLEAN:
                 return TaintValue(state=TaintState.CLEAN, confidence=1.0, last_operation="subscript")
+            return val_taint
+
+        if isinstance(node, ast.IfExp):
+            true_taint = self.resolve_expression(node.body, sink, scope_id, current_lineno, visited.copy(), call_context)
+            false_taint = self.resolve_expression(node.orelse, sink, scope_id, current_lineno, visited.copy(), call_context)
+
+            if true_taint.state == TaintState.CLEAN and false_taint.state == TaintState.CLEAN:
+                return TaintValue(state=TaintState.CLEAN, confidence=1.0, last_operation="ternary")
+
+            tainted_branches = [t for t in (true_taint, false_taint) if t.state == TaintState.TAINTED]
+            if tainted_branches:
+                best_t = max(tainted_branches, key=lambda t: t.confidence)
+                combined_path = []
+                for t in tainted_branches:
+                    if t.path:
+                        combined_path.extend(t.path)
+                combined_path.append(f"{file_name}:ternary")
+                combined_nodes = []
+                seen_nids = set()
+                combined_edges = []
+                seen_ekeys = set()
+                for t in tainted_branches:
+                    for pn in t.proof_nodes:
+                        if pn.node_id not in seen_nids:
+                            seen_nids.add(pn.node_id)
+                            combined_nodes.append(pn)
+                    for pe in t.proof_edges:
+                        ek = (pe.from_node_id, pe.to_node_id, pe.edge_type)
+                        if ek not in seen_ekeys:
+                            seen_ekeys.add(ek)
+                            combined_edges.append(pe)
+                return TaintValue(
+                    state=TaintState.TAINTED,
+                    source_id=best_t.source_id,
+                    confidence=best_t.confidence,
+                    path=combined_path,
+                    last_operation="ternary",
+                    proof_nodes=combined_nodes,
+                    proof_edges=combined_edges
+                )
+
+            unknown_branches = [t for t in (true_taint, false_taint) if t.state != TaintState.CLEAN]
+            first_u = unknown_branches[0]
+            return TaintValue(
+                state=TaintState.UNKNOWN,
+                source_id=first_u.source_id,
+                confidence=0.50,
+                path=[*true_taint.path, *false_taint.path, "ternary"],
+                last_operation="ternary",
+                proof_nodes=first_u.proof_nodes,
+                proof_edges=first_u.proof_edges
+            )
+
+        if isinstance(node, (ast.ListComp, ast.SetComp, ast.GeneratorExp)):
+            elt_taint = self.resolve_expression(node.elt, sink, scope_id, current_lineno, visited.copy(), call_context)
+            if elt_taint.state == TaintState.TAINTED:
+                return TaintValue(
+                    state=TaintState.TAINTED,
+                    source_id=elt_taint.source_id,
+                    confidence=elt_taint.confidence,
+                    path=[*elt_taint.path, f"{file_name}:comprehension"],
+                    last_operation="comprehension",
+                    proof_nodes=elt_taint.proof_nodes,
+                    proof_edges=elt_taint.proof_edges
+                )
+            for gen in node.generators:
+                iter_taint = self.resolve_expression(gen.iter, sink, scope_id, current_lineno, visited.copy(), call_context)
+                if iter_taint.state == TaintState.TAINTED:
+                    return TaintValue(
+                        state=TaintState.TAINTED,
+                        source_id=iter_taint.source_id,
+                        confidence=iter_taint.confidence,
+                        path=[*iter_taint.path, f"{file_name}:comprehension"],
+                        last_operation="comprehension",
+                        proof_nodes=iter_taint.proof_nodes,
+                        proof_edges=iter_taint.proof_edges
+                    )
+            if elt_taint.state == TaintState.CLEAN:
+                return TaintValue(state=TaintState.CLEAN, confidence=1.0, last_operation="comprehension")
+            return elt_taint
+
+        if isinstance(node, ast.DictComp):
+            key_taint = self.resolve_expression(node.key, sink, scope_id, current_lineno, visited.copy(), call_context)
+            val_taint = self.resolve_expression(node.value, sink, scope_id, current_lineno, visited.copy(), call_context)
+            if val_taint.state == TaintState.TAINTED:
+                return TaintValue(state=TaintState.TAINTED, source_id=val_taint.source_id, confidence=val_taint.confidence, path=[*val_taint.path, f"{file_name}:dict_comp"], last_operation="dict_comp", proof_nodes=val_taint.proof_nodes, proof_edges=val_taint.proof_edges)
+            if key_taint.state == TaintState.TAINTED:
+                return TaintValue(state=TaintState.TAINTED, source_id=key_taint.source_id, confidence=key_taint.confidence, path=[*key_taint.path, f"{file_name}:dict_comp"], last_operation="dict_comp", proof_nodes=key_taint.proof_nodes, proof_edges=key_taint.proof_edges)
+            if val_taint.state == TaintState.CLEAN and key_taint.state == TaintState.CLEAN:
+                return TaintValue(state=TaintState.CLEAN, confidence=1.0, last_operation="dict_comp")
+            return val_taint if val_taint.state != TaintState.CLEAN else key_taint
+
+        if isinstance(node, ast.NamedExpr):
+            if isinstance(node.target, ast.Name):
+                record = AssignmentRecord(
+                    target_name=node.target.id,
+                    value_node=node.value,
+                    lineno=getattr(node, "lineno", current_lineno),
+                    scope_id=scope_id,
+                    is_conditional=False
+                )
+                self.assignments_by_scope.setdefault((scope_id, node.target.id), []).append(record)
+            return self.resolve_expression(node.value, sink, scope_id, current_lineno, visited.copy(), call_context)
 
         if isinstance(node, ast.Constant):
             return TaintValue(state=TaintState.CLEAN, confidence=1.0, last_operation="constant")
@@ -2325,6 +2893,12 @@ class TaintTracker:
                 source_trace=("literal",),
                 origin_node=node
             )
+
+        # Ternary Expressions (ast.IfExp)
+        if isinstance(node, ast.IfExp):
+            p_body = self.resolve_path_provenance(node.body, sink, scope_id, current_lineno, visited.copy(), call_context)
+            p_orelse = self.resolve_path_provenance(node.orelse, sink, scope_id, current_lineno, visited.copy(), call_context)
+            return compose_path_provenance(p_body, p_orelse, operator="ternary")
 
         # 3. JoinedStr (f-strings)
         if isinstance(node, ast.JoinedStr):
@@ -2855,6 +3429,143 @@ class TaintTracker:
                 if func_scope:
                     self.call_sites_by_target.setdefault(func_scope, []).append((call_node, caller_scope, lineno))
 
+        # Re-scan raw_calls for any sinks resolved after call-site indexing (higher-order callbacks)
+        for call_node, caller_scope, lineno in self.raw_calls:
+            # Check if this call is a parameter callback (higher-order function invocation)
+            func_def = self.functions.get(caller_scope)
+            p_fn_name = None
+            if func_def:
+                param_names = [a.arg for a in func_def.args.args]
+                cand = call_node.func.id if isinstance(call_node.func, ast.Name) else None
+                if cand:
+                    if cand in param_names:
+                        p_fn_name = cand
+                    else:
+                        recs = self.assignments_by_scope.get((caller_scope, cand), [])
+                        recs_before = [r for r in recs if r.lineno < lineno]
+                        if recs_before and isinstance(recs_before[-1].value_node, ast.Name) and recs_before[-1].value_node.id in param_names:
+                            p_fn_name = recs_before[-1].value_node.id
+
+            if p_fn_name and func_def:
+                param_names = [a.arg for a in func_def.args.args]
+                p_fn_idx = param_names.index(p_fn_name)
+                call_sites = self.call_sites_by_target.get(caller_scope, [])
+                mod_name = caller_scope.split(":")[0]
+                file_path = self.file_paths.get(mod_name, "unknown.py")
+
+                for cs_call, cs_scope, cs_lineno in call_sites:
+                    arg_for_fn = None
+                    for kw in getattr(cs_call, "keywords", []):
+                        if kw.arg == p_fn_name:
+                            arg_for_fn = kw.value
+                            break
+                    if arg_for_fn is None:
+                        pos_idx = p_fn_idx
+                        if param_names and param_names[0] in ("self", "cls"):
+                            pos_idx = p_fn_idx - 1
+                        if 0 <= pos_idx < len(cs_call.args):
+                            arg_for_fn = cs_call.args[pos_idx]
+
+                    if arg_for_fn is None:
+                        continue
+
+                    fn_canon = self.resolve_canonical_name(arg_for_fn, cs_scope) or dotted_name(arg_for_fn)
+                    if not fn_canon:
+                        continue
+
+                    matched_rule = match_sink_rule(call_node, dotted_name(arg_for_fn) or "", fn_canon)
+                    if matched_rule and not self.check_sink_safety(call_node, fn_canon):
+                        ctx = {}
+                        for idx, p_name in enumerate(param_names):
+                            p_expr = None
+                            for kw in getattr(cs_call, "keywords", []):
+                                if kw.arg == p_name:
+                                    p_expr = kw.value
+                                    break
+                            if p_expr is None:
+                                p_pos = idx
+                                if param_names and param_names[0] in ("self", "cls"):
+                                    p_pos = idx - 1
+                                if 0 <= p_pos < len(cs_call.args):
+                                    p_expr = cs_call.args[p_pos]
+                            if p_expr is not None:
+                                p_taint = self.resolve_expression(p_expr, None, cs_scope, cs_lineno)
+                                if p_taint.state != TaintState.CLEAN:
+                                    caller_file = cs_scope.split(":", 1)[0] if ":" in cs_scope else file_path
+                                    call_func_symbol = dotted_name(cs_call.func) if hasattr(cs_call, "func") else "call"
+                                    call_snippet = self.get_source_snippet(caller_file, cs_lineno, cs_lineno, cs_call) or f"{call_func_symbol}(...)"
+                                    step_idx = len(p_taint.proof_nodes)
+                                    cs_pn = self.create_proof_node(
+                                        step_index=step_idx,
+                                        node_type=ProofNodeType.CALL_SITE,
+                                        file_path=caller_file,
+                                        node=cs_call,
+                                        symbol=call_func_symbol,
+                                        scope_id=cs_scope,
+                                        lineno=cs_lineno,
+                                        override_snippet=call_snippet
+                                    )
+                                    callee_line = func_def.lineno if func_def else lineno
+                                    param_pn = self.create_proof_node(
+                                        step_index=step_idx + 1,
+                                        node_type=ProofNodeType.PARAM_BINDING,
+                                        file_path=file_path,
+                                        node=func_def,
+                                        symbol=p_name,
+                                        scope_id=caller_scope,
+                                        lineno=callee_line,
+                                        override_snippet=self.get_source_snippet(file_path, callee_line, callee_line, func_def) or f"def {func_def.name}(..., {p_name}, ...)"
+                                    )
+                                    new_edges = list(p_taint.proof_edges)
+                                    if p_taint.proof_nodes:
+                                        new_edges.append(ProofEdge(from_node_id=p_taint.proof_nodes[-1].node_id, to_node_id=cs_pn.node_id, edge_type="CALL_SITE"))
+                                    new_edges.append(ProofEdge(from_node_id=cs_pn.node_id, to_node_id=param_pn.node_id, edge_type="PARAM_BINDING"))
+                                    p_taint = TaintValue(
+                                        state=p_taint.state,
+                                        source_id=p_taint.source_id,
+                                        confidence=p_taint.confidence,
+                                        path=[*p_taint.path, f"call:{call_func_symbol}", f"{file_path}:{p_name}"],
+                                        last_operation=f"param:{p_name}",
+                                        proof_nodes=[*p_taint.proof_nodes, cs_pn, param_pn],
+                                        proof_edges=new_edges
+                                    )
+                                ctx[p_name] = p_taint
+                            else:
+                                ctx[p_name] = TaintValue(state=TaintState.CLEAN, confidence=1.0)
+
+                        sink_id = self.next_sink_id()
+                        sink_meta = {
+                            "operation": matched_rule.operation,
+                            "category": matched_rule.category,
+                            "cwe": matched_rule.cwe_id,
+                            "sink_type": matched_rule.category,
+                        }
+                        loc = location(call_node, file_path)
+                        sink_node = SecurityNode(
+                            id=sink_id,
+                            node_type=NodeType.SINK,
+                            symbol=fn_canon,
+                            operation=matched_rule.operation,
+                            location=loc,
+                            metadata=sink_meta
+                        )
+                        self.sinks.append(sink_node)
+                        self.sink_records.append(SinkRecord(
+                            node=call_node,
+                            security_node=sink_node,
+                            lineno=lineno,
+                            scope_id=caller_scope,
+                            call_context=ctx
+                        ))
+            elif not any(r.node is call_node for r in self.sink_records):
+                if self.is_sink_call(call_node, caller_scope, lineno):
+                    canon_name = self.resolve_canonical_name(call_node.func, caller_scope) or dotted_name(call_node.func) or ""
+                    if not self.check_sink_safety(call_node, canon_name):
+                        mod_name = caller_scope.split(":")[0]
+                        file_path = self.file_paths.get(mod_name, "unknown.py")
+                        sink_node = self.get_or_create_sink(call_node, file_path, caller_scope)
+                        self.sink_records.append(SinkRecord(node=call_node, security_node=sink_node, lineno=lineno, scope_id=caller_scope))
+
         for mod_name, tree in self.modules.items():
             for node in ast.walk(tree):
                 if isinstance(node, ast.Call) and self.is_source_call(node, f"{mod_name}:global"):
@@ -2913,7 +3624,7 @@ class TaintTracker:
                         proof_graph=pg
                     ))
             else:
-                taint = self.resolve_expression(target_expr, sink, record.scope_id, record.lineno)
+                taint = self.resolve_expression(target_expr, sink, record.scope_id, record.lineno, call_context=record.call_context)
                 full_path_str = " -> ".join(taint.path) if taint.path else taint.last_operation
                 pg = None
                 if taint.state in (TaintState.TAINTED, TaintState.UNKNOWN):

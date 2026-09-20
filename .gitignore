@@ -4,10 +4,16 @@ __pycache__/
 .DS_Store
 
 # Local scratch scripts and temporary artifacts
-scratch/
+scratch/*
 # Allow canonical test files inside scratch
 !scratch/test_*.py
 test.py
+
+# Build & packaging artifacts
+dist/
+build/
+*.egg-info/
+*.png
 
 # Local database files
 *.db
