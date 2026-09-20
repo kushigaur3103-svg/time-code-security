@@ -303,9 +303,29 @@ SOURCE_REGISTRY = {
 }
 
 SANITIZER_REGISTRY = {
+    # Canonical Vector-to-Sanitizers Mapping
+    "CWE-78": {"shlex.quote", "quote"},
+    "CWE-22": {
+        "os.path.basename", "basename",
+        "werkzeug.utils.secure_filename", "secure_filename",
+        "pathlib.Path.name", "Path.name",
+        "secure_path_join"
+    },
+    "CWE-95": {"safe_eval_input"},
+    "CWE-79": {"html.escape"},
+
+    # Function-to-Metadata Mapping (Backward compatibility & fine-grained sink matching)
     "html.escape": {"protected_cwes": {"CWE-79"}, "protected_sinks": {"XSS"}},
     "safe_eval_input": {"protected_cwes": {"CWE-95"}, "protected_sinks": {"CODE_EXECUTION"}},
-    "secure_path_join": {"protected_cwes": {"CWE-22"}, "protected_sinks": {"PATH_TRAVERSAL"}},
+    "secure_path_join": {"protected_cwes": {"CWE-22"}, "protected_sinks": {"PATH_TRAVERSAL", "FILE_ACCESS"}},
+    "shlex.quote": {"protected_cwes": {"CWE-78"}, "protected_sinks": {"COMMAND_INJECTION", "OS_COMMAND_EXECUTION"}},
+    "quote": {"protected_cwes": {"CWE-78"}, "protected_sinks": {"COMMAND_INJECTION", "OS_COMMAND_EXECUTION"}},
+    "os.path.basename": {"protected_cwes": {"CWE-22"}, "protected_sinks": {"PATH_TRAVERSAL", "FILE_ACCESS"}},
+    "basename": {"protected_cwes": {"CWE-22"}, "protected_sinks": {"PATH_TRAVERSAL", "FILE_ACCESS"}},
+    "werkzeug.utils.secure_filename": {"protected_cwes": {"CWE-22"}, "protected_sinks": {"PATH_TRAVERSAL", "FILE_ACCESS"}},
+    "secure_filename": {"protected_cwes": {"CWE-22"}, "protected_sinks": {"PATH_TRAVERSAL", "FILE_ACCESS"}},
+    "pathlib.Path.name": {"protected_cwes": {"CWE-22"}, "protected_sinks": {"PATH_TRAVERSAL", "FILE_ACCESS"}},
+    "Path.name": {"protected_cwes": {"CWE-22"}, "protected_sinks": {"PATH_TRAVERSAL", "FILE_ACCESS"}},
 }
 
 PRIMITIVE_NUMERIC_CASTS = {"int", "float", "bool", "math.floor", "math.ceil"}
@@ -861,10 +881,28 @@ class TaintTracker:
         return sink
 
     def sanitizer_protects_context(self, function_name: str, sink: SecurityNode) -> bool:
+        if not sink or not hasattr(sink, "metadata"):
+            return False
+        sink_cwe = sink.metadata.get("cwe")
+        sink_type = sink.metadata.get("sink_type") or sink.metadata.get("category")
+
+        # 1. Check direct CWE registry mapping
+        if sink_cwe and sink_cwe in SANITIZER_REGISTRY:
+            cwe_sanitizers = SANITIZER_REGISTRY[sink_cwe]
+            if isinstance(cwe_sanitizers, (set, list, tuple)):
+                fn_clean = function_name.replace("builtins.", "")
+                fn_short = fn_clean.split(".")[-1]
+                if fn_clean in cwe_sanitizers or fn_short in cwe_sanitizers:
+                    return True
+
+        # 2. Check function rule dict mapping
         rule = SANITIZER_REGISTRY.get(function_name)
-        if not rule: return False
-        return (sink.metadata.get("cwe") in rule.get("protected_cwes", set()) or 
-                sink.metadata.get("sink_type") in rule.get("protected_sinks", set()))
+        if not rule and "." in function_name:
+            rule = SANITIZER_REGISTRY.get(function_name.split(".")[-1])
+        if isinstance(rule, dict):
+            return (sink_cwe in rule.get("protected_cwes", set()) or
+                    sink_type in rule.get("protected_sinks", set()))
+        return False
 
     def _extract_target_from_parents_attr(self, node: ast.AST) -> Optional[str]:
         if isinstance(node, ast.Attribute) and node.attr == "parents":
@@ -3195,6 +3233,13 @@ class TaintTracker:
                 )
 
             if node.attr in ("parent", "parents", "name", "stem", "suffix", "suffixes"):
+                if node.attr == "name" and self.sanitizer_protects_context("pathlib.Path.name", sink):
+                    return ProvenanceValue(
+                        state=ProvenanceState.STATIC,
+                        confidence=1.0,
+                        source_trace=("sanitizer:pathlib.Path.name",),
+                        origin_node=node
+                    )
                 recv_prov = self.resolve_path_provenance(node.value, sink, scope_id, current_lineno, visited.copy(), call_context)
                 return ProvenanceValue(
                     state=recv_prov.state,

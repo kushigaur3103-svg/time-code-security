@@ -1,6 +1,6 @@
 # TimeCodeSecurity (TCS) 🛡️
 
-[![Version](https://img.shields.io/badge/version-1.2.0-blue.svg)](https://github.com/kushigaur3103-svg/time-code-security)
+[![Version](https://img.shields.io/badge/version-1.3.0-blue.svg)](https://github.com/kushigaur3103-svg/time-code-security)
 [![Tests](https://img.shields.io/badge/tests-271%2F271%20passed-success.svg)](https://github.com/kushigaur3103-svg/time-code-security)
 [![Python](https://img.shields.io/badge/python-3.9%20%7C%203.10%20%7C%203.11-blue.svg)](https://github.com/kushigaur3103-svg/time-code-security)
 [![License](https://img.shields.io/badge/license-MIT-green.svg)](https://github.com/kushigaur3103-svg/time-code-security)
@@ -8,6 +8,19 @@
 > **Deterministic AST SAST Scanner, Proof Graph Engine & Automated Closed-Loop Remediation Framework.**
 
 TCS scans source code for high-risk vulnerabilities, tracks taint flows across call graphs, verifies reachability in dependencies, and **automatically writes syntactically valid patches** back to disk with zero hallucinations.
+
+---
+
+## 🛡️ Phase 3 Vector-Aware Sanitizer Registry & False-Positive Shield
+
+Version 1.3.0 introduces context-aware sanitizer tracking and a false-positive mitigation shield:
+
+- **Vector-Aware CWE Sanitizer Mappings**:
+  - **CWE-78 (OS Command Injection)**: Recognized sanitizers include `shlex.quote`.
+  - **CWE-22 (Path Traversal)**: Recognized sanitizers include `os.path.basename`, `werkzeug.utils.secure_filename`, and `pathlib.Path.name`.
+  - **Universal Numeric Typecasting**: `int()` and `float()` typecasting strips all string payload injection vectors (CWE-89, CWE-78, etc.) and neutralizes taint propagation.
+- **Context-Aware Protection**:
+  - Sanitizers are strictly bound to relevant vulnerability vectors. Irrelevant sanitizers (e.g. `html.escape` for shell injection sinks) are rejected, ensuring zero false-negative blindspots.
 
 ---
 
