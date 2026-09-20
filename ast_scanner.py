@@ -987,7 +987,30 @@ class TaintTracker:
                         return True
         return False
 
-    def _resolve_function_scope(self, call_name: str, current_scope: str) -> str | None:
+    def _resolve_transitive_import(self, r_mod: str, r_func: str, visited: set[str], depth: int) -> str | None:
+        if depth > 5 or r_mod not in self.imports:
+            return None
+        f_parts = r_func.split(".")
+        for j in range(len(f_parts), 0, -1):
+            f_head = ".".join(f_parts[:j])
+            f_tail = ".".join(f_parts[j:])
+            if f_head in self.imports[r_mod]:
+                imported_target = self.imports[r_mod][f_head]
+                full_target = imported_target + ("." + f_tail if f_tail else "")
+                visit_key = f"{r_mod}->{full_target}"
+                if visit_key not in visited:
+                    v_copy = visited.copy()
+                    v_copy.add(visit_key)
+                    res = self._resolve_function_scope(full_target, f"{r_mod}:global", v_copy, depth + 1)
+                    if res:
+                        return res
+        return None
+
+    def _resolve_function_scope(self, call_name: str, current_scope: str, visited: Optional[set[str]] = None, depth: int = 0) -> str | None:
+        if visited is None:
+            visited = set()
+        if depth > 5:
+            return None
         mod_name = current_scope.split(":")[0]
         if "function:" in current_scope:
             nested = f"{current_scope}.{call_name}"
@@ -1002,6 +1025,8 @@ class TaintTracker:
                 r_func = ".".join(parts[i:])
                 test_scope = f"{r_mod}:function:{r_func}"
                 if test_scope in self.functions: return test_scope
+                trans = self._resolve_transitive_import(r_mod, r_func, visited, depth)
+                if trans: return trans
 
         base_name = parts[0]
         # Check if base_name is a variable holding a class instance (e.g. loader = Loader(); loader.method)
@@ -1042,6 +1067,8 @@ class TaintTracker:
                                         r_cls = ".".join(parts_cls[i:])
                                         cand = f"{r_mod}:function:{r_cls}.{method_attr}"
                                         if cand in self.functions: return cand
+                                        trans = self._resolve_transitive_import(r_mod, f"{r_cls}.{method_attr}", visited, depth)
+                                        if trans: return trans
                     break
                 if "." in curr and "function" in curr: curr = curr.rsplit(".", 1)[0]
                 elif ":function" in curr: curr = f"{mod_name}:global"
@@ -1057,6 +1084,8 @@ class TaintTracker:
                 r_func = ".".join(parts2[i:])
                 test_scope = f"{r_mod}:function:{r_func}"
                 if test_scope in self.functions: return test_scope
+                trans = self._resolve_transitive_import(r_mod, r_func, visited, depth)
+                if trans: return trans
         return None
 
     def _get_enclosing_class_scope(self, scope_id: str) -> Optional[str]:

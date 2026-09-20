@@ -1,6 +1,6 @@
 # TimeCodeSecurity (TCS) 🛡️
 
-[![Version](https://img.shields.io/badge/version-1.4.0-blue.svg)](https://github.com/kushigaur3103-svg/time-code-security)
+[![Version](https://img.shields.io/badge/version-1.5.0-blue.svg)](https://github.com/kushigaur3103-svg/time-code-security)
 [![Tests](https://img.shields.io/badge/tests-271%2F271%20passed-success.svg)](https://github.com/kushigaur3103-svg/time-code-security)
 [![Python](https://img.shields.io/badge/python-3.9%20%7C%203.10%20%7C%203.11-blue.svg)](https://github.com/kushigaur3103-svg/time-code-security)
 [![License](https://img.shields.io/badge/license-MIT-green.svg)](https://github.com/kushigaur3103-svg/time-code-security)
@@ -8,6 +8,21 @@
 > **Deterministic AST SAST Scanner, Proof Graph Engine & Automated Closed-Loop Remediation Framework.**
 
 TCS scans source code for high-risk vulnerabilities, tracks taint flows across call graphs, verifies reachability in dependencies, and **automatically writes syntactically valid patches** back to disk with zero hallucinations.
+
+---
+
+## 🔄 Phase 5 Inter-Procedural Taint Tracking & Cross-File Proof Graphs
+
+Version 1.5.0 introduces deep inter-procedural dataflow analysis, transitive module dispatch, and cross-file proof graph resolution:
+
+- **Transitive Multi-Hop Module Calls (A $\rightarrow$ B $\rightarrow$ C)**:
+  - Deep cross-file parameter binding propagating untrusted sources through arbitrary forwarding chains, adapter wrappers, and intermediate dispatch layers.
+- **Callee-Return Taint Propagation**:
+  - Inter-procedural return value tracking capturing untrusted inputs returned by callee functions across module boundaries and routed to caller sinks.
+- **Re-Exported Facade Alias Resolution**:
+  - Transitive symbol resolution for aliased imports and facade modules (`from facade import func` where `facade.py` re-exports `from internal import real_func as func`) with cycle-safe recursion bounds.
+- **Cross-File Sanitizer Negative Space Preservation**:
+  - Seamless propagation of sanitizer status across file boundaries, guaranteeing zero false positives when input is sanitized in upstream or downstream utility modules before reaching the sink.
 
 ---
 
