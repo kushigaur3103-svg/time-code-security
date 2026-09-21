@@ -297,14 +297,22 @@ SOURCE_REGISTRY = {
     "request.values.get": {"operation": "HTTP_PARAMETER_ACCESS", "source_type": "USER_CONTROLLED"},
     "request.values.getlist": {"operation": "HTTP_PARAMETER_ACCESS", "source_type": "USER_CONTROLLED"},
     "request.get_json": {"operation": "HTTP_BODY_JSON_ACCESS", "source_type": "USER_CONTROLLED"},
+    "request.get_data": {"operation": "HTTP_BODY_ACCESS", "source_type": "USER_CONTROLLED"},
     "request.headers.get": {"operation": "HTTP_HEADER_ACCESS", "source_type": "USER_CONTROLLED"},
     "request.cookies.get": {"operation": "HTTP_COOKIE_ACCESS", "source_type": "USER_CONTROLLED"},
+    "request.files.get": {"operation": "HTTP_FILE_UPLOAD_ACCESS", "source_type": "USER_CONTROLLED"},
+    "request.files.getlist": {"operation": "HTTP_FILE_UPLOAD_ACCESS", "source_type": "USER_CONTROLLED"},
+    "request.files": {"operation": "HTTP_FILE_UPLOAD_ACCESS", "source_type": "USER_CONTROLLED"},
     "request.GET.get": {"operation": "HTTP_QUERY_PARAMETER_ACCESS", "source_type": "USER_CONTROLLED"},
     "request.GET.getlist": {"operation": "HTTP_QUERY_PARAMETER_ACCESS", "source_type": "USER_CONTROLLED"},
     "request.POST.get": {"operation": "HTTP_BODY_PARAMETER_ACCESS", "source_type": "USER_CONTROLLED"},
     "request.POST.getlist": {"operation": "HTTP_BODY_PARAMETER_ACCESS", "source_type": "USER_CONTROLLED"},
     "request.query_params.get": {"operation": "HTTP_QUERY_PARAMETER_ACCESS", "source_type": "USER_CONTROLLED"},
     "sys.argv": {"operation": "CLI_ARGUMENT_ACCESS", "source_type": "USER_CONTROLLED"},
+    "os.environ.get": {"operation": "ENVIRONMENT_VARIABLE_ACCESS", "source_type": "USER_CONTROLLED"},
+    "os.environ": {"operation": "ENVIRONMENT_VARIABLE_ACCESS", "source_type": "USER_CONTROLLED"},
+    "input": {"operation": "STDIN_READ", "source_type": "USER_CONTROLLED"},
+    "builtins.input": {"operation": "STDIN_READ", "source_type": "USER_CONTROLLED"},
 }
 
 SANITIZER_REGISTRY = {
@@ -314,7 +322,8 @@ SANITIZER_REGISTRY = {
         "os.path.basename", "basename",
         "werkzeug.utils.secure_filename", "secure_filename",
         "pathlib.Path.name", "Path.name",
-        "secure_path_join"
+        "secure_path_join",
+        "uuid.UUID", "UUID",
     },
     "CWE-95": {"safe_eval_input"},
     "CWE-79": {"html.escape"},
@@ -331,9 +340,26 @@ SANITIZER_REGISTRY = {
     "secure_filename": {"protected_cwes": {"CWE-22"}, "protected_sinks": {"PATH_TRAVERSAL", "FILE_ACCESS"}},
     "pathlib.Path.name": {"protected_cwes": {"CWE-22"}, "protected_sinks": {"PATH_TRAVERSAL", "FILE_ACCESS"}},
     "Path.name": {"protected_cwes": {"CWE-22"}, "protected_sinks": {"PATH_TRAVERSAL", "FILE_ACCESS"}},
+    "uuid.UUID": {"protected_cwes": {"CWE-22"}, "protected_sinks": {"PATH_TRAVERSAL", "FILE_ACCESS"}},
+    "UUID": {"protected_cwes": {"CWE-22"}, "protected_sinks": {"PATH_TRAVERSAL", "FILE_ACCESS"}},
 }
 
 PRIMITIVE_NUMERIC_CASTS = {"int", "float", "bool", "math.floor", "math.ceil"}
+
+# String/bytes methods that never cleanse taint: the result carries the receiver's
+# taint state unchanged (e.g. request.get_data().decode(), cookie.split(":")[0]).
+TAINT_PRESERVING_RECEIVER_METHODS = {
+    "decode", "encode", "split", "rsplit", "splitlines", "strip", "lstrip", "rstrip",
+    "lower", "upper", "title", "capitalize", "swapcase", "casefold", "replace",
+    "removeprefix", "removesuffix", "expandtabs", "center", "ljust", "rjust",
+    "zfill", "partition", "rpartition",
+}
+
+# Container-mutating methods whose added element taints the whole container.
+CONTAINER_MUTATION_METHODS = {
+    "append": 0, "add": 0, "extend": 0, "insert": 1,
+    "update": 0, "setdefault": 1, "push": 0,
+}
 
 SINK_REGISTRY = {
     "eval": {"operation": "ARBITRARY_CODE_EXECUTION", "category": "CODE_EXECUTION", "cwe": "CWE-95"},
@@ -355,6 +381,9 @@ SINK_REGISTRY = {
     "yaml.load": {"operation": "DESERIALIZATION", "category": "UNSAFE_DESERIALIZATION", "cwe": "CWE-502"},
     "yaml.unsafe_load": {"operation": "DESERIALIZATION", "category": "UNSAFE_DESERIALIZATION", "cwe": "CWE-502"},
     "open": {"operation": "FILE_ACCESS", "category": "PATH_TRAVERSAL", "cwe": "CWE-22"},
+    "shutil.rmtree": {"operation": "FILE_DELETE", "category": "PATH_TRAVERSAL", "cwe": "CWE-22"},
+    "extractall": {"operation": "ARCHIVE_EXTRACTION", "category": "PATH_TRAVERSAL", "cwe": "CWE-22"},
+    "extract": {"operation": "ARCHIVE_EXTRACTION", "category": "PATH_TRAVERSAL", "cwe": "CWE-22"},
     "render_template_string": {"operation": "TEMPLATE_EVALUATION", "category": "SSTI", "cwe": "CWE-1336"},
     "flask.render_template_string": {"operation": "TEMPLATE_EVALUATION", "category": "SSTI", "cwe": "CWE-1336"},
     "jinja2.Template": {"operation": "TEMPLATE_EVALUATION", "category": "SSTI", "cwe": "CWE-1336"},
@@ -363,6 +392,14 @@ SINK_REGISTRY = {
     "RawSQL": {"operation": "SQL_EXECUTION", "category": "SQL_INJECTION", "cwe": "CWE-89"},
     "objects.raw": {"operation": "SQL_EXECUTION", "category": "SQL_INJECTION", "cwe": "CWE-89"},
     "objects.extra": {"operation": "SQL_EXECUTION", "category": "SQL_INJECTION", "cwe": "CWE-89"},
+    "xml.etree.ElementTree.fromstring": {"operation": "XML_PARSING", "category": "XML_EXTERNAL_ENTITY", "cwe": "CWE-611"},
+    "ET.fromstring": {"operation": "XML_PARSING", "category": "XML_EXTERNAL_ENTITY", "cwe": "CWE-611"},
+    "fromstring": {"operation": "XML_PARSING", "category": "XML_EXTERNAL_ENTITY", "cwe": "CWE-611"},
+    "urllib.request.urlopen": {"operation": "SSRF_REQUEST", "category": "SERVER_SIDE_REQUEST_FORGERY", "cwe": "CWE-918"},
+    "urlopen": {"operation": "SSRF_REQUEST", "category": "SERVER_SIDE_REQUEST_FORGERY", "cwe": "CWE-918"},
+    "re.compile": {"operation": "REGEX_COMPILATION", "category": "REGULAR_EXPRESSION_DOS", "cwe": "CWE-1333"},
+    "redirect": {"operation": "OPEN_REDIRECT", "category": "URL_REDIRECTION", "cwe": "CWE-601"},
+    "flask.redirect": {"operation": "OPEN_REDIRECT", "category": "URL_REDIRECTION", "cwe": "CWE-601"},
 }
 
 def location(node: ast.AST, file_path: str) -> CodeLocation:
@@ -459,6 +496,8 @@ class TaintTracker:
         self.raw_calls: list[tuple[ast.Call, str, int]] = []
         self.call_sites_by_target: dict[str, list[tuple[ast.Call, str, int]]] = {}
         self.containment_guards: list[dict] = []
+        self.list_mutations: dict[tuple[str, str], list[tuple[int, ast.AST]]] = {}
+        self.instance_field_writes: dict[tuple[str, str], list[tuple[int, ast.AST, str]]] = {}
         self._source_counter = 0
         self._sink_counter = 0
 
@@ -594,12 +633,50 @@ class TaintTracker:
                     break
         return None
 
+    def _eval_const_str_with_params(self, node: Optional[ast.AST], scope_id: Optional[str] = None, visited: Optional[set[str]] = None) -> Optional[str]:
+        """Like _eval_const_str but also resolves a bare parameter Name to the constant
+        argument passed at the enclosing function's call sites (higher-order getattr)."""
+        val = self._eval_const_str(node, scope_id, visited)
+        if val is not None:
+            return val
+        if isinstance(node, ast.Name) and scope_id:
+            enc_scope = scope_id
+            while enc_scope:
+                f_node = self.functions.get(enc_scope)
+                if f_node and any(a.arg == node.id for a in f_node.args.args):
+                    param_names = [a.arg for a in f_node.args.args]
+                    param_idx = param_names.index(node.id)
+                    for call_node, caller_scope, _call_lineno in self.call_sites_by_target.get(enc_scope, []):
+                        arg_expr = None
+                        for kw in getattr(call_node, "keywords", []):
+                            if kw.arg == node.id:
+                                arg_expr = kw.value
+                                break
+                        if arg_expr is None:
+                            pos_idx = param_idx
+                            if param_names and param_names[0] in ("self", "cls"):
+                                pos_idx -= 1
+                            if 0 <= pos_idx < len(call_node.args):
+                                arg_expr = call_node.args[pos_idx]
+                        if arg_expr is not None:
+                            c = self._eval_const_str(arg_expr, caller_scope, visited)
+                            if c is not None:
+                                return c
+                    break
+                if "." in enc_scope and "function" in enc_scope:
+                    enc_scope = enc_scope.rsplit(".", 1)[0]
+                else:
+                    break
+        return None
+
     def resolve_canonical_name(self, node: ast.AST, scope_id: str = "", visited: Optional[set[str]] = None) -> Optional[str]:
         if visited is None:
             visited = set()
         mod_name = scope_id.split(":")[0] if scope_id else ""
 
         if isinstance(node, ast.Name):
+            if node.id == "__builtins__":
+                return "builtins"
             if mod_name and mod_name in self.imports and node.id in self.imports[mod_name]:
                 return self.imports[mod_name][node.id]
 
@@ -686,7 +763,7 @@ class TaintTracker:
             # 1. getattr(target, attr_name) dynamic resolution
             if (call_name in ("getattr", "builtins.getattr") or (call_name and call_name.endswith(".getattr"))) and len(node.args) >= 2:
                 target_canon = self.resolve_canonical_name(node.args[0], scope_id, visited) or dotted_name(node.args[0])
-                attr_str = self._eval_const_str(node.args[1], scope_id)
+                attr_str = self._eval_const_str_with_params(node.args[1], scope_id, visited)
                 if target_canon and attr_str:
                     return f"{target_canon}.{attr_str}"
 
@@ -765,6 +842,13 @@ class TaintTracker:
                         else:
                             break
                     return key_str
+
+            # X.__dict__["name"] -> X.name (module / builtins reflection)
+            if isinstance(node.value, ast.Attribute) and node.value.attr == "__dict__":
+                base_canon = self.resolve_canonical_name(node.value.value, scope_id, visited)
+                dict_key = self._extract_subscript_key(node.slice, scope_id)
+                if base_canon and dict_key is not None:
+                    return f"{base_canon}.{dict_key}"
 
             key = self._extract_subscript_key(node.slice, scope_id)
             base_var = node.value.id if isinstance(node.value, ast.Name) else None
@@ -1058,6 +1142,14 @@ class TaintTracker:
                 base_arg = test_node.args[0] if test_node.args else None
                 if target_name and base_arg:
                     pairs.append((target_name, base_arg))
+            elif isinstance(test_node.func, ast.Attribute) and test_node.func.attr == "fullmatch":
+                # re.fullmatch(pattern, var) or compiled_pattern.fullmatch(var):
+                # a full-match anchor constrains var to a safe character class.
+                base_name = dotted_name(test_node.func.value)
+                if base_name == "re" and len(test_node.args) >= 2 and isinstance(test_node.args[1], ast.Name):
+                    pairs.append((test_node.args[1].id, None))
+                elif base_name != "re" and len(test_node.args) >= 1 and isinstance(test_node.args[0], ast.Name):
+                    pairs.append((test_node.args[0].id, None))
         elif isinstance(test_node, ast.BoolOp) and isinstance(test_node.op, ast.And):
             for val in test_node.values:
                 pairs.extend(self._extract_containment_pairs(val))
@@ -1363,6 +1455,11 @@ class TaintTracker:
                                     comp_key = f"{target.value.attr}[{key}]"
                                     record = AssignmentRecord(target_name=comp_key, value_node=stmt.value, lineno=stmt.lineno, scope_id=scope_id, is_conditional=is_conditional)
                                     self.class_field_assignments.setdefault((cls_scope, comp_key), []).append(record)
+                        elif isinstance(target.value, ast.Attribute) and isinstance(target.value.value, ast.Name) and target.value.value.id in ("self", "cls"):
+                            # Dynamic-key instance container write: self.field[k] = value
+                            cls_scope = self._get_enclosing_class_scope(scope_id)
+                            if cls_scope:
+                                self.instance_field_writes.setdefault((cls_scope, target.value.attr), []).append((stmt.lineno, stmt.value, scope_id))
                     elif isinstance(target, (ast.Tuple, ast.List)):
                         for idx, elt in enumerate(target.elts):
                             val_node = stmt.value.elts[idx] if (isinstance(stmt.value, (ast.Tuple, ast.List)) and idx < len(stmt.value.elts)) else stmt.value
@@ -1413,6 +1510,49 @@ class TaintTracker:
                     self.scan_for_sinks(stmt.value, scope_id, stmt.lineno)
                     self._collect_calls_in_expr(stmt.value, scope_id, stmt.lineno)
                     self._collect_named_exprs(stmt.value, scope_id, stmt.lineno, is_conditional=is_conditional)
+            elif isinstance(stmt, ast.AugAssign):
+                # x += rhs: taint on rhs must propagate onto the existing target x.
+                # Model the Name target as `x <op> rhs` so that prior taint on x and
+                # new taint from rhs are combined (never loses an existing taint).
+                if isinstance(stmt.target, ast.Name):
+                    combined = ast.BinOp(
+                        left=ast.Name(id=stmt.target.id, ctx=ast.Load()),
+                        op=stmt.op,
+                        right=stmt.value,
+                    )
+                    ast.copy_location(combined, stmt)
+                    ast.copy_location(combined.left, stmt)
+                    ast.fix_missing_locations(combined)
+                    record = AssignmentRecord(target_name=stmt.target.id, value_node=combined, lineno=stmt.lineno, scope_id=scope_id, is_conditional=is_conditional)
+                    self.assignments_by_scope.setdefault((scope_id, stmt.target.id), []).append(record)
+                    if scope_id in self.classes:
+                        self.class_field_assignments.setdefault((scope_id, stmt.target.id), []).append(record)
+                elif isinstance(stmt.target, ast.Attribute) and isinstance(stmt.target.value, ast.Name) and stmt.target.value.id in ("self", "cls"):
+                    cls_scope = self._get_enclosing_class_scope(scope_id)
+                    if cls_scope:
+                        record = AssignmentRecord(target_name=stmt.target.attr, value_node=stmt.value, lineno=stmt.lineno, scope_id=scope_id, is_conditional=is_conditional)
+                        self.class_field_assignments.setdefault((cls_scope, stmt.target.attr), []).append(record)
+                elif isinstance(stmt.target, ast.Subscript):
+                    key = self._extract_subscript_key(stmt.target.slice, scope_id)
+                    if key is not None:
+                        if isinstance(stmt.target.value, ast.Name):
+                            comp_key = f"{stmt.target.value.id}[{key}]"
+                            record = AssignmentRecord(target_name=comp_key, value_node=stmt.value, lineno=stmt.lineno, scope_id=scope_id, is_conditional=is_conditional)
+                            self.assignments_by_scope.setdefault((scope_id, comp_key), []).append(record)
+                        elif isinstance(stmt.target.value, ast.Attribute) and isinstance(stmt.target.value.value, ast.Name) and stmt.target.value.value.id in ("self", "cls"):
+                            cls_scope = self._get_enclosing_class_scope(scope_id)
+                            if cls_scope:
+                                comp_key = f"{stmt.target.value.attr}[{key}]"
+                                record = AssignmentRecord(target_name=comp_key, value_node=stmt.value, lineno=stmt.lineno, scope_id=scope_id, is_conditional=is_conditional)
+                                self.class_field_assignments.setdefault((cls_scope, comp_key), []).append(record)
+                    elif isinstance(stmt.target.value, ast.Attribute) and isinstance(stmt.target.value.value, ast.Name) and stmt.target.value.value.id in ("self", "cls"):
+                        cls_scope = self._get_enclosing_class_scope(scope_id)
+                        if cls_scope:
+                            self.instance_field_writes.setdefault((cls_scope, stmt.target.value.attr), []).append((stmt.lineno, stmt.value, scope_id))
+                self.scan_for_sinks(stmt.value, scope_id, stmt.lineno)
+                self._collect_calls_in_expr(stmt.value, scope_id, stmt.lineno)
+                self._record_container_mutation(stmt.value, scope_id, stmt.lineno)
+                self._collect_named_exprs(stmt.value, scope_id, stmt.lineno, is_conditional=is_conditional)
             elif isinstance(stmt, ast.If):
                 self.scan_for_sinks(stmt.test, scope_id, stmt.lineno)
                 self._collect_calls_in_expr(stmt.test, scope_id, stmt.lineno)
@@ -1499,9 +1639,97 @@ class TaintTracker:
                     self._collect_calls_in_expr(stmt.value, scope_id, stmt.lineno)
                     self._collect_named_exprs(stmt.value, scope_id, stmt.lineno, is_conditional=is_conditional)
             elif isinstance(stmt, ast.Expr):
+                if isinstance(stmt.value, (ast.Yield, ast.YieldFrom)):
+                    self.returns_by_scope.setdefault(scope_id, []).append(stmt.value)
+                self._record_container_mutation(stmt.value, scope_id, stmt.lineno)
                 self.scan_for_sinks(stmt.value, scope_id, stmt.lineno)
                 self._collect_calls_in_expr(stmt.value, scope_id, stmt.lineno)
                 self._collect_named_exprs(stmt.value, scope_id, stmt.lineno, is_conditional=is_conditional)
+
+    def _record_container_mutation(self, expr: ast.AST, scope_id: str, lineno: int):
+        """Record `container.append/extend/insert/add/update(x)` so a later
+        `"".join(container)` can see taint introduced by mutation."""
+        if not isinstance(expr, ast.Call) or not isinstance(expr.func, ast.Attribute):
+            return
+        attr = expr.func.attr
+        if attr not in CONTAINER_MUTATION_METHODS:
+            return
+        if not isinstance(expr.func.value, ast.Name):
+            return
+        arg_idx = CONTAINER_MUTATION_METHODS[attr]
+        if arg_idx >= len(expr.args):
+            return
+        var_name = expr.func.value.id
+        self.list_mutations.setdefault((scope_id, var_name), []).append((lineno, expr.args[arg_idx]))
+
+    def _resolve_container_mutation_taint(self, container_node, sink, scope_id, current_lineno, visited, call_context):
+        """Resolve taint introduced into a container via .append()/.extend()/etc.
+        Returns a merged TaintValue or None when the container has no tracked mutations."""
+        if not isinstance(container_node, ast.Name):
+            return None
+        var_name = container_node.id
+        mod_name = scope_id.split(":")[0] if scope_id else ""
+        muts = self.list_mutations.get((scope_id, var_name))
+        if not muts:
+            curr = scope_id
+            while curr:
+                muts = self.list_mutations.get((curr, var_name))
+                if muts:
+                    break
+                if "." in curr and "function" in curr:
+                    curr = curr.rsplit(".", 1)[0]
+                elif ":function" in curr:
+                    curr = f"{mod_name}:global"
+                elif curr != f"{mod_name}:global":
+                    curr = f"{mod_name}:global"
+                else:
+                    break
+        if not muts:
+            return None
+        results = []
+        for lineno, val_node in muts:
+            if lineno >= current_lineno:
+                continue
+            results.append(self.resolve_expression(val_node, sink, scope_id, lineno, visited.copy(), call_context))
+        if not results:
+            return None
+        return self.merge_taints(results, f"{scope_id}:{var_name}:mutations")
+
+    def _resolve_instance_field_write_taint(self, cls_scope, attr, sink, visited):
+        """Resolve taint written into an instance container via a dynamic-key write
+        (self.field[k] = value), binding the writing method's parameters to the
+        arguments passed at each call site."""
+        writes = self.instance_field_writes.get((cls_scope, attr))
+        if not writes:
+            return None
+        results = []
+        for lineno, value_node, method_scope in writes:
+            f_node = self.functions.get(method_scope)
+            param_names = [a.arg for a in f_node.args.args] if f_node else []
+            call_sites = self.call_sites_by_target.get(method_scope, [])
+            if call_sites and param_names:
+                has_self = param_names[0] in ("self", "cls")
+                for call_node, caller_scope, call_lineno in call_sites:
+                    ctx = {}
+                    for i, p in enumerate(param_names):
+                        if p in ("self", "cls"):
+                            continue
+                        arg_idx = i - 1 if has_self else i
+                        arg_node = None
+                        for kw in getattr(call_node, "keywords", []):
+                            if kw.arg == p:
+                                arg_node = kw.value
+                                break
+                        if arg_node is None and 0 <= arg_idx < len(call_node.args):
+                            arg_node = call_node.args[arg_idx]
+                        if arg_node is not None:
+                            ctx[p] = self.resolve_expression(arg_node, sink, caller_scope, call_lineno, visited.copy(), {})
+                    results.append(self.resolve_expression(value_node, sink, method_scope, lineno, visited.copy(), ctx))
+            else:
+                results.append(self.resolve_expression(value_node, sink, method_scope, lineno, visited.copy(), {}))
+        if not results:
+            return None
+        return self.merge_taints(results, f"{cls_scope}:{attr}:field_writes")
 
     def scan_for_sinks(self, expr: ast.AST, scope_id: str, lineno: int):
         mod_name = scope_id.split(":")[0]
@@ -1841,6 +2069,19 @@ class TaintTracker:
 
                 # Rule B (Clean Proof): If ALL recorded assignments evaluate to CLEAN
                 if all(v.state == TaintState.CLEAN for v in resolved_values):
+                    # A dynamic-key write (self.field[k] = tainted) can taint the container
+                    # even when the static initializer is clean.
+                    dyn = self._resolve_instance_field_write_taint(target_cls_scope, node.attr, sink, v_copy)
+                    if dyn is not None and dyn.state != TaintState.CLEAN and dyn.source_id:
+                        return TaintValue(
+                            state=dyn.state,
+                            source_id=dyn.source_id,
+                            confidence=dyn.confidence,
+                            path=[*dyn.path, f"{file_name}:self.{node.attr}[]"],
+                            last_operation=f"instance_field_write:self.{node.attr}",
+                            proof_nodes=dyn.proof_nodes,
+                            proof_edges=dyn.proof_edges
+                        )
                     return TaintValue(
                         state=TaintState.CLEAN,
                         confidence=1.0,
@@ -2529,6 +2770,18 @@ class TaintTracker:
                         return TaintValue(state=TaintState.CLEAN, confidence=1.0, last_operation="template_from_string")
                 return TaintValue(state=TaintState.CLEAN, confidence=1.0, last_operation="template_from_string")
 
+            # Taint-preserving receiver methods and mutated-container str.join
+            if isinstance(node.func, ast.Attribute):
+                attr = node.func.attr
+                if attr == "join" and node.args:
+                    mut = self._resolve_container_mutation_taint(node.args[0], sink, scope_id, current_lineno, visited, call_context)
+                    if mut is not None and mut.state != TaintState.CLEAN and mut.source_id:
+                        return TaintValue(state=mut.state, source_id=mut.source_id, confidence=mut.confidence, path=[*mut.path, f"{file_name}:join()"], last_operation="join", proof_nodes=mut.proof_nodes, proof_edges=mut.proof_edges)
+                elif attr in TAINT_PRESERVING_RECEIVER_METHODS and not self._resolve_function_scope(function_name, scope_id):
+                    recv = self.resolve_expression(node.func.value, sink, scope_id, current_lineno, visited.copy(), call_context)
+                    if recv.state != TaintState.CLEAN and recv.source_id:
+                        return TaintValue(state=recv.state, source_id=recv.source_id, confidence=recv.confidence, path=[*recv.path, f"{file_name}:{attr}()"], last_operation=f"{attr}()", proof_nodes=recv.proof_nodes, proof_edges=recv.proof_edges)
+
             func_scope = self._resolve_function_scope(function_name, scope_id)
             if func_scope:
                 call_sig = f"call:{func_scope}:{current_lineno}"
@@ -2632,14 +2885,20 @@ class TaintTracker:
             dname_val = dotted_name(node.value)
             framework_sources = (
                 "request.args", "request.form", "request.values", "request.headers",
-                "request.cookies", "request.GET", "request.POST", "request.query_params", "sys.argv"
+                "request.cookies", "request.GET", "request.POST", "request.query_params", "sys.argv",
+                "os.environ"
             )
             if norm_val in framework_sources or dname_val in framework_sources:
                 loc = location(node, file_name)
+                is_env = (norm_val == "os.environ" or dname_val == "os.environ")
                 is_sys_argv = (norm_val == "sys.argv" or dname_val == "sys.argv")
-                target_state = TaintState.UNKNOWN if is_sys_argv else TaintState.TAINTED
-                target_conf = 0.50 if is_sys_argv else 1.0
-                target_op = "CLI_ARGUMENT_ACCESS" if is_sys_argv else "HTTP_PARAMETER_ACCESS"
+                target_state = TaintState.UNKNOWN if (is_sys_argv or is_env) else TaintState.TAINTED
+                target_conf = 0.50 if (is_sys_argv or is_env) else 1.0
+                target_op = (
+                    "ENVIRONMENT_VARIABLE_ACCESS" if is_env
+                    else "CLI_ARGUMENT_ACCESS" if is_sys_argv
+                    else "HTTP_PARAMETER_ACCESS"
+                )
                 for existing in self.sources:
                     if existing.location == loc:
                         src_pn = self.create_proof_node(
@@ -3772,7 +4031,7 @@ class TaintTracker:
         for record in self.sink_records:
             sink = record.security_node
             target_expr = None
-            if isinstance(record.node.func, ast.Attribute) and (record.node.func.attr in {"read_text", "read_bytes", "write_text", "write_bytes"} or (record.node.func.attr == "open" and self._is_path_expr(record.node.func.value, record.scope_id))):
+            if isinstance(record.node.func, ast.Attribute) and (record.node.func.attr in {"read_text", "read_bytes", "write_text", "write_bytes", "extractall", "extract"} or (record.node.func.attr == "open" and self._is_path_expr(record.node.func.value, record.scope_id))):
                 target_expr = record.node.func.value
             elif isinstance(record.node.func, ast.Attribute) and record.node.func.attr == "render":
                 if self._is_jinja_template_expr(record.node.func.value, record.scope_id):

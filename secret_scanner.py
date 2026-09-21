@@ -118,8 +118,11 @@ _REGEX_GITHUB_TOKEN = re.compile(r"\b(ghp|gho|ghu|ghs|ghr)_[0-9A-Za-z]{36}\b")
 # 3. Slack Token (xoxb, xoxp, xoxa, xoxr, xoxs followed by hyphen & 10..48 chars)
 _REGEX_SLACK_TOKEN = re.compile(r"\bxox[baprs]-[0-9A-Za-z]{10,48}\b")
 
-# 4. Stripe API Key (live secret keys sk_live_ and restricted keys rk_live_)
-_REGEX_STRIPE_KEY = re.compile(r"\b(sk_live|rk_live)_[0-9A-Za-z]{24,99}\b")
+# 4. Stripe API Key (secret keys sk_live_/sk_test_ and restricted keys rk_live_)
+_REGEX_STRIPE_KEY = re.compile(r"\b(sk_live|sk_test|rk_live)_[0-9A-Za-z]{24,99}\b")
+
+# 4b. Slack Incoming Webhook URL
+_REGEX_SLACK_WEBHOOK = re.compile(r"https://hooks\.slack\.com/services/[A-Za-z0-9/_+-]+")
 
 # 5. AWS Access Key (AKIA, ASIA, ABIA, ACCA followed by 14..16 chars)
 _REGEX_AWS_ACCESS_KEY = re.compile(r"\b(AKIA|ASIA|ABIA|ACCA)[0-9A-Z]{14,16}\b")
@@ -127,6 +130,11 @@ _REGEX_AWS_ACCESS_KEY = re.compile(r"\b(AKIA|ASIA|ABIA|ACCA)[0-9A-Z]{14,16}\b")
 # 6. Database Connection String (matches scheme and URI candidate tokens, parsed robustly)
 _REGEX_DB_URI = re.compile(
     r"\b(?P<scheme>postgres(?:ql)?|mysql|mongodb|redis)://[^\s\"'`]+"
+)
+
+# 7. JWT Bearer Token (standard 3-segment base64url encoded tokens)
+_REGEX_JWT_TOKEN = re.compile(
+    r"\beyJ[A-Za-z0-9_-]{10,}\.eyJ[A-Za-z0-9_-]{10,}\.[A-Za-z0-9_-]{10,}\b"
 )
 
 
@@ -292,6 +300,19 @@ def scan_text(text: str, filename: str = "<string>") -> List[SecretFinding]:
                 )
             )
 
+        # 5b. Slack Incoming Webhook URL (Precedence 5)
+        for m in _REGEX_SLACK_WEBHOOK.finditer(clean_line):
+            candidates.append(
+                _CandidateMatch(
+                    precedence=5,
+                    start=m.start(),
+                    end=m.end(),
+                    secret_type="slack_webhook_url",
+                    detector="slack_webhook_url",
+                    masked_value=mask_secret(m.group(0)),
+                )
+            )
+
         # 6. Database Connection String (Precedence 6)
         for m in _REGEX_DB_URI.finditer(clean_line):
             parsed = _parse_and_mask_db_uri(m.group(0))
@@ -308,6 +329,19 @@ def scan_text(text: str, filename: str = "<string>") -> List[SecretFinding]:
                     secret_type="database_connection_string",
                     detector="database_connection_string",
                     masked_value=masked_val,
+                )
+            )
+
+        # 7. JWT Token (Precedence 7)
+        for m in _REGEX_JWT_TOKEN.finditer(clean_line):
+            candidates.append(
+                _CandidateMatch(
+                    precedence=7,
+                    start=m.start(),
+                    end=m.end(),
+                    secret_type="jwt_token",
+                    detector="jwt_token",
+                    masked_value=mask_secret(m.group(0)),
                 )
             )
 
@@ -363,7 +397,7 @@ def scan_text(text: str, filename: str = "<string>") -> List[SecretFinding]:
     if not any(filename.endswith(ext) for ext in (".env", ".ini", ".conf", ".yaml", ".yml", ".json", ".toml", ".txt")):
         try:
             parsed_tree = ast.parse(text, filename=filename)
-            cred_var_regex = re.compile(r"(?i)(.*password.*|.*secret.*|.*api_key.*|.*auth_token.*|.*private_key.*)")
+            cred_var_regex = re.compile(r"(?i)(.*password.*|.*secret.*|.*api_key.*|.*auth_token.*|.*token.*|.*bearer.*|.*credential.*|.*private_key.*|.*webhook.*)")
             dummy_regex = re.compile(r"(?i)(^<.*>$|test|dummy|example|fake|sample|placeholder|change_me|insert|your_|_here)")
             lines = text.splitlines()
 
@@ -387,7 +421,12 @@ def scan_text(text: str, filename: str = "<string>") -> List[SecretFinding]:
                     val_str = val_node.s
 
                 if val_str and len(val_str) >= 8:
-                    if not dummy_regex.search(val_str):
+                    is_explicit_cred = any(bool(re.search(r"(?i)(aws_secret_access_key|aws_secret|secret_key|private_key|token|bearer|api_key)", vn)) for vn, _ in target_names)
+                    is_dummy = bool(dummy_regex.search(val_str))
+                    if is_dummy and is_explicit_cred and len(val_str) >= 20 and shannon_entropy(val_str) >= 3.0:
+                        is_dummy = False
+
+                    if not is_dummy:
                         for var_name, var_col in target_names:
                             if cred_var_regex.search(var_name):
                                 line_no = getattr(node, "lineno", 1)

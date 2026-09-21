@@ -140,6 +140,20 @@ def _is_dummy_value(finding: SecretFinding, config: FilterConfig) -> bool:
     if not config.ignore_dummies:
         return False
 
+    # Exemption for explicit high-entropy credentials (e.g. AWS_SECRET_ACCESS_KEY, JWT_BEARER_TOKEN)
+    if finding.context and re.search(r"(?i)\b(aws_secret_access_key|jwt_bearer_token)\b", finding.context):
+        if re.search(r"(?i)(0{8,}|1{8,}|x{8,})$", finding.masked_value):
+            return True
+        return False
+
+    if finding.secret_type == "jwt_token":
+        return False
+
+    # Slack incoming-webhook URLs are secrets by structure (the full URL grants
+    # posting access), so a placeholder-looking token tail must not suppress them.
+    if finding.secret_type == "slack_webhook_url":
+        return False
+
     # 1. Check masked value for repetitive dummy characters in unmasked suffix
     # e.g., AKIA************0000 or ghp_****************************0000
     mv = finding.masked_value

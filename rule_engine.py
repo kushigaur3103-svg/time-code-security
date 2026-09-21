@@ -255,18 +255,28 @@ CWE_78_RULE = SecurityRule(
 
 CWE22_BUILTIN_SINKS = {"open", "builtins.open"}
 CWE22_PATH_ATTRS = {"read_text", "read_bytes", "write_text", "write_bytes"}
+CWE22_ADDITIONAL_SINKS = {
+    "shutil.rmtree", "os.remove", "os.unlink", "os.rmdir",
+    "shutil.move", "shutil.copy", "shutil.copy2", "shutil.copytree",
+    "zipfile.ZipFile.extractall", "zipfile.ZipFile.extract",
+    "tarfile.TarFile.extractall", "tarfile.TarFile.extract",
+}
 
 
 def _cwe22_sink_matcher(node: ast.AST, name: str, canon_name: Optional[str] = None) -> bool:
-    """Matches direct/qualified calls to open() and pathlib.Path file I/O attributes."""
+    """Matches direct/qualified calls to open(), pathlib file I/O, archive extraction, and path removals."""
     candidates = {c for c in (name, canon_name) if c}
     if any(c in CWE22_BUILTIN_SINKS for c in candidates):
         # Exclude method calls like arbitrary_object.open()
         if isinstance(node, ast.Call) and isinstance(node.func, ast.Attribute):
             return False
         return True
+    if any(c in CWE22_ADDITIONAL_SINKS for c in candidates):
+        return True
     if isinstance(node, ast.Call) and isinstance(node.func, ast.Attribute):
         if node.func.attr in CWE22_PATH_ATTRS:
+            return True
+        if node.func.attr in ("extractall", "extract", "rmtree"):
             return True
     return False
 
@@ -474,6 +484,225 @@ CWE_798_RULE = SecurityRule(
     }
 )
 
+# ==============================================================================
+# CWE-611 (XML External Entity / XXE) Rule Implementation
+# ==============================================================================
+
+CWE611_SINKS = {
+    "xml.etree.ElementTree.fromstring", "xml.etree.ElementTree.parse",
+    "ET.fromstring", "ET.parse",
+    "fromstring", "parse",
+    "lxml.etree.fromstring", "lxml.etree.parse",
+    "xml.dom.minidom.parseString", "xml.dom.minidom.parse",
+    "xml.sax.parseString", "xml.sax.parse",
+}
+
+
+def _cwe611_sink_matcher(node: ast.AST, name: str, canon_name: Optional[str] = None) -> bool:
+    """Matches direct and qualified calls to XML parsing functions."""
+    candidates = {c for c in (name, canon_name) if c}
+    if any(c in CWE611_SINKS or any(c.endswith(f".{s}") for s in ("fromstring",)) for c in candidates):
+        return True
+    if isinstance(node, ast.Call) and isinstance(node.func, ast.Attribute):
+        if node.func.attr in ("fromstring", "parse") and any(c.startswith(("xml.", "ET.", "lxml.")) for c in candidates):
+            return True
+        if node.func.attr == "fromstring":
+            return True
+    return False
+
+
+CWE_611_RULE = SecurityRule(
+    cwe_id="CWE-611",
+    name="XmlExternalEntity",
+    category="XML_EXTERNAL_ENTITY",
+    operation="XML_PARSING",
+    confirmed_severity="HIGH",
+    potential_severity="MEDIUM",
+    remediation="Disable external entity resolution (DTD) or use defusedxml to safely parse untrusted XML documents.",
+    sarif_metadata={
+        "id": "CWE-611",
+        "name": "XmlExternalEntity",
+        "shortDescription": {
+            "text": "Improper Restriction of XML External Entity Reference ('XXE')"
+        },
+        "fullDescription": {
+            "text": "The software processes an XML document that can contain XML entities with URIs that resolve to documents outside of the intended sphere of control."
+        },
+        "helpUri": "https://cwe.mitre.org/data/definitions/611.html",
+        "defaultConfiguration": {
+            "level": "error"
+        },
+        "properties": {
+            "precision": "high",
+            "security-severity": "8.0",
+            "tags": ["security", "external/cwe/cwe-611"]
+        }
+    },
+    sink_matcher=_cwe611_sink_matcher,
+    safety_filter=None
+)
+
+# ==============================================================================
+# CWE-918 (Server-Side Request Forgery / SSRF) Rule Implementation
+# ==============================================================================
+
+CWE918_SINKS = {
+    "urllib.request.urlopen", "urllib.request.Request",
+    "urlopen", "Request",
+    "requests.get", "requests.post", "requests.put", "requests.delete", "requests.patch", "requests.head", "requests.request",
+    "httpx.get", "httpx.post", "httpx.put", "httpx.delete", "httpx.patch", "httpx.head", "httpx.request",
+    "aiohttp.ClientSession.get", "aiohttp.ClientSession.post", "aiohttp.ClientSession.request",
+}
+
+
+def _cwe918_sink_matcher(node: ast.AST, name: str, canon_name: Optional[str] = None) -> bool:
+    """Matches network request functions vulnerable to Server-Side Request Forgery."""
+    candidates = {c for c in (name, canon_name) if c}
+    if any(c in CWE918_SINKS or any(c.endswith(f".{s}") for s in ("urlopen", "Request")) for c in candidates):
+        return True
+    if isinstance(node, ast.Call) and isinstance(node.func, ast.Attribute):
+        if node.func.attr == "urlopen":
+            return True
+    return False
+
+
+CWE_918_RULE = SecurityRule(
+    cwe_id="CWE-918",
+    name="ServerSideRequestForgery",
+    category="SERVER_SIDE_REQUEST_FORGERY",
+    operation="SSRF_REQUEST",
+    confirmed_severity="HIGH",
+    potential_severity="MEDIUM",
+    remediation="Validate and allowlist URLs against trusted domains and restrict requests to private/internal IP ranges.",
+    sarif_metadata={
+        "id": "CWE-918",
+        "name": "ServerSideRequestForgery",
+        "shortDescription": {
+            "text": "Server-Side Request Forgery (SSRF)"
+        },
+        "fullDescription": {
+            "text": "The web server receives a URL or similar request from an upstream component and retrieves the contents of this URL without sufficiently validating the destination address."
+        },
+        "helpUri": "https://cwe.mitre.org/data/definitions/918.html",
+        "defaultConfiguration": {
+            "level": "error"
+        },
+        "properties": {
+            "precision": "high",
+            "security-severity": "8.5",
+            "tags": ["security", "external/cwe/cwe-918"]
+        }
+    },
+    sink_matcher=_cwe918_sink_matcher,
+    safety_filter=None
+)
+
+# ==============================================================================
+# CWE-1333 (Regular Expression Denial of Service / ReDoS) Rule Implementation
+# ==============================================================================
+
+CWE1333_SINKS = {
+    "re.compile", "regex.compile",
+}
+
+
+def _cwe1333_sink_matcher(node: ast.AST, name: str, canon_name: Optional[str] = None) -> bool:
+    """Matches dynamic regular expression compilation functions vulnerable to ReDoS."""
+    candidates = {c for c in (name, canon_name) if c}
+    return bool(candidates & CWE1333_SINKS) or any(c.endswith(".compile") and ("re." in c or "regex." in c) for c in candidates)
+
+
+CWE_1333_RULE = SecurityRule(
+    cwe_id="CWE-1333",
+    name="RegularExpressionDoS",
+    category="REGULAR_EXPRESSION_DOS",
+    operation="REGEX_COMPILATION",
+    confirmed_severity="HIGH",
+    potential_severity="LOW",
+    remediation="Avoid constructing regular expressions from untrusted input or escape metacharacters using re.escape.",
+    sarif_metadata={
+        "id": "CWE-1333",
+        "name": "RegularExpressionDoS",
+        "shortDescription": {
+            "text": "Inefficient Regular Expression Complexity ('ReDoS')"
+        },
+        "fullDescription": {
+            "text": "The software uses a regular expression that can take an exponential amount of time to evaluate, causing a denial of service."
+        },
+        "helpUri": "https://cwe.mitre.org/data/definitions/1333.html",
+        "defaultConfiguration": {
+            "level": "error"
+        },
+        "properties": {
+            "precision": "high",
+            "security-severity": "7.5",
+            "tags": ["security", "external/cwe/cwe-1333"]
+        }
+    },
+    sink_matcher=_cwe1333_sink_matcher,
+    safety_filter=None
+)
+
+# ==============================================================================
+# CWE-601 (URL Redirection to Untrusted Site / Open Redirect) Rule Implementation
+# ==============================================================================
+
+CWE601_SINKS = {
+    "redirect", "flask.redirect", "django.shortcuts.redirect"
+}
+
+
+def _cwe601_sink_matcher(node: ast.AST, name: str, canon_name: Optional[str] = None) -> bool:
+    """Matches redirect functions susceptible to open URL redirection."""
+    candidates = {c for c in (name, canon_name) if c}
+    return any(c in CWE601_SINKS or any(c.endswith(f".{s}") for s in ("redirect",)) for c in candidates)
+
+
+def _cwe601_safety_filter(node: ast.Call, sink_name: str) -> bool:
+    """Exempts safe redirects to constant relative paths, e.g. redirect('/') or redirect('/login')."""
+    # Only applies to genuine redirect sinks; check_safety invokes every rule's
+    # filter against every node, so guard against suppressing unrelated sinks
+    # (e.g. z.extractall("/tmp/...")) that merely pass a constant leading-slash arg.
+    if not (sink_name in CWE601_SINKS or sink_name.endswith(".redirect") or sink_name == "redirect"):
+        return False
+    if node.args and isinstance(node.args[0], ast.Constant) and isinstance(node.args[0].value, str):
+        val = node.args[0].value
+        if val.startswith("/") and not val.startswith("//"):
+            return True
+    return False
+
+
+CWE_601_RULE = SecurityRule(
+    cwe_id="CWE-601",
+    name="OpenRedirect",
+    category="URL_REDIRECTION",
+    operation="OPEN_REDIRECT",
+    confirmed_severity="MEDIUM",
+    potential_severity="LOW",
+    remediation="Validate target redirect URLs against an allowlist of permitted domains or enforce strict relative paths.",
+    sarif_metadata={
+        "id": "CWE-601",
+        "name": "OpenRedirect",
+        "shortDescription": {
+            "text": "URL Redirection to Untrusted Site ('Open Redirect')"
+        },
+        "fullDescription": {
+            "text": "A web application accepts a user-controlled input that specifies a link to an external site and uses that link in a redirect, enabling phishing attacks."
+        },
+        "helpUri": "https://cwe.mitre.org/data/definitions/601.html",
+        "defaultConfiguration": {
+            "level": "error"
+        },
+        "properties": {
+            "precision": "high",
+            "security-severity": "6.1",
+            "tags": ["security", "external/cwe/cwe-601"]
+        }
+    },
+    sink_matcher=_cwe601_sink_matcher,
+    safety_filter=_cwe601_safety_filter
+)
+
 # Global Registry instance initialized with migrated security rules
 GLOBAL_RULE_REGISTRY = RuleRegistry()
 GLOBAL_RULE_REGISTRY.register(CWE_89_RULE)
@@ -483,6 +712,10 @@ GLOBAL_RULE_REGISTRY.register(CWE_22_RULE)
 GLOBAL_RULE_REGISTRY.register(CWE_502_RULE)
 GLOBAL_RULE_REGISTRY.register(CWE_1336_RULE)
 GLOBAL_RULE_REGISTRY.register(CWE_798_RULE)
+GLOBAL_RULE_REGISTRY.register(CWE_611_RULE)
+GLOBAL_RULE_REGISTRY.register(CWE_918_RULE)
+GLOBAL_RULE_REGISTRY.register(CWE_1333_RULE)
+GLOBAL_RULE_REGISTRY.register(CWE_601_RULE)
 
 
 def get_rule(cwe_id: str) -> Optional[SecurityRule]:
