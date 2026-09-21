@@ -188,6 +188,82 @@ def _mask_db_connection_uri(match: re.Match) -> str:
     return match.group(0)
 
 
+# Gitleaks precedence sits below every native detector (1-7) so existing
+# secret_type labels and overlap resolution are preserved; bank patterns only
+# contribute findings for spans no native detector already claimed.
+_GITLEAKS_PRECEDENCE = 8
+
+
+def _load_master_rules_bank():
+    """Load master_rules_bank.py from the repository root (pure-data module).
+
+    Returns None on any failure so production imports never break if the bank
+    file is absent; the Gitleaks merge below is then simply a no-op. Kept local
+    to the secret subsystem to honor the SAST/SCA isolation invariant.
+    """
+    import importlib.util
+    import os
+
+    path = os.path.join(
+        os.path.dirname(os.path.abspath(__file__)), "master_rules_bank.py"
+    )
+    try:
+        spec = importlib.util.spec_from_file_location("_tcs_master_rules_bank_secrets", path)
+        if spec is None or spec.loader is None:
+            return None
+        mod = importlib.util.module_from_spec(spec)
+        spec.loader.exec_module(mod)
+        return mod
+    except Exception:
+        return None
+
+
+# Global inline-flag tokens like (?i) that are NOT at the start of the pattern are
+# rejected by Python's re (Gitleaks uses Go's regexp which allows them anywhere).
+_MID_GLOBAL_FLAG = re.compile(r"\(\?([aiLmsux]+)\)")
+
+
+def _compile_gitleaks_pattern(pattern: str) -> Optional[re.Pattern]:
+    """Compile a Gitleaks regex, repairing Go-style mid-pattern global flags.
+
+    Falls back to None if the pattern cannot be compiled even after repair, so a
+    single bad signature can never break the whole detector set.
+    """
+    try:
+        return re.compile(pattern)
+    except re.error:
+        pass
+    flags = 0
+    for m in _MID_GLOBAL_FLAG.finditer(pattern):
+        if "i" in m.group(1):
+            flags |= re.IGNORECASE
+        if "s" in m.group(1):
+            flags |= re.DOTALL
+        if "m" in m.group(1):
+            flags |= re.MULTILINE
+    stripped = _MID_GLOBAL_FLAG.sub("", pattern)
+    try:
+        return re.compile(stripped, flags)
+    except re.error:
+        return None
+
+
+def _build_gitleaks_detectors() -> List[Tuple[str, re.Pattern]]:
+    bank = _load_master_rules_bank()
+    if bank is None:
+        return []
+    raw = getattr(bank, "GITLEAKS_SECRETS_BANK", {}) or {}
+    detectors: List[Tuple[str, re.Pattern]] = []
+    for secret_type, pattern in raw.items():
+        compiled = _compile_gitleaks_pattern(pattern)
+        if compiled is not None:
+            detectors.append((secret_type, compiled))
+    return detectors
+
+
+_GITLEAKS_DETECTORS: List[Tuple[str, re.Pattern]] = _build_gitleaks_detectors()
+
+
 class _CandidateMatch:
     """Internal candidate match before overlap resolution and secret erasure."""
 
@@ -344,6 +420,22 @@ def scan_text(text: str, filename: str = "<string>") -> List[SecretFinding]:
                     masked_value=mask_secret(m.group(0)),
                 )
             )
+
+        # 8. Gitleaks signature bank (Precedence 8 - lowest; native detectors win overlaps)
+        for gl_type, gl_regex in _GITLEAKS_DETECTORS:
+            for m in gl_regex.finditer(clean_line):
+                if m.start() == m.end():
+                    continue
+                candidates.append(
+                    _CandidateMatch(
+                        precedence=_GITLEAKS_PRECEDENCE,
+                        start=m.start(),
+                        end=m.end(),
+                        secret_type=gl_type,
+                        detector=gl_type,
+                        masked_value=mask_secret(m.group(0)),
+                    )
+                )
 
         if not candidates:
             continue

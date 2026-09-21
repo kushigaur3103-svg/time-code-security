@@ -14,6 +14,7 @@ Non-negotiable invariants:
 
 from dataclasses import dataclass, field
 import fnmatch
+from functools import lru_cache
 import os
 import re
 from typing import List, Optional, Set, Tuple
@@ -27,6 +28,62 @@ __all__ = [
     "filter_findings",
     "evaluate_findings",
 ]
+
+
+def _load_master_rules_bank():
+    """Load master_rules_bank.py from the repository root (pure-data module).
+
+    Returns None on any failure so the filter still works if the bank is absent.
+    Kept local to the secret subsystem to honor the SAST/SCA isolation invariant.
+    """
+    import importlib.util
+
+    path = os.path.join(
+        os.path.dirname(os.path.abspath(__file__)), "master_rules_bank.py"
+    )
+    try:
+        spec = importlib.util.spec_from_file_location("_tcs_master_rules_bank_filters", path)
+        if spec is None or spec.loader is None:
+            return None
+        mod = importlib.util.module_from_spec(spec)
+        spec.loader.exec_module(mod)
+        return mod
+    except Exception:
+        return None
+
+
+_MASTER_RULES_BANK = _load_master_rules_bank()
+
+# Gitleaks allowlist signatures target RAW secret values, but this filter only ever
+# sees masked values (raw secrets are never retained). They are therefore applied
+# best-effort to the masked value; structural/high-confidence detectors are exempt
+# so genuine secrets are never suppressed by a placeholder heuristic.
+_GITLEAKS_STOPWORDS: Tuple[str, ...] = (
+    tuple(getattr(_MASTER_RULES_BANK, "GITLEAKS_STOPWORDS", ()) or ())
+    if _MASTER_RULES_BANK is not None
+    else ()
+)
+_GITLEAKS_ALLOWLIST_REGEXES: Tuple[str, ...] = (
+    tuple(getattr(_MASTER_RULES_BANK, "GITLEAKS_ALLOWLIST_REGEXES", ()) or ())
+    if _MASTER_RULES_BANK is not None
+    else ()
+)
+
+
+@lru_cache(maxsize=8)
+def _compile_allowlist(patterns: Tuple[str, ...]) -> Tuple[re.Pattern, ...]:
+    compiled = []
+    for p in patterns:
+        try:
+            compiled.append(re.compile(p))
+        except re.error:
+            continue
+    return tuple(compiled)
+# Secret types whose detection is structural/high-confidence and must never be
+# suppressed by the Gitleaks placeholder allowlist.
+_GITLEAKS_EXEMPT_TYPES = frozenset(
+    {"private_key", "jwt_token", "slack_webhook_url", "database_connection_string"}
+)
 
 
 @dataclass
@@ -83,6 +140,9 @@ class FilterConfig:
     ignore_dummies: bool = True
     ignore_mock_contexts: bool = True
     min_entropy_threshold: Optional[float] = None
+    gitleaks_stopwords: Tuple[str, ...] = _GITLEAKS_STOPWORDS
+    gitleaks_allowlist_regexes: Tuple[str, ...] = _GITLEAKS_ALLOWLIST_REGEXES
+    ignore_gitleaks_allowlist: bool = True
 
 
 @dataclass(frozen=True)
@@ -214,6 +274,36 @@ def _is_dummy_value(finding: SecretFinding, config: FilterConfig) -> bool:
     return False
 
 
+def _is_gitleaks_suppressed(finding: SecretFinding, config: FilterConfig) -> bool:
+    """Suppress placeholder-looking findings via the Gitleaks allowlist/stopwords.
+
+    Gitleaks evaluates these against the RAW secret; this engine only retains the
+    masked value, so they are applied best-effort to the masked value. Structural
+    and pure-mask-artifact values are exempt to avoid suppressing genuine secrets.
+    """
+    if not config.ignore_gitleaks_allowlist:
+        return False
+
+    if finding.secret_type in _GITLEAKS_EXEMPT_TYPES:
+        return False
+
+    mv = finding.masked_value or ""
+    # A value that is nothing but mask characters carries no signal; never suppress
+    # a real (short) secret just because masking reduced it to asterisks.
+    if not mv or set(mv) <= {"*"}:
+        return False
+
+    for stopword in config.gitleaks_stopwords:
+        if stopword and stopword in mv:
+            return True
+
+    for pattern in _compile_allowlist(config.gitleaks_allowlist_regexes):
+        if pattern.search(mv):
+            return True
+
+    return False
+
+
 def _is_mock_context(finding: SecretFinding, file_path: str, config: FilterConfig) -> bool:
     """Check if the finding occurs within a test mock or fixture context."""
     if not config.ignore_mock_contexts:
@@ -303,6 +393,17 @@ def evaluate_findings(
                     finding=f,
                     reason="dummy_or_placeholder_value",
                     filter_name="DummyValueFilter",
+                )
+            )
+            continue
+
+        # 2b. Gitleaks allowlist / stopword signatures
+        if _is_gitleaks_suppressed(f, config):
+            suppressed.append(
+                SuppressedFinding(
+                    finding=f,
+                    reason="gitleaks_allowlist_or_stopword",
+                    filter_name="GitleaksAllowlistFilter",
                 )
             )
             continue

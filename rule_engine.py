@@ -6,8 +6,33 @@ safety evaluation, remediation, and severity mappings.
 
 from __future__ import annotations
 import ast
+import importlib.util
+import os
 from dataclasses import dataclass, field
 from typing import Callable, Optional, Dict, Any, List, Set
+
+
+def _load_master_rules_bank():
+    """Load master_rules_bank.py from the repository root (pure-data module).
+
+    Returns None on any failure so production imports never break if the bank
+    file is absent; the merge below is then simply a no-op.
+    """
+    path = os.path.join(
+        os.path.dirname(os.path.abspath(__file__)), "master_rules_bank.py"
+    )
+    try:
+        spec = importlib.util.spec_from_file_location("_tcs_master_rules_bank", path)
+        if spec is None or spec.loader is None:
+            return None
+        mod = importlib.util.module_from_spec(spec)
+        spec.loader.exec_module(mod)
+        return mod
+    except Exception:
+        return None
+
+
+_MASTER_RULES_BANK = _load_master_rules_bank()
 
 
 @dataclass(frozen=True)
@@ -703,6 +728,109 @@ CWE_601_RULE = SecurityRule(
     safety_filter=_cwe601_safety_filter
 )
 
+# ==============================================================================
+# Master Rules Bank merge (append-only; never overwrites existing sink entries)
+# ==============================================================================
+
+# Maps a bank CWE onto the pre-existing per-CWE sink set so bank function names
+# are picked up by the existing matchers. CWEs absent here get a generated rule.
+_BANK_CWE_TO_SINK_SET: Dict[str, Set[str]] = {
+    "CWE-502": CWE502_SINKS,
+    "CWE-22": CWE22_ADDITIONAL_SINKS,
+    "CWE-611": CWE611_SINKS,
+    "CWE-918": CWE918_SINKS,
+    "CWE-601": CWE601_SINKS,
+    "CWE-1333": CWE1333_SINKS,
+    "CWE-1336": CWE1336_DIRECT_SINKS,
+}
+
+# Metadata for CWE families present in the bank but without a pre-existing rule.
+_BANK_NEW_RULE_META: Dict[str, Dict[str, Any]] = {
+    "CWE-79": {
+        "name": "CrossSiteScripting",
+        "category": "XSS",
+        "operation": "HTML_INJECTION",
+        "confirmed_severity": "HIGH",
+        "potential_severity": "MEDIUM",
+        "remediation": "Do not mark untrusted input as safe. Contextually encode output (HTML/JS/URL) or use a vetted sanitizer before rendering.",
+        "short": "Improper Neutralization of Input During Web Page Generation ('Cross-site Scripting')",
+        "full": "The application marks attacker-controlled input as safe HTML (e.g. markupsafe.Markup / django mark_safe), bypassing auto-escaping and enabling cross-site scripting.",
+        "security_severity": "6.1",
+    },
+    "CWE-295": {
+        "name": "ImproperCertificateValidation",
+        "category": "INSECURE_TRANSPORT",
+        "operation": "HOST_KEY_VERIFICATION_BYPASS",
+        "confirmed_severity": "HIGH",
+        "potential_severity": "MEDIUM",
+        "remediation": "Do not use AutoAddPolicy or disable host key/certificate verification. Verify host keys against a known_hosts store and validate certificates.",
+        "short": "Improper Certificate Validation",
+        "full": "The application auto-accepts unknown SSH host keys or disables certificate validation, enabling man-in-the-middle attacks.",
+        "security_severity": "5.9",
+    },
+    "CWE-327": {
+        "name": "BrokenCryptographicAlgorithm",
+        "category": "WEAK_CRYPTOGRAPHY",
+        "operation": "WEAK_HASH",
+        "confirmed_severity": "MEDIUM",
+        "potential_severity": "LOW",
+        "remediation": "Avoid broken hashes (MD5/SHA1) for security purposes. Use SHA-256 or stronger (e.g. hashlib.sha256, blake2).",
+        "short": "Use of a Broken or Risky Cryptographic Algorithm",
+        "full": "The application uses a cryptographically broken hash algorithm (MD5 or SHA1), which is vulnerable to collision and preimage attacks.",
+        "security_severity": "5.3",
+    },
+}
+
+_BANK_NEW_CWE_SINKS: Dict[str, Set[str]] = {}
+
+
+def _build_bank_rule(cwe_id: str, sink_set: Set[str]) -> SecurityRule:
+    meta = _BANK_NEW_RULE_META[cwe_id]
+
+    def _matcher(node: ast.AST, name: str, canon_name: Optional[str] = None, _s: Set[str] = sink_set) -> bool:
+        candidates = {c for c in (name, canon_name) if c}
+        return bool(candidates & _s)
+
+    return SecurityRule(
+        cwe_id=cwe_id,
+        name=meta["name"],
+        category=meta["category"],
+        operation=meta["operation"],
+        confirmed_severity=meta["confirmed_severity"],
+        potential_severity=meta["potential_severity"],
+        remediation=meta["remediation"],
+        sarif_metadata={
+            "id": cwe_id,
+            "name": meta["name"],
+            "shortDescription": {"text": meta["short"]},
+            "fullDescription": {"text": meta["full"]},
+            "helpUri": f"https://cwe.mitre.org/data/definitions/{cwe_id.split('-')[1]}.html",
+            "defaultConfiguration": {"level": "error"},
+            "properties": {
+                "precision": "high",
+                "security-severity": meta["security_severity"],
+                "tags": ["security", f"external/cwe/cwe-{cwe_id.split('-')[1].lower()}"],
+            },
+        },
+        sink_matcher=_matcher,
+        safety_filter=None,
+    )
+
+
+if _MASTER_RULES_BANK is not None:
+    _ENTERPRISE_SINKS_BANK = getattr(_MASTER_RULES_BANK, "ENTERPRISE_SINKS_BANK", {}) or {}
+    for _fn_name, _fn_meta in _ENTERPRISE_SINKS_BANK.items():
+        _cwe = _fn_meta.get("cwe")
+        _existing_set = _BANK_CWE_TO_SINK_SET.get(_cwe)
+        if _existing_set is not None:
+            _existing_set.add(_fn_name)  # append-only; sets dedupe, no overwrite
+        elif _cwe in _BANK_NEW_RULE_META:
+            _BANK_NEW_CWE_SINKS.setdefault(_cwe, set()).add(_fn_name)
+
+_BANK_GENERATED_RULES: List[SecurityRule] = [
+    _build_bank_rule(_cwe, _sinks) for _cwe, _sinks in _BANK_NEW_CWE_SINKS.items()
+]
+
 # Global Registry instance initialized with migrated security rules
 GLOBAL_RULE_REGISTRY = RuleRegistry()
 GLOBAL_RULE_REGISTRY.register(CWE_89_RULE)
@@ -716,6 +844,8 @@ GLOBAL_RULE_REGISTRY.register(CWE_611_RULE)
 GLOBAL_RULE_REGISTRY.register(CWE_918_RULE)
 GLOBAL_RULE_REGISTRY.register(CWE_1333_RULE)
 GLOBAL_RULE_REGISTRY.register(CWE_601_RULE)
+for _bank_rule in _BANK_GENERATED_RULES:
+    GLOBAL_RULE_REGISTRY.register(_bank_rule)
 
 
 def get_rule(cwe_id: str) -> Optional[SecurityRule]:
