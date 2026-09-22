@@ -84,6 +84,49 @@ def _get_node_prop(node, prop, default=""):
         return node.get(prop, default)
     return getattr(node, prop, default)
 
+
+def format_confidence(conf_val=None, conf_label=None) -> str:
+    """Format confidence display string safely without NaN%."""
+    if conf_val is None and conf_label is None:
+        return "HIGH (PATTERN_MATCH)"
+
+    if isinstance(conf_val, dict):
+        finding = conf_val
+        conf_val = finding.get("confidence")
+        conf_label = finding.get("confidence_label") or finding.get("confidence")
+
+    if isinstance(conf_val, str):
+        val_str = conf_val.strip()
+        if "nan" in val_str.lower():
+            return "HIGH (PATTERN_MATCH)"
+        if "PATTERN_MATCH" in val_str or "HIGH" in val_str:
+            return val_str
+        try:
+            num = float(val_str)
+            label = conf_label if (conf_label and not isinstance(conf_label, (int, float))) else ("CONFIRMED" if num >= 1.0 else "POTENTIAL")
+            if "PATTERN_MATCH" in str(label):
+                return str(label)
+            return f"{label} ({int(num * 100)}%)"
+        except (ValueError, TypeError):
+            return val_str
+
+    if isinstance(conf_val, (int, float)):
+        import math
+        if math.isnan(conf_val):
+            return "HIGH (PATTERN_MATCH)"
+        label = conf_label if (conf_label and not isinstance(conf_label, (int, float))) else ("CONFIRMED" if conf_val >= 1.0 else "POTENTIAL")
+        if "PATTERN_MATCH" in str(label):
+            return str(label)
+        return f"{label} ({int(conf_val * 100)}%)"
+
+    if conf_label and isinstance(conf_label, str):
+        if "nan" in conf_label.lower():
+            return "HIGH (PATTERN_MATCH)"
+        return conf_label
+
+    return "CONFIRMED (100%)"
+
+
 def build_proof_graph_view(proof_nodes, finding=None):
     if finding and (
         finding.get("type") == "SECRET"
@@ -291,7 +334,7 @@ def build_secret_view(finding):
     line = finding.get("line") or finding.get("line_number") or 1
     file_path = finding.get("file") or "target.py"
     detector = finding.get("detector") or "secret_scanner"
-    confidence = finding.get("confidence") or finding.get("confidence_label") or "HIGH"
+    confidence = format_confidence(finding.get("confidence"), finding.get("confidence_label"))
     snippet = finding.get("code_snippet") or masked
     remediation = finding.get(
         "remediation",
@@ -557,7 +600,7 @@ def generate_markdown_report(findings, code_snippet=""):
             cwe = f.get("cwe", "UNKNOWN")
             category = f.get("category", "Vulnerability")
             severity = f.get("severity", "HIGH")
-            confidence = f.get("confidence", "HIGH")
+            confidence = format_confidence(f.get("confidence"), f.get("confidence_label"))
             file_path = f.get("file", "target.py")
             line_no = f.get("line", "?")
             symbol = f.get("symbol", "")
@@ -611,6 +654,10 @@ def generate_markdown_report(findings, code_snippet=""):
             lines.append("")
 
     return "\n".join(lines)
+
+
+_generate_audit_report = generate_markdown_report
+generate_audit_report = generate_markdown_report
 
 
 def main(page: ft.Page):
@@ -1172,7 +1219,8 @@ def main(page: ft.Page):
                                 "cwe": f.get("cwe", "UNKNOWN"),
                                 "category": f.get("category", "Vulnerability"),
                                 "severity": f.get("severity", "HIGH"),
-                                "confidence": f.get("confidence_label", "CONFIRMED"),
+                                "confidence": f.get("confidence", 1.0),
+                                "confidence_label": f.get("confidence_label", "CONFIRMED"),
                                 "file": f.get("file", "target.py"),
                                 "line": f.get("line_number", 1),
                                 "symbol": f.get("sink_symbol", "sink"),
@@ -1194,7 +1242,8 @@ def main(page: ft.Page):
                                 "cwe": "CWE-798",
                                 "category": s.get("category", "Hardcoded Credential / Secret Leak"),
                                 "severity": s.get("severity", "HIGH"),
-                                "confidence": s.get("confidence_label") or getattr(s, "confidence", "CONFIRMED"),
+                                "confidence": s.get("confidence") or s.get("confidence_label") or getattr(s, "confidence", "HIGH (PATTERN_MATCH)"),
+                                "confidence_label": s.get("confidence_label") or getattr(s, "confidence", "HIGH (PATTERN_MATCH)"),
                                 "file": s.get("file", "target.py"),
                                 "line": s.get("line_number", 1),
                                 "symbol": s.get("secret_type") or s.get("symbol", "hardcoded_secret"),

@@ -101,6 +101,48 @@ def check_file_resilience(file_path: Path, display_path: str) -> Optional[str]:
     return None
 
 
+def format_confidence(conf_val: Any = None, conf_label: Optional[str] = None) -> str:
+    """Format confidence display string safely without NaN%."""
+    if conf_val is None and conf_label is None:
+        return "HIGH (PATTERN_MATCH)"
+
+    if isinstance(conf_val, dict):
+        finding = conf_val
+        conf_val = finding.get("confidence")
+        conf_label = finding.get("confidence_label") or finding.get("confidence")
+
+    if isinstance(conf_val, str):
+        val_str = conf_val.strip()
+        if "nan" in val_str.lower():
+            return "HIGH (PATTERN_MATCH)"
+        if "PATTERN_MATCH" in val_str or "HIGH" in val_str:
+            return val_str
+        try:
+            num = float(val_str)
+            label = conf_label if (conf_label and not isinstance(conf_label, (int, float))) else ("CONFIRMED" if num >= 1.0 else "POTENTIAL")
+            if "PATTERN_MATCH" in str(label):
+                return str(label)
+            return f"{label} ({int(num * 100)}%)"
+        except (ValueError, TypeError):
+            return val_str
+
+    if isinstance(conf_val, (int, float)):
+        import math
+        if math.isnan(conf_val):
+            return "HIGH (PATTERN_MATCH)"
+        label = conf_label if (conf_label and not isinstance(conf_label, (int, float))) else ("CONFIRMED" if conf_val >= 1.0 else "POTENTIAL")
+        if "PATTERN_MATCH" in str(label):
+            return str(label)
+        return f"{label} ({int(conf_val * 100)}%)"
+
+    if conf_label and isinstance(conf_label, str):
+        if "nan" in conf_label.lower():
+            return "HIGH (PATTERN_MATCH)"
+        return conf_label
+
+    return "CONFIRMED (100%)"
+
+
 def extract_remediation_advice(cwe: str, sink_symbol: str) -> str:
     rule = GLOBAL_RULE_REGISTRY.get_rule(cwe)
     if rule and rule.remediation:
@@ -681,7 +723,7 @@ def format_table(
             status = "SUPPRESSED" if f.get("suppressed") else "ACTIVE"
             lines.append(f"\n[{fid}] {cwe} ({cat}) - Status: {status}")
             lines.append(f"  Location:     {f.get('file', '')}:{f.get('line_number', '')}")
-            lines.append(f"  Severity:     {f.get('severity', '')} (Confidence: {f.get('confidence_label', '')})")
+            lines.append(f"  Severity:     {f.get('severity', '')} (Confidence: {format_confidence(f.get('confidence'), f.get('confidence_label'))})")
             if f.get("code_snippet"):
                 lines.append(f"  Code Snippet: {f.get('code_snippet')}")
             if f.get("flow_trace_summary"):
@@ -787,7 +829,7 @@ def format_table(
             stype = str(sf.get("secret_type", ""))[:18]
             mv = str(sf.get("masked_value", ""))[:24]
             loc = f"{sf.get('file', '')}:{sf.get('line_number', '')}"[:22]
-            conf = str(sf.get("confidence", "HIGH"))[:10]
+            conf = str(format_confidence(sf.get("confidence"), sf.get("confidence_label")))[:10]
             det = str(sf.get("detector", ""))[:16]
             lines.append(f"{stype:<18} | {mv:<24} | {loc:<22} | {conf:<10} | {det:<16}")
 
@@ -802,7 +844,7 @@ def format_table(
             status = "SUPPRESSED" if f.get("suppressed") else "ACTIVE"
             lines.append(f"\n[SAST:{fid}] {cwe} ({cat}) - Status: {status}")
             lines.append(f"  Location:     {f.get('file', '')}:{f.get('line_number', '')}")
-            lines.append(f"  Severity:     {f.get('severity', '')} (Confidence: {f.get('confidence_label', '')})")
+            lines.append(f"  Severity:     {f.get('severity', '')} (Confidence: {format_confidence(f.get('confidence'), f.get('confidence_label'))})")
             if f.get("code_snippet"):
                 lines.append(f"  Code Snippet: {f.get('code_snippet')}")
             if f.get("flow_trace_summary"):
@@ -851,7 +893,7 @@ def format_table(
             lines.append(f"  Type:         {stype}")
             lines.append(f"  Masked Value: {mv}")
             lines.append(f"  Location:     {loc} ({cols})")
-            lines.append(f"  Confidence:   {conf}")
+            lines.append(f"  Confidence:   {format_confidence(sf.get('confidence'), sf.get('confidence_label'))}")
             lines.append(f"  Detector:     {det}")
             if ctx:
                 lines.append(f"  Context:      {ctx}")
@@ -869,6 +911,42 @@ def format_table(
 
     lines.append(sep)
     return "\n".join(lines)
+
+
+def _generate_audit_report(results_or_findings: Any, code_snippet: str = "") -> str:
+    """Generate plaintext audit report with formatted confidence."""
+    if isinstance(results_or_findings, dict) and "findings" in results_or_findings:
+        sec_findings = results_or_findings.get("secret_findings") or [f for f in results_or_findings.get("findings", []) if f.get("is_secret") or f.get("cwe") == "CWE-798"]
+        sast_findings = [f for f in results_or_findings.get("findings", []) if not (f.get("is_secret") or f.get("cwe") == "CWE-798")]
+        return format_table(
+            results_or_findings,
+            sast_findings,
+            secret_findings=sec_findings,
+            secrets_enabled=bool(sec_findings)
+        )
+    if isinstance(results_or_findings, list):
+        sec_findings = [f for f in results_or_findings if f.get("is_secret") or f.get("cwe") == "CWE-798"]
+        sast_findings = [f for f in results_or_findings if not (f.get("is_secret") or f.get("cwe") == "CWE-798")]
+        results = {
+            "summary": {
+                "total_files": 1,
+                "lines_scanned": len(code_snippet.splitlines()) if code_snippet else 1,
+                "security_score": 0 if results_or_findings else 100,
+                "risk_level": "CRITICAL" if any(f.get("severity") == "CRITICAL" for f in results_or_findings) else ("HIGH" if results_or_findings else "CLEAN"),
+            },
+            "findings": sast_findings,
+            "secret_findings": sec_findings,
+        }
+        return format_table(
+            results,
+            sast_findings,
+            secret_findings=sec_findings,
+            secrets_enabled=bool(sec_findings)
+        )
+    return str(results_or_findings)
+
+
+generate_audit_report = _generate_audit_report
 
 
 from remediation import (
