@@ -2504,7 +2504,14 @@ jobs:
         findings.forEach((f, idx) => {
             lines.push(`\n[${idx + 1}] ${f.id || 'VULN'} | ${f.severity} | ${f.cwe} | ${f.category}`);
             lines.push(`    Location:   ${f.file || 'target.py'}:${f.line_number}`);
-            lines.push(`    Confidence: ${f.confidence_label} (${Math.round((f.confidence || 1) * 100)}%)`);
+            let confDisplay = f.confidence_label || 'CONFIRMED';
+            const numConf = Number(f.confidence);
+            if (!isNaN(numConf) && typeof f.confidence === 'number') {
+                confDisplay = `${confDisplay} (${Math.round(numConf * 100)}%)`;
+            } else if (typeof f.confidence === 'string' && f.confidence.includes('%')) {
+                confDisplay = f.confidence;
+            }
+            lines.push(`    Confidence: ${confDisplay}`);
             if (f.code_snippet) lines.push(`    Snippet:    ${f.code_snippet}`);
             if (f.flow_trace && f.flow_trace.length) lines.push(`    Dataflow:   ${f.flow_trace.join(' -> ')}`);
             if (f.remediation) {
@@ -2804,29 +2811,53 @@ jobs:
                         <svg class="w-8 h-8 text-emerald-400" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M5 13l4 4L19 7"></path></svg>
                     </div>
                     <h3 class="text-lg md:text-xl font-bold text-emerald-400 font-mono mb-2">
-                        NO VULNERABILITIES DETECTED within current TCS analysis scope (6 supported CWE classes).
+                        NO VULNERABILITIES DETECTED within current TCS analysis scope (14 supported CWE classes).
                     </h3>
                     <p class="text-sm text-gray-400 max-w-2xl mx-auto leading-relaxed mb-6 font-mono">
-                        Deterministic AST and interprocedural data-flow analysis confirmed zero tainted data flows reaching dangerous sinks across all scanned modules.
+                        Deterministic AST and interprocedural data-flow analysis confirmed zero tainted data flows reaching dangerous sinks, and zero credential leaks across all scanned modules.
                     </p>
-                    <div class="grid grid-cols-2 sm:grid-cols-3 gap-2 max-w-2xl mx-auto text-left text-xs font-mono">
-                        <div class="p-2.5 rounded-lg bg-emerald-950/30 border border-emerald-500/20 text-gray-300 flex items-center gap-2">
-                            <span class="text-emerald-400">✓</span> CWE-95: Code Execution
+                    <div class="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-3 gap-2 max-w-3xl mx-auto text-left text-xs font-mono">
+                        <div class="p-2.5 rounded-lg bg-emerald-950/30 border border-emerald-500/20 text-gray-300 flex items-center gap-2 transition-colors hover:border-emerald-500/50 hover:bg-emerald-950/50">
+                            <span class="text-emerald-400">✓</span> CWE-95: Code Injection
                         </div>
-                        <div class="p-2.5 rounded-lg bg-emerald-950/30 border border-emerald-500/20 text-gray-300 flex items-center gap-2">
+                        <div class="p-2.5 rounded-lg bg-emerald-950/30 border border-emerald-500/20 text-gray-300 flex items-center gap-2 transition-colors hover:border-emerald-500/50 hover:bg-emerald-950/50">
                             <span class="text-emerald-400">✓</span> CWE-78: Command Injection
                         </div>
-                        <div class="p-2.5 rounded-lg bg-emerald-950/30 border border-emerald-500/20 text-gray-300 flex items-center gap-2">
+                        <div class="p-2.5 rounded-lg bg-emerald-950/30 border border-emerald-500/20 text-gray-300 flex items-center gap-2 transition-colors hover:border-emerald-500/50 hover:bg-emerald-950/50">
                             <span class="text-emerald-400">✓</span> CWE-89: SQL Injection
                         </div>
-                        <div class="p-2.5 rounded-lg bg-emerald-950/30 border border-emerald-500/20 text-gray-300 flex items-center gap-2">
+                        <div class="p-2.5 rounded-lg bg-emerald-950/30 border border-emerald-500/20 text-gray-300 flex items-center gap-2 transition-colors hover:border-emerald-500/50 hover:bg-emerald-950/50">
                             <span class="text-emerald-400">✓</span> CWE-22: Path Traversal
                         </div>
-                        <div class="p-2.5 rounded-lg bg-emerald-950/30 border border-emerald-500/20 text-gray-300 flex items-center gap-2">
+                        <div class="p-2.5 rounded-lg bg-emerald-950/30 border border-emerald-500/20 text-gray-300 flex items-center gap-2 transition-colors hover:border-emerald-500/50 hover:bg-emerald-950/50">
                             <span class="text-emerald-400">✓</span> CWE-502: Deserialization
                         </div>
-                        <div class="p-2.5 rounded-lg bg-emerald-950/30 border border-emerald-500/20 text-gray-300 flex items-center gap-2">
+                        <div class="p-2.5 rounded-lg bg-emerald-950/30 border border-emerald-500/20 text-gray-300 flex items-center gap-2 transition-colors hover:border-emerald-500/50 hover:bg-emerald-950/50">
                             <span class="text-emerald-400">✓</span> CWE-1336: SSTI
+                        </div>
+                        <div class="p-2.5 rounded-lg bg-emerald-950/30 border border-emerald-500/20 text-gray-300 flex items-center gap-2 transition-colors hover:border-emerald-500/50 hover:bg-emerald-950/50">
+                            <span class="text-emerald-400">✓</span> CWE-79: Cross-Site Scripting (XSS)
+                        </div>
+                        <div class="p-2.5 rounded-lg bg-emerald-950/30 border border-emerald-500/20 text-gray-300 flex items-center gap-2 transition-colors hover:border-emerald-500/50 hover:bg-emerald-950/50">
+                            <span class="text-emerald-400">✓</span> CWE-295: Broken TLS / Cert Validation
+                        </div>
+                        <div class="p-2.5 rounded-lg bg-emerald-950/30 border border-emerald-500/20 text-gray-300 flex items-center gap-2 transition-colors hover:border-emerald-500/50 hover:bg-emerald-950/50">
+                            <span class="text-emerald-400">✓</span> CWE-918: Server-Side Request Forgery (SSRF)
+                        </div>
+                        <div class="p-2.5 rounded-lg bg-emerald-950/30 border border-emerald-500/20 text-gray-300 flex items-center gap-2 transition-colors hover:border-emerald-500/50 hover:bg-emerald-950/50">
+                            <span class="text-emerald-400">✓</span> CWE-611: XML External Entity (XXE)
+                        </div>
+                        <div class="p-2.5 rounded-lg bg-emerald-950/30 border border-emerald-500/20 text-gray-300 flex items-center gap-2 transition-colors hover:border-emerald-500/50 hover:bg-emerald-950/50">
+                            <span class="text-emerald-400">✓</span> CWE-601: Open Redirect
+                        </div>
+                        <div class="p-2.5 rounded-lg bg-emerald-950/30 border border-emerald-500/20 text-gray-300 flex items-center gap-2 transition-colors hover:border-emerald-500/50 hover:bg-emerald-950/50">
+                            <span class="text-emerald-400">✓</span> CWE-1333: Regex Injection / ReDoS
+                        </div>
+                        <div class="p-2.5 rounded-lg bg-emerald-950/30 border border-emerald-500/20 text-gray-300 flex items-center gap-2 transition-colors hover:border-emerald-500/50 hover:bg-emerald-950/50">
+                            <span class="text-emerald-400">✓</span> CWE-327: Broken Cryptography
+                        </div>
+                        <div class="p-2.5 rounded-lg bg-emerald-950/30 border border-emerald-500/20 text-gray-300 flex items-center gap-2 transition-colors hover:border-emerald-500/50 hover:bg-emerald-950/50">
+                            <span class="text-emerald-400">✓</span> CWE-798: Hardcoded Secrets &amp; Credentials (219+ Gitleaks Signatures)
                         </div>
                     </div>
                 </div>
