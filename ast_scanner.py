@@ -313,6 +313,11 @@ SOURCE_REGISTRY = {
     "os.environ": {"operation": "ENVIRONMENT_VARIABLE_ACCESS", "source_type": "USER_CONTROLLED"},
     "input": {"operation": "STDIN_READ", "source_type": "USER_CONTROLLED"},
     "builtins.input": {"operation": "STDIN_READ", "source_type": "USER_CONTROLLED"},
+    "os.getenv": {"operation": "ENVIRONMENT_VARIABLE_ACCESS", "source_type": "USER_CONTROLLED"},
+    "fastapi.Query": {"operation": "HTTP_QUERY_PARAMETER_ACCESS", "source_type": "USER_CONTROLLED"},
+    "fastapi.Header": {"operation": "HTTP_HEADER_ACCESS", "source_type": "USER_CONTROLLED"},
+    "fastapi.Cookie": {"operation": "HTTP_COOKIE_ACCESS", "source_type": "USER_CONTROLLED"},
+    "fastapi.Body": {"operation": "HTTP_BODY_ACCESS", "source_type": "USER_CONTROLLED"},
 }
 
 SANITIZER_REGISTRY = {
@@ -1984,7 +1989,7 @@ class TaintTracker:
                 return TaintValue(state=TaintState.CLEAN, confidence=1.0, path=[f"{file_name}:{attr_name}", "path_containment_proven"], last_operation="path_containment_proven")
             canon_attr = self.resolve_canonical_name(node, scope_id) or attr_name
             norm_attr = canon_attr[6:] if (canon_attr and canon_attr.startswith("flask.")) else canon_attr
-            if norm_attr in ("request.data", "request.json", "request.query_string", "request.body") or (attr_name in ("request.data", "request.json", "request.query_string", "request.body")):
+            if norm_attr in ("request.data", "request.json", "request.query_string", "request.body", "request.META", "request.FILES") or (attr_name in ("request.data", "request.json", "request.query_string", "request.body", "request.META", "request.FILES")):
                 loc = location(node, file_name)
                 for existing in self.sources:
                     if existing.location == loc:
@@ -2886,7 +2891,7 @@ class TaintTracker:
             framework_sources = (
                 "request.args", "request.form", "request.values", "request.headers",
                 "request.cookies", "request.GET", "request.POST", "request.query_params", "sys.argv",
-                "os.environ"
+                "os.environ", "request.META", "request.FILES"
             )
             if norm_val in framework_sources or dname_val in framework_sources:
                 loc = location(node, file_name)
@@ -3635,7 +3640,7 @@ class TaintTracker:
         if isinstance(node, ast.Attribute):
             canon_attr = self.resolve_canonical_name(node, scope_id) or dotted_name(node) or ""
             norm_attr = canon_attr[6:] if canon_attr.startswith("flask.") else canon_attr
-            if norm_attr in ("request.data", "request.json", "request.query_string") or (node.attr in ("data", "json", "query_string") and dotted_name(node.value) == "request"):
+            if norm_attr in ("request.data", "request.json", "request.query_string", "request.body", "request.META", "request.FILES") or (node.attr in ("data", "json", "query_string", "body", "META", "FILES") and dotted_name(node.value) == "request"):
                 src = self.get_or_create_source(node, file_name, scope_id)
                 return ProvenanceValue(
                     state=ProvenanceState.TAINTED,
@@ -3684,7 +3689,7 @@ class TaintTracker:
         if isinstance(node, ast.Subscript):
             canon_val = self.resolve_canonical_name(node.value, scope_id) or dotted_name(node.value) or ""
             norm_val = canon_val[6:] if canon_val.startswith("flask.") else canon_val
-            if norm_val in ("request.args", "request.form", "request.values", "request.headers", "request.cookies") or dotted_name(node.value) in ("request.args", "request.form", "request.values", "request.headers", "request.cookies"):
+            if norm_val in ("request.args", "request.form", "request.values", "request.headers", "request.cookies", "request.META", "request.FILES") or dotted_name(node.value) in ("request.args", "request.form", "request.values", "request.headers", "request.cookies", "request.META", "request.FILES"):
                 src = self.get_or_create_source(node, file_name, scope_id)
                 return ProvenanceValue(
                     state=ProvenanceState.TAINTED,
