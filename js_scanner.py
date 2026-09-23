@@ -245,6 +245,35 @@ class JsTsScanner:
                 counter += 1
             findings.extend(file_findings)
 
+    def scan_file_content(
+        self,
+        code: str,
+        filename: str = "editor_snippet.tsx",
+        start_counter: int = 1,
+    ) -> List[Dict[str, Any]]:
+        """Parse source code in-memory and extract security findings."""
+        if not self.available:
+            return []
+        ext = Path(filename).suffix.lower() or ".tsx"
+        parser, language = _get_parser_and_language(ext)
+        if parser is None or language is None:
+            return []
+        source_bytes = code.encode("utf-8")
+        try:
+            tree = parser.parse(source_bytes)
+        except Exception:
+            return []
+        root = tree.root_node
+        findings: List[Dict[str, Any]] = []
+        if language is _JS_LANGUAGE:
+            findings.extend(self._extract_eval_sinks_js(root, source_bytes, filename, language))
+            findings.extend(self._extract_innerhtml_js(root, source_bytes, filename, language))
+        else:
+            findings.extend(self._extract_eval_sinks(root, source_bytes, filename))
+            findings.extend(self._extract_jsx_xss(root, source_bytes, filename))
+            findings.extend(self._extract_innerhtml(root, source_bytes, filename))
+        for i, ff in enumerate(findings):
+            ff["id"] = f"TCS-JS-{start_counter + i:03d}"
         return findings
 
     def scan_files(

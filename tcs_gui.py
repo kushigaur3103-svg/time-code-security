@@ -5,6 +5,8 @@ import threading
 from pathlib import Path
 import flet as ft
 import requests
+import re
+import ast
 import time
 
 # Ensure TCS core engine is discoverable
@@ -20,6 +22,22 @@ except Exception as e:
     TCS_LOCAL_AVAILABLE = False
     __version__ = "2.0.0"
     print(f"[!] Warning: Could not import local TCS engine: {e}")
+
+try:
+    from js_scanner import JsTsScanner, js_ts_available
+    JS_SCANNER_AVAILABLE = js_ts_available()
+except Exception:
+    JS_SCANNER_AVAILABLE = False
+    JsTsScanner = None
+
+try:
+    import remediation
+    from remediation import RemediationEngine, PatchStatus
+    REMEDIATION_AVAILABLE = True
+except Exception:
+    REMEDIATION_AVAILABLE = False
+    RemediationEngine = None
+    PatchStatus = None
 
 # Flet Compatibility Helpers
 def get_icon(name, fallback=""):
@@ -441,6 +459,9 @@ def build_finding_tile(finding, is_selected, on_click_handler):
     bg_color = "#1f2937" if is_selected else "#161b22"
     border_width = 2 if is_selected else 1
 
+    disc_mode = str(finding.get("discovery_mode", ""))
+    is_js_ts = "JS_TS" in disc_mode or f_type == "JS/TS"
+
     badge_icon = ICON_KEY if f_type == "SECRET" else ICON_WARN
 
     return ft.Container(
@@ -457,6 +478,18 @@ def build_finding_tile(finding, is_selected, on_click_handler):
                                     bgcolor="#374151",
                                     padding=make_padding(horizontal=6, vertical=1),
                                     border_radius=4,
+                                ),
+                                *(
+                                    [
+                                        ft.Container(
+                                            content=ft.Text("JS/TS", size=9, weight=ft.FontWeight.BOLD, color="#00ffcc"),
+                                            bgcolor="#092d24",
+                                            border=make_border(1, "#00ffcc"),
+                                            padding=make_padding(horizontal=4, vertical=1),
+                                            border_radius=3,
+                                        )
+                                    ]
+                                    if is_js_ts else []
                                 ),
                             ],
                             spacing=6,
@@ -852,6 +885,25 @@ def main(page: ft.Page):
             on_click=toggle_editor_click
         )
 
+        language_dropdown = ft.Dropdown(
+            options=[
+                ft.dropdown.Option("Auto-Detect"),
+                ft.dropdown.Option("Python (.py)"),
+                ft.dropdown.Option("TypeScript/React (.tsx/.ts)"),
+                ft.dropdown.Option("JavaScript (.js)"),
+            ],
+            value="Auto-Detect",
+            width=210,
+            height=36,
+            text_size=11,
+            color="#00ffcc",
+            bgcolor="#161b22",
+            border_color="#30363d",
+            focused_border_color="#00ffcc",
+            content_padding=make_padding(horizontal=10, vertical=0),
+            tooltip="Select parser mode or auto-detect based on syntax",
+        )
+
         editor_header = ft.Container(
             content=ft.Row(
                 [
@@ -862,7 +914,13 @@ def main(page: ft.Page):
                         ],
                         spacing=6,
                     ),
-                    btn_toggle_editor,
+                    ft.Row(
+                        [
+                            language_dropdown,
+                            btn_toggle_editor,
+                        ],
+                        spacing=8,
+                    ),
                 ],
                 alignment=ft.MainAxisAlignment.SPACE_BETWEEN,
             ),
@@ -1115,7 +1173,6 @@ def main(page: ft.Page):
                 or finding.get("is_secret")
                 or finding.get("cwe") == "CWE-798"
                 or finding.get("category") == "HARDCODED_SECRET"
-                or finding.get("proof_nodes") is None
             ):
                 right_container.content = build_secret_view(finding)
             else:
@@ -1126,29 +1183,128 @@ def main(page: ft.Page):
         def fix_code_click(e):
             code_value = code_input.value
             if not code_value:
+                show_snackbar("Please enter or scan code first.", "red")
                 return
-            set_button_text(btn_fix, "Fixing...")
+
+            finding = selected_finding
+            if not finding and findings_state:
+                finding = findings_state[0]
+
+            if not finding:
+                show_snackbar("No active vulnerability selected for remediation.", "red")
+                return
+
+            cwe = str(finding.get("cwe", "")).upper()
+            remediable_cwes = ("CWE-89", "CWE-78", "CWE-22")
+
+            if cwe not in remediable_cwes:
+                show_snackbar("Manual remediation required for this vector.", "#ea580c")
+                return
+
+            if not REMEDIATION_AVAILABLE or RemediationEngine is None:
+                show_snackbar("Local Vector D remediation engine is unavailable.", "red")
+                return
+
+            set_button_text(btn_fix, "Generating Patch...")
             page.update()
 
             try:
-                response = requests.post(
-                    "http://localhost:10000/api/fix-code",
-                    headers={"Authorization": f"Bearer {page.token}", "X-Master-Key": key_input.value},
-                    json={"code": code_value, "report": results_area.value},
-                    timeout=15
-                )
-                if response.status_code == 200:
-                    data = response.json()
-                    new_code = data.get("report") or data.get("result") or str(data)
-                    results_area.value += f"\n\n### AI-Fixed Code\n\n```python\n{new_code}\n```"
-                elif response.status_code == 403:
-                    show_snackbar("PRO Feature Only! Please upgrade on the website.", "red")
+                engine = RemediationEngine()
+                target_finding = dict(finding)
+                if "line_number" not in target_finding and "line" in target_finding:
+                    target_finding["line_number"] = target_finding["line"]
+                target_file = target_finding.get("file", "target.py")
+                rec = engine.remediate(target_finding, code_value, file_path=target_file)
+
+                if rec.patch_status == PatchStatus.SUCCESS and rec.patched_source:
+                    patched_code = rec.patched_source
+                    unified_diff = rec.unified_diff or "(No structural diff)"
+
+                    def apply_patch_action(ev):
+                        code_input.value = patched_code
+                        fix_dialog.open = False
+                        if hasattr(page, "close") and callable(getattr(page, "close")):
+                            try:
+                                page.close(fix_dialog)
+                            except Exception:
+                                pass
+                        page.update()
+                        show_snackbar("Verified patch applied to editor! Re-scanning...", "green")
+                        initiate_scan(None)
+
+                    def cancel_dialog_action(ev):
+                        fix_dialog.open = False
+                        if hasattr(page, "close") and callable(getattr(page, "close")):
+                            try:
+                                page.close(fix_dialog)
+                            except Exception:
+                                pass
+                        page.update()
+
+                    fix_dialog = ft.AlertDialog(
+                        modal=True,
+                        title=ft.Row(
+                            [
+                                ft.Icon(get_icon("AUTO_FIX_HIGH_ROUNDED", "build"), color="#00ffcc", size=20),
+                                ft.Text(f"Vector D Auto-Fix: {cwe} ({rec.remediation_rule.value})", size=14, weight=ft.FontWeight.BOLD, color="white"),
+                            ],
+                            spacing=8,
+                        ),
+                        content=ft.Container(
+                            content=ft.Column(
+                                [
+                                    ft.Text("Deterministic AST Patch Preview (Verified Gate Passed):", size=11, color="#9ca3af"),
+                                    ft.Container(height=4),
+                                    ft.Text("Unified Diff:", size=10, weight=ft.FontWeight.BOLD, color="#00ffcc"),
+                                    ft.Container(
+                                        content=ft.Text(
+                                            unified_diff,
+                                            size=11,
+                                            font_family="Consolas, monospace",
+                                            color="#e6edf3",
+                                        ),
+                                        bgcolor="#0d1117",
+                                        border=make_border(1, "#30363d"),
+                                        border_radius=6,
+                                        padding=10,
+                                        width=580,
+                                        height=200,
+                                    ),
+                                ],
+                                spacing=4,
+                                tight=True,
+                            ),
+                            width=600,
+                            padding=6,
+                        ),
+                        actions=[
+                            ft.TextButton("Cancel", on_click=cancel_dialog_action),
+                            ft.ElevatedButton(
+                                "Apply Patch to Editor",
+                                bgcolor="#059669",
+                                color="white",
+                                icon=get_icon("CHECK_ROUNDED", "check"),
+                                on_click=apply_patch_action,
+                            ),
+                        ],
+                        actions_alignment=ft.MainAxisAlignment.END,
+                    )
+
+                    page.dialog = fix_dialog
+                    fix_dialog.open = True
+                    if hasattr(page, "open") and callable(getattr(page, "open")):
+                        try:
+                            page.open(fix_dialog)
+                        except Exception:
+                            pass
+                    page.update()
                 else:
-                    show_snackbar(f"Fix failed: {response.status_code}", "red")
+                    status_name = getattr(rec.patch_status, "value", str(rec.patch_status))
+                    show_snackbar(f"Remediation could not produce verified patch: {status_name}", "red")
             except Exception as err:
-                show_snackbar(f"Error: {err}", "red")
+                show_snackbar(f"Remediation error: {err}", "red")
             finally:
-                set_button_text(btn_fix, "🔧 Generate Secure Code")
+                set_button_text(btn_fix, "⚡ One-Click Auto-Fix")
                 page.update()
 
         def test_code_click(e):
@@ -1179,7 +1335,14 @@ def main(page: ft.Page):
                 set_button_text(btn_test, "🧪 Generate Unit Tests")
                 page.update()
 
-        btn_fix = ft.ElevatedButton("🔧 Generate Secure Code", bgcolor="blue", color="white", visible=False, on_click=fix_code_click)
+        btn_fix = ft.ElevatedButton(
+            "⚡ One-Click Auto-Fix",
+            bgcolor="#059669",
+            color="white",
+            visible=False,
+            icon=get_icon("AUTO_FIX_HIGH_ROUNDED", "build"),
+            on_click=fix_code_click
+        )
         btn_test = ft.ElevatedButton("🧪 Generate Unit Tests", bgcolor="purple", color="white", visible=False, on_click=test_code_click)
 
         pro_actions_row = ft.Row([btn_fix, btn_test], alignment=ft.MainAxisAlignment.CENTER)
@@ -1202,80 +1365,216 @@ def main(page: ft.Page):
                 nonlocal findings_state, selected_finding
                 try:
                     if TCS_LOCAL_AVAILABLE:
-                        # Unified local pipeline: SAST taint analysis + Secret detection
-                        sast_res = execute_tcs_scan({"target.py": code_value}, audit_all=True, secrets=True)
-                        all_findings = [f for f in sast_res.get("findings", []) if f.get("active", True)]
-                        sast_findings = [f for f in all_findings if not f.get("is_secret") and f.get("cwe") != "CWE-798"]
-                        secret_findings = [f for f in all_findings if f.get("is_secret") or f.get("cwe") == "CWE-798"]
+                        # Language selection & detection
+                        selected_lang = getattr(language_dropdown, "value", "Auto-Detect") or "Auto-Detect"
+                        is_js_ts = False
+                        detected_ext = ".py"
+
+                        if selected_lang == "TypeScript/React (.tsx/.ts)":
+                            is_js_ts = True
+                            detected_ext = ".tsx"
+                        elif selected_lang == "JavaScript (.js)":
+                            is_js_ts = True
+                            detected_ext = ".js"
+                        elif selected_lang == "Python (.py)":
+                            is_js_ts = False
+                            detected_ext = ".py"
+                        else:
+                            # Auto-Detect
+                            js_signals = [
+                                "'use client'", '"use client"', "'use server'", '"use server"',
+                                "dangerouslySetInnerHTML", "export default", "export const",
+                                "export function", "import React", "from 'react'", 'from "react"',
+                                "console.log", "document.getElementById", "document.querySelector",
+                                "=== ", "!== ", "=>"
+                            ]
+                            has_js_signal = any(sig in code_value for sig in js_signals)
+                            has_jsx = bool(re.search(r"<\/?[A-Za-z][\w\.-]*(\s+[^>]*)?\/?>", code_value)) or "<div" in code_value
+                            if has_js_signal or has_jsx:
+                                is_js_ts = True
+                                detected_ext = ".tsx" if has_jsx else ".ts"
+                            else:
+                                try:
+                                    ast.parse(code_value)
+                                    is_js_ts = False
+                                    detected_ext = ".py"
+                                except SyntaxError:
+                                    if JS_SCANNER_AVAILABLE and JsTsScanner is not None:
+                                        is_js_ts = True
+                                        detected_ext = ".tsx"
 
                         findings_state = []
-                        sast_idx = 1
-                        for f in sast_findings:
-                            pg = f.get("proof_graph") or {}
-                            nodes = pg.get("nodes", [])
-                            findings_state.append({
-                                "type": "SAST",
-                                "id": f.get("id", f"TCS-VULN-{sast_idx:03d}"),
-                                "cwe": f.get("cwe", "UNKNOWN"),
-                                "category": f.get("category", "Vulnerability"),
-                                "severity": f.get("severity", "HIGH"),
-                                "confidence": f.get("confidence", 1.0),
-                                "confidence_label": f.get("confidence_label", "CONFIRMED"),
-                                "file": f.get("file", "target.py"),
-                                "line": f.get("line_number", 1),
-                                "symbol": f.get("sink_symbol", "sink"),
-                                "code_snippet": f.get("code_snippet", ""),
-                                "proof_nodes": nodes,
-                                "proof_graph": pg,
-                                "remediation": f.get("remediation", ""),
-                                "flow_trace": f.get("flow_trace", []),
-                                "flow_trace_summary": f.get("flow_trace_summary", ""),
-                                "is_secret": False,
-                            })
-                            sast_idx += 1
+                        if is_js_ts:
+                            if not JS_SCANNER_AVAILABLE or JsTsScanner is None:
+                                show_snackbar("Tree-sitter JS/TS scanner is unavailable in environment.", "red")
+                                return
 
-                        sec_idx = 1
-                        for s in secret_findings:
-                            findings_state.append({
-                                "type": "SECRET",
-                                "id": s.get("id", f"TCS-SEC-{sec_idx:03d}"),
-                                "cwe": "CWE-798",
-                                "category": s.get("category", "Hardcoded Credential / Secret Leak"),
-                                "severity": s.get("severity", "HIGH"),
-                                "confidence": s.get("confidence") or s.get("confidence_label") or getattr(s, "confidence", "HIGH (PATTERN_MATCH)"),
-                                "confidence_label": s.get("confidence_label") or getattr(s, "confidence", "HIGH (PATTERN_MATCH)"),
-                                "file": s.get("file", "target.py"),
-                                "line": s.get("line_number", 1),
-                                "symbol": s.get("secret_type") or s.get("symbol", "hardcoded_secret"),
-                                "masked_value": s.get("masked_value", "REDACTED"),
-                                "code_snippet": s.get("code_snippet", ""),
-                                "detector": s.get("detector", "secret_scanner"),
-                                "remediation": s.get("remediation", "Never commit secrets, credentials, or database connection strings into source control. Move credentials to environment variables or an external secret vault (e.g., AWS Secrets Manager, HashiCorp Vault). Revoke and rotate this exposed secret immediately."),
-                                "proof_nodes": None,
-                                "proof_graph": None,
-                                "is_secret": True,
-                            })
-                            sec_idx += 1
+                            js_scanner_inst = JsTsScanner()
+                            virtual_file = f"editor_snippet{detected_ext}"
+                            raw_findings = js_scanner_inst.scan_file_content(code_value, filename=virtual_file)
+                            secret_res = secret_scanner.scan_text(code_value, filename=virtual_file) if hasattr(secret_scanner, "scan_text") else []
 
-                        total_flaws = len(findings_state)
-                        critical_count = sum(1 for f in findings_state if f.get("severity") == "CRITICAL")
-                        high_count = sum(1 for f in findings_state if f.get("severity") == "HIGH")
+                            for i, jf in enumerate(raw_findings, 1):
+                                proof_nodes = [
+                                    {
+                                        "step_index": 1,
+                                        "node_type": "SOURCE",
+                                        "symbol": jf.get("source_symbol", "User Input"),
+                                        "start_line": jf.get("source_line") or 1,
+                                        "expression_snippet": "Untrusted User Input / Tainted Component Prop",
+                                    },
+                                    {
+                                        "step_index": 2,
+                                        "node_type": "SINK",
+                                        "symbol": jf.get("sink_symbol", "sink"),
+                                        "start_line": jf.get("line_number", 1),
+                                        "expression_snippet": jf.get("code_snippet", ""),
+                                    },
+                                ]
+                                findings_state.append({
+                                    "type": "JS/TS",
+                                    "id": jf.get("id", f"TCS-JS-{i:03d}"),
+                                    "cwe": jf.get("cwe", "UNKNOWN"),
+                                    "category": jf.get("category", "Vulnerability"),
+                                    "severity": jf.get("severity", "HIGH"),
+                                    "confidence": jf.get("confidence", 1.0),
+                                    "confidence_label": jf.get("confidence_label", "CONFIRMED"),
+                                    "file": virtual_file,
+                                    "line": jf.get("line_number", 1),
+                                    "line_number": jf.get("line_number", 1),
+                                    "symbol": jf.get("sink_symbol", "sink"),
+                                    "code_snippet": jf.get("code_snippet", ""),
+                                    "proof_nodes": proof_nodes,
+                                    "proof_graph": None,
+                                    "remediation": jf.get("remediation", ""),
+                                    "flow_trace": jf.get("flow_trace", []),
+                                    "flow_trace_summary": jf.get("flow_trace_summary", ""),
+                                    "is_secret": False,
+                                    "discovery_mode": "JS_TS_SCAN",
+                                })
 
-                        if total_flaws > 0:
-                            summary_banner_text.value = f"AUDIT COMPLETE: {total_flaws} Flaws Identified ({len(sast_findings)} SAST · {len(secret_findings)} Secrets) — {critical_count} CRITICAL, {high_count} HIGH"
-                            summary_banner_text.color = COLOR_RED
-                            btn_fix.visible = True
-                            btn_test.visible = True
-                            select_finding(findings_state[0])
+                            sec_idx = 1
+                            for s in secret_res:
+                                findings_state.append({
+                                    "type": "SECRET",
+                                    "id": s.get("id", f"TCS-SEC-{sec_idx:03d}"),
+                                    "cwe": "CWE-798",
+                                    "category": s.get("category", "Hardcoded Credential / Secret Leak"),
+                                    "severity": s.get("severity", "HIGH"),
+                                    "confidence": s.get("confidence") or "HIGH (PATTERN_MATCH)",
+                                    "confidence_label": s.get("confidence_label") or "HIGH (PATTERN_MATCH)",
+                                    "file": virtual_file,
+                                    "line": s.get("line_number", 1),
+                                    "line_number": s.get("line_number", 1),
+                                    "symbol": s.get("secret_type") or "hardcoded_secret",
+                                    "masked_value": s.get("masked_value", "REDACTED"),
+                                    "code_snippet": s.get("code_snippet", ""),
+                                    "detector": s.get("detector", "secret_scanner"),
+                                    "remediation": s.get("remediation", "Never commit secrets, credentials, or database connection strings into source control. Move credentials to environment variables or an external secret vault (e.g., AWS Secrets Manager, HashiCorp Vault). Revoke and rotate this exposed secret immediately."),
+                                    "proof_nodes": None,
+                                    "proof_graph": None,
+                                    "is_secret": True,
+                                    "discovery_mode": "SECRET_SCAN",
+                                })
+                                sec_idx += 1
+
+                            total_flaws = len(findings_state)
+                            critical_count = sum(1 for f in findings_state if f.get("severity") == "CRITICAL")
+                            high_count = sum(1 for f in findings_state if f.get("severity") == "HIGH")
+
+                            if total_flaws > 0:
+                                summary_banner_text.value = f"AUDIT COMPLETE (Tree-sitter {detected_ext}): {total_flaws} Flaws Identified ({len(raw_findings)} JS/TS · {len(secret_res)} Secrets) — {critical_count} CRITICAL, {high_count} HIGH"
+                                summary_banner_text.color = COLOR_RED
+                                btn_fix.visible = True
+                                btn_test.visible = False
+                                select_finding(findings_state[0])
+                            else:
+                                summary_banner_text.value = f"AUDIT COMPLETE (Tree-sitter {detected_ext}): Clean · 0 Vulnerabilities Detected"
+                                summary_banner_text.color = COLOR_GREEN
+                                selected_finding = None
+                                render_findings_list()
+                                right_container.content = build_proof_graph_view([])
+
+                            results_area.value = generate_markdown_report(findings_state, code_value)
+                            page.update()
                         else:
-                            summary_banner_text.value = "AUDIT COMPLETE: Clean · 0 Vulnerabilities Detected"
-                            summary_banner_text.color = COLOR_GREEN
-                            selected_finding = None
-                            render_findings_list()
-                            right_container.content = build_proof_graph_view([])
+                            # Unified local pipeline: SAST taint analysis + Secret detection
+                            sast_res = execute_tcs_scan({"target.py": code_value}, audit_all=True, secrets=True)
+                            all_findings = [f for f in sast_res.get("findings", []) if f.get("active", True)]
+                            sast_findings = [f for f in all_findings if not f.get("is_secret") and f.get("cwe") != "CWE-798"]
+                            secret_findings = [f for f in all_findings if f.get("is_secret") or f.get("cwe") == "CWE-798"]
 
-                        results_area.value = generate_markdown_report(findings_state, code_value)
-                        page.update()
+                            sast_idx = 1
+                            for f in sast_findings:
+                                pg = f.get("proof_graph") or {}
+                                nodes = pg.get("nodes", [])
+                                findings_state.append({
+                                    "type": "SAST",
+                                    "id": f.get("id", f"TCS-VULN-{sast_idx:03d}"),
+                                    "cwe": f.get("cwe", "UNKNOWN"),
+                                    "category": f.get("category", "Vulnerability"),
+                                    "severity": f.get("severity", "HIGH"),
+                                    "confidence": f.get("confidence", 1.0),
+                                    "confidence_label": f.get("confidence_label", "CONFIRMED"),
+                                    "file": f.get("file", "target.py"),
+                                    "line": f.get("line_number", 1),
+                                    "line_number": f.get("line_number", 1),
+                                    "symbol": f.get("sink_symbol", "sink"),
+                                    "code_snippet": f.get("code_snippet", ""),
+                                    "proof_nodes": nodes,
+                                    "proof_graph": pg,
+                                    "remediation": f.get("remediation", ""),
+                                    "flow_trace": f.get("flow_trace", []),
+                                    "flow_trace_summary": f.get("flow_trace_summary", ""),
+                                    "is_secret": False,
+                                    "discovery_mode": "AST_SCAN",
+                                })
+                                sast_idx += 1
+
+                            sec_idx = 1
+                            for s in secret_findings:
+                                findings_state.append({
+                                    "type": "SECRET",
+                                    "id": s.get("id", f"TCS-SEC-{sec_idx:03d}"),
+                                    "cwe": "CWE-798",
+                                    "category": s.get("category", "Hardcoded Credential / Secret Leak"),
+                                    "severity": s.get("severity", "HIGH"),
+                                    "confidence": s.get("confidence") or s.get("confidence_label") or getattr(s, "confidence", "HIGH (PATTERN_MATCH)"),
+                                    "confidence_label": s.get("confidence_label") or getattr(s, "confidence", "HIGH (PATTERN_MATCH)"),
+                                    "file": s.get("file", "target.py"),
+                                    "line": s.get("line_number", 1),
+                                    "line_number": s.get("line_number", 1),
+                                    "symbol": s.get("secret_type") or s.get("symbol", "hardcoded_secret"),
+                                    "masked_value": s.get("masked_value", "REDACTED"),
+                                    "code_snippet": s.get("code_snippet", ""),
+                                    "detector": s.get("detector", "secret_scanner"),
+                                    "remediation": s.get("remediation", "Never commit secrets, credentials, or database connection strings into source control. Move credentials to environment variables or an external secret vault (e.g., AWS Secrets Manager, HashiCorp Vault). Revoke and rotate this exposed secret immediately."),
+                                    "proof_nodes": None,
+                                    "proof_graph": None,
+                                    "is_secret": True,
+                                    "discovery_mode": "SECRET_SCAN",
+                                })
+                                sec_idx += 1
+
+                            total_flaws = len(findings_state)
+                            critical_count = sum(1 for f in findings_state if f.get("severity") == "CRITICAL")
+                            high_count = sum(1 for f in findings_state if f.get("severity") == "HIGH")
+
+                            if total_flaws > 0:
+                                summary_banner_text.value = f"AUDIT COMPLETE (Python): {total_flaws} Flaws Identified ({len(sast_findings)} SAST · {len(secret_findings)} Secrets) — {critical_count} CRITICAL, {high_count} HIGH"
+                                summary_banner_text.color = COLOR_RED
+                                btn_fix.visible = True
+                                btn_test.visible = True
+                                select_finding(findings_state[0])
+                            else:
+                                summary_banner_text.value = "AUDIT COMPLETE (Python): Clean · 0 Vulnerabilities Detected"
+                                summary_banner_text.color = COLOR_GREEN
+                                selected_finding = None
+                                render_findings_list()
+                                right_container.content = build_proof_graph_view([])
+
+                            results_area.value = generate_markdown_report(findings_state, code_value)
+                            page.update()
                     else:
                         # Fallback to HTTP API
                         response = requests.post(
