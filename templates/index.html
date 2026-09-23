@@ -2900,6 +2900,27 @@ jobs:
 
                                 const hasAutoFix = Boolean(f.remediation && typeof f.remediation === 'object' && f.remediation.status === 'SUCCESS');
                                 const isNonRemediableCWE = ['CWE-95', 'CWE-502', 'CWE-1336'].includes(f.cwe);
+
+                                const filePath = String(f.file || f.filename || '').toLowerCase();
+                                let langBadgeHtml = '';
+                                if (Boolean(f.is_secret || f.cwe === 'CWE-798' || f.discovery_mode === 'SECRET_SCAN')) {
+                                    langBadgeHtml = `<span class="text-[10px] font-mono font-extrabold px-1.5 py-0.5 rounded border border-red-500/40 bg-red-500/20 text-red-300">SECRET</span>`;
+                                } else if (f.discovery_mode === 'JS_TS_SCAN' || filePath.endsWith('.tsx') || filePath.endsWith('.ts') || filePath.endsWith('.jsx') || filePath.endsWith('.js')) {
+                                    if (filePath.endsWith('.tsx')) {
+                                        langBadgeHtml = `<span class="text-[10px] font-mono font-extrabold px-1.5 py-0.5 rounded border border-cyan-500/40 bg-cyan-500/20 text-cyan-300">TSX</span>`;
+                                    } else if (filePath.endsWith('.ts')) {
+                                        langBadgeHtml = `<span class="text-[10px] font-mono font-extrabold px-1.5 py-0.5 rounded border border-blue-500/40 bg-blue-500/20 text-blue-300">TS</span>`;
+                                    } else if (filePath.endsWith('.jsx')) {
+                                        langBadgeHtml = `<span class="text-[10px] font-mono font-extrabold px-1.5 py-0.5 rounded border border-cyan-500/40 bg-cyan-500/20 text-cyan-300">JSX</span>`;
+                                    } else if (filePath.endsWith('.js')) {
+                                        langBadgeHtml = `<span class="text-[10px] font-mono font-extrabold px-1.5 py-0.5 rounded border border-amber-500/40 bg-amber-500/20 text-amber-300">JS</span>`;
+                                    } else {
+                                        langBadgeHtml = `<span class="text-[10px] font-mono font-extrabold px-1.5 py-0.5 rounded border border-cyan-500/40 bg-cyan-500/20 text-cyan-300">JS/TS</span>`;
+                                    }
+                                } else {
+                                    langBadgeHtml = `<span class="text-[10px] font-mono font-extrabold px-1.5 py-0.5 rounded border border-emerald-500/40 bg-emerald-500/20 text-emerald-300">PYTHON</span>`;
+                                }
+
                                 let autoFixHtml = '';
                                 if (hasAutoFix) {
                                     autoFixHtml = `
@@ -2942,6 +2963,7 @@ jobs:
                                             <div class="flex items-center justify-between gap-2 mb-2 flex-wrap font-mono">
                                                 <div class="flex items-center gap-1.5 flex-wrap">
                                                     <span class="text-[11px] font-bold text-gray-400 bg-white/5 px-2 py-0.5 rounded border border-white/10">${escapeHtml(f.id)}</span>
+                                                    ${langBadgeHtml}
                                                     <span class="text-[11px] font-extrabold px-2 py-0.5 rounded-full border border-slate-600 bg-slate-800 text-slate-200">SUPPRESSED</span>
                                                     <span class="text-[11px] font-bold px-2 py-0.5 rounded-full border border-slate-700 text-slate-400 line-through">${escapeHtml(f.severity)}</span>
                                                     <span class="text-[11px] font-bold px-2 py-0.5 rounded-full border border-slate-700 text-slate-300">${escapeHtml(f.cwe)}</span>
@@ -2978,6 +3000,7 @@ jobs:
                                             <div class="flex items-center justify-between gap-2 mb-2 flex-wrap font-mono">
                                                 <div class="flex items-center gap-1.5 flex-wrap">
                                                     <span class="text-[11px] font-bold text-gray-400 bg-white/5 px-2 py-0.5 rounded border border-white/10">${escapeHtml(f.id)}</span>
+                                                    ${langBadgeHtml}
                                                     <span class="text-[11px] font-bold px-2 py-0.5 rounded-full border ${sevColor}">${escapeHtml(f.severity)}</span>
                                                     <span class="text-[11px] font-bold px-2 py-0.5 rounded-full ${cweBadgeClass}">${escapeHtml(f.cwe)}</span>
                                                 </div>
