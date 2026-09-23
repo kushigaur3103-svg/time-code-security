@@ -2191,6 +2191,81 @@ async def fix_code(payload: CodePayload, request: Request, authorization: str = 
                 )
                 fixed_code = get_cached_or_generate_ai(redacted_code, standalone_prompt, is_fix=True, db=db, user_id=user.id)
             
+            # Autonomous Closed-Loop SAST Verification & Self-Healing Loop
+            max_attempts = 2
+            current_code = fixed_code or ""
+
+            for attempt in range(max_attempts):
+                # Clean markdown fences to yield raw Python source code for AST analysis
+                raw_code = current_code.strip()
+                code_blocks = re.findall(r'```(?:[a-zA-Z0-9_\-\+]*\n)?(.*?)```', raw_code, re.DOTALL)
+                if code_blocks:
+                    raw_code = max(code_blocks, key=len).strip()
+                raw_code = re.sub(r'<span[^>]*>(.*?)</span>', r'\1', raw_code)
+
+                if not raw_code:
+                    break
+
+                # 1. Background scan on the generated code
+                scan_result = execute_tcs_ast_scan({'fixed_target.py': raw_code})
+                active_findings = [
+                    f for f in scan_result.get('findings', [])
+                    if f.get('active', True) and not f.get('suppressed', False)
+                ]
+
+                # If scanner passes with 0 flaws, break immediately!
+                if not active_findings:
+                    break
+
+                # 2. Dynamically compile teacher feedback from findings
+                flaw_feedback = []
+                for idx, f in enumerate(active_findings, 1):
+                    flaw_feedback.append(
+                        f"[{idx}] {f.get('cwe')} at Line {f.get('line_number')}: `{f.get('code_snippet', '')}`. "
+                        f"Advice: {f.get('remediation', '')}"
+                    )
+
+                correction_prompt = (
+                    f"You are an Elite DevSecOps AI. Your previously generated code STILL failed our deterministic SAST audit with {len(active_findings)} active vulnerabilities:\n"
+                    + "\n".join(flaw_feedback) +
+                    "\n\nFix ALL these remaining flaws in the code without introducing syntax errors or breaking functionality. "
+                    "Return ONLY the complete corrected Python code in a single markdown code block."
+                )
+
+                # 3. Call AI with correction feedback
+                correction_response = get_cached_or_generate_ai(
+                    raw_code, correction_prompt, is_fix=True, db=db, user_id=user.id
+                )
+                remediated = extract_hardened_code_from_report(correction_response)
+                if not remediated and correction_response:
+                    re_blocks = re.findall(r'```(?:[a-zA-Z0-9_\-\+]*\n)?(.*?)```', correction_response, re.DOTALL)
+                    if re_blocks:
+                        remediated = f"```python\n{max(re_blocks, key=len).strip()}\n```"
+                    elif "def " in correction_response or "import " in correction_response:
+                        remediated = f"```python\n{correction_response.strip()}\n```"
+
+                if remediated:
+                    current_code = remediated
+                else:
+                    break
+
+            fixed_code = current_code
+            if fixed_code and not fixed_code.startswith("```"):
+                fixed_code = f"```python\n{fixed_code.strip()}\n```"
+            
+            # Sync healed 100/100 code back into ScanCache so future hits don't waste API credits:
+            if db and fixed_code:
+                try:
+                    cached_entry = db.query(ScanCache).filter(
+                        ScanCache.code_hash == hashlib.sha256(redacted_code.encode("utf-8")).hexdigest(),
+                        ScanCache.is_fix == True
+                    ).order_by(ScanCache.id.desc()).first()
+                    if cached_entry:
+                        cached_entry.report_text = fixed_code
+                        db.commit()
+                except Exception:
+                    db.rollback()
+            
             if user.org_id:
                 new_vault = CodeVault(
                     org_id=user.org_id,
