@@ -643,7 +643,17 @@ def format_reachability_section(reachability_findings: List[Dict[str, Any]]) -> 
         edge = rf.get("edge_type", "UNRESOLVED_EDGE")
         limitations = rf.get("limitations", [])
 
-        lines.append(f"- [PKG] {pkg} ({ver}) -> {cls}")
+        desc = ""
+        if cls == "REACHABLE_API_USE":
+            desc = " (CRITICAL / High Alert)"
+        elif cls == "DEPENDENCY_ACTIVE":
+            desc = " (Imported, no known vulnerable API called)"
+        elif cls == "DEPENDENCY_DORMANT":
+            desc = " (Declared in manifest, never imported)"
+        elif cls == "TRANSITIVE_VULNERABLE":
+            desc = " (Transitive dependency, not imported directly)"
+
+        lines.append(f"- [PKG] {pkg} ({ver}) -> {cls}{desc}")
         lines.append(f"  Advisory: {adv_id} ({sev})")
         lines.append(f"  Import State: {imp_status} ({loc_str})")
         lines.append(f"  Call Path: {path_str} (Depth: {depth}, Edge: {edge})")
@@ -809,17 +819,37 @@ def format_table(
 
     if sca_list:
         lines.append("\n[SCA DEPENDENCY VULNERABILITIES]")
-        lines.append(f"{'PACKAGE':<16} | {'STATUS':<11} | {'INSTALLED / SPEC':<18} | {'VULN ID':<16} | {'SEVERITY':<8} | {'FIXED':<10} | {'LOCATION':<20}")
-        lines.append(dash_sep)
-        for sf in sca_list:
-            pkg = str(sf.get("package_name", ""))[:16]
-            status = str(sf.get("status", ""))[:11]
-            ver_spec = str(sf.get("installed_version") or sf.get("requested_specifier") or "-")[:18]
-            vid = str(sf.get("vulnerability_id", ""))[:16]
-            sev = str(sf.get("severity", "UNKNOWN"))[:8]
-            fixed = str(sf.get("fixed_version") or "-")[:10]
-            loc_str = f"{sf.get('manifest_source', '')}:{sf.get('line_number') or '?'}"[:20]
-            lines.append(f"{pkg:<16} | {status:<11} | {ver_spec:<18} | {vid:<16} | {sev:<8} | {fixed:<10} | {loc_str:<20}")
+        if reachability_enabled:
+            lines.append(f"{'PACKAGE':<16} | {'STATUS':<11} | {'REACHABILITY':<20} | {'INSTALLED / SPEC':<18} | {'VULN ID':<16} | {'SEVERITY':<8} | {'LOCATION':<20}")
+            lines.append(dash_sep)
+            for sf in sca_list:
+                pkg = str(sf.get("package_name", ""))[:16]
+                status = str(sf.get("status", ""))[:11]
+                vid = str(sf.get("vulnerability_id", ""))[:16]
+                reach_str = "-"
+                if reachability_findings:
+                    norm_p = pkg.lower().replace("_", "-")
+                    for rf in reachability_findings:
+                        if rf.get("package_name", "").lower().replace("_", "-") == norm_p and (rf.get("advisory_id") == vid or not rf.get("advisory_id")):
+                            reach_str = str(rf.get("reachability_classification", "-"))
+                            break
+                reach_str = reach_str[:20]
+                ver_spec = str(sf.get("installed_version") or sf.get("requested_specifier") or "-")[:18]
+                sev = str(sf.get("severity", "UNKNOWN"))[:8]
+                loc_str = f"{sf.get('manifest_source', '')}:{sf.get('line_number') or '?'}"[:20]
+                lines.append(f"{pkg:<16} | {status:<11} | {reach_str:<20} | {ver_spec:<18} | {vid:<16} | {sev:<8} | {loc_str:<20}")
+        else:
+            lines.append(f"{'PACKAGE':<16} | {'STATUS':<11} | {'INSTALLED / SPEC':<18} | {'VULN ID':<16} | {'SEVERITY':<8} | {'FIXED':<10} | {'LOCATION':<20}")
+            lines.append(dash_sep)
+            for sf in sca_list:
+                pkg = str(sf.get("package_name", ""))[:16]
+                status = str(sf.get("status", ""))[:11]
+                ver_spec = str(sf.get("installed_version") or sf.get("requested_specifier") or "-")[:18]
+                vid = str(sf.get("vulnerability_id", ""))[:16]
+                sev = str(sf.get("severity", "UNKNOWN"))[:8]
+                fixed = str(sf.get("fixed_version") or "-")[:10]
+                loc_str = f"{sf.get('manifest_source', '')}:{sf.get('line_number') or '?'}"[:20]
+                lines.append(f"{pkg:<16} | {status:<11} | {ver_spec:<18} | {vid:<16} | {sev:<8} | {fixed:<10} | {loc_str:<20}")
 
     if sec_list:
         lines.append("\n[SECRET SCANNING FINDINGS (CWE-798)]")
@@ -868,10 +898,29 @@ def format_table(
             loc = f"{sf.get('manifest_source', '')}:{sf.get('line_number') or '?'}"
             summary = sf.get("summary", "")
 
+            # Look up reachability classification if reachability analysis was performed
+            reach_desc = ""
+            if reachability_enabled and reachability_findings:
+                norm_p = pkg.lower().replace("_", "-")
+                for rf in reachability_findings:
+                    if rf.get("package_name", "").lower().replace("_", "-") == norm_p and (rf.get("advisory_id") == vid or not rf.get("advisory_id")):
+                        r_cls = rf.get("reachability_classification")
+                        if r_cls == "REACHABLE_API_USE":
+                            reach_desc = "REACHABLE_API_USE (CRITICAL / High Alert)"
+                        elif r_cls == "DEPENDENCY_ACTIVE":
+                            reach_desc = "DEPENDENCY_ACTIVE (Imported, no known vulnerable API called)"
+                        elif r_cls == "DEPENDENCY_DORMANT":
+                            reach_desc = "DEPENDENCY_DORMANT (Declared in manifest, never imported)"
+                        elif r_cls:
+                            reach_desc = str(r_cls)
+                        break
+
             lines.append(f"\n[SCA:{vid}] {pkg} ({ver_desc}) - Status: {status}")
             lines.append(f"  Package:        {pkg}")
             lines.append(f"  Vulnerability:  {vid}")
             lines.append(f"  Status:         {status}")
+            if reach_desc:
+                lines.append(f"  Reachability:   {reach_desc}")
             lines.append(f"  Severity:       {sev} (CVSS: {cvss_str})")
             lines.append(f"  Installed/Spec: {ver_desc}")
             lines.append(f"  Fixed Version:  {fixed}")
@@ -1536,10 +1585,16 @@ def main(argv: Optional[List[str]] = None):
                     if mf_candidate.exists():
                         cand_manifests.append(mf_candidate)
 
+        if not cand_manifests and manifest_files:
+            cand_manifests = list(manifest_files)
+        if not cand_sources and files:
+            cand_sources = [Path(f) for f in files.keys() if f != "tcs_cli.py"]
+
         if cand_manifests and cand_sources:
             selected_mf = cand_manifests[0]
             try:
-                rf_objs = analyze_dependency_reachability(selected_mf, cand_sources)
+                live_adv = sca_findings if sca_findings else None
+                rf_objs = analyze_dependency_reachability(selected_mf, cand_sources, live_advisories=live_adv)
                 reachability_findings = [f.to_dict() if hasattr(f, "to_dict") else dict(f) for f in rf_objs]
             except Exception as e:
                 print(f"[WARN] Vector C reachability analysis failed: {e}", file=sys.stderr)

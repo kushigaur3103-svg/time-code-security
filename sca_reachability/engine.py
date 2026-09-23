@@ -81,15 +81,98 @@ def _load_advisories(advisory_path: Optional[Path]) -> Dict[str, Any]:
     return {"advisories": []}
 
 
+def _normalize_live_advisory(item: Any) -> Dict[str, Any]:
+    """
+    Normalizes a live advisory (SCAFinding, dict, or OSVVulnerability) into an advisory payload.
+    Extracts package_name, vulnerability_id/cve, affected ranges, and metadata.
+    """
+    if hasattr(item, "to_dict"):
+        d = item.to_dict()
+    elif isinstance(item, dict):
+        d = dict(item)
+    else:
+        d = {
+            "package_name": getattr(item, "package_name", ""),
+            "vulnerability_id": getattr(item, "vulnerability_id", getattr(item, "id", "")),
+            "aliases": getattr(item, "aliases", []),
+            "severity": getattr(item, "severity", "UNKNOWN"),
+            "cvss_score": getattr(item, "cvss_score", None),
+            "summary": getattr(item, "summary", ""),
+            "fixed_version": getattr(item, "fixed_version", None),
+            "matched_range": getattr(item, "matched_range", ""),
+            "confidence": getattr(item, "confidence", 1.0),
+            "status": getattr(item, "status", "CONFIRMED"),
+            "manifest_source": getattr(item, "manifest_source", ""),
+            "line_number": getattr(item, "line_number", None),
+            "installed_version": getattr(item, "installed_version", None),
+            "requested_specifier": getattr(item, "requested_specifier", None),
+        }
+
+    pkg_name = (
+        d.get("package_name")
+        or (d.get("package", {}).get("name") if isinstance(d.get("package"), dict) else "")
+        or ""
+    )
+    vuln_id = d.get("vulnerability_id") or d.get("id") or "UNKNOWN-VULN"
+    aliases = list(d.get("aliases") or [])
+    summary = d.get("summary") or d.get("details") or ""
+
+    severity = d.get("severity")
+    if not severity and isinstance(d.get("database_specific"), dict):
+        severity = d.get("database_specific", {}).get("severity")
+    severity = severity or "HIGH"
+
+    cvss = d.get("cvss_score")
+    if cvss is None and isinstance(d.get("database_specific"), dict):
+        cvss = d.get("database_specific", {}).get("cvss_score")
+
+    matched_range = d.get("matched_range") or ""
+    affected = d.get("affected") or []
+    if not affected and matched_range:
+        affected = [{
+            "package": {"name": pkg_name},
+            "ranges": [{"type": "ECOSYSTEM", "events": [{"introduced": "0"}]}],
+            "versions": [],
+            "database_specific": {
+                "severity": severity,
+                "cvss_score": cvss,
+                "matched_range": matched_range,
+            }
+        }]
+
+    return {
+        "id": vuln_id,
+        "package": {"name": pkg_name},
+        "summary": summary,
+        "aliases": aliases,
+        "database_specific": {
+            "severity": severity,
+            "cvss_score": cvss if cvss is not None else 7.5,
+        },
+        "affected": affected,
+        "status": d.get("status", "CONFIRMED"),
+        "confidence": float(d.get("confidence", 1.0)),
+        "matched_range": matched_range,
+        "fixed_version": d.get("fixed_version"),
+        "installed_version": d.get("installed_version"),
+        "requested_specifier": d.get("requested_specifier"),
+        "manifest_source": d.get("manifest_source"),
+        "line_number": d.get("line_number"),
+    }
+
+
 def analyze_dependency_reachability(
     manifest_path: Path,
     source_path: Union[Path, List[Path], Tuple[Path, ...]],
     advisory_path: Optional[Path] = None,
     target_package: Optional[str] = None,
+    live_advisories: Optional[List[Any]] = None,
 ) -> List[VectorCFinding]:
     """
     Main entry point for Vector C dependency reachability analysis.
     Supports single files and multi-file codebases.
+    When live_advisories is provided, evaluates reachability directly against live SCA findings.
+    Otherwise falls back to advisory_path or default fixture.
     """
     manifest_path = Path(manifest_path)
     if isinstance(source_path, (list, tuple)):
@@ -98,17 +181,6 @@ def analyze_dependency_reachability(
         source_files = [Path(source_path)]
 
     declared_pkgs, transitive_map = _parse_manifest_dependencies(manifest_path)
-    advisories_data = _load_advisories(advisory_path)
-    advisories_list = advisories_data.get("advisories", [])
-
-    # Default synthetic advisory fallback
-    default_adv = {
-        "id": "TCS-VEC-C-001",
-        "aliases": ["CVE-2026-0001", "GHSA-vc01-test-0001"],
-        "summary": "Synthetic advisory: vulnlib.dangerous() execution vulnerability in versions <= 1.5.0",
-        "severity": "HIGH",
-        "cvss_score": 8.5,
-    }
 
     # AST Scope Analysis across all provided source files
     primary_src = source_files[0] if source_files else Path("app.py")
@@ -125,32 +197,89 @@ def analyze_dependency_reachability(
 
     findings: List[VectorCFinding] = []
 
-    # Decide which packages to evaluate
-    packages_to_check = [target_package] if target_package else list(declared_pkgs.keys())
+    # Decide whether to use live_advisories or the static advisory fixture
+    if live_advisories is not None:
+        normalized_advisories = [_normalize_live_advisory(adv) for adv in live_advisories]
+        evaluation_items = []
+        for adv in normalized_advisories:
+            pkg_name = adv.get("package", {}).get("name", "")
+            if not pkg_name:
+                continue
 
-    for pkg_name in packages_to_check:
-        pkg_meta = declared_pkgs.get(pkg_name, {})
+            if target_package:
+                norm_target = target_package.lower().replace("_", "-")
+                norm_pkg = pkg_name.lower().replace("_", "-")
+                if norm_target != norm_pkg:
+                    continue
+
+            norm_pkg = pkg_name.lower().replace("_", "-")
+            pkg_meta = declared_pkgs.get(pkg_name)
+            if not pkg_meta:
+                for dp_name, dp_meta in declared_pkgs.items():
+                    if dp_name.lower().replace("_", "-") == norm_pkg:
+                        pkg_meta = dp_meta
+                        break
+            pkg_meta = dict(pkg_meta) if pkg_meta else {}
+
+            if adv.get("manifest_source"):
+                pkg_meta["manifest_source"] = adv.get("manifest_source")
+            if adv.get("line_number") is not None:
+                pkg_meta["line"] = adv.get("line_number")
+            if adv.get("installed_version"):
+                pkg_meta["version"] = adv.get("installed_version")
+            if adv.get("requested_specifier"):
+                pkg_meta["specifier"] = adv.get("requested_specifier")
+
+            adv_info = {
+                "id": adv.get("id", "UNKNOWN-VULN"),
+                "aliases": adv.get("aliases", []),
+                "summary": adv.get("summary", ""),
+                "severity": adv.get("database_specific", {}).get("severity", "HIGH"),
+                "cvss_score": adv.get("database_specific", {}).get("cvss_score", 7.5),
+            }
+            status = adv.get("status", "CONFIRMED")
+            confidence = adv.get("confidence", 1.0)
+            evaluation_items.append((pkg_name, adv_info, pkg_meta, status, confidence))
+    else:
+        advisories_data = _load_advisories(advisory_path)
+        advisories_list = advisories_data.get("advisories", [])
+
+        # Default synthetic advisory fallback
+        default_adv = {
+            "id": "TCS-VEC-C-001",
+            "aliases": ["CVE-2026-0001", "GHSA-vc01-test-0001"],
+            "summary": "Synthetic advisory: vulnlib.dangerous() execution vulnerability in versions <= 1.5.0",
+            "severity": "HIGH",
+            "cvss_score": 8.5,
+        }
+
+        packages_to_check = [target_package] if target_package else list(declared_pkgs.keys())
+        evaluation_items = []
+        for pkg_name in packages_to_check:
+            pkg_meta = declared_pkgs.get(pkg_name, {})
+            matched_adv = None
+            norm_pkg = pkg_name.lower().replace("_", "-")
+            for adv in advisories_list:
+                adv_pkg = adv.get("package", {}).get("name", "")
+                if adv_pkg.lower().replace("_", "-") == norm_pkg:
+                    matched_adv = adv
+                    break
+
+            adv_info = default_adv.copy()
+            if matched_adv:
+                adv_info["id"] = matched_adv.get("id", adv_info["id"])
+                adv_info["aliases"] = matched_adv.get("aliases", adv_info["aliases"])
+                adv_info["summary"] = matched_adv.get("summary", adv_info["summary"])
+                adv_info["severity"] = matched_adv.get("database_specific", {}).get("severity", adv_info["severity"])
+                adv_info["cvss_score"] = matched_adv.get("database_specific", {}).get("cvss_score", adv_info["cvss_score"])
+
+            evaluation_items.append((pkg_name, adv_info, pkg_meta, "CONFIRMED", 1.0))
+
+    for pkg_name, adv_info, pkg_meta, affected_status, affected_confidence in evaluation_items:
         manifest_source = pkg_meta.get("manifest_source", manifest_path.name)
         manifest_line = pkg_meta.get("line")
         declared_ver = pkg_meta.get("version", "1.5.0")
         specifier = pkg_meta.get("transitive_specifier") or pkg_meta.get("specifier", f"=={declared_ver}" if declared_ver else None)
-
-        # Generic advisory matching via normalized package identity
-        matched_adv = None
-        norm_pkg = pkg_name.lower().replace("_", "-")
-        for adv in advisories_list:
-            adv_pkg = adv.get("package", {}).get("name", "")
-            if adv_pkg.lower().replace("_", "-") == norm_pkg:
-                matched_adv = adv
-                break
-
-        adv_info = default_adv.copy()
-        if matched_adv:
-            adv_info["id"] = matched_adv.get("id", adv_info["id"])
-            adv_info["aliases"] = matched_adv.get("aliases", adv_info["aliases"])
-            adv_info["summary"] = matched_adv.get("summary", adv_info["summary"])
-            adv_info["severity"] = matched_adv.get("database_specific", {}).get("severity", adv_info["severity"])
-            adv_info["cvss_score"] = matched_adv.get("database_specific", {}).get("cvss_score", adv_info["cvss_score"])
 
         # Check if imported anywhere in the AST
         found_imports: List[ImportRecord] = []
@@ -161,6 +290,8 @@ def analyze_dependency_reachability(
                     or rec.import_root == pkg_name
                     or rec.import_root == pkg_name.replace("-", "_")
                     or rec.distribution_name == pkg_name.replace("_", "-")
+                    or rec.distribution_name.lower().replace("_", "-") == pkg_name.lower().replace("_", "-")
+                    or rec.import_root.lower().replace("_", "-") == pkg_name.lower().replace("_", "-")
                 ):
                     found_imports.append(rec)
 
@@ -178,8 +309,8 @@ def analyze_dependency_reachability(
                     package_name=pkg_name,
                     declared_version=declared_ver,
                     version_specifier=specifier,
-                    affected_status="CONFIRMED",
-                    affected_confidence=1.0,
+                    affected_status=affected_status,
+                    affected_confidence=affected_confidence,
                     import_status=ReachabilityState.PACKAGE_IMPORT_NOT_FOUND,
                     import_evidence=None,
                     import_evidence_source="UNRESOLVED",
@@ -206,8 +337,8 @@ def analyze_dependency_reachability(
                     package_name=pkg_name,
                     declared_version=declared_ver,
                     version_specifier=specifier,
-                    affected_status="CONFIRMED",
-                    affected_confidence=1.0,
+                    affected_status=affected_status,
+                    affected_confidence=affected_confidence,
                     import_status=ReachabilityState.PACKAGE_IMPORT_NOT_FOUND,
                     import_evidence=None,
                     import_evidence_source="UNRESOLVED",
@@ -238,6 +369,9 @@ def analyze_dependency_reachability(
                 c.attributed_import.distribution_name == pkg_name
                 or c.attributed_import.import_root == pkg_name
                 or c.attributed_import.import_root == pkg_name.replace("-", "_")
+                or c.attributed_import.distribution_name == pkg_name.replace("_", "-")
+                or c.attributed_import.distribution_name.lower().replace("_", "-") == pkg_name.lower().replace("_", "-")
+                or c.attributed_import.import_root.lower().replace("_", "-") == pkg_name.lower().replace("_", "-")
             ):
                 matched_calls.append(c)
 
@@ -261,8 +395,8 @@ def analyze_dependency_reachability(
                 package_name=pkg_name,
                 declared_version=declared_ver,
                 version_specifier=specifier,
-                affected_status="CONFIRMED",
-                affected_confidence=1.0,
+                affected_status=affected_status,
+                affected_confidence=affected_confidence,
                 import_status=ReachabilityState.PACKAGE_IMPORTED,
                 import_evidence=primary_import,
                 import_evidence_source=primary_import.mapping_evidence,
@@ -292,8 +426,8 @@ def analyze_dependency_reachability(
                 package_name=pkg_name,
                 declared_version=declared_ver,
                 version_specifier=specifier,
-                affected_status="CONFIRMED",
-                affected_confidence=1.0,
+                affected_status=affected_status,
+                affected_confidence=affected_confidence,
                 import_status=ReachabilityState.PACKAGE_IMPORTED,
                 import_evidence=primary_import,
                 import_evidence_source=primary_import.mapping_evidence,
@@ -326,8 +460,8 @@ def analyze_dependency_reachability(
                 package_name=pkg_name,
                 declared_version=declared_ver,
                 version_specifier=specifier,
-                affected_status="CONFIRMED",
-                affected_confidence=1.0,
+                affected_status=affected_status,
+                affected_confidence=affected_confidence,
                 import_status=ReachabilityState.PACKAGE_IMPORTED,
                 import_evidence=primary_import,
                 import_evidence_source=primary_import.mapping_evidence,
@@ -346,6 +480,8 @@ def analyze_dependency_reachability(
                 manifest_line=manifest_line,
                 limitations=("Dynamic dispatch via getattr prevents static reachability determination",),
             ))
+            continue
+
         # Rule P-2: Star-import / wildcard lookup prevents deterministic attribution
         if primary_import.is_wildcard or (target_call.attributed_import and target_call.attributed_import.is_wildcard):
             findings.append(VectorCFinding(
@@ -355,8 +491,8 @@ def analyze_dependency_reachability(
                 package_name=pkg_name,
                 declared_version=declared_ver,
                 version_specifier=specifier,
-                affected_status="CONFIRMED",
-                affected_confidence=1.0,
+                affected_status=affected_status,
+                affected_confidence=affected_confidence,
                 import_status=ReachabilityState.PACKAGE_IMPORTED,
                 import_evidence=primary_import,
                 import_evidence_source=primary_import.mapping_evidence,
@@ -386,8 +522,8 @@ def analyze_dependency_reachability(
                 package_name=pkg_name,
                 declared_version=declared_ver,
                 version_specifier=specifier,
-                affected_status="CONFIRMED",
-                affected_confidence=1.0,
+                affected_status=affected_status,
+                affected_confidence=affected_confidence,
                 import_status=ReachabilityState.PACKAGE_IMPORTED,
                 import_evidence=primary_import,
                 import_evidence_source=primary_import.mapping_evidence,
@@ -443,8 +579,8 @@ def analyze_dependency_reachability(
             package_name=pkg_name,
             declared_version=declared_ver,
             version_specifier=specifier,
-            affected_status="CONFIRMED",
-            affected_confidence=1.0,
+            affected_status=affected_status,
+            affected_confidence=affected_confidence,
             import_status=ReachabilityState.PACKAGE_IMPORTED,
             import_evidence=primary_import,
             import_evidence_source=primary_import.mapping_evidence,
