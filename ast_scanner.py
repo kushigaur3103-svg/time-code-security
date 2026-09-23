@@ -2586,7 +2586,35 @@ class TaintTracker:
                 if recv_taint.state != TaintState.CLEAN and recv_taint.source_id:
                     return TaintValue(state=recv_taint.state, source_id=recv_taint.source_id, confidence=recv_taint.confidence, path=[*recv_taint.path, f"{file_name}:{node.func.attr}()"], last_operation=f"{node.func.attr}()", proof_nodes=recv_taint.proof_nodes, proof_edges=recv_taint.proof_edges)
                 if recv_taint.state == TaintState.CLEAN:
+                    # A clean receiver must not silently drop tainted arguments:
+                    # if any positional/keyword argument is TAINTED, propagate it.
+                    arg_tainted = [a for a in arg_values if a.state == TaintState.TAINTED and a.source_id]
+                    for kw in getattr(node, "keywords", []):
+                        if kw.arg:
+                            kw_v = self.resolve_expression(kw.value, sink, scope_id, current_lineno, visited.copy(), call_context)
+                            if kw_v.state == TaintState.TAINTED and kw_v.source_id:
+                                arg_tainted.append(kw_v)
+                    if arg_tainted:
+                        best_a = max(arg_tainted, key=lambda a: a.confidence)
+                        return TaintValue(state=TaintState.TAINTED, source_id=best_a.source_id, confidence=best_a.confidence, path=[*best_a.path, f"{file_name}:{node.func.attr}()"], last_operation=f"{node.func.attr}()", proof_nodes=best_a.proof_nodes, proof_edges=best_a.proof_edges)
                     return TaintValue(state=TaintState.CLEAN, confidence=1.0, last_operation=f"{node.func.attr}()")
+
+            # Robust .format() on non-literal receivers: when the template is not a
+            # statically recognizable string expr, still propagate tainted arguments
+            # instead of falling through to generic call handling.
+            if (
+                isinstance(node.func, ast.Attribute)
+                and node.func.attr == "format"
+                and not self._is_string_expr(node.func.value, scope_id)
+            ):
+                robust_fmt_args = list(arg_values)
+                for kw in getattr(node, "keywords", []):
+                    if kw.arg:
+                        robust_fmt_args.append(self.resolve_expression(kw.value, sink, scope_id, current_lineno, visited.copy(), call_context))
+                tainted_fmt_args = [a for a in robust_fmt_args if a.state == TaintState.TAINTED and a.source_id]
+                if tainted_fmt_args:
+                    best_arg = max(tainted_fmt_args, key=lambda a: a.confidence)
+                    return TaintValue(state=TaintState.TAINTED, source_id=best_arg.source_id, confidence=best_arg.confidence, path=[*best_arg.path, f"{file_name}:format()"], last_operation="format", proof_nodes=best_arg.proof_nodes, proof_edges=best_arg.proof_edges)
 
             # Format calls on string literals or templates
             if isinstance(node.func, ast.Attribute) and node.func.attr == "format" and self._is_string_expr(node.func.value, scope_id):
@@ -3275,10 +3303,19 @@ class TaintTracker:
                         if ek not in seen_ekeys:
                             seen_ekeys.add(ek)
                             combined_edges.append(pe)
+            # Container/general concatenation: EITHER tainted operand taints the
+            # result (prefer the higher-confidence tainted side).
+            tainted_op = None
+            if left.state == TaintState.TAINTED and right.state == TaintState.TAINTED:
+                tainted_op = left if left.confidence >= right.confidence else right
+            elif left.state == TaintState.TAINTED:
+                tainted_op = left
+            elif right.state == TaintState.TAINTED:
+                tainted_op = right
             return TaintValue(
-                state=TaintState.TAINTED if (left.state == TaintState.TAINTED and right.state == TaintState.TAINTED) else TaintState.UNKNOWN,
-                source_id=src_id,
-                confidence=min(left.confidence, right.confidence),
+                state=TaintState.TAINTED if tainted_op is not None else TaintState.UNKNOWN,
+                source_id=tainted_op.source_id if tainted_op is not None else src_id,
+                confidence=tainted_op.confidence if tainted_op is not None else min(left.confidence, right.confidence),
                 path=[*left.path, *right.path, "binary_op"],
                 last_operation="binary_op",
                 proof_nodes=combined_nodes,
