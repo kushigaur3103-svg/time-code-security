@@ -1,4 +1,4 @@
-﻿"""
+"""
 TimeCodeSecurity (TCS) SCA Dependency Reachability Analysis (Vector C).
 """
 from sca_reachability.contracts import (

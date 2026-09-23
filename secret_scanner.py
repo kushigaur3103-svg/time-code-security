@@ -16,10 +16,11 @@ from collections import Counter
 from dataclasses import dataclass
 import math
 import re
-from typing import List, Optional, Tuple
+from typing import Any, List, Optional, Tuple
 
 __all__ = [
     "SecretFinding",
+    "SecretScanner",
     "mask_secret",
     "shannon_entropy",
     "scan_text",
@@ -224,11 +225,22 @@ _MID_GLOBAL_FLAG = re.compile(r"\(\?([aiLmsux]+)\)")
 
 
 def _compile_gitleaks_pattern(pattern: str) -> Optional[re.Pattern]:
-    """Compile a Gitleaks regex, repairing Go-style mid-pattern global flags.
+    """Compile a Gitleaks regex, repairing Go-style mid-pattern global flags and nested sets.
 
     Falls back to None if the pattern cannot be compiled even after repair, so a
     single bad signature can never break the whole detector set.
     """
+    # Normalize Go/POSIX character classes & unescaped nested bracket sets
+    # (e.g. [[:alnum:]] -> [a-zA-Z0-9]) to prevent Python 3.11+ FutureWarning: Possible nested set
+    if "[:alnum:]" in pattern:
+        pattern = pattern.replace("[[:alnum:]]", "[a-zA-Z0-9]").replace("[:alnum:]", "a-zA-Z0-9")
+    if "[:alpha:]" in pattern:
+        pattern = pattern.replace("[[:alpha:]]", "[a-zA-Z]").replace("[:alpha:]", "a-zA-Z")
+    if "[:digit:]" in pattern:
+        pattern = pattern.replace("[[:digit:]]", "[0-9]").replace("[:digit:]", "0-9")
+    # Escape any remaining unescaped inner '[' within character classes (e.g. '[...[...')
+    pattern = re.sub(r"(\[[^\]]*?)\[", r"\1\\[", pattern)
+
     try:
         return re.compile(pattern)
     except re.error:
@@ -580,3 +592,17 @@ def scan_file(filepath: str) -> List[SecretFinding]:
     with open(filepath, "r", encoding="utf-8", errors="replace") as f:
         content = f.read()
     return scan_text(content, filename=filepath)
+
+
+class SecretScanner:
+    """Offline secret detection engine."""
+
+    def __init__(self, filter_config: Optional[Any] = None):
+        self.filter_config = filter_config
+
+    def scan_text(self, text: str, filename: str = "<memory>") -> List[SecretFinding]:
+        return scan_text(text, filename)
+
+    def scan_file(self, path: str) -> List[SecretFinding]:
+        return scan_file(path)
+
