@@ -1,0 +1,10 @@
+id: tcs-cwe-79-react-xss
+cwe: CWE-79
+severity: CRITICAL
+message: "Unsanitized input passed to dangerous DOM/React rendering sink (dangerouslySetInnerHTML / innerHTML)."
+sinks:
+  - dangerouslySetInnerHTML
+  - innerHTML
+  - outerHTML
+  - document.write
+  - document.writeln

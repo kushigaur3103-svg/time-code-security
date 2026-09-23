@@ -1,0 +1,9 @@
+id: tcs-cwe-95-js-eval
+cwe: CWE-95
+severity: HIGH
+message: "Dynamic code evaluation via eval() or Function() constructor can lead to arbitrary JavaScript execution."
+sinks:
+  - eval
+  - Function
+  - setTimeout
+  - setInterval

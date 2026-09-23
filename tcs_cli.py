@@ -35,6 +35,17 @@ from staged_scanner import (
 from sca_reachability.engine import analyze_dependency_reachability
 
 try:
+    from js_scanner import JsTsScanner, JS_TS_EXTENSIONS, js_ts_available
+    _JS_TS_SCANNER_AVAILABLE = True
+except ImportError:
+    _JS_TS_SCANNER_AVAILABLE = False
+    JS_TS_EXTENSIONS = frozenset()
+
+    def js_ts_available() -> bool:
+        return False
+
+
+try:
     from importlib.metadata import version as _get_version
     __version__ = _get_version("time-code-security")
 except Exception:
@@ -387,7 +398,9 @@ def execute_tcs_scan(
     return ret
 
 
-SECRET_EXTS = {".py", ".env", ".json", ".yaml", ".yml", ".toml", ".ini", ".conf", ".txt"}
+SECRET_EXTS = {".py", ".env", ".json", ".yaml", ".yml", ".toml", ".ini", ".conf", ".txt",
+               ".js", ".jsx", ".ts", ".tsx", ".mjs", ".cjs"}
+
 
 
 def discover_python_files(
@@ -1394,6 +1407,43 @@ def main(argv: Optional[List[str]] = None):
         except Exception as e:
             print(f"[ERROR] Scan execution failed: {e}", file=sys.stderr)
             sys.exit(2)
+
+        # ---------------------------------------------------------
+        # JS/TS Tree-sitter Security Scanner (Vector E)
+        # ---------------------------------------------------------
+        if _JS_TS_SCANNER_AVAILABLE and js_ts_available():
+            try:
+                _js_scanner_inst = JsTsScanner()
+                _js_findings = _js_scanner_inst.scan_directory(
+                    target, base_dir=base_dir, skipped_files=all_skipped_files
+                )
+                if _js_findings:
+                    # Re-number IDs to continue from where Python scan left off
+                    _py_count = len(results.get("findings", []))
+                    for _i, _jf in enumerate(_js_findings):
+                        _jf["id"] = f"TCS-JS-{_py_count + _i + 1:03d}"
+                    results["findings"] = results.get("findings", []) + _js_findings
+                    # Recompute summary metrics to include JS findings
+                    from staged_scanner import recompute_summary_metrics
+                    _js_lines = sum(
+                        len(p.read_bytes().split(b"\n"))
+                        for p in _js_scanner_inst._discover_js_files(target, None)
+                        if p.exists()
+                    )
+                    results["summary"] = recompute_summary_metrics(
+                        original_summary=results.get("summary", {}),
+                        filtered_findings=results["findings"],
+                        total_files=results["summary"].get("total_files", 0) + len(
+                            [f for f in _js_findings if f.get("file")]
+                        ),
+                        lines_scanned=results["summary"].get("lines_scanned", 0) + _js_lines,
+                    )
+                    print(
+                        f"[TCS-JS] Tree-sitter JS/TS scan: {len(_js_findings)} finding(s) in {target}",
+                        file=sys.stderr,
+                    )
+            except Exception as _js_err:
+                print(f"[TCS-JS] WARNING: JS/TS scan failed: {_js_err}", file=sys.stderr)
 
     results["skipped_files"] = all_skipped_files
 
