@@ -1,0 +1,46 @@
+name: "TCS SARIF Scan (CLI)"
+
+on:
+  push:
+    branches: [ "main" ]
+  pull_request:
+    branches: [ "main" ]
+  workflow_dispatch:
+
+permissions:
+  contents: read
+  security-events: write
+
+jobs:
+  tcs-sarif-scan:
+    name: "TCS CLI SARIF Scan"
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout Code
+        uses: actions/checkout@v4
+
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.11"
+
+      - name: Install dependencies
+        run: |
+          python -m pip install --upgrade pip
+          # The TCS engine core is stdlib-only; requirements.txt is best-effort
+          # so a heavy or unavailable dependency never blocks the scan.
+          if [ -f requirements.txt ]; then
+            pip install -r requirements.txt || echo "::warning::requirements.txt install failed; continuing with stdlib-only engine"
+          fi
+
+      - name: Run TCS CLI scan (SARIF)
+        continue-on-error: true
+        run: |
+          python tcs_cli.py . --format sarif -o tcs-results.sarif
+
+      - name: Upload SARIF to GitHub Code Scanning
+        uses: github/codeql-action/upload-sarif@v3
+        if: always()
+        with:
+          sarif_file: tcs-results.sarif
+          category: timecodesecurity
