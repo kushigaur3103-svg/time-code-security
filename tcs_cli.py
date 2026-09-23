@@ -14,7 +14,7 @@ import dataclasses
 from pathlib import Path
 from typing import Dict, List, Any, Optional, Set
 
-from ast_scanner import TaintTracker, render_proof_graph_ascii
+from ast_scanner import TaintTracker, render_proof_graph_ascii, ProofNodeType
 from suppression_resolver import resolve_suppressions
 from sarif_adapter import to_sarif
 from rule_engine import GLOBAL_RULE_REGISTRY
@@ -234,29 +234,94 @@ def execute_tcs_scan(
             offending_snippet = target_lines[sink_loc.line_start - 1].strip()
 
         transform_raw = edge.transform or ""
-        trace_steps = []
+
+        # Resolve source information
+        src_sym = None
+        src_file = None
+        src_line_no = None
+
         if source_node:
-            trace_steps.append(f"Source: {source_node.symbol} ({source_loc.file}:{source_loc.line_start})")
-        else:
-            trace_steps.append("Source: User Input")
+            src_sym = source_node.symbol
+            src_file = source_loc.file if source_loc else sink_loc.file
+            src_line_no = source_loc.line_start if source_loc else sink_loc.line_start
+        elif getattr(edge, "proof_graph", None) and edge.proof_graph.nodes:
+            first_node = edge.proof_graph.nodes[0]
+            if first_node.node_type == ProofNodeType.SOURCE or getattr(first_node.node_type, "value", str(first_node.node_type)) == "source":
+                src_sym = first_node.symbol
+                src_file = first_node.file_path or sink_loc.file
+                src_line_no = first_node.start_line or sink_loc.line_start
+
+        # If source is missing or generic "User Input", standardize to user_input ({func_name})
+        if not src_sym or src_sym in ("User Input", "USER_INPUT", "Untrusted Input Origin"):
+            func_name = "handler"
+            if getattr(edge, "proof_graph", None) and edge.proof_graph.nodes:
+                sc = edge.proof_graph.nodes[0].scope_id or ""
+                if ":" in sc:
+                    sc_cand = sc.split(":")[-1]
+                    if sc_cand and sc_cand not in ("global", "module"):
+                        func_name = sc_cand
+            if func_name == "handler" and hasattr(sink, "scope_id") and sink.scope_id:
+                if ":" in sink.scope_id:
+                    sc_cand = sink.scope_id.split(":")[-1]
+                    if sc_cand and sc_cand not in ("global", "module"):
+                        func_name = sc_cand
+            src_sym = f"user_input ({func_name})"
+            if not src_file:
+                src_file = sink_loc.file
+            if src_line_no is None:
+                src_line_no = max(1, sink_loc.line_start - 1)
+
+        trace_steps = [f"Source: {src_sym} ({src_file}:{src_line_no})"]
 
         if transform_raw:
             parts = [p.strip() for p in transform_raw.split("->")]
             for p in parts:
                 if p.startswith("SRC-") or p == "binary_op" or not p:
                     continue
-                clean_p = p.split(":")[-1] if ":" in p else p
-                if clean_p and clean_p not in trace_steps:
-                    trace_steps.append(f"Variable / Flow: {clean_p}")
+                # Replace bracketed path/join operators with readable os.path.join()
+                if p in ("[join]", "[path_join]", "[join_unknown]", "[join_internal]", "[os.path.join]") or (p.startswith("[") and "join" in p.lower()):
+                    join_step = f"Variable / Flow: os.path.join() ({sink_loc.file}:{sink_loc.line_start})"
+                    if join_step not in trace_steps:
+                        trace_steps.append(join_step)
+                    continue
+                if p.startswith("[") and p.endswith("]"):
+                    op_name = p[1:-1]
+                    op_step = f"Variable / Flow: {op_name}()"
+                    if op_step not in trace_steps:
+                        trace_steps.append(op_step)
+                    continue
+
+                # Normalize return steps to avoid integer leakage (e.g. return:target.py:13 -> return (L13))
+                if p.startswith("return:"):
+                    ret_parts = p.split(":")
+                    if len(ret_parts) >= 2 and ret_parts[-1].isdigit():
+                        clean_p = f"return (L{ret_parts[-1]})"
+                    else:
+                        clean_p = "return"
+                elif p.startswith("return_from:"):
+                    clean_p = f"return_from {p.split(':')[-1]}()"
+                elif p.isdigit():
+                    clean_p = f"return (L{p})"
+                else:
+                    clean_p = p.split(":")[-1] if ":" in p else p
+                    if clean_p.isdigit():
+                        clean_p = f"return (L{clean_p})"
+
+                # Skip untainted string literals (quoted paths like "/var/www/uploads")
+                if clean_p.startswith('"') or clean_p.startswith("'") or clean_p.startswith("/"):
+                    continue
+
+                var_step = f"Variable / Flow: {clean_p}"
+                if clean_p and var_step not in trace_steps:
+                    trace_steps.append(var_step)
 
         trace_steps.append(f"Sink: {sink.symbol} ({sink_loc.file}:{sink_loc.line_start})")
 
-        src_sym = source_node.symbol if source_node else "User Input"
-        src_line = f"L{source_loc.line_start}" if source_loc else "L?"
         snk_sym = sink.symbol
         snk_line = f"L{sink_loc.line_start}"
+        src_line_str = f"L{src_line_no}" if src_line_no is not None else "L?"
 
-        flow_summary = f"[{src_sym} ({src_line})] -> [Tainted Dataflow] -> [{snk_sym} ({snk_line})]"
+        flow_summary = f"[{src_sym} ({src_line_str})] -> [Tainted Dataflow] -> [{snk_sym} ({snk_line})]"
         remediation = extract_remediation_advice(cwe, sink.symbol)
 
         findings.append({
@@ -269,9 +334,9 @@ def execute_tcs_scan(
             "file": sink_loc.file,
             "line_number": sink_loc.line_start,
             "sink_symbol": sink.symbol,
-            "source_symbol": source_node.symbol if source_node else "USER_INPUT",
-            "source_line": source_loc.line_start if source_loc else None,
-            "source_file": source_loc.file if source_loc else None,
+            "source_symbol": src_sym if (source_node or src_sym) else "USER_INPUT",
+            "source_line": src_line_no,
+            "source_file": src_file,
             "code_snippet": offending_snippet,
             "flow_trace": trace_steps,
             "flow_trace_summary": flow_summary,
@@ -751,6 +816,10 @@ def format_table(
                 lines.append(f"  Code Snippet: {f.get('code_snippet')}")
             if f.get("flow_trace_summary"):
                 lines.append(f"  Flow Summary: {f.get('flow_trace_summary')}")
+            if f.get("flow_trace"):
+                lines.append("  Dataflow Trace:")
+                for step in f.get("flow_trace"):
+                    lines.append(f"    - {step}")
             if f.get("suppressed") and f.get("suppression_justification"):
                 lines.append(f"  Justification:{f.get('suppression_justification')}")
             if f.get("remediation"):
@@ -892,6 +961,10 @@ def format_table(
                 lines.append(f"  Code Snippet: {f.get('code_snippet')}")
             if f.get("flow_trace_summary"):
                 lines.append(f"  Flow Summary: {f.get('flow_trace_summary')}")
+            if f.get("flow_trace"):
+                lines.append("  Dataflow Trace:")
+                for step in f.get("flow_trace"):
+                    lines.append(f"    - {step}")
             if f.get("suppressed") and f.get("suppression_justification"):
                 lines.append(f"  Justification:{f.get('suppression_justification')}")
             if f.get("remediation"):

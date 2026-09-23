@@ -3627,7 +3627,7 @@ class TaintTracker:
                         origin_node=node
                     )
                 if any(p.state == ProvenanceState.UNKNOWN for p in arg_provs):
-                    return ProvenanceValue(state=ProvenanceState.UNKNOWN, confidence=0.50, source_trace=("[join_unknown]",), origin_node=node)
+                    return ProvenanceValue(state=ProvenanceState.UNKNOWN, confidence=0.50, source_trace=("[os.path.join]",), origin_node=node)
                 if any(p.state == ProvenanceState.INTERNAL_DYNAMIC for p in arg_provs):
                     return ProvenanceValue(state=ProvenanceState.INTERNAL_DYNAMIC, confidence=1.0, source_trace=("[join_internal]",), origin_node=node)
                 return ProvenanceValue(state=ProvenanceState.STATIC, confidence=1.0, source_trace=("literal",), origin_node=node)
@@ -4197,15 +4197,17 @@ class TaintTracker:
                     override_snippet=self.get_source_snippet(sink_file, enc_func.lineno, enc_func.lineno, enc_func) or f"def {enc_func.name}(..., {matched_param.arg}, ...)"
                 )
             else:
+                func_name = enc_func.name if enc_func else (record.scope_id.split(":")[-1] if (record.scope_id and ":" in record.scope_id and record.scope_id.split(":")[-1] != "global") else "handler")
+                src_sym = f"user_input ({func_name})"
                 src_pn = self.create_proof_node(
                     step_index=0,
                     node_type=ProofNodeType.SOURCE,
                     file_path=sink_file,
                     node=None,
-                    symbol="User Input",
+                    symbol=src_sym,
                     scope_id=record.scope_id,
                     lineno=max(1, record.lineno - 1),
-                    override_snippet="Untrusted Input Origin"
+                    override_snippet=src_sym
                 )
             graph_nodes.insert(0, src_pn)
 
@@ -4325,15 +4327,17 @@ class TaintTracker:
                     override_snippet=self.get_source_snippet(sink_file, enc_func.lineno, enc_func.lineno, enc_func) or f"def {enc_func.name}(..., {matched_param.arg}, ...)"
                 )
             else:
+                func_name = enc_func.name if enc_func else (record.scope_id.split(":")[-1] if (record.scope_id and ":" in record.scope_id and record.scope_id.split(":")[-1] != "global") else "handler")
+                src_sym = f"user_input ({func_name})"
                 src_pn = self.create_proof_node(
                     step_index=0,
                     node_type=ProofNodeType.SOURCE,
                     file_path=sink_file,
                     node=None,
-                    symbol="User Input",
+                    symbol=src_sym,
                     scope_id=record.scope_id,
                     lineno=max(1, record.lineno - 1),
-                    override_snippet="Untrusted Input Origin"
+                    override_snippet=src_sym
                 )
             cwe22_nodes.insert(0, src_pn)
 
