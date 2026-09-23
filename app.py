@@ -1328,7 +1328,16 @@ ENTERPRISE_DEVSECOPS_SYSTEM_PROMPT = (
     "**4. Recommended Remediation & Hardened Code**\n"
     "(Provide the exact drop-in corrected code fixing ALL syntax, secrets, and security flaws. Highlight success concepts using <span style='color: #00ff00;'>)\n\n"
     "RULE 3 (NO SILENT FIXES): If you modify, secure, or upgrade ANYTHING in the code (e.g., replacing 'random' with 'secrets', adding input sanitization, or fixing path traversal/SSRF), you MUST explicitly document it as a finding in '1. Static & AST Assessment'.\n\n"
-    "RULE 4 (ANTI-HALLUCINATION FOR XXE): When fixing XML XXE vulnerabilities in Python, NEVER hallucinate fake parameters like 'resolve_entities=False' for standard xml.etree. You MUST use 'defusedxml' or explicitly drop external entities securely."
+    "RULE 4 (ANTI-HALLUCINATION FOR XXE): When fixing XML XXE vulnerabilities in Python, NEVER hallucinate fake parameters like 'resolve_entities=False' for standard xml.etree. You MUST use 'defusedxml' or explicitly drop external entities securely.\n\n"
+    "RULE 5 (GOLD-STANDARD COMMAND EXECUTION REMEDIATION FOR CWE-78): When remediating OS command injection (CWE-78), you are STRICTLY FORBIDDEN from generating .replace() character blacklists (e.g. .replace('&', '').replace(';', '')). Character blacklists preserve taint and are rejected by enterprise security policies. For any dynamic user argument passed to subprocess, you MUST sanitize it with 'import shlex' and 'shlex.quote(param)' or strict regex whitelist, even when using argument lists.\n\n"
+    "RULE 6 (GOLD-STANDARD PATH TRAVERSAL REMEDIATION FOR CWE-22): When remediating Path Traversal vulnerabilities (CWE-22), NEVER emit os.path.abspath without containment verification, and NEVER rely on string replacement (.replace('../', '')). Ensure all required imports are added at the top of the file (e.g. 'from pathlib import Path' or 'import os'). Use 'target_path.is_relative_to(base_dir)' for directory paths, or 'os.path.basename(user_input)' for file names:\n"
+    "```python\n"
+    "from pathlib import Path\n"
+    "base_dir = Path('/safe/base').resolve()\n"
+    "target_path = (base_dir / user_input).resolve()\n"
+    "if not target_path.is_relative_to(base_dir):\n"
+    "    raise ValueError('Path traversal attempt detected')\n"
+    "```"
 )
 
 def extract_hardened_code_from_report(report_text: str) -> str:
@@ -1551,9 +1560,9 @@ def extract_remediation_advice(cwe: str, sink_symbol: str) -> str:
         return rule.remediation
     remediations = {
         "CWE-95": "Avoid passing untrusted input to eval(). Use ast.literal_eval() for parsing Python literals, or parse structured data using json.loads().",
-        "CWE-78": "Avoid shell execution with dynamic input. Use subprocess.run() with an argument list and shell=False, e.g., subprocess.run(['cmd', arg], shell=False).",
+        "CWE-78": "Avoid shell execution with dynamic input. Use subprocess.run() with an argument list and shell=False, e.g., subprocess.run(['cmd', arg], shell=False). If shell execution is required, escape dynamic arguments using import shlex; shlex.quote(param). Never generate .replace() character blacklists.",
         "CWE-89": "Use parameterized SQL queries with bind variables instead of string concatenation/formatting, e.g., cursor.execute('SELECT * FROM tbl WHERE id = ?', (user_id,)).",
-        "CWE-22": "Validate and sanitize file paths using secure_path_join() or verify containment with os.path.abspath / pathlib.Path.resolve() against an allowed base directory.",
+        "CWE-22": "Enforce canonical pathlib.Path resolution with containment verification (if not target_path.is_relative_to(base_dir): raise ValueError) or sanitize untrusted filenames using werkzeug.utils.secure_filename / os.path.basename. Avoid os.path.abspath without boundary checks.",
         "CWE-502": "Do not deserialize untrusted data with pickle. Use safe serialization formats such as JSON (json.loads), Protocol Buffers, or messagepack.",
         "CWE-1336": "Avoid passing user input directly into render_template_string(). Use standard render_template() with parameterized template context variables to enforce auto-escaping."
     }
@@ -2146,10 +2155,19 @@ async def fix_code(payload: CodePayload, request: Request, authorization: str = 
                 standalone_prompt = (
                     "You are an elite Enterprise DevSecOps AI and Principal Security Architect. "
                     "Fix ALL flaws in the provided code: syntax errors, legacy patterns, and security vulnerabilities. "
-                    "You MUST include ALL enterprise-grade defensive remediations: "
-                    "Path Traversal validation (safe path resolution), SSRF URL validation/allowlisting, "
-                    "strict Secret Management (sourcing secrets from environment variables, never hardcoding), "
-                    "parameterized database queries, safe XML parsing using defusedxml, and cryptographically secure random using secrets. "
+                    "You MUST follow these strict enterprise-grade defensive remediation rules:\n"
+                    "1. CWE-78 Command Execution: STRICT BAN on .replace() character blacklists. For any dynamic user argument passed to subprocess, you MUST sanitize it with 'import shlex' and 'shlex.quote(param)' or strict regex whitelist, even when using argument lists.\n"
+                    "2. CWE-22 Path Traversal: STRICT BAN on os.path.abspath without boundary checks. Ensure all required imports are added at the top of the file (e.g. 'from pathlib import Path' or 'import os'). Use 'target_path.is_relative_to(base_dir)' for directory paths, or 'os.path.basename(user_input)' for file names:\n"
+                    "   from pathlib import Path\n"
+                    "   base_dir = Path('/safe/base').resolve()\n"
+                    "   target_path = (base_dir / user_input).resolve()\n"
+                    "   if not target_path.is_relative_to(base_dir):\n"
+                    "       raise ValueError('Path traversal attempt detected')\n"
+                    "3. CWE-89 SQL Injection: Use parameterized SQL queries with bind variables (never string formatting or f-strings).\n"
+                    "4. CWE-798 Secrets: Strictly source all secrets/credentials from environment variables (os.getenv), never hardcode.\n"
+                    "5. CWE-502 Deserialization: Replace pickle with json or safe parsers.\n"
+                    "6. Safe XML Parsing: Use defusedxml, never standard xml.etree with entity expansion.\n"
+                    "7. Cryptography: Use 'secrets' instead of 'random' for cryptographic tokens and keys.\n"
                     "Return ONLY the cleanly corrected, fully hardened secure code inside a markdown code block. Do not include boilerplate explanations or unit tests."
                 )
                 fixed_code = get_cached_or_generate_ai(redacted_code, standalone_prompt, is_fix=True, db=db, user_id=user.id)
