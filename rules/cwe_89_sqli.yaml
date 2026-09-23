@@ -1,0 +1,9 @@
+id: tcs-cwe-89-sqli
+cwe: CWE-89
+severity: CRITICAL
+message: "Use parameterized SQL queries with bind variables instead of string concatenation/formatting, e.g., cursor.execute('SELECT * FROM tbl WHERE id = ?', (user_id,))."
+sinks:
+  - execute
+  - raw
+  - extra
+  - RawSQL

@@ -11,10 +11,17 @@ import sys
 import dataclasses
 from dataclasses import dataclass, field
 from pathlib import Path
-from typing import Any, Callable, Dict, List, Optional
+from typing import Any, Callable, Dict, List, Optional, Tuple
 
 from remediation.contracts import PatchStatus, RemediationRecord
 from remediation.patch_engine import RemediationEngine
+
+try:
+    from verification_engine import verify_fix, Patch, get_stable_signature
+except ImportError:
+    verify_fix = None
+    Patch = None
+    get_stable_signature = None
 
 
 @dataclass
@@ -196,6 +203,66 @@ def refine_finding_line_number(fnd: Dict[str, Any], current_content: str) -> int
     return best_line
 
 
+def resolve_target_signature(
+    fnd: Dict[str, Any],
+    files: Dict[str, str]
+) -> Optional[Tuple]:
+    """
+    Defensively extracts the stable (source, sink, file, file, root_var) signature
+    for a finding across the multi-file project dictionary.
+
+    Guarantees:
+    - Never raises unhandled exceptions.
+    - Gracefully returns None if source/sink nodes cannot be resolved.
+    """
+    if get_stable_signature is None or not files:
+        return None
+
+    try:
+        from ast_scanner import TaintTracker
+        tracker = TaintTracker(files=files)
+        sources, sinks, edges = tracker.analyze()
+        src_map = {s.id: s for s in sources}
+        snk_map = {s.id: s for s in sinks}
+
+        target_file = fnd.get("file")
+        target_line = int(fnd.get("line_number", 0))
+        sink_sym = fnd.get("sink_symbol")
+
+        best_match = None
+        for e in edges:
+            if not e.target_id.startswith("SNK") or e.kind == "CLEAN":
+                continue
+            s = src_map.get(e.source_id)
+            sk = snk_map.get(e.target_id)
+            if not s or not sk:
+                continue
+
+            # Match target file
+            if target_file and sk.location.file != target_file:
+                continue
+
+            # Match sink symbol if known
+            if sink_sym and sk.symbol != sink_sym:
+                continue
+
+            # Match line number if known
+            if target_line > 0 and abs(sk.location.line_start - target_line) <= 2:
+                best_match = (s, sk, e)
+                break
+            elif best_match is None:
+                best_match = (s, sk, e)
+
+        if best_match:
+            s, sk, e = best_match
+            return get_stable_signature(s, sk, e)
+    except Exception:
+        # Defensive fallback: never crash if analysis fails or nodes are missing
+        pass
+
+    return None
+
+
 def remediate_project(
     files: Dict[str, str],
     effective_findings: List[Dict[str, Any]],
@@ -253,6 +320,52 @@ def remediate_project(
             fnd["line_number"] = refine_finding_line_number(fnd, current_content)
 
             rec = engine.remediate(fnd, current_content, file_path=rel_file)
+
+            # Cross-file closed-loop verification gate via verification_engine
+            if rec.patch_status == PatchStatus.SUCCESS and rec.verification_passed and rec.patched_source is not None:
+                if verify_fix is not None and Patch is not None and files:
+                    try:
+                        working_files = dict(files)
+                        working_files[rel_file] = current_content
+                        target_sig = resolve_target_signature(fnd, working_files)
+                        if target_sig is not None:
+                            patch_obj = Patch(
+                                file_path=rel_file,
+                                original_code=current_content,
+                                new_code=rec.patched_source,
+                            )
+                            v_res = verify_fix(
+                                files=working_files,
+                                patch=patch_obj,
+                                target_signature=target_sig,
+                            )
+                            if v_res.status == "REGRESSION_DETECTED":
+                                rec = dataclasses.replace(
+                                    rec,
+                                    patch_status=PatchStatus.FAILED_VERIFICATION,
+                                    verification_passed=False,
+                                    patched_source=None,
+                                    limitations=tuple(list(rec.limitations) + [f"Cross-file regression detected: {v_res.reason}"]),
+                                )
+                            elif v_res.status == "NOT_VERIFIED":
+                                rec = dataclasses.replace(
+                                    rec,
+                                    patch_status=PatchStatus.FAILED_VERIFICATION,
+                                    verification_passed=False,
+                                    patched_source=None,
+                                    limitations=tuple(list(rec.limitations) + [f"Cross-file verification failed: {v_res.reason}"]),
+                                )
+                            elif v_res.status == "INVALID_PATCH":
+                                rec = dataclasses.replace(
+                                    rec,
+                                    patch_status=PatchStatus.FAILED_SYNTAX,
+                                    verification_passed=False,
+                                    patched_source=None,
+                                    limitations=tuple(list(rec.limitations) + [f"Invalid patch: {v_res.reason}"]),
+                                )
+                    except Exception as ve_err:
+                        print(f"[WARN] Multi-file verification skipped: {ve_err}", file=sys.stderr)
+
             per_file_records.append(rec)
             if rec.patch_status == PatchStatus.SUCCESS and rec.verification_passed and rec.patched_source is not None:
                 prev_text = current_content

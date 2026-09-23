@@ -34,6 +34,70 @@ def _load_master_rules_bank():
 
 _MASTER_RULES_BANK = _load_master_rules_bank()
 
+try:
+    import yaml
+except ImportError:
+    yaml = None
+
+
+def load_yaml_rules(rules_dir: Optional[str] = None) -> List[Dict[str, Any]]:
+    """Safely loads declarative security rules from YAML files (Semgrep-style).
+
+    FALLBACK INVARIANT:
+    If YAML files are missing, unreadable, or yaml module is unavailable,
+    falls back cleanly to native internal dictionaries without raising exceptions.
+    """
+    if yaml is None:
+        return []
+
+    if rules_dir is None:
+        rules_dir = os.path.join(os.path.dirname(os.path.abspath(__file__)), "rules")
+
+    if not os.path.isdir(rules_dir):
+        return []
+
+    loaded_rules: List[Dict[str, Any]] = []
+    try:
+        rule_files = sorted(
+            f for f in os.listdir(rules_dir)
+            if f.endswith(".yaml") or f.endswith(".yml")
+        )
+    except Exception:
+        return []
+
+    for fname in rule_files:
+        fpath = os.path.join(rules_dir, fname)
+        try:
+            with open(fpath, "r", encoding="utf-8") as rf:
+                content = yaml.safe_load(rf)
+                if isinstance(content, dict):
+                    if "id" in content and "cwe" in content and "sinks" in content:
+                        loaded_rules.append(content)
+                elif isinstance(content, list):
+                    for item in content:
+                        if isinstance(item, dict) and "id" in item and "cwe" in item and "sinks" in item:
+                            loaded_rules.append(item)
+        except Exception:
+            continue
+
+    return loaded_rules
+
+
+# Global cached declarative rules
+DECLARATIVE_YAML_RULES: List[Dict[str, Any]] = load_yaml_rules()
+DECLARATIVE_RULES_BY_CWE: Dict[str, Dict[str, Any]] = {
+    r["cwe"]: r for r in DECLARATIVE_YAML_RULES if "cwe" in r
+}
+DECLARATIVE_RULES_BY_ID: Dict[str, Dict[str, Any]] = {
+    r["id"]: r for r in DECLARATIVE_YAML_RULES if "id" in r
+}
+
+
+def get_declarative_rule(cwe_or_id: str) -> Optional[Dict[str, Any]]:
+    """Retrieve a declarative rule dictionary by CWE ID or Rule ID."""
+    return DECLARATIVE_RULES_BY_CWE.get(cwe_or_id) or DECLARATIVE_RULES_BY_ID.get(cwe_or_id)
+
+
 
 @dataclass(frozen=True)
 class SecurityRule:
@@ -97,6 +161,8 @@ class RuleRegistry:
 def _cwe89_sink_matcher(node: ast.AST, name: str, canon_name: Optional[str] = None) -> bool:
     """Matches method calls for SQL execution (execute, raw, extra, RawSQL)."""
     target_names = {"execute", "raw", "extra", "RawSQL"}
+    if "CWE-89" in DECLARATIVE_RULES_BY_CWE:
+        target_names = target_names | {str(s) for s in DECLARATIVE_RULES_BY_CWE["CWE-89"].get("sinks", []) if s}
     for candidate in (name, canon_name):
         if candidate:
             if candidate in target_names or any(candidate.endswith(f".{t}") for t in target_names):
@@ -173,8 +239,11 @@ CWE_89_RULE = SecurityRule(
 
 def _cwe95_sink_matcher(node: ast.AST, name: str, canon_name: Optional[str] = None) -> bool:
     """Matches direct and qualified calls to eval, exec, and compile."""
+    target_sinks = {"eval", "exec", "compile", "builtins.eval", "builtins.exec", "builtins.compile"}
+    if "CWE-95" in DECLARATIVE_RULES_BY_CWE:
+        target_sinks = target_sinks | {str(s) for s in DECLARATIVE_RULES_BY_CWE["CWE-95"].get("sinks", []) if s}
     candidates = {c for c in (name, canon_name) if c}
-    return any(c in ("eval", "exec", "compile", "builtins.eval", "builtins.exec", "builtins.compile") for c in candidates)
+    return any(c in target_sinks for c in candidates)
 
 
 CWE_95_RULE = SecurityRule(
@@ -220,6 +289,8 @@ CWE78_SINKS = {
     "subprocess.check_output",
     "subprocess.Popen",
 }
+if "CWE-78" in DECLARATIVE_RULES_BY_CWE:
+    CWE78_SINKS.update(str(s) for s in DECLARATIVE_RULES_BY_CWE["CWE-78"].get("sinks", []) if s)
 
 
 def _cwe78_sink_matcher(node: ast.AST, name: str, canon_name: Optional[str] = None) -> bool:
@@ -286,6 +357,11 @@ CWE22_ADDITIONAL_SINKS = {
     "zipfile.ZipFile.extractall", "zipfile.ZipFile.extract",
     "tarfile.TarFile.extractall", "tarfile.TarFile.extract",
 }
+if "CWE-22" in DECLARATIVE_RULES_BY_CWE:
+    CWE22_ADDITIONAL_SINKS.update(
+        str(s) for s in DECLARATIVE_RULES_BY_CWE["CWE-22"].get("sinks", [])
+        if s and str(s) not in CWE22_BUILTIN_SINKS and str(s) not in CWE22_PATH_ATTRS
+    )
 
 
 def _cwe22_sink_matcher(node: ast.AST, name: str, canon_name: Optional[str] = None) -> bool:

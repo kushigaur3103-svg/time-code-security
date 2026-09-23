@@ -1,0 +1,23 @@
+id: tcs-cwe-22-traversal
+cwe: CWE-22
+severity: HIGH
+message: "Validate and sanitize file paths using secure_path_join() or verify containment with os.path.abspath / pathlib.Path.resolve() against an allowed base directory."
+sinks:
+  - open
+  - builtins.open
+  - read_text
+  - read_bytes
+  - write_text
+  - write_bytes
+  - shutil.rmtree
+  - os.remove
+  - os.unlink
+  - os.rmdir
+  - shutil.move
+  - shutil.copy
+  - shutil.copy2
+  - shutil.copytree
+  - zipfile.ZipFile.extractall
+  - zipfile.ZipFile.extract
+  - tarfile.TarFile.extractall
+  - tarfile.TarFile.extract

@@ -1,0 +1,11 @@
+id: tcs-cwe-95-code-injection
+cwe: CWE-95
+severity: CRITICAL
+message: "Avoid passing untrusted input to eval(). Use ast.literal_eval() for parsing Python literals, or parse structured data using json.loads()."
+sinks:
+  - eval
+  - exec
+  - compile
+  - builtins.eval
+  - builtins.exec
+  - builtins.compile

@@ -1,0 +1,11 @@
+id: tcs-cwe-78-cmdi
+cwe: CWE-78
+severity: CRITICAL
+message: "Avoid shell execution with dynamic input. Use subprocess.run() with an argument list and shell=False, e.g., subprocess.run(['cmd', arg], shell=False)."
+sinks:
+  - os.system
+  - subprocess.run
+  - subprocess.call
+  - subprocess.check_call
+  - subprocess.check_output
+  - subprocess.Popen
