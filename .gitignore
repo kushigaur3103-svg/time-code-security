@@ -22,3 +22,6 @@ build/
 benchmark_manifest.json
 benchmark_results.json
 benchmark_report.txt
+
+# Local machine runtime state
+.client_storage.json
