@@ -1107,6 +1107,13 @@ async def update_settings(payload: SettingsPayload, authorization: str = Header(
         if not user:
             raise HTTPException(status_code=404, detail="User not found")
         user.webhook_url = payload.webhook_url
+        if payload.webhook_url:
+            # Solo users: auto-create a personal workspace so webhook alerts
+            # dispatch without requiring a manual Enterprise Workspace.
+            try:
+                ensure_personal_workspace(db, user)
+            except Exception as ws_err:
+                logger.error(f"Personal workspace auto-creation failed for user {user.id}: {ws_err}")
         db.commit()
         return {"message": "Settings updated"}
     finally:
@@ -1486,6 +1493,27 @@ def get_cached_or_generate_ai(payload_code: str, system_prompt: str, is_fix: boo
         db.commit()
     
     return ai_reply
+
+def ensure_personal_workspace(db, user) -> Optional[int]:
+    """
+    Solo-user fallback: the notification pipeline is organization-scoped, so a
+    user without a workspace gets a default personal workspace auto-created.
+    Idempotent: reuses an existing personal workspace with the same name.
+    """
+    if user.org_id is not None:
+        return user.org_id
+    org_name = f"{user.email}'s Workspace"
+    org = db.query(Organization).filter(Organization.name == org_name).first()
+    if not org:
+        org = Organization(name=org_name, invite_code=secrets.token_hex(3))
+        db.add(org)
+        db.commit()
+        db.refresh(org)
+    user.org_id = org.id
+    user.org_role = "admin"
+    db.commit()
+    return org.id
+
 
 def resolve_webhook_format(url: str) -> str:
     """Detects the webhook provider from the URL to select the correct payload format."""
@@ -2128,6 +2156,10 @@ async def scan_code(request: Request, authorization: str = Header(None)):
                 if user:
                     user.scan_count = (user.scan_count or 0) + 1
                     db.commit()
+                    if user.webhook_url and user.org_id is None:
+                        # Lazy backfill: solo users with a saved webhook get a
+                        # personal workspace so the dispatch gate below passes.
+                        ensure_personal_workspace(db, user)
                     authed_user_ctx = {
                         "user_id": user.id,
                         "org_id": user.org_id,
