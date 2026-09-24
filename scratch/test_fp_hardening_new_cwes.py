@@ -73,6 +73,64 @@ def login():
         cwe338_sinks = [s for s in sinks if s.metadata.get("cwe") == "CWE-338"]
         self.assertGreaterEqual(len(cwe338_sinks), 1, "Expected CWE-338 sink when passed to auth function")
 
+    def test_postal_pin_random_passes(self):
+        code = """
+import random
+
+def get_delivery_zone():
+    postal_pin = random.randint(100000, 999999)
+    geo_pin = random.randint(1000, 9999)
+    map_pin = random.randint(100, 999)
+    return postal_pin, geo_pin, map_pin
+"""
+        tracker = TaintTracker(files={"test.py": code}, audit_all=True)
+        sources, sinks, edges = tracker.analyze()
+        cwe338_sinks = [s for s in sinks if s.metadata.get("cwe") == "CWE-338"]
+        self.assertEqual(len(cwe338_sinks), 0, f"Expected 0 CWE-338 sinks for postal/geo/map pin, found: {cwe338_sinks}")
+
+    def test_auth_pin_random_triggers(self):
+        code = """
+import random
+
+def generate_pin():
+    auth_pin = random.randint(100000, 999999)
+    user_pin = random.randint(1000, 9999)
+    return auth_pin, user_pin
+"""
+        tracker = TaintTracker(files={"test.py": code}, audit_all=True)
+        sources, sinks, edges = tracker.analyze()
+        cwe338_sinks = [s for s in sinks if s.metadata.get("cwe") == "CWE-338"]
+        self.assertGreaterEqual(len(cwe338_sinks), 2, "Expected CWE-338 sinks for auth_pin and user_pin")
+
+    def test_pressed_key_random_passes(self):
+        code = """
+import random
+
+def handle_input(keys):
+    pressed_key = random.choice(keys)
+    key_event = random.choice(keys)
+    keyboard_key = random.choice(keys)
+    return pressed_key, key_event, keyboard_key
+"""
+        tracker = TaintTracker(files={"test.py": code}, audit_all=True)
+        sources, sinks, edges = tracker.analyze()
+        cwe338_sinks = [s for s in sinks if s.metadata.get("cwe") == "CWE-338"]
+        self.assertEqual(len(cwe338_sinks), 0, f"Expected 0 CWE-338 sinks for pressed_key/key_event/keyboard_key, found: {cwe338_sinks}")
+
+    def test_session_key_random_triggers(self):
+        code = """
+import random
+
+def create_session(keys):
+    session_key = random.choice(keys)
+    return session_key
+"""
+        tracker = TaintTracker(files={"test.py": code}, audit_all=True)
+        sources, sinks, edges = tracker.analyze()
+        cwe338_sinks = [s for s in sinks if s.metadata.get("cwe") == "CWE-338"]
+        self.assertGreaterEqual(len(cwe338_sinks), 1, "Expected CWE-338 sink for session_key")
+
+
 
 class TestCWE327BrokenCryptoGuards(unittest.TestCase):
     """Verify CWE-327 respects usedforsecurity=False and non-cryptographic checksum targets."""
@@ -131,6 +189,36 @@ def hash_secret(pwd):
         sources, sinks, edges = tracker.analyze()
         cwe327_sinks = [s for s in sinks if s.metadata.get("cwe") == "CWE-327"]
         self.assertGreaterEqual(len(cwe327_sinks), 1, "Expected CWE-327 sink for bare md5 call")
+
+    def test_hashlib_new_weak_triggers(self):
+        code = """
+import hashlib
+
+def hash_data(data):
+    h = hashlib.new("md5", data)
+    s = hashlib.new(name="sha1", data=data)
+    d = hashlib.new("des", data)
+    return h.hexdigest(), s.hexdigest(), d.hexdigest()
+"""
+        tracker = TaintTracker(files={"test.py": code}, audit_all=True)
+        sources, sinks, edges = tracker.analyze()
+        cwe327_sinks = [s for s in sinks if s.metadata.get("cwe") == "CWE-327"]
+        self.assertGreaterEqual(len(cwe327_sinks), 3, f"Expected at least 3 CWE-327 sinks for hashlib.new with md5/sha1/des, got: {len(cwe327_sinks)}")
+
+    def test_hashlib_new_usedforsecurity_false_passes(self):
+        code = """
+import hashlib
+
+def compute_checksum(data):
+    h = hashlib.new("md5", data, usedforsecurity=False)
+    s = hashlib.new(name="sha1", data=data, usedforsecurity=False)
+    return h.hexdigest(), s.hexdigest()
+"""
+        tracker = TaintTracker(files={"test.py": code}, audit_all=True)
+        sources, sinks, edges = tracker.analyze()
+        cwe327_sinks = [s for s in sinks if s.metadata.get("cwe") == "CWE-327"]
+        self.assertEqual(len(cwe327_sinks), 0, f"Expected 0 CWE-327 sinks with usedforsecurity=False, got: {cwe327_sinks}")
+
 
 
 class TestCWE400UnboundedReadRefinement(unittest.TestCase):
@@ -258,6 +346,71 @@ def nav():
         cwe601_edges = [e for e in edges if any(s.id == e.target_id and s.metadata.get("cwe") == "CWE-601" for s in sinks)]
         self.assertGreaterEqual(len(cwe601_edges), 1, "Expected CWE-601 vulnerability when redirect validator is a dummy return True")
 
+    def test_imported_validator_protects_inside_if_branch(self):
+        code = """
+from flask import request
+import requests
+from external_validator import is_safe_url
+
+def proxy():
+    url = request.args.get("url")
+    if is_safe_url(url):
+        requests.get(url)
+"""
+        tracker = TaintTracker(files={"test.py": code}, audit_all=True)
+        sources, sinks, edges = tracker.analyze()
+        cwe918_edges = [e for e in edges if any(s.id == e.target_id and s.metadata.get("cwe") == "CWE-918" for s in sinks)]
+        self.assertEqual(len(cwe918_edges), 0, f"Expected 0 CWE-918 findings inside safe branch of imported validator, got: {cwe918_edges}")
+
+    def test_imported_validator_does_not_protect_outside_if_branch(self):
+        code = """
+from flask import request
+import requests
+from external_validator import is_safe_url
+
+def proxy():
+    url = request.args.get("url")
+    if is_safe_url(url):
+        pass
+    requests.get(url)
+"""
+        tracker = TaintTracker(files={"test.py": code}, audit_all=True)
+        sources, sinks, edges = tracker.analyze()
+        cwe918_edges = [e for e in edges if any(s.id == e.target_id and s.metadata.get("cwe") == "CWE-918" for s in sinks)]
+        self.assertGreaterEqual(len(cwe918_edges), 1, "Expected CWE-918 vulnerability when sink is outside the if body with imported validator")
+
+    def test_imported_redirect_validator_protects_inside_if_branch(self):
+        code = """
+from flask import request, redirect
+from external_security import is_safe_redirect_url
+
+def nav():
+    nxt = request.args.get("next")
+    if is_safe_redirect_url(nxt):
+        return redirect(nxt)
+"""
+        tracker = TaintTracker(files={"test.py": code}, audit_all=True)
+        sources, sinks, edges = tracker.analyze()
+        cwe601_edges = [e for e in edges if any(s.id == e.target_id and s.metadata.get("cwe") == "CWE-601" for s in sinks)]
+        self.assertEqual(len(cwe601_edges), 0, f"Expected 0 CWE-601 findings inside safe branch of imported redirect validator, got: {cwe601_edges}")
+
+    def test_imported_redirect_validator_does_not_protect_outside_if_branch(self):
+        code = """
+from flask import request, redirect
+from external_security import is_safe_redirect_url
+
+def nav():
+    nxt = request.args.get("next")
+    if is_safe_redirect_url(nxt):
+        pass
+    return redirect(nxt)
+"""
+        tracker = TaintTracker(files={"test.py": code}, audit_all=True)
+        sources, sinks, edges = tracker.analyze()
+        cwe601_edges = [e for e in edges if any(s.id == e.target_id and s.metadata.get("cwe") == "CWE-601" for s in sinks)]
+        self.assertGreaterEqual(len(cwe601_edges), 1, "Expected CWE-601 vulnerability when sink is outside the if body with imported redirect validator")
+
 
 if __name__ == "__main__":
     unittest.main(verbosity=2)
+

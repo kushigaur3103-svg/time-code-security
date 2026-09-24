@@ -456,6 +456,64 @@ CWE338_SECURITY_KEYWORDS = (
     "token", "key", "secret", "password", "session",
     "auth", "nonce", "salt", "otp", "pin", "csrf"
 )
+CWE338_BASE_SECURITY_TOKENS = {
+    "token", "secret", "password", "session", "auth",
+    "nonce", "salt", "otp", "csrf", "passwd", "credential", "credentials"
+}
+CWE338_NON_SECURITY_KEY_TOKENS = {
+    "pressed", "press", "keyboard", "event", "nav", "navigation",
+    "arrow", "input", "down", "up", "release", "shortcut"
+}
+CWE338_NON_SECURITY_PIN_ADJACENT = {
+    "postal", "geo", "zip", "address", "map", "location", "board", "display", "needle", "bowling"
+}
+
+def tokenize_identifier(ident: str) -> list[str]:
+    """Splits snake_case and camelCase identifiers into lowercase tokens."""
+    if not ident:
+        return []
+    cleaned = re.sub(r'[^a-zA-Z0-9]+', '_', ident)
+    parts = cleaned.split('_')
+    tokens = []
+    for part in parts:
+        if not part:
+            continue
+        subparts = re.findall(r'[A-Z]+(?=[A-Z][a-z]|\d|\b)|[A-Z]?[a-z]+|[0-9]+', part)
+        if subparts:
+            tokens.extend(p.lower() for p in subparts)
+        else:
+            tokens.append(part.lower())
+    return tokens
+
+def is_security_identifier(name: str) -> bool:
+    """Classifies whether an identifier or attribute represents a security-sensitive credential/token."""
+    if not name:
+        return False
+    tokens = tokenize_identifier(name)
+    if not tokens:
+        return False
+
+    # 1. Base security tokens
+    if any(t in CWE338_BASE_SECURITY_TOKENS for t in tokens):
+        return True
+
+    # 2. 'key' token with non-security compound suppression (e.g. pressed_key, key_event, keyboard_key)
+    if "key" in tokens:
+        if not any(t in CWE338_NON_SECURITY_KEY_TOKENS for t in tokens):
+            return True
+
+    # 3. 'pin' token with adjacent word suppression (e.g. postal_pin, zip_pin, map_pin)
+    if "pin" in tokens:
+        pin_indices = [i for i, t in enumerate(tokens) if t == "pin"]
+        for idx in pin_indices:
+            prev_token = tokens[idx - 1] if idx > 0 else None
+            next_token = tokens[idx + 1] if idx < len(tokens) - 1 else None
+            if (prev_token in CWE338_NON_SECURITY_PIN_ADJACENT) or (next_token in CWE338_NON_SECURITY_PIN_ADJACENT):
+                continue
+            return True
+
+    return False
+
 CWE338_SECURITY_FUNC_KEYWORDS = (
     "auth", "login", "session", "token", "crypto", "hash",
     "password", "secret", "set_cookie", "cookie", "jwt",
@@ -1214,30 +1272,37 @@ class TaintTracker:
         while curr is not None:
             if isinstance(curr, ast.Assign):
                 for t in curr.targets:
-                    if isinstance(t, ast.Name) and any(kw in t.id.lower() for kw in CWE338_SECURITY_KEYWORDS):
+                    if isinstance(t, ast.Name) and is_security_identifier(t.id):
                         return True
-                    if isinstance(t, ast.Attribute) and any(kw in t.attr.lower() for kw in CWE338_SECURITY_KEYWORDS):
+                    if isinstance(t, ast.Attribute) and is_security_identifier(t.attr):
                         return True
                     if isinstance(t, ast.Subscript) and isinstance(t.slice, (ast.Constant, ast.Str)):
-                        s_val = str(t.slice.value if isinstance(t.slice, ast.Constant) else t.slice.s).lower()
-                        if any(kw in s_val for kw in CWE338_SECURITY_KEYWORDS):
+                        s_val = str(t.slice.value if isinstance(t.slice, ast.Constant) else t.slice.s)
+                        if is_security_identifier(s_val):
                             return True
+                    if isinstance(t, (ast.Tuple, ast.List)):
+                        for elt in t.elts:
+                            if isinstance(elt, ast.Name) and is_security_identifier(elt.id):
+                                return True
+                            if isinstance(elt, ast.Attribute) and is_security_identifier(elt.attr):
+                                return True
                 break
             elif isinstance(curr, ast.AnnAssign):
-                if isinstance(curr.target, ast.Name) and any(kw in curr.target.id.lower() for kw in CWE338_SECURITY_KEYWORDS):
+                if isinstance(curr.target, ast.Name) and is_security_identifier(curr.target.id):
                     return True
-                if isinstance(curr.target, ast.Attribute) and any(kw in curr.target.attr.lower() for kw in CWE338_SECURITY_KEYWORDS):
+                if isinstance(curr.target, ast.Attribute) and is_security_identifier(curr.target.attr):
                     return True
                 break
             elif isinstance(curr, ast.Call) and curr is not node:
                 func_name = (dotted_name(curr.func) or "").lower()
-                if any(kw in func_name for kw in CWE338_SECURITY_FUNC_KEYWORDS):
+                func_tokens = tokenize_identifier(func_name)
+                if any(t in CWE338_SECURITY_FUNC_KEYWORDS for t in func_tokens) or any(kw in func_name for kw in CWE338_SECURITY_FUNC_KEYWORDS):
                     return True
                 for kw in getattr(curr, "keywords", []):
-                    if kw.arg and any(skw in kw.arg.lower() for kw in CWE338_SECURITY_KEYWORDS):
+                    if kw.arg and is_security_identifier(kw.arg):
                         return True
             elif isinstance(curr, (ast.FunctionDef, ast.AsyncFunctionDef)):
-                if any(kw in curr.name.lower() for kw in CWE338_SECURITY_KEYWORDS):
+                if is_security_identifier(curr.name):
                     return True
                 break
             elif isinstance(curr, (ast.ClassDef, ast.Module)):
@@ -1252,9 +1317,46 @@ class TaintTracker:
                         if r.lineno == call_lineno:
                             for sub in ast.walk(r.value_node):
                                 if sub is node:
-                                    if any(kw in var_name.lower() for kw in CWE338_SECURITY_KEYWORDS):
+                                    if is_security_identifier(var_name):
                                         return True
         return False
+
+    def _get_hashlib_new_algo(self, node: ast.Call, scope_id: str = "") -> Optional[str]:
+        """Detects whether node is a call to hashlib.new(...) and returns the lowercased algorithm name."""
+        if not isinstance(node, ast.Call):
+            return None
+        fn_name = dotted_name(node.func) or ""
+        canon = self.resolve_canonical_name(node.func, scope_id) if (scope_id and hasattr(self, "resolve_canonical_name")) else fn_name
+        is_hashlib_new = False
+        if fn_name in ("hashlib.new", "_hashlib.new") or canon in ("hashlib.new", "_hashlib.new"):
+            is_hashlib_new = True
+        elif isinstance(node.func, ast.Attribute) and node.func.attr == "new":
+            val_name = dotted_name(node.func.value) or ""
+            val_canon = self.resolve_canonical_name(node.func.value, scope_id) if (scope_id and hasattr(self, "resolve_canonical_name")) else val_name
+            if val_name in ("hashlib", "_hashlib") or val_canon in ("hashlib", "_hashlib"):
+                is_hashlib_new = True
+        elif fn_name == "new" and (canon in ("hashlib.new", "_hashlib.new") or (scope_id and "hashlib" in str(self.imports.get(scope_id.split(":")[0], {})))):
+            is_hashlib_new = True
+
+        if not is_hashlib_new:
+            return None
+
+        algo = None
+        if node.args:
+            arg0 = node.args[0]
+            if isinstance(arg0, ast.Constant) and isinstance(arg0.value, str):
+                algo = arg0.value.strip().lower()
+            elif isinstance(arg0, ast.Str):
+                algo = arg0.s.strip().lower()
+        if not algo:
+            for kw in getattr(node, "keywords", []):
+                if kw.arg == "name":
+                    if isinstance(kw.value, ast.Constant) and isinstance(kw.value.value, str):
+                        algo = kw.value.value.strip().lower()
+                    elif isinstance(kw.value, ast.Str):
+                        algo = kw.value.s.strip().lower()
+                    break
+        return algo
 
     def _is_exempt_cwe327(self, node: ast.Call, scope_id: str = "", lineno: int = 0) -> bool:
         call_lineno = lineno or getattr(node, "lineno", 0)
@@ -1400,6 +1502,13 @@ class TaintTracker:
         if self._has_disabled_ssl(node):
             return True
 
+        # Check for hashlib.new(...) with weak algorithm (CWE-327)
+        hashlib_algo = self._get_hashlib_new_algo(node, scope_id)
+        if hashlib_algo in ("md5", "sha1", "des"):
+            if self._is_exempt_cwe327(node, scope_id, call_lineno):
+                return False
+            return True
+
         # Check for CWE-327 exemption (usedforsecurity=False or non-crypto checksum target)
         if self._is_exempt_cwe327(node, scope_id, call_lineno):
             return False
@@ -1502,7 +1611,14 @@ class TaintTracker:
                 # 1. Check for CWE-295: disabled SSL/TLS verification
                 if self._has_disabled_ssl(node):
                     meta = {"operation": "DISABLED_SSL_VERIFICATION", "category": "INSECURE_TRANSPORT", "cwe": "CWE-295"}
-                # 2. Check for unbounded read (CWE-400)
+                # 2. Check for hashlib.new(...) with weak algorithm (CWE-327)
+                elif (hashlib_algo := self._get_hashlib_new_algo(node, scope_id)) in ("md5", "sha1", "des"):
+                    meta = {
+                        "operation": "WEAK_CIPHER" if hashlib_algo == "des" else "WEAK_HASH",
+                        "category": "WEAK_CRYPTOGRAPHY",
+                        "cwe": "CWE-327"
+                    }
+                # 3. Check for unbounded read (CWE-400)
                 elif isinstance(node.func, ast.Attribute) and node.func.attr == "read" and len(node.args) == 0:
                     meta = {"operation": "UNBOUNDED_READ", "category": "RESOURCE_EXHAUSTION", "cwe": "CWE-400"}
                 # 3. Check SINK_REGISTRY
@@ -1606,11 +1722,19 @@ class TaintTracker:
                     pairs.append((test_node.args[0].id, None))
             else:
                 fn_name = dotted_name(test_node.func) or ""
+                canon = self.resolve_canonical_name(test_node.func) if hasattr(self, "resolve_canonical_name") else ""
+                names_to_check = {fn_name, canon} - {"", None}
                 val_funcs = ("is_safe_url", "validate_url", "check_domain_allowlist", "is_allowed_domain",
                              "is_safe_redirect_url", "validate_redirect_url", "url_has_allowed_host_and_scheme",
                              "is_relative_url", "is_private_ip", "validate_private_ip")
-                if any(fn_name == vf or fn_name.endswith(f".{vf}") for vf in val_funcs):
+                if any(any(n == vf or n.endswith(f".{vf}") for vf in val_funcs) for n in names_to_check):
+                    target_arg = None
                     if test_node.args:
+                        target_arg = test_node.args[0]
+                    elif test_node.keywords:
+                        target_arg = test_node.keywords[0].value
+
+                    if target_arg:
                         short_fn = fn_name.split(".")[-1]
                         func_node = None
                         for f_scope, f_def in self.functions.items():
@@ -1620,11 +1744,12 @@ class TaintTracker:
                         if func_node and self._is_dummy_validator_func(func_node):
                             pass  # Dummy validator (e.g. return True): DO NOT create containment guard!
                         else:
-                            arg0 = test_node.args[0]
-                            if isinstance(arg0, ast.Name):
-                                pairs.append((arg0.id, None))
-                            elif isinstance(arg0, ast.Attribute):
-                                pairs.append((arg0.attr, None))
+                            # External / imported validator (func_node is None) or valid local validator:
+                            # Create containment guard for the protected variable!
+                            if isinstance(target_arg, ast.Name):
+                                pairs.append((target_arg.id, None))
+                            elif isinstance(target_arg, ast.Attribute):
+                                pairs.append((target_arg.attr, None))
         elif isinstance(test_node, ast.BoolOp) and isinstance(test_node.op, ast.And):
             for val in test_node.values:
                 pairs.extend(self._extract_containment_pairs(val))
