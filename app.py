@@ -27,8 +27,8 @@ import ast
 from ast_scanner import TaintTracker, SINK_REGISTRY, SOURCE_REGISTRY, SANITIZER_REGISTRY, render_proof_graph_ascii, ProofNodeType
 from sarif_adapter import to_sarif
 from suppression_resolver import resolve_suppressions
-from rule_engine import GLOBAL_RULE_REGISTRY
 import secret_scanner
+from secret_scanner import SecretVault, VaultRestorationError
 import tempfile
 from pathlib import Path
 from sca_reachability.engine import analyze_dependency_reachability
@@ -69,12 +69,14 @@ except Exception as e:
     print(f"RAG Load Error: {e}")
 
 SECRET_PATTERNS = {
-    "AWS Access Keys": re.compile(r"(?i)\b(AKIA|ABIA|ACCA|ASIA)[0-9A-Z]{16}\b"),
-    "Stripe Secrets": re.compile(r"\b(?:sk|rk)_(?:live|test)_[0-9a-zA-Z]{24,}\b"),
-    "GitHub Tokens": re.compile(r"\b(?:ghp|gho|ghu|ghs|ghr)_[0-9a-zA-Z]{36,}\b|\bgithub_pat_[0-9a-zA-Z_]{80,}\b"),
+    "AWS Access Keys": secret_scanner.SECRET_PATTERNS.get("AWS Access Key", re.compile(r"(?i)\b(AKIA|ABIA|ACCA|ASIA)[0-9A-Z]{14,16}\b")),
+    "AWS Secret Keys": secret_scanner.SECRET_PATTERNS.get("AWS Secret Key"),
+    "Stripe Secrets": secret_scanner.SECRET_PATTERNS.get("Stripe API Key", re.compile(r"\b(?:sk|rk)_(?:live|test)_[0-9a-zA-Z]{24,}\b")),
+    "GitHub Tokens": secret_scanner.SECRET_PATTERNS.get("GitHub Token", re.compile(r"\b(?:ghp|gho|ghu|ghs|ghr)_[0-9a-zA-Z]{36,}\b|\bgithub_pat_[0-9a-zA-Z_]{80,}\b")),
     "OpenAI Keys": re.compile(r"\bsk-[a-zA-Z0-9_-]{20,}\b"),
-    "Slack Tokens": re.compile(r"\bxox[baprs]-[0-9a-zA-Z]{10,}-[0-9a-zA-Z]{10,}\b"),
-    "Private Keys": re.compile(r"-----BEGIN (?:RSA |EC |DSA |OPENSSH )?PRIVATE KEY-----[\s\S]*?-----END (?:RSA |EC |DSA |OPENSSH )?PRIVATE KEY-----"),
+    "Slack Tokens": secret_scanner.SECRET_PATTERNS.get("Slack API Token", re.compile(r"\bxox[baprs]-[0-9a-zA-Z]{10,}-[0-9a-zA-Z]{10,}\b")),
+    "Google API Keys": secret_scanner.SECRET_PATTERNS.get("Google API Key"),
+    "Private Keys": secret_scanner.SECRET_PATTERNS.get("Asymmetric Private Key", re.compile(r"-----BEGIN (?:RSA |EC |DSA |OPENSSH )?PRIVATE KEY-----[\s\S]*?-----END (?:RSA |EC |DSA |OPENSSH )?PRIVATE KEY-----")),
     "Generic Tokens": re.compile(r"(?i)(?:password|secret|api_key|apikey|auth_token|bearer|access_token|private_key)[\s=:]+['\"]([^'\"]{6,})['\"]")
 }
 
@@ -127,8 +129,18 @@ def apply_zero_leak_redaction(code: str):
         return "", False
     secrets_found = False
     redacted_code = code
+
+    # 1. Detect all secrets via SecretVault (providers + high-entropy heuristic)
+    vault_secrets = SecretVault.find_all_secrets(code)
+    if vault_secrets:
+        secrets_found = True
+        for s in vault_secrets:
+            redacted_code = redacted_code.replace(s, "***REDACTED_BY_TIMECODESECURITY***")
     
+    # 2. Check remaining patterns
     for name, pattern in SECRET_PATTERNS.items():
+        if not pattern:
+            continue
         if name == "Generic Tokens":
             def replace_generic(match):
                 full_match = match.group(0)
@@ -137,6 +149,14 @@ def apply_zero_leak_redaction(code: str):
             if pattern.search(redacted_code):
                 secrets_found = True
                 redacted_code = pattern.sub(replace_generic, redacted_code)
+        elif name == "AWS Secret Keys":
+            def replace_secret_key(match):
+                full_match = match.group(0)
+                secret_val = match.group(1) if match.groups >= 1 and match.group(1) else full_match
+                return full_match.replace(secret_val, "***REDACTED_BY_TIMECODESECURITY***")
+            if pattern.search(redacted_code):
+                secrets_found = True
+                redacted_code = pattern.sub(replace_secret_key, redacted_code)
         else:
             if pattern.search(redacted_code):
                 secrets_found = True
@@ -1416,7 +1436,9 @@ def extract_hardened_code_from_report(report_text: str) -> str:
     return ""
 
 def get_cached_or_generate_ai(payload_code: str, system_prompt: str, is_fix: bool, db, existing_job_id: str = None, user_id: int = None):
-    code_hash = hashlib.sha256(f"{payload_code}_{system_prompt}".encode('utf-8')).hexdigest()
+    # Two-way reversible secret redaction vault (TruffleHog / GitGuardian standard)
+    vaulted_code, vault_map = SecretVault.redact(payload_code)
+    code_hash = hashlib.sha256(f"{vaulted_code}_{system_prompt}".encode('utf-8')).hexdigest()
     cached = db.query(ScanCache).filter(ScanCache.code_hash == code_hash, ScanCache.is_fix == is_fix, ScanCache.status == 'completed').first()
     if cached:
         if existing_job_id:
@@ -1425,9 +1447,14 @@ def get_cached_or_generate_ai(payload_code: str, system_prompt: str, is_fix: boo
                 pending_job.report_text = cached.report_text
                 pending_job.status = 'completed'
                 db.commit()
+        if is_fix and vault_map and cached.report_text:
+            try:
+                return SecretVault.restore(cached.report_text, vault_map)
+            except VaultRestorationError:
+                return SecretVault.restore(cached.report_text, vault_map, fallback_on_error=True)
         return cached.report_text
         
-    prompt = f"Code to {'fix' if is_fix else 'analyze'}:\n{payload_code}"
+    prompt = f"Code to {'fix' if is_fix else 'analyze'}:\n{vaulted_code}"
     
     groq_keys_str = os.getenv("GROQ_API_KEYS", "")
     if not groq_keys_str:
@@ -1519,7 +1546,7 @@ def get_cached_or_generate_ai(payload_code: str, system_prompt: str, is_fix: boo
                 
     if ai_reply is None:
         # Resilient dynamic fallback analyzer
-        ai_reply = generate_dynamic_security_analysis(payload_code, is_premium=True)
+        ai_reply = generate_dynamic_security_analysis(vaulted_code, is_premium=True)
 
     if existing_job_id:
         pending_job = db.query(ScanCache).filter(ScanCache.job_id == existing_job_id).first()
@@ -1532,6 +1559,11 @@ def get_cached_or_generate_ai(payload_code: str, system_prompt: str, is_fix: boo
         db.add(new_cache)
         db.commit()
     
+    if is_fix and vault_map and ai_reply:
+        try:
+            return SecretVault.restore(ai_reply, vault_map)
+        except VaultRestorationError:
+            return SecretVault.restore(ai_reply, vault_map, fallback_on_error=True)
     return ai_reply
 
 def ensure_personal_workspace(db, user) -> Optional[int]:
@@ -2302,7 +2334,11 @@ async def fix_code(payload: CodePayload, request: Request, authorization: str = 
             raise HTTPException(status_code=403, detail="PRO Feature Only")
             
         try:
+            # Reversible Secret Vault (TruffleHog / GitGuardian standard)
+            vaulted_code, vault_map = SecretVault.redact(valid_code)
+            
             redacted_code, secrets_found = apply_zero_leak_redaction(valid_code)
+            secrets_found = secrets_found or bool(vault_map)
             
             main_system_prompt = ENTERPRISE_DEVSECOPS_SYSTEM_PROMPT
             if secrets_found:
@@ -2451,6 +2487,13 @@ async def fix_code(payload: CodePayload, request: Request, authorization: str = 
             
             user.scan_count += 1
             db.commit()
+            
+            # Losslessly restore any vaulted secrets in the hardened code
+            if fixed_code and vault_map:
+                try:
+                    fixed_code = SecretVault.restore(fixed_code, vault_map)
+                except VaultRestorationError:
+                    fixed_code = SecretVault.restore(fixed_code, vault_map, fallback_on_error=True)
                 
             return {"fixed_code": fixed_code}
         except HTTPException as he:

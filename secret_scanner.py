@@ -16,13 +16,19 @@ from collections import Counter
 from dataclasses import dataclass
 import math
 import re
-from typing import Any, List, Optional, Tuple
+import uuid
+from typing import Any, Dict, List, Optional, Set, Tuple
 
 __all__ = [
     "SecretFinding",
     "SecretScanner",
+    "SecretVault",
+    "VaultRestorationError",
+    "SECRET_PATTERNS",
     "mask_secret",
+    "calculate_shannon_entropy",
     "shannon_entropy",
+    "is_adaptive_high_entropy_secret",
     "scan_text",
     "scan_file",
 ]
@@ -82,12 +88,13 @@ def mask_secret(value: str) -> str:
     return value[:4] + ("*" * (length - 8)) + value[-4:]
 
 
-def shannon_entropy(data: str) -> float:
+def calculate_shannon_entropy(data: str) -> float:
     """Calculate the Shannon entropy H(X) in bits per character.
 
-    Returns 0.0 for empty string.
+    Standard base-2 Shannon entropy calculation.
+    Returns 0.0 for empty or single-character strings.
     """
-    if not data:
+    if not data or len(data) <= 1:
         return 0.0
     length = len(data)
     counts = Counter(data)
@@ -96,6 +103,243 @@ def shannon_entropy(data: str) -> float:
         p = count / length
         entropy -= p * math.log2(p)
     return entropy
+
+
+def shannon_entropy(data: str) -> float:
+    """Calculate the Shannon entropy H(X) in bits per character (legacy alias)."""
+    return calculate_shannon_entropy(data)
+
+
+# ---------------------------------------------------------------------------
+# Multi-Provider Regex Registry & Entropy Vault (TruffleHog / GitGuardian standard)
+# ---------------------------------------------------------------------------
+
+class _SecretPatternsDict(dict):
+    """Dictionary supporting flexible case-insensitive and delimiter-free lookup."""
+
+    def __getitem__(self, key):
+        if key in self:
+            return super().__getitem__(key)
+        norm = re.sub(r"[\s_\-]", "", str(key).lower())
+        for k, v in self.items():
+            if re.sub(r"[\s_\-]", "", str(k).lower()) == norm:
+                return v
+        raise KeyError(key)
+
+    def get(self, key, default=None):
+        try:
+            return self[key]
+        except KeyError:
+            return default
+
+
+SECRET_PATTERNS = _SecretPatternsDict({
+    "AWS Access Key": re.compile(r"\b(?:AKIA|ASIA|ABIA|ACCA)[0-9A-Z]{14,16}\b"),
+    "AWS Secret Key": re.compile(
+        r"(?i)(?:aws_secret_access_key|aws_secret|secret_key|secret_access_key)\s*[:=]\s*['\"]?([A-Za-z0-9/+=]{40})['\"]?"
+    ),
+    "GitHub Token": re.compile(
+        r"\b(?:(?:ghp|gho|ghu|ghs|ghr)_[a-zA-Z0-9]{36}|github_pat_[a-zA-Z0-9_]{82,})\b"
+    ),
+    "Stripe API Key": re.compile(r"\b(?:sk|pk|rk)_(?:live|test)_[0-9a-zA-Z]{24,}\b"),
+    "Slack API Token": re.compile(r"\bxox[baprs]-[0-9a-zA-Z]{10,48}(?:-[0-9a-zA-Z]{10,48})*\b"),
+    "Google API Key": re.compile(r"\bAIza[0-9A-Za-z\-_]{35}\b"),
+    "Asymmetric Private Key": re.compile(
+        r"-----BEGIN (?:(?:RSA|EC|DSA|OPENSSH) )?PRIVATE KEY-----[\s\S]*?-----END (?:(?:RSA|EC|DSA|OPENSSH) )?PRIVATE KEY-----|-----BEGIN (?:RSA|EC|DSA|OPENSSH|PRIVATE)(?: PRIVATE)? KEY-----"
+    ),
+})
+
+HIGH_ENTROPY_VAR_KEYWORDS = ("secret", "token", "key", "password", "auth", "cred")
+HIGH_ENTROPY_ASSIGN_REGEX = re.compile(
+    r"""(?i)\b([a-z0-9_]*(?:secret|token|key|password|auth|cred)[a-z0-9_]*)\s*[:=]\s*['"]([^'"]{16,})['"]"""
+)
+_HEX_REGEX = re.compile(r"^[0-9a-fA-F]+$")
+
+
+def is_adaptive_high_entropy_secret(val_str: str) -> bool:
+    """Character-set adaptive entropy validation (TruffleHog / GitGuardian standard).
+
+    - Pure hexadecimal (^[0-9a-fA-F]+$): threshold >= 3.0 with length >= 24.
+      (Theoretical maximum for base-16 is log2(16) = 4.0 bits/char).
+    - Mixed alphanumeric/special characters: threshold >= 4.3 with length >= 16.
+    """
+    if not val_str:
+        return False
+    length = len(val_str)
+    if _HEX_REGEX.match(val_str):
+        return length >= 24 and calculate_shannon_entropy(val_str) >= 3.0
+    return length >= 16 and calculate_shannon_entropy(val_str) >= 4.3
+
+
+class VaultRestorationError(ValueError, RuntimeError):
+    """Raised when one or more vault tokens remain unrestored."""
+    pass
+
+
+def find_high_entropy_secrets_ast(code: str) -> List[str]:
+    """Find variable assignments matching credential keywords with adaptive entropy using AST."""
+    secrets_found: List[str] = []
+    try:
+        tree = ast.parse(code)
+        for node in ast.walk(tree):
+            target_names: List[str] = []
+            if isinstance(node, ast.Assign):
+                for t in node.targets:
+                    if isinstance(t, ast.Name):
+                        target_names.append(t.id)
+            elif isinstance(node, ast.AnnAssign) and isinstance(node.target, ast.Name):
+                target_names.append(node.target.id)
+
+            if not target_names:
+                continue
+
+            val_str = None
+            if isinstance(node.value, ast.Constant) and isinstance(node.value.value, str):
+                val_str = node.value.value
+            elif isinstance(node.value, ast.Str):
+                val_str = node.value.s
+
+            if val_str and len(val_str) >= 16:
+                for var_name in target_names:
+                    var_lower = var_name.lower()
+                    if any(kw in var_lower for kw in HIGH_ENTROPY_VAR_KEYWORDS):
+                        if is_adaptive_high_entropy_secret(val_str):
+                            secrets_found.append(val_str)
+                            break
+    except Exception:
+        pass
+    return secrets_found
+
+
+def find_high_entropy_secrets_regex(code: str) -> List[str]:
+    """Fallback regex scanner for high-entropy credential assignments with adaptive entropy."""
+    secrets_found: List[str] = []
+    for m in HIGH_ENTROPY_ASSIGN_REGEX.finditer(code):
+        candidate = m.group(2)
+        if is_adaptive_high_entropy_secret(candidate):
+            secrets_found.append(candidate)
+    return secrets_found
+
+
+class SecretVault:
+    """Enterprise-grade reversible secret redaction vault (TruffleHog / GitGuardian standard).
+
+    Reversibly replaces detected secrets with deterministic sequential tokens:
+    '__TCS_VAULT_TOKEN_<idx>__' based on the order of appearance in the file.
+    Restores original secrets losslessly while verifying token restoration integrity.
+    """
+
+    def __init__(self):
+        self.vault_map: Dict[str, str] = {}
+
+    def redact_code(self, code: str) -> str:
+        redacted, vmap = self.redact(code)
+        self.vault_map.update(vmap)
+        return redacted
+
+    def restore_code(self, redacted_code: str, fallback_on_error: bool = False) -> str:
+        return self.restore(redacted_code, self.vault_map, fallback_on_error=fallback_on_error)
+
+    @classmethod
+    def find_all_secrets(cls, code: str) -> List[str]:
+        """Detect all secrets in code matching provider patterns and adaptive entropy heuristic."""
+        if not code:
+            return []
+        detected = set()
+
+        for pat_name, pat in SECRET_PATTERNS.items():
+            for m in pat.finditer(code):
+                if pat_name == "AWS Secret Key":
+                    try:
+                        secret_val = m.group(1) if m.group(1) else m.group(0)
+                    except (IndexError, AttributeError):
+                        secret_val = m.group(0)
+                else:
+                    secret_val = m.group(0)
+                if secret_val and not secret_val.startswith("__TCS_VAULT_TOKEN_"):
+                    detected.add(secret_val)
+
+        for s in find_high_entropy_secrets_ast(code):
+            if s and not s.startswith("__TCS_VAULT_TOKEN_"):
+                detected.add(s)
+
+        for s in find_high_entropy_secrets_regex(code):
+            if s and not s.startswith("__TCS_VAULT_TOKEN_"):
+                detected.add(s)
+
+        # Sort longer secrets first to avoid prefix collisions during substitution
+        return sorted(detected, key=len, reverse=True)
+
+    @classmethod
+    def redact(cls, code: str) -> Tuple[str, Dict[str, str]]:
+        """Deterministically redact all detected secrets into reversible vault tokens.
+
+        Sequential tokens f"__TCS_VAULT_TOKEN_{idx}__" are assigned based on the
+        order of appearance in the file, ensuring 100% deterministic code hashes.
+        Returns (redacted_code, vault_map) where vault_map maps tokens to original secrets.
+        """
+        if not code:
+            return "", {}
+
+        secrets = cls.find_all_secrets(code)
+        if not secrets:
+            return code, {}
+
+        # Establish deterministic order based on first appearance in code
+        def appearance_key(s: str) -> Tuple[int, int, str]:
+            pos = code.find(s)
+            return (pos if pos != -1 else 999999999, -len(s), s)
+
+        sorted_by_appearance = sorted(secrets, key=appearance_key)
+
+        secret_to_token: Dict[str, str] = {}
+        for idx, secret in enumerate(sorted_by_appearance, start=1):
+            if secret not in secret_to_token:
+                secret_to_token[secret] = f"__TCS_VAULT_TOKEN_{idx}__"
+
+        vault_map: Dict[str, str] = {token: secret for secret, token in secret_to_token.items()}
+
+        # Replace secrets in descending order of length to prevent substring corruption
+        redacted_code = code
+        for secret in sorted(secret_to_token.keys(), key=len, reverse=True):
+            token = secret_to_token[secret]
+            redacted_code = redacted_code.replace(secret, token)
+
+        return redacted_code, vault_map
+
+    @classmethod
+    def restore(cls, redacted_code: str, vault_map: Dict[str, str], fallback_on_error: bool = False) -> str:
+        """Losslessly restore all vaulted secrets in redacted_code using vault_map.
+
+        Verifies that no token from vault_map remains in the restored code.
+        If any token remains unreplaced:
+          - If fallback_on_error is True: returns best-effort restoration.
+          - Otherwise: raises VaultRestorationError.
+        """
+        if not redacted_code:
+            return ""
+
+        restored_code = redacted_code
+        if vault_map:
+            # Sort tokens by length descending
+            for token, original_secret in sorted(vault_map.items(), key=lambda x: len(x[0]), reverse=True):
+                restored_code = restored_code.replace(token, original_secret)
+
+        # Integrity verification: verify that NO token from vault_map remains in restored code
+        unrestored_tokens = [tok for tok in (vault_map or {}) if tok in restored_code]
+        residual_tokens = re.findall(r"__TCS_VAULT_TOKEN_[a-zA-Z0-9_]+__", restored_code)
+        remaining = list(dict.fromkeys(unrestored_tokens + residual_tokens))
+        if remaining:
+            msg = (
+                f"Vault restoration integrity failure: {len(remaining)} unreplaced token(s) "
+                f"remain in code: {remaining}"
+            )
+            if fallback_on_error:
+                return restored_code
+            raise VaultRestorationError(msg)
+
+        return restored_code
+
 
 
 # ---------------------------------------------------------------------------
