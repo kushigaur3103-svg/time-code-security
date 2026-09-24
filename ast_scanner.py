@@ -452,6 +452,27 @@ SANITIZER_REGISTRY = {
 
 PRIMITIVE_NUMERIC_CASTS = {"int", "float", "bool", "math.floor", "math.ceil"}
 
+CWE338_SECURITY_KEYWORDS = (
+    "token", "key", "secret", "password", "session",
+    "auth", "nonce", "salt", "otp", "pin", "csrf"
+)
+CWE338_SECURITY_FUNC_KEYWORDS = (
+    "auth", "login", "session", "token", "crypto", "hash",
+    "password", "secret", "set_cookie", "cookie", "jwt",
+    "verify", "credentials", "cipher", "authenticate"
+)
+CWE327_NON_CRYPTO_KEYWORDS = ("cache_key", "etag", "checksum", "fingerprint", "thumb")
+CWE_PREDICATE_GUARDS = {
+    "is_safe_url", "validate_url", "check_domain_allowlist", "is_allowed_domain",
+    "validate_private_ip", "is_private_ip", "is_safe_redirect_url", "validate_redirect_url",
+    "url_has_allowed_host_and_scheme", "is_relative_url"
+}
+NETWORK_INPUT_KEYWORDS = (
+    "request", "stream", "socket", "sock", "uploaded_file", "upload",
+    "files", "client", "connection", "conn", "raw", "aiohttp", "httpx",
+    "urllib", "body_file", "raw_request", "wsgi", "network"
+)
+
 # String/bytes methods that never cleanse taint: the result carries the receiver's
 # taint state unchanged (e.g. request.get_data().decode(), cookie.split(":")[0]).
 TAINT_PRESERVING_RECEIVER_METHODS = {
@@ -638,7 +659,11 @@ class TaintTracker:
             mod_name = fpath.replace("\\\\", "/").replace(".py", "").replace("/", ".")
             if mod_name.endswith(".__init__"): mod_name = mod_name[:-9]
             try:
-                self.modules[mod_name] = ast.parse(code, filename=fpath)
+                tree = ast.parse(code, filename=fpath)
+                for p in ast.walk(tree):
+                    for child in ast.iter_child_nodes(p):
+                        child.parent = p
+                self.modules[mod_name] = tree
                 self.file_paths[mod_name] = fpath
             except SyntaxError:
                 pass
@@ -1181,6 +1206,185 @@ class TaintTracker:
                 return True
         return False
 
+    def _is_security_sensitive_random(self, node: ast.Call, scope_id: str = "", lineno: int = 0) -> bool:
+        call_lineno = lineno or getattr(node, "lineno", 0)
+
+        # 1. Walk up the parent AST hierarchy to find enclosing assignment or call
+        curr = getattr(node, "parent", None)
+        while curr is not None:
+            if isinstance(curr, ast.Assign):
+                for t in curr.targets:
+                    if isinstance(t, ast.Name) and any(kw in t.id.lower() for kw in CWE338_SECURITY_KEYWORDS):
+                        return True
+                    if isinstance(t, ast.Attribute) and any(kw in t.attr.lower() for kw in CWE338_SECURITY_KEYWORDS):
+                        return True
+                    if isinstance(t, ast.Subscript) and isinstance(t.slice, (ast.Constant, ast.Str)):
+                        s_val = str(t.slice.value if isinstance(t.slice, ast.Constant) else t.slice.s).lower()
+                        if any(kw in s_val for kw in CWE338_SECURITY_KEYWORDS):
+                            return True
+                break
+            elif isinstance(curr, ast.AnnAssign):
+                if isinstance(curr.target, ast.Name) and any(kw in curr.target.id.lower() for kw in CWE338_SECURITY_KEYWORDS):
+                    return True
+                if isinstance(curr.target, ast.Attribute) and any(kw in curr.target.attr.lower() for kw in CWE338_SECURITY_KEYWORDS):
+                    return True
+                break
+            elif isinstance(curr, ast.Call) and curr is not node:
+                func_name = (dotted_name(curr.func) or "").lower()
+                if any(kw in func_name for kw in CWE338_SECURITY_FUNC_KEYWORDS):
+                    return True
+                for kw in getattr(curr, "keywords", []):
+                    if kw.arg and any(skw in kw.arg.lower() for kw in CWE338_SECURITY_KEYWORDS):
+                        return True
+            elif isinstance(curr, (ast.FunctionDef, ast.AsyncFunctionDef)):
+                if any(kw in curr.name.lower() for kw in CWE338_SECURITY_KEYWORDS):
+                    return True
+                break
+            elif isinstance(curr, (ast.ClassDef, ast.Module)):
+                break
+            curr = getattr(curr, "parent", None)
+
+        # 2. Check assignments_by_scope fallback
+        if scope_id:
+            for (sc, var_name), recs in self.assignments_by_scope.items():
+                if sc == scope_id:
+                    for r in recs:
+                        if r.lineno == call_lineno:
+                            for sub in ast.walk(r.value_node):
+                                if sub is node:
+                                    if any(kw in var_name.lower() for kw in CWE338_SECURITY_KEYWORDS):
+                                        return True
+        return False
+
+    def _is_exempt_cwe327(self, node: ast.Call, scope_id: str = "", lineno: int = 0) -> bool:
+        call_lineno = lineno or getattr(node, "lineno", 0)
+
+        # 1. Keyword usedforsecurity=False
+        for kw in getattr(node, "keywords", []):
+            if kw.arg == "usedforsecurity":
+                val = getattr(kw.value, "value", None)
+                if val is False:
+                    return True
+                if isinstance(kw.value, ast.NameConstant) and kw.value.value is False:
+                    return True
+
+        # 2. Check enclosing assignment targets for non-cryptographic checksumming
+        curr = getattr(node, "parent", None)
+        while curr is not None:
+            if isinstance(curr, ast.Assign):
+                for t in curr.targets:
+                    target_str = ""
+                    if isinstance(t, ast.Name): target_str = t.id.lower()
+                    elif isinstance(t, ast.Attribute): target_str = t.attr.lower()
+                    elif isinstance(t, ast.Subscript) and isinstance(t.slice, (ast.Constant, ast.Str)):
+                        target_str = str(t.slice.value if isinstance(t.slice, ast.Constant) else t.slice.s).lower()
+                    if any(kw in target_str for kw in CWE327_NON_CRYPTO_KEYWORDS):
+                        return True
+                break
+            elif isinstance(curr, ast.AnnAssign):
+                target_str = curr.target.id.lower() if isinstance(curr.target, ast.Name) else (curr.target.attr.lower() if isinstance(curr.target, ast.Attribute) else "")
+                if any(kw in target_str for kw in CWE327_NON_CRYPTO_KEYWORDS):
+                    return True
+                break
+            elif isinstance(curr, (ast.FunctionDef, ast.AsyncFunctionDef)):
+                if any(kw in curr.name.lower() for kw in CWE327_NON_CRYPTO_KEYWORDS):
+                    return True
+                break
+            elif isinstance(curr, (ast.ClassDef, ast.Module)):
+                break
+            curr = getattr(curr, "parent", None)
+
+        # 3. Fallback check via assignments_by_scope
+        if scope_id:
+            for (sc, var_name), recs in self.assignments_by_scope.items():
+                if sc == scope_id:
+                    for r in recs:
+                        if r.lineno == call_lineno:
+                            if any(kw in var_name.lower() for kw in CWE327_NON_CRYPTO_KEYWORDS):
+                                for sub in ast.walk(r.value_node):
+                                    if sub is node:
+                                        return True
+        return False
+
+    def _is_definitely_safe_local_read(self, receiver: ast.AST, scope_id: str = "", lineno: int = 0) -> bool:
+        if isinstance(receiver, ast.Call):
+            func_name = dotted_name(receiver.func) or ""
+            if func_name == "open" and receiver.args:
+                first_arg = receiver.args[0]
+                if isinstance(first_arg, (ast.Constant, ast.Str)):
+                    return True
+        return False
+
+    def _is_untrusted_stream(self, receiver: ast.AST, scope_id: str, lineno: int, recv_taint: Optional[TaintValue] = None) -> bool:
+        # 1. Receiver is tracked as tainted
+        if recv_taint and recv_taint.state == TaintState.TAINTED:
+            return True
+
+        # 2. Check names in receiver AST
+        for sub in ast.walk(receiver):
+            if isinstance(sub, ast.Name) and any(kw in sub.id.lower() for kw in NETWORK_INPUT_KEYWORDS):
+                return True
+            if isinstance(sub, ast.Attribute) and any(kw in sub.attr.lower() for kw in NETWORK_INPUT_KEYWORDS):
+                return True
+
+        # 3. Check taint path or trace
+        if recv_taint and hasattr(recv_taint, "path"):
+            for p in recv_taint.path:
+                p_lower = p.lower()
+                if any(kw in p_lower for kw in NETWORK_INPUT_KEYWORDS):
+                    return True
+
+        # 4. Check if receiver is a variable assigned from network / request input
+        if isinstance(receiver, ast.Name) and scope_id:
+            curr = scope_id
+            while curr:
+                recs = self.assignments_by_scope.get((curr, receiver.id), [])
+                for r in recs:
+                    if r.lineno <= lineno:
+                        for sub in ast.walk(r.value_node):
+                            if isinstance(sub, ast.Name) and any(kw in sub.id.lower() for kw in NETWORK_INPUT_KEYWORDS):
+                                return True
+                            if isinstance(sub, ast.Attribute) and any(kw in sub.attr.lower() for kw in NETWORK_INPUT_KEYWORDS):
+                                return True
+                            if isinstance(sub, ast.Call):
+                                call_name = (dotted_name(sub.func) or "").lower()
+                                if any(kw in call_name for kw in NETWORK_INPUT_KEYWORDS):
+                                    return True
+                if "." in curr:
+                    curr = curr.rsplit(".", 1)[0]
+                elif ":function" in curr:
+                    curr = f"{curr.split(':')[0]}:global"
+                else:
+                    break
+
+        return False
+
+    def _is_dummy_validator_func(self, func_node: ast.FunctionDef) -> bool:
+        """Check if a validator function is a dummy (e.g. merely returns True without checks)."""
+        meaningful = []
+        for s in func_node.body:
+            if isinstance(s, ast.Expr) and isinstance(s.value, (ast.Constant, ast.Str)):
+                continue  # docstring
+            if isinstance(s, ast.Pass):
+                continue
+            meaningful.append(s)
+        if not meaningful:
+            return True
+        if len(meaningful) == 1 and isinstance(meaningful[0], ast.Return):
+            ret_val = meaningful[0].value
+            if ret_val is None:
+                return True
+            if isinstance(ret_val, ast.Constant) and bool(ret_val.value) is True:
+                return True
+            if isinstance(ret_val, ast.NameConstant) and ret_val.value is True:
+                return True
+        has_check = any(isinstance(s, (ast.If, ast.Raise, ast.Assert, ast.Try)) for s in ast.walk(func_node))
+        if not has_check:
+            has_validation = any(isinstance(s, (ast.Compare, ast.Call, ast.BoolOp)) for s in ast.walk(func_node))
+            if not has_validation:
+                return True
+        return False
+
     def is_sink_call(self, node: ast.AST, scope_id: str = "", lineno: int = 0) -> bool:
         if not isinstance(node, ast.Call): return False
         call_lineno = lineno or getattr(node, "lineno", 0)
@@ -1196,6 +1400,24 @@ class TaintTracker:
         if self._has_disabled_ssl(node):
             return True
 
+        # Check for CWE-327 exemption (usedforsecurity=False or non-crypto checksum target)
+        if self._is_exempt_cwe327(node, scope_id, call_lineno):
+            return False
+
+        # Check for CWE-338 (Randomness): only classify as sink in security contexts
+        candidates = {c for c in (name, canon) if c}
+        for c in list(candidates):
+            if "." in c:
+                candidates.add(c.split(".")[-1])
+
+        cwe338_names = {
+            "random.random", "random.randint", "random.choice", "random.randrange", "random.sample",
+            "randint", "randrange", "choice", "sample"
+        }
+        if candidates & cwe338_names:
+            if not self._is_security_sensitive_random(node, scope_id, call_lineno):
+                return False
+
         if canon:
             if canon.startswith("shadowed:"):
                 return False
@@ -1203,6 +1425,10 @@ class TaintTracker:
                 return False
             matched = match_sink_rule(node, name, canon)
             if matched:
+                if matched.cwe_id == "CWE-327" and self._is_exempt_cwe327(node, scope_id, call_lineno):
+                    return False
+                if matched.cwe_id == "CWE-338" and not self._is_security_sensitive_random(node, scope_id, call_lineno):
+                    return False
                 if isinstance(node.func, ast.Attribute) and node.func.attr == "render":
                     if not self._is_jinja_template_expr(node.func.value, scope_id):
                         return False
@@ -1213,18 +1439,24 @@ class TaintTracker:
                 return False
             matched = match_sink_rule(node, name, canon)
             if matched:
+                if matched.cwe_id == "CWE-327" and self._is_exempt_cwe327(node, scope_id, call_lineno):
+                    return False
+                if matched.cwe_id == "CWE-338" and not self._is_security_sensitive_random(node, scope_id, call_lineno):
+                    return False
                 if isinstance(node.func, ast.Attribute) and node.func.attr == "render":
                     if not self._is_jinja_template_expr(node.func.value, scope_id):
                         return False
                 return True
 
         # Check direct SINK_REGISTRY membership
-        candidates = {c for c in (name, canon) if c}
-        for c in list(candidates):
-            if "." in c:
-                candidates.add(c.split(".")[-1])
-        if any(c in SINK_REGISTRY for c in candidates):
-            return True
+        for c in candidates:
+            if c in SINK_REGISTRY:
+                cwe = SINK_REGISTRY[c].get("cwe")
+                if cwe == "CWE-327" and self._is_exempt_cwe327(node, scope_id, call_lineno):
+                    return False
+                if cwe == "CWE-338" and not self._is_security_sensitive_random(node, scope_id, call_lineno):
+                    return False
+                return True
 
         if isinstance(node.func, ast.Attribute):
             if node.func.attr in {"read_text", "read_bytes", "write_text", "write_bytes"}:
@@ -1235,10 +1467,14 @@ class TaintTracker:
                 return True
             # Unbounded file read without size parameter (CWE-400)
             if node.func.attr == "read" and len(node.args) == 0:
+                if self._is_definitely_safe_local_read(node.func.value, scope_id, call_lineno):
+                    return False
                 return True
         return False
 
     def check_sink_safety(self, node: ast.Call, sink_name: str) -> bool:
+        if self._is_exempt_cwe327(node):
+            return True
         if check_sink_safety_rules(node, sink_name):
             return True
         return False
@@ -1298,6 +1534,14 @@ class TaintTracker:
     def sanitizer_protects_context(self, function_name: str, sink: SecurityNode) -> bool:
         if not sink or not hasattr(sink, "metadata"):
             return False
+
+        # Predicate guards (e.g. is_safe_url, is_safe_redirect_url) are NOT expression sanitizers.
+        # They only protect when evaluated as conditional guards enclosing the sink.
+        fn_clean = function_name.replace("builtins.", "")
+        fn_short = fn_clean.split(".")[-1]
+        if fn_clean in CWE_PREDICATE_GUARDS or fn_short in CWE_PREDICATE_GUARDS:
+            return False
+
         sink_cwe = sink.metadata.get("cwe")
         sink_type = sink.metadata.get("sink_type") or sink.metadata.get("category")
 
@@ -1305,8 +1549,6 @@ class TaintTracker:
         if sink_cwe and sink_cwe in SANITIZER_REGISTRY:
             cwe_sanitizers = SANITIZER_REGISTRY[sink_cwe]
             if isinstance(cwe_sanitizers, (set, list, tuple)):
-                fn_clean = function_name.replace("builtins.", "")
-                fn_short = fn_clean.split(".")[-1]
                 if fn_clean in cwe_sanitizers or fn_short in cwe_sanitizers:
                     return True
 
@@ -1368,8 +1610,21 @@ class TaintTracker:
                              "is_safe_redirect_url", "validate_redirect_url", "url_has_allowed_host_and_scheme",
                              "is_relative_url", "is_private_ip", "validate_private_ip")
                 if any(fn_name == vf or fn_name.endswith(f".{vf}") for vf in val_funcs):
-                    if test_node.args and isinstance(test_node.args[0], ast.Name):
-                        pairs.append((test_node.args[0].id, None))
+                    if test_node.args:
+                        short_fn = fn_name.split(".")[-1]
+                        func_node = None
+                        for f_scope, f_def in self.functions.items():
+                            if f_def.name == short_fn or f_scope.endswith(f":{short_fn}"):
+                                func_node = f_def
+                                break
+                        if func_node and self._is_dummy_validator_func(func_node):
+                            pass  # Dummy validator (e.g. return True): DO NOT create containment guard!
+                        else:
+                            arg0 = test_node.args[0]
+                            if isinstance(arg0, ast.Name):
+                                pairs.append((arg0.id, None))
+                            elif isinstance(arg0, ast.Attribute):
+                                pairs.append((arg0.attr, None))
         elif isinstance(test_node, ast.BoolOp) and isinstance(test_node.op, ast.And):
             for val in test_node.values:
                 pairs.extend(self._extract_containment_pairs(val))
@@ -1392,7 +1647,10 @@ class TaintTracker:
         for guard in self.containment_guards:
             if guard["var_name"] == var_name:
                 if guard["scope_id"] == scope_id or scope_id.startswith(guard["scope_id"] + "."):
-                    is_in_body = (guard["start_line"] <= lineno <= guard["end_line"]) or (guard["start_line"] <= sink_line <= guard["end_line"])
+                    if sink and hasattr(sink, "location") and sink.location:
+                        is_in_body = (guard["start_line"] <= sink_line <= guard["end_line"])
+                    else:
+                        is_in_body = (guard["start_line"] <= lineno <= guard["end_line"])
                     if is_in_body:
                         # Check if var_name was reassigned between check_line and current evaluation line
                         check_pt = max(lineno, sink_line)
@@ -1797,7 +2055,7 @@ class TaintTracker:
                                 "start_line": stmt.lineno + 1,
                                 "end_line": 999999,
                             })
-                    elif stmt.body:
+                    elif not is_inverted and stmt.body:
                         body_start = stmt.body[0].lineno
                         body_end = max(getattr(s, "end_lineno", s.lineno) for s in stmt.body)
                         for target_name, base_node in pairs:
@@ -1808,6 +2066,18 @@ class TaintTracker:
                                 "check_line": stmt.lineno,
                                 "start_line": body_start,
                                 "end_line": body_end,
+                            })
+                    elif is_inverted and stmt.orelse:
+                        orelse_start = stmt.orelse[0].lineno
+                        orelse_end = max(getattr(s, "end_lineno", s.lineno) for s in stmt.orelse)
+                        for target_name, base_node in pairs:
+                            self.containment_guards.append({
+                                "var_name": target_name,
+                                "base_node": base_node,
+                                "scope_id": scope_id,
+                                "check_line": stmt.lineno,
+                                "start_line": orelse_start,
+                                "end_line": orelse_end,
                             })
                 self.collect_statements(stmt.body, scope_id=scope_id, is_conditional=True)
                 self.collect_statements(stmt.orelse, scope_id=scope_id, is_conditional=True)
@@ -4338,12 +4608,28 @@ class TaintTracker:
                 continue
 
             if op == "UNBOUNDED_READ" or (cwe in ("CWE-400", "CWE-776") and isinstance(record.node.func, ast.Attribute) and record.node.func.attr == "read" and len(record.node.args) == 0):
+                receiver = record.node.func.value
+                recv_taint = self.resolve_expression(receiver, sink, record.scope_id, record.lineno, call_context=record.call_context)
+                if not self._is_untrusted_stream(receiver, record.scope_id, record.lineno, recv_taint):
+                    if sink in self.sinks:
+                        self.sinks.remove(sink)
+                    continue
+
+                source_id = recv_taint.source_id if (recv_taint and recv_taint.source_id) else "UNBOUNDED_READ"
+                confidence = recv_taint.confidence if (recv_taint and recv_taint.state == TaintState.TAINTED) else (1.0 if self.audit_all else 0.85)
+                kind = "CONFIRMED_DATA_FLOW" if confidence >= 1.0 else "POTENTIAL_DATA_FLOW"
+                full_path_str = " -> ".join(recv_taint.path) if (recv_taint and recv_taint.path) else "unbounded_file_read"
+                pg = None
+                if recv_taint and recv_taint.state in (TaintState.TAINTED, TaintState.UNKNOWN):
+                    pg = self._build_proof_graph(recv_taint, sink, record, cwe or "CWE-400")
+
                 self.edges.append(DataFlowEdge(
-                    source_id="UNBOUNDED_READ",
+                    source_id=source_id,
                     target_id=sink.id,
-                    kind="CONFIRMED_DATA_FLOW" if self.audit_all else "POTENTIAL_DATA_FLOW",
-                    confidence=1.0 if self.audit_all else 0.85,
-                    transform="unbounded_file_read"
+                    kind=kind,
+                    confidence=confidence,
+                    transform=full_path_str,
+                    proof_graph=pg
                 ))
                 continue
 
