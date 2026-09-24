@@ -1497,7 +1497,6 @@ def main(argv: Optional[List[str]] = None):
                         _jf["id"] = f"TCS-JS-{_py_count + _i + 1:03d}"
                     results["findings"] = results.get("findings", []) + _js_findings
                     # Recompute summary metrics to include JS findings
-                    from staged_scanner import recompute_summary_metrics
                     _js_lines = sum(
                         len(p.read_bytes().split(b"\n"))
                         for p in _js_scanner_inst._discover_js_files(target, None)
