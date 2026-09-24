@@ -332,6 +332,53 @@ SANITIZER_REGISTRY = {
     },
     "CWE-95": {"safe_eval_input"},
     "CWE-79": {"html.escape"},
+    "CWE-918": {
+        "is_safe_url", "validate_url",
+        "check_domain_allowlist", "is_allowed_domain",
+        "validate_private_ip", "is_private_ip",
+    },
+    "CWE-611": {
+        "defusedxml.ElementTree.parse", "defusedxml.ElementTree.fromstring",
+        "defusedxml.parse", "defusedxml.fromstring",
+        "defused_parse", "defused_fromstring",
+    },
+    "CWE-601": {
+        "is_safe_redirect_url", "validate_redirect_url",
+        "url_has_allowed_host_and_scheme", "is_relative_url",
+    },
+    "CWE-327": {
+        "hashlib.sha256", "sha256",
+        "hashlib.sha512", "sha512",
+        "bcrypt.hashpw", "bcrypt",
+        "argon2.PasswordHasher", "argon2",
+    },
+    "CWE-328": {
+        "hashlib.sha256", "sha256",
+        "hashlib.sha512", "sha512",
+        "bcrypt.hashpw", "bcrypt",
+        "argon2.PasswordHasher", "argon2",
+    },
+    "CWE-338": {
+        "secrets.token_hex", "token_hex",
+        "secrets.token_urlsafe", "token_urlsafe",
+        "secrets.choice",
+        "os.urandom",
+        "secrets.randbelow", "randbelow",
+    },
+    "CWE-295": {
+        "verify_ssl_cert",
+        "ssl.create_default_context", "create_default_context",
+        "cert_verify",
+    },
+    "CWE-400": {
+        "re.escape", "escape",
+        "safe_read_chunked", "read_chunked",
+    },
+    "CWE-776": {
+        "defusedxml.ElementTree.parse", "defusedxml.ElementTree.fromstring",
+        "defusedxml.parse", "defusedxml.fromstring",
+        "defused_parse", "defused_fromstring",
+    },
 
     # Function-to-Metadata Mapping (Backward compatibility & fine-grained sink matching)
     "html.escape": {"protected_cwes": {"CWE-79"}, "protected_sinks": {"XSS"}},
@@ -347,6 +394,60 @@ SANITIZER_REGISTRY = {
     "Path.name": {"protected_cwes": {"CWE-22"}, "protected_sinks": {"PATH_TRAVERSAL", "FILE_ACCESS"}},
     "uuid.UUID": {"protected_cwes": {"CWE-22"}, "protected_sinks": {"PATH_TRAVERSAL", "FILE_ACCESS"}},
     "UUID": {"protected_cwes": {"CWE-22"}, "protected_sinks": {"PATH_TRAVERSAL", "FILE_ACCESS"}},
+
+    # CWE-918 Sanitizers
+    "is_safe_url": {"protected_cwes": {"CWE-918"}, "protected_sinks": {"SERVER_SIDE_REQUEST_FORGERY", "SSRF_REQUEST"}},
+    "validate_url": {"protected_cwes": {"CWE-918"}, "protected_sinks": {"SERVER_SIDE_REQUEST_FORGERY", "SSRF_REQUEST"}},
+    "check_domain_allowlist": {"protected_cwes": {"CWE-918"}, "protected_sinks": {"SERVER_SIDE_REQUEST_FORGERY", "SSRF_REQUEST"}},
+    "is_allowed_domain": {"protected_cwes": {"CWE-918"}, "protected_sinks": {"SERVER_SIDE_REQUEST_FORGERY", "SSRF_REQUEST"}},
+    "validate_private_ip": {"protected_cwes": {"CWE-918"}, "protected_sinks": {"SERVER_SIDE_REQUEST_FORGERY", "SSRF_REQUEST"}},
+    "is_private_ip": {"protected_cwes": {"CWE-918"}, "protected_sinks": {"SERVER_SIDE_REQUEST_FORGERY", "SSRF_REQUEST"}},
+
+    # CWE-611 Sanitizers
+    "defusedxml.ElementTree.parse": {"protected_cwes": {"CWE-611", "CWE-776"}, "protected_sinks": {"XML_PARSING", "XML_EXTERNAL_ENTITY"}},
+    "defusedxml.ElementTree.fromstring": {"protected_cwes": {"CWE-611", "CWE-776"}, "protected_sinks": {"XML_PARSING", "XML_EXTERNAL_ENTITY"}},
+    "defusedxml.parse": {"protected_cwes": {"CWE-611", "CWE-776"}, "protected_sinks": {"XML_PARSING", "XML_EXTERNAL_ENTITY"}},
+    "defusedxml.fromstring": {"protected_cwes": {"CWE-611", "CWE-776"}, "protected_sinks": {"XML_PARSING", "XML_EXTERNAL_ENTITY"}},
+    "defused_parse": {"protected_cwes": {"CWE-611", "CWE-776"}, "protected_sinks": {"XML_PARSING", "XML_EXTERNAL_ENTITY"}},
+    "defused_fromstring": {"protected_cwes": {"CWE-611", "CWE-776"}, "protected_sinks": {"XML_PARSING", "XML_EXTERNAL_ENTITY"}},
+
+    # CWE-601 Sanitizers
+    "is_safe_redirect_url": {"protected_cwes": {"CWE-601"}, "protected_sinks": {"OPEN_REDIRECT", "URL_REDIRECTION"}},
+    "validate_redirect_url": {"protected_cwes": {"CWE-601"}, "protected_sinks": {"OPEN_REDIRECT", "URL_REDIRECTION"}},
+    "url_has_allowed_host_and_scheme": {"protected_cwes": {"CWE-601"}, "protected_sinks": {"OPEN_REDIRECT", "URL_REDIRECTION"}},
+    "is_relative_url": {"protected_cwes": {"CWE-601"}, "protected_sinks": {"OPEN_REDIRECT", "URL_REDIRECTION"}},
+
+    # CWE-327 / CWE-328 Sanitizers
+    "hashlib.sha256": {"protected_cwes": {"CWE-327", "CWE-328"}, "protected_sinks": {"WEAK_HASH", "WEAK_CRYPTOGRAPHY"}},
+    "sha256": {"protected_cwes": {"CWE-327", "CWE-328"}, "protected_sinks": {"WEAK_HASH", "WEAK_CRYPTOGRAPHY"}},
+    "hashlib.sha512": {"protected_cwes": {"CWE-327", "CWE-328"}, "protected_sinks": {"WEAK_HASH", "WEAK_CRYPTOGRAPHY"}},
+    "sha512": {"protected_cwes": {"CWE-327", "CWE-328"}, "protected_sinks": {"WEAK_HASH", "WEAK_CRYPTOGRAPHY"}},
+    "bcrypt.hashpw": {"protected_cwes": {"CWE-327", "CWE-328"}, "protected_sinks": {"WEAK_HASH", "WEAK_CRYPTOGRAPHY"}},
+    "bcrypt": {"protected_cwes": {"CWE-327", "CWE-328"}, "protected_sinks": {"WEAK_HASH", "WEAK_CRYPTOGRAPHY"}},
+    "argon2.PasswordHasher": {"protected_cwes": {"CWE-327", "CWE-328"}, "protected_sinks": {"WEAK_HASH", "WEAK_CRYPTOGRAPHY"}},
+    "argon2": {"protected_cwes": {"CWE-327", "CWE-328"}, "protected_sinks": {"WEAK_HASH", "WEAK_CRYPTOGRAPHY"}},
+
+    # CWE-338 Sanitizers
+    "secrets.token_hex": {"protected_cwes": {"CWE-338"}, "protected_sinks": {"INSECURE_RANDOM", "INSECURE_RANDOMNESS"}},
+    "token_hex": {"protected_cwes": {"CWE-338"}, "protected_sinks": {"INSECURE_RANDOM", "INSECURE_RANDOMNESS"}},
+    "secrets.token_urlsafe": {"protected_cwes": {"CWE-338"}, "protected_sinks": {"INSECURE_RANDOM", "INSECURE_RANDOMNESS"}},
+    "token_urlsafe": {"protected_cwes": {"CWE-338"}, "protected_sinks": {"INSECURE_RANDOM", "INSECURE_RANDOMNESS"}},
+    "secrets.choice": {"protected_cwes": {"CWE-338"}, "protected_sinks": {"INSECURE_RANDOM", "INSECURE_RANDOMNESS"}},
+    "os.urandom": {"protected_cwes": {"CWE-338"}, "protected_sinks": {"INSECURE_RANDOM", "INSECURE_RANDOMNESS"}},
+    "secrets.randbelow": {"protected_cwes": {"CWE-338"}, "protected_sinks": {"INSECURE_RANDOM", "INSECURE_RANDOMNESS"}},
+    "randbelow": {"protected_cwes": {"CWE-338"}, "protected_sinks": {"INSECURE_RANDOM", "INSECURE_RANDOMNESS"}},
+
+    # CWE-295 Sanitizers
+    "verify_ssl_cert": {"protected_cwes": {"CWE-295"}, "protected_sinks": {"DISABLED_SSL_VERIFICATION", "INSECURE_TRANSPORT"}},
+    "ssl.create_default_context": {"protected_cwes": {"CWE-295"}, "protected_sinks": {"DISABLED_SSL_VERIFICATION", "INSECURE_TRANSPORT"}},
+    "create_default_context": {"protected_cwes": {"CWE-295"}, "protected_sinks": {"DISABLED_SSL_VERIFICATION", "INSECURE_TRANSPORT"}},
+    "cert_verify": {"protected_cwes": {"CWE-295"}, "protected_sinks": {"DISABLED_SSL_VERIFICATION", "INSECURE_TRANSPORT"}},
+
+    # CWE-400 / CWE-776 Sanitizers
+    "re.escape": {"protected_cwes": {"CWE-400", "CWE-776", "CWE-1333"}, "protected_sinks": {"REGEX_COMPILATION", "REGULAR_EXPRESSION_DOS", "RESOURCE_EXHAUSTION"}},
+    "escape": {"protected_cwes": {"CWE-400", "CWE-776", "CWE-1333"}, "protected_sinks": {"REGEX_COMPILATION", "REGULAR_EXPRESSION_DOS", "RESOURCE_EXHAUSTION"}},
+    "safe_read_chunked": {"protected_cwes": {"CWE-400", "CWE-776"}, "protected_sinks": {"RESOURCE_EXHAUSTION", "FILE_ACCESS"}},
+    "read_chunked": {"protected_cwes": {"CWE-400", "CWE-776"}, "protected_sinks": {"RESOURCE_EXHAUSTION", "FILE_ACCESS"}},
 }
 
 PRIMITIVE_NUMERIC_CASTS = {"int", "float", "bool", "math.floor", "math.ceil"}
@@ -367,44 +468,97 @@ CONTAINER_MUTATION_METHODS = {
 }
 
 SINK_REGISTRY = {
+    # CWE-95: Code Execution
     "eval": {"operation": "ARBITRARY_CODE_EXECUTION", "category": "CODE_EXECUTION", "cwe": "CWE-95"},
     "exec": {"operation": "ARBITRARY_CODE_EXECUTION", "category": "CODE_EXECUTION", "cwe": "CWE-95"},
     "compile": {"operation": "ARBITRARY_CODE_EXECUTION", "category": "CODE_EXECUTION", "cwe": "CWE-95"},
     "builtins.eval": {"operation": "ARBITRARY_CODE_EXECUTION", "category": "CODE_EXECUTION", "cwe": "CWE-95"},
     "builtins.exec": {"operation": "ARBITRARY_CODE_EXECUTION", "category": "CODE_EXECUTION", "cwe": "CWE-95"},
     "builtins.compile": {"operation": "ARBITRARY_CODE_EXECUTION", "category": "CODE_EXECUTION", "cwe": "CWE-95"},
+
+    # CWE-78: Command Injection
     "os.system": {"operation": "OS_COMMAND_EXECUTION", "category": "COMMAND_INJECTION", "cwe": "CWE-78"},
     "subprocess.run": {"operation": "OS_COMMAND_EXECUTION", "category": "COMMAND_INJECTION", "cwe": "CWE-78"},
     "subprocess.call": {"operation": "OS_COMMAND_EXECUTION", "category": "COMMAND_INJECTION", "cwe": "CWE-78"},
     "subprocess.check_call": {"operation": "OS_COMMAND_EXECUTION", "category": "COMMAND_INJECTION", "cwe": "CWE-78"},
     "subprocess.check_output": {"operation": "OS_COMMAND_EXECUTION", "category": "COMMAND_INJECTION", "cwe": "CWE-78"},
     "subprocess.Popen": {"operation": "OS_COMMAND_EXECUTION", "category": "COMMAND_INJECTION", "cwe": "CWE-78"},
+
+    # CWE-502: Unsafe Deserialization
     "pickle.loads": {"operation": "DESERIALIZATION", "category": "UNSAFE_DESERIALIZATION", "cwe": "CWE-502"},
     "pickle.load": {"operation": "DESERIALIZATION", "category": "UNSAFE_DESERIALIZATION", "cwe": "CWE-502"},
     "_pickle.loads": {"operation": "DESERIALIZATION", "category": "UNSAFE_DESERIALIZATION", "cwe": "CWE-502"},
     "_pickle.load": {"operation": "DESERIALIZATION", "category": "UNSAFE_DESERIALIZATION", "cwe": "CWE-502"},
     "yaml.load": {"operation": "DESERIALIZATION", "category": "UNSAFE_DESERIALIZATION", "cwe": "CWE-502"},
     "yaml.unsafe_load": {"operation": "DESERIALIZATION", "category": "UNSAFE_DESERIALIZATION", "cwe": "CWE-502"},
+
+    # CWE-22: Path Traversal
     "open": {"operation": "FILE_ACCESS", "category": "PATH_TRAVERSAL", "cwe": "CWE-22"},
     "shutil.rmtree": {"operation": "FILE_DELETE", "category": "PATH_TRAVERSAL", "cwe": "CWE-22"},
     "extractall": {"operation": "ARCHIVE_EXTRACTION", "category": "PATH_TRAVERSAL", "cwe": "CWE-22"},
     "extract": {"operation": "ARCHIVE_EXTRACTION", "category": "PATH_TRAVERSAL", "cwe": "CWE-22"},
+
+    # CWE-1336: SSTI
     "render_template_string": {"operation": "TEMPLATE_EVALUATION", "category": "SSTI", "cwe": "CWE-1336"},
     "flask.render_template_string": {"operation": "TEMPLATE_EVALUATION", "category": "SSTI", "cwe": "CWE-1336"},
     "jinja2.Template": {"operation": "TEMPLATE_EVALUATION", "category": "SSTI", "cwe": "CWE-1336"},
+
+    # CWE-89: SQL Injection
     "raw": {"operation": "SQL_EXECUTION", "category": "SQL_INJECTION", "cwe": "CWE-89"},
     "extra": {"operation": "SQL_EXECUTION", "category": "SQL_INJECTION", "cwe": "CWE-89"},
     "RawSQL": {"operation": "SQL_EXECUTION", "category": "SQL_INJECTION", "cwe": "CWE-89"},
     "objects.raw": {"operation": "SQL_EXECUTION", "category": "SQL_INJECTION", "cwe": "CWE-89"},
     "objects.extra": {"operation": "SQL_EXECUTION", "category": "SQL_INJECTION", "cwe": "CWE-89"},
+
+    # CWE-611: XML External Entity (XXE)
     "xml.etree.ElementTree.fromstring": {"operation": "XML_PARSING", "category": "XML_EXTERNAL_ENTITY", "cwe": "CWE-611"},
-    "ET.fromstring": {"operation": "XML_PARSING", "category": "XML_EXTERNAL_ENTITY", "cwe": "CWE-611"},
-    "fromstring": {"operation": "XML_PARSING", "category": "XML_EXTERNAL_ENTITY", "cwe": "CWE-611"},
+    "xml.etree.ElementTree.parse": {"operation": "XML_PARSING", "category": "XML_EXTERNAL_ENTITY", "cwe": "CWE-611"},
+    "xml.dom.minidom.parseString": {"operation": "XML_PARSING", "category": "XML_EXTERNAL_ENTITY", "cwe": "CWE-611"},
+    "xml.dom.minidom.parse": {"operation": "XML_PARSING", "category": "XML_EXTERNAL_ENTITY", "cwe": "CWE-611"},
+    "lxml.etree.fromstring": {"operation": "XML_PARSING", "category": "XML_EXTERNAL_ENTITY", "cwe": "CWE-611"},
+    "lxml.etree.parse": {"operation": "XML_PARSING", "category": "XML_EXTERNAL_ENTITY", "cwe": "CWE-611"},
+
+    # CWE-918: Server-Side Request Forgery (SSRF)
     "urllib.request.urlopen": {"operation": "SSRF_REQUEST", "category": "SERVER_SIDE_REQUEST_FORGERY", "cwe": "CWE-918"},
     "urlopen": {"operation": "SSRF_REQUEST", "category": "SERVER_SIDE_REQUEST_FORGERY", "cwe": "CWE-918"},
-    "re.compile": {"operation": "REGEX_COMPILATION", "category": "REGULAR_EXPRESSION_DOS", "cwe": "CWE-1333"},
+    "requests.get": {"operation": "SSRF_REQUEST", "category": "SERVER_SIDE_REQUEST_FORGERY", "cwe": "CWE-918"},
+    "requests.post": {"operation": "SSRF_REQUEST", "category": "SERVER_SIDE_REQUEST_FORGERY", "cwe": "CWE-918"},
+    "requests.put": {"operation": "SSRF_REQUEST", "category": "SERVER_SIDE_REQUEST_FORGERY", "cwe": "CWE-918"},
+    "requests.delete": {"operation": "SSRF_REQUEST", "category": "SERVER_SIDE_REQUEST_FORGERY", "cwe": "CWE-918"},
+    "httpx.get": {"operation": "SSRF_REQUEST", "category": "SERVER_SIDE_REQUEST_FORGERY", "cwe": "CWE-918"},
+    "httpx.post": {"operation": "SSRF_REQUEST", "category": "SERVER_SIDE_REQUEST_FORGERY", "cwe": "CWE-918"},
+    "aiohttp.ClientSession.get": {"operation": "SSRF_REQUEST", "category": "SERVER_SIDE_REQUEST_FORGERY", "cwe": "CWE-918"},
+    "aiohttp.ClientSession.post": {"operation": "SSRF_REQUEST", "category": "SERVER_SIDE_REQUEST_FORGERY", "cwe": "CWE-918"},
+
+    # CWE-601: Open Redirect
     "redirect": {"operation": "OPEN_REDIRECT", "category": "URL_REDIRECTION", "cwe": "CWE-601"},
     "flask.redirect": {"operation": "OPEN_REDIRECT", "category": "URL_REDIRECTION", "cwe": "CWE-601"},
+    "django.shortcuts.redirect": {"operation": "OPEN_REDIRECT", "category": "URL_REDIRECTION", "cwe": "CWE-601"},
+
+    # CWE-327 / CWE-328: Broken Cryptographic Hashes & Ciphers
+    "hashlib.md5": {"operation": "WEAK_HASH", "category": "WEAK_CRYPTOGRAPHY", "cwe": "CWE-327"},
+    "hashlib.sha1": {"operation": "WEAK_HASH", "category": "WEAK_CRYPTOGRAPHY", "cwe": "CWE-327"},
+    "Crypto.Cipher.DES": {"operation": "WEAK_CIPHER", "category": "WEAK_CRYPTOGRAPHY", "cwe": "CWE-327"},
+    "Crypto.Cipher.DES.new": {"operation": "WEAK_CIPHER", "category": "WEAK_CRYPTOGRAPHY", "cwe": "CWE-327"},
+    "DES.new": {"operation": "WEAK_CIPHER", "category": "WEAK_CRYPTOGRAPHY", "cwe": "CWE-327"},
+
+    # CWE-338: Insecure Randomness
+    "random.random": {"operation": "INSECURE_RANDOM", "category": "INSECURE_RANDOMNESS", "cwe": "CWE-338"},
+    "random.randint": {"operation": "INSECURE_RANDOM", "category": "INSECURE_RANDOMNESS", "cwe": "CWE-338"},
+    "random.choice": {"operation": "INSECURE_RANDOM", "category": "INSECURE_RANDOMNESS", "cwe": "CWE-338"},
+    "random.randrange": {"operation": "INSECURE_RANDOM", "category": "INSECURE_RANDOMNESS", "cwe": "CWE-338"},
+    "random.sample": {"operation": "INSECURE_RANDOM", "category": "INSECURE_RANDOMNESS", "cwe": "CWE-338"},
+
+    # CWE-295: Disabled SSL/TLS Verification
+    "paramiko.client.AutoAddPolicy": {"operation": "HOST_KEY_VERIFICATION_BYPASS", "category": "INSECURE_TRANSPORT", "cwe": "CWE-295"},
+    "paramiko.AutoAddPolicy": {"operation": "HOST_KEY_VERIFICATION_BYPASS", "category": "INSECURE_TRANSPORT", "cwe": "CWE-295"},
+    "urllib3.disable_warnings": {"operation": "DISABLED_SSL_VERIFICATION", "category": "INSECURE_TRANSPORT", "cwe": "CWE-295"},
+    "ssl._create_unverified_context": {"operation": "DISABLED_SSL_VERIFICATION", "category": "INSECURE_TRANSPORT", "cwe": "CWE-295"},
+
+    # CWE-400 / CWE-1333: Resource Exhaustion / ReDoS
+    "re.compile": {"operation": "REGEX_COMPILATION", "category": "RESOURCE_EXHAUSTION", "cwe": "CWE-400"},
+    "re.search": {"operation": "REGEX_SEARCH", "category": "RESOURCE_EXHAUSTION", "cwe": "CWE-400"},
+    "re.match": {"operation": "REGEX_MATCH", "category": "RESOURCE_EXHAUSTION", "cwe": "CWE-400"},
 }
 
 def location(node: ast.AST, file_path: str) -> CodeLocation:
@@ -1019,11 +1173,29 @@ class TaintTracker:
 
         return False
 
+    def _has_disabled_ssl(self, node: ast.Call) -> bool:
+        for kw in getattr(node, "keywords", []):
+            if kw.arg == "verify" and isinstance(kw.value, ast.Constant) and kw.value.value is False:
+                return True
+            if kw.arg == "cert_reqs" and isinstance(kw.value, ast.Constant) and str(kw.value.value).upper() in ("CERT_NONE", "NONE"):
+                return True
+        return False
+
     def is_sink_call(self, node: ast.AST, scope_id: str = "", lineno: int = 0) -> bool:
         if not isinstance(node, ast.Call): return False
         call_lineno = lineno or getattr(node, "lineno", 0)
         name = dotted_name(node.func) or ""
         canon = self.resolve_canonical_name(node.func, scope_id) if scope_id else name
+
+        if (canon and canon.startswith("defusedxml.")) or (name and name.startswith("defusedxml.")):
+            return False
+        if canon in SANITIZER_REGISTRY or name in SANITIZER_REGISTRY:
+            return False
+
+        # Check for CWE-295 (Disabled SSL verification in HTTP / socket calls)
+        if self._has_disabled_ssl(node):
+            return True
+
         if canon:
             if canon.startswith("shadowed:"):
                 return False
@@ -1046,12 +1218,23 @@ class TaintTracker:
                         return False
                 return True
 
+        # Check direct SINK_REGISTRY membership
+        candidates = {c for c in (name, canon) if c}
+        for c in list(candidates):
+            if "." in c:
+                candidates.add(c.split(".")[-1])
+        if any(c in SINK_REGISTRY for c in candidates):
+            return True
+
         if isinstance(node.func, ast.Attribute):
             if node.func.attr in {"read_text", "read_bytes", "write_text", "write_bytes"}:
                 return True
             if node.func.attr == "open" and self._is_path_expr(node.func.value, scope_id):
                 return True
             if node.func.attr == "render" and self._is_jinja_template_expr(node.func.value, scope_id):
+                return True
+            # Unbounded file read without size parameter (CWE-400)
+            if node.func.attr == "read" and len(node.args) == 0:
                 return True
         return False
 
@@ -1060,28 +1243,50 @@ class TaintTracker:
             return True
         return False
 
-    def get_or_create_sink(self, node: ast.Call, file_path: str, scope_id: str = "") -> SecurityNode:
+    def get_or_create_sink(self, node: ast.Call, file_path: str, scope_id: str = "", force_cwe: Optional[str] = None) -> SecurityNode:
         loc = location(node, file_path)
         for existing in self.sinks:
-            if existing.location == loc: return existing
+            if existing.location == loc and (force_cwe is None or existing.metadata.get("cwe") == force_cwe):
+                return existing
         sink_id = self.next_sink_id()
         canon_name = self.resolve_canonical_name(node.func, scope_id) if scope_id else None
         name = dotted_name(node.func) or "sink"
-        matched_rule = match_sink_rule(node, name, canon_name)
-        if matched_rule and isinstance(node.func, ast.Attribute) and node.func.attr == "render":
-            if not self._is_jinja_template_expr(node.func.value, scope_id):
-                matched_rule = None
-        if matched_rule:
-            meta = {"operation": matched_rule.operation, "category": matched_rule.category, "cwe": matched_rule.cwe_id}
+
+        if force_cwe == "CWE-295":
+            meta = {"operation": "DISABLED_SSL_VERIFICATION", "category": "INSECURE_TRANSPORT", "cwe": "CWE-295"}
         else:
-            meta = {}
-        if not meta and isinstance(node.func, ast.Attribute):
-            if node.func.attr in {"read_text", "read_bytes", "write_text", "write_bytes"} or (node.func.attr == "open" and self._is_path_expr(node.func.value, scope_id)):
-                cwe22_rule = get_rule("CWE-22")
-                if cwe22_rule:
-                    meta = {"operation": cwe22_rule.operation, "category": cwe22_rule.category, "cwe": cwe22_rule.cwe_id}
-                else:
-                    meta = {"operation": "FILE_ACCESS", "category": "PATH_TRAVERSAL", "cwe": "CWE-22"}
+            matched_rule = match_sink_rule(node, name, canon_name)
+            if matched_rule and isinstance(node.func, ast.Attribute) and node.func.attr == "render":
+                if not self._is_jinja_template_expr(node.func.value, scope_id):
+                    matched_rule = None
+            if matched_rule:
+                meta = {"operation": matched_rule.operation, "category": matched_rule.category, "cwe": matched_rule.cwe_id}
+            else:
+                meta = {}
+                # 1. Check for CWE-295: disabled SSL/TLS verification
+                if self._has_disabled_ssl(node):
+                    meta = {"operation": "DISABLED_SSL_VERIFICATION", "category": "INSECURE_TRANSPORT", "cwe": "CWE-295"}
+                # 2. Check for unbounded read (CWE-400)
+                elif isinstance(node.func, ast.Attribute) and node.func.attr == "read" and len(node.args) == 0:
+                    meta = {"operation": "UNBOUNDED_READ", "category": "RESOURCE_EXHAUSTION", "cwe": "CWE-400"}
+                # 3. Check SINK_REGISTRY
+                if not meta:
+                    candidates = [c for c in (canon_name, name) if c]
+                    for c in candidates:
+                        if c in SINK_REGISTRY:
+                            meta = dict(SINK_REGISTRY[c])
+                            break
+                        short_c = c.split(".")[-1]
+                        if short_c in SINK_REGISTRY:
+                            meta = dict(SINK_REGISTRY[short_c])
+                            break
+            if not meta and isinstance(node.func, ast.Attribute):
+                if node.func.attr in {"read_text", "read_bytes", "write_text", "write_bytes"} or (node.func.attr == "open" and self._is_path_expr(node.func.value, scope_id)):
+                    cwe22_rule = get_rule("CWE-22")
+                    if cwe22_rule:
+                        meta = {"operation": cwe22_rule.operation, "category": cwe22_rule.category, "cwe": cwe22_rule.cwe_id}
+                    else:
+                        meta = {"operation": "FILE_ACCESS", "category": "PATH_TRAVERSAL", "cwe": "CWE-22"}
         sink = SecurityNode(
             id=sink_id, node_type=NodeType.SINK, symbol=canon_name or name,
             operation=meta.get("operation", "UNKNOWN_OPERATION"), location=loc,
@@ -1138,6 +1343,8 @@ class TaintTracker:
                     target_name = self._extract_target_from_parents_attr(comp)
                     if target_name:
                         pairs.append((target_name, test_node.left))
+                    elif isinstance(test_node.left, ast.Name):
+                        pairs.append((test_node.left.id, comp))
         elif isinstance(test_node, ast.UnaryOp) and isinstance(test_node.op, ast.Not):
             # Inverted containment check (e.g., `if not target.is_relative_to(base):`)
             return self._extract_containment_pairs(test_node.operand)
@@ -1155,6 +1362,14 @@ class TaintTracker:
                     pairs.append((test_node.args[1].id, None))
                 elif base_name != "re" and len(test_node.args) >= 1 and isinstance(test_node.args[0], ast.Name):
                     pairs.append((test_node.args[0].id, None))
+            else:
+                fn_name = dotted_name(test_node.func) or ""
+                val_funcs = ("is_safe_url", "validate_url", "check_domain_allowlist", "is_allowed_domain",
+                             "is_safe_redirect_url", "validate_redirect_url", "url_has_allowed_host_and_scheme",
+                             "is_relative_url", "is_private_ip", "validate_private_ip")
+                if any(fn_name == vf or fn_name.endswith(f".{vf}") for vf in val_funcs):
+                    if test_node.args and isinstance(test_node.args[0], ast.Name):
+                        pairs.append((test_node.args[0].id, None))
         elif isinstance(test_node, ast.BoolOp) and isinstance(test_node.op, ast.And):
             for val in test_node.values:
                 pairs.extend(self._extract_containment_pairs(val))
@@ -1164,7 +1379,9 @@ class TaintTracker:
         if sink is not None:
             cwe = sink.metadata.get("cwe")
             stype = sink.metadata.get("sink_type")
-            if cwe != "CWE-22" and stype not in ("PATH_TRAVERSAL", "FILE_ACCESS"):
+            allowed_cwes = {"CWE-22", "CWE-918", "CWE-601", "CWE-400", "CWE-1333"}
+            allowed_types = {"PATH_TRAVERSAL", "FILE_ACCESS", "SSRF", "OPEN_REDIRECT", "REGEX_COMPILATION", "RESOURCE_EXHAUSTION"}
+            if cwe not in allowed_cwes and stype not in allowed_types:
                 return False
 
         if visited is not None and f"guard_check:{scope_id}:{var_name}" in visited:
@@ -1746,6 +1963,9 @@ class TaintTracker:
                 if not self.check_sink_safety(subnode, canon_name):
                     sink_node = self.get_or_create_sink(subnode, file_path, scope_id)
                     self.sink_records.append(SinkRecord(node=subnode, security_node=sink_node, lineno=call_lineno, scope_id=scope_id))
+                    if sink_node.metadata.get("cwe") != "CWE-295" and self._has_disabled_ssl(subnode):
+                        ssl_sink = self.get_or_create_sink(subnode, file_path, scope_id, force_cwe="CWE-295")
+                        self.sink_records.append(SinkRecord(node=subnode, security_node=ssl_sink, lineno=call_lineno, scope_id=scope_id))
 
     def _is_string_expr(self, expr_node: ast.AST, scope_id: str) -> bool:
         if isinstance(expr_node, ast.Constant) and isinstance(expr_node.value, str):
@@ -4065,6 +4285,9 @@ class TaintTracker:
                         file_path = self.file_paths.get(mod_name, "unknown.py")
                         sink_node = self.get_or_create_sink(call_node, file_path, caller_scope)
                         self.sink_records.append(SinkRecord(node=call_node, security_node=sink_node, lineno=lineno, scope_id=caller_scope))
+                        if sink_node.metadata.get("cwe") != "CWE-295" and self._has_disabled_ssl(call_node):
+                            ssl_sink = self.get_or_create_sink(call_node, file_path, caller_scope, force_cwe="CWE-295")
+                            self.sink_records.append(SinkRecord(node=call_node, security_node=ssl_sink, lineno=lineno, scope_id=caller_scope))
 
         for mod_name, tree in self.modules.items():
             for node in ast.walk(tree):
@@ -4089,7 +4312,42 @@ class TaintTracker:
                     if kw.arg in ("source", "template", "s"):
                         target_expr = kw.value
                         break
-            else:
+
+            cwe = sink.metadata.get("cwe")
+            stype = sink.metadata.get("sink_type")
+            op = sink.metadata.get("operation")
+
+            if cwe == "CWE-295":
+                self.edges.append(DataFlowEdge(
+                    source_id="INSECURE_CONFIGURATION",
+                    target_id=sink.id,
+                    kind="CONFIRMED_DATA_FLOW",
+                    confidence=1.0,
+                    transform="disabled_ssl_verification"
+                ))
+                continue
+
+            if cwe == "CWE-338":
+                self.edges.append(DataFlowEdge(
+                    source_id="INSECURE_PRNG",
+                    target_id=sink.id,
+                    kind="CONFIRMED_DATA_FLOW" if self.audit_all else "POTENTIAL_DATA_FLOW",
+                    confidence=1.0 if self.audit_all else 0.85,
+                    transform="insecure_random_generator"
+                ))
+                continue
+
+            if op == "UNBOUNDED_READ" or (cwe in ("CWE-400", "CWE-776") and isinstance(record.node.func, ast.Attribute) and record.node.func.attr == "read" and len(record.node.args) == 0):
+                self.edges.append(DataFlowEdge(
+                    source_id="UNBOUNDED_READ",
+                    target_id=sink.id,
+                    kind="CONFIRMED_DATA_FLOW" if self.audit_all else "POTENTIAL_DATA_FLOW",
+                    confidence=1.0 if self.audit_all else 0.85,
+                    transform="unbounded_file_read"
+                ))
+                continue
+
+            if target_expr is None:
                 continue
 
             cwe = sink.metadata.get("cwe")

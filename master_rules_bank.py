@@ -35,6 +35,8 @@ ENTERPRISE_SINKS_BANK = {
     # CWE-295: Broken TLS / Insecure Transport & Host Key Verification
     "paramiko.client.AutoAddPolicy": {"cwe": "CWE-295", "severity": "HIGH"},
     "paramiko.AutoAddPolicy": {"cwe": "CWE-295", "severity": "HIGH"},
+    "ssl._create_unverified_context": {"cwe": "CWE-295", "severity": "HIGH"},
+    "urllib3.disable_warnings": {"cwe": "CWE-295", "severity": "MEDIUM"},
 
     # CWE-918: Server-Side Request Forgery (SSRF)
     "urllib.request.urlopen": {"cwe": "CWE-918", "severity": "HIGH"},
@@ -57,13 +59,25 @@ ENTERPRISE_SINKS_BANK = {
     "flask.redirect": {"cwe": "CWE-601", "severity": "MEDIUM"},
     "django.shortcuts.redirect": {"cwe": "CWE-601", "severity": "MEDIUM"},
 
-    # CWE-1333: Regex Injection / ReDoS
+    # CWE-1333 / CWE-400: Regex Injection / ReDoS / Resource Exhaustion
     "re.compile": {"cwe": "CWE-1333", "severity": "MEDIUM"},
     "regex.compile": {"cwe": "CWE-1333", "severity": "MEDIUM"},
+    "re.search": {"cwe": "CWE-400", "severity": "MEDIUM"},
+    "re.match": {"cwe": "CWE-400", "severity": "MEDIUM"},
 
-    # CWE-327: Broken Crypto & Hashing
+    # CWE-327 / CWE-328: Broken Crypto & Hashing
     "hashlib.md5": {"cwe": "CWE-327", "severity": "MEDIUM"},
     "hashlib.sha1": {"cwe": "CWE-327", "severity": "MEDIUM"},
+    "Crypto.Cipher.DES.new": {"cwe": "CWE-327", "severity": "HIGH"},
+    "Crypto.Cipher.DES": {"cwe": "CWE-327", "severity": "HIGH"},
+    "DES.new": {"cwe": "CWE-327", "severity": "HIGH"},
+
+    # CWE-338: Insecure Randomness for Security Contexts
+    "random.random": {"cwe": "CWE-338", "severity": "MEDIUM"},
+    "random.randint": {"cwe": "CWE-338", "severity": "MEDIUM"},
+    "random.choice": {"cwe": "CWE-338", "severity": "MEDIUM"},
+    "random.randrange": {"cwe": "CWE-338", "severity": "MEDIUM"},
+    "random.sample": {"cwe": "CWE-338", "severity": "MEDIUM"},
 
     # CWE-1336: SSTI (Server-Side Template Injection)
     "jinja2.Template": {"cwe": "CWE-1336", "severity": "HIGH"},

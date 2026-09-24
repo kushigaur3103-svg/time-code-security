@@ -855,6 +855,28 @@ _BANK_NEW_RULE_META: Dict[str, Dict[str, Any]] = {
         "full": "The application uses a cryptographically broken hash algorithm (MD5 or SHA1), which is vulnerable to collision and preimage attacks.",
         "security_severity": "5.3",
     },
+    "CWE-338": {
+        "name": "InsecureRandomness",
+        "category": "INSECURE_RANDOMNESS",
+        "operation": "INSECURE_RANDOM",
+        "confirmed_severity": "MEDIUM",
+        "potential_severity": "LOW",
+        "remediation": "Do not use standard pseudo-random number generators (random module) for security-sensitive contexts. Use secrets (e.g. secrets.token_hex, secrets.choice) or os.urandom instead.",
+        "short": "Use of Cryptographically Weak Pseudo-Random Number Generator (PRNG)",
+        "full": "The application uses a cryptographically weak pseudo-random number generator (such as random.randint or random.choice) in a security context.",
+        "security_severity": "5.3",
+    },
+    "CWE-400": {
+        "name": "ResourceExhaustion",
+        "category": "RESOURCE_EXHAUSTION",
+        "operation": "REGEX_COMPILATION",
+        "confirmed_severity": "MEDIUM",
+        "potential_severity": "LOW",
+        "remediation": "Escape user input using re.escape before passing to regex operations, and enforce size limits on file reads (read(MAX_SIZE)).",
+        "short": "Uncontrolled Resource Consumption ('Resource Exhaustion')",
+        "full": "The application performs regex operations or file reads on untrusted data without size or complexity limits, exposing it to denial of service.",
+        "security_severity": "5.3",
+    },
 }
 
 _BANK_NEW_CWE_SINKS: Dict[str, Set[str]] = {}

@@ -1358,6 +1358,46 @@ ENTERPRISE_DEVSECOPS_SYSTEM_PROMPT = (
     "target_path = (base_dir / user_input).resolve()\n"
     "if not target_path.is_relative_to(base_dir):\n"
     "    raise ValueError('Path traversal attempt detected')\n"
+    "```\n\n"
+    "RULE 7 (CWE-918 SERVER-SIDE REQUEST FORGERY - SSRF): Never make HTTP requests (requests.get/post, httpx.get/post, urllib.request.urlopen) directly to untrusted URLs. Validate URLs against an explicit allowlist of permitted domains, use 'is_safe_url(url)' / 'validate_url(url)', or verify parsed URL netloc:\n"
+    "```python\n"
+    "from urllib.parse import urlparse\n"
+    "ALLOWED_DOMAINS = {'api.example.com', 'trusted.service.internal'}\n"
+    "def is_safe_url(target_url: str) -> bool:\n"
+    "    parsed = urlparse(target_url)\n"
+    "    return parsed.scheme in ('http', 'https') and parsed.netloc in ALLOWED_DOMAINS\n"
+    "```\n\n"
+    "RULE 8 (CWE-611 XML EXTERNAL ENTITY - XXE): Always use 'defusedxml' to parse XML, never standard xml.etree with entity expansion. Replace xml.etree.ElementTree with defusedxml.ElementTree:\n"
+    "```python\n"
+    "import defusedxml.ElementTree as ET\n"
+    "root = ET.fromstring(xml_payload)\n"
+    "```\n\n"
+    "RULE 9 (CWE-601 OPEN REDIRECT): Strictly validate redirect destinations before calling flask.redirect() or django.shortcuts.redirect(). Ensure the URL is relative or on an allowed domain:\n"
+    "```python\n"
+    "def is_safe_redirect_url(target: str) -> bool:\n"
+    "    return target.startswith('/') and not target.startswith('//')\n"
+    "if not is_safe_redirect_url(next_url):\n"
+    "    return redirect('/')\n"
+    "```\n\n"
+    "RULE 10 (CWE-327 / CWE-328 BROKEN CRYPTOGRAPHY & HASHES): Never use MD5, SHA1, or DES for security purposes (passwords, integrity, digital signatures, encryption). Use hashlib.sha256(), hashlib.sha512(), bcrypt (bcrypt.hashpw), or argon2:\n"
+    "```python\n"
+    "import hashlib\n"
+    "secure_hash = hashlib.sha256(data.encode('utf-8')).hexdigest()\n"
+    "```\n\n"
+    "RULE 11 (CWE-338 INSECURE RANDOMNESS): Never use the standard 'random' module (random.random, random.randint, random.choice) for security tokens, passwords, session IDs, or nonces. Always use the cryptographically secure 'secrets' module:\n"
+    "```python\n"
+    "import secrets\n"
+    "token = secrets.token_hex(32)\n"
+    "otp = str(secrets.randbelow(900000) + 100000)\n"
+    "```\n\n"
+    "RULE 12 (CWE-295 DISABLED SSL/TLS VERIFICATION): Never disable SSL/TLS certificate verification in HTTP requests or client sessions (NEVER pass verify=False, cert_reqs='CERT_NONE', urllib3.disable_warnings, or paramiko.AutoAddPolicy). Always enforce valid certificate validation:\n"
+    "```python\n"
+    "response = requests.get(url, verify=True, timeout=10)\n"
+    "```\n\n"
+    "RULE 13 (CWE-400 / CWE-776 RESOURCE EXHAUSTION & REDOS): Prevent unbounded resource consumption. For regexes with user input, sanitize using 're.escape(user_pattern)' before compiling. For file or socket reads, never call unbounded 'f.read()'; always pass a byte limit or use safe chunked reading:\n"
+    "```python\n"
+    "safe_pattern = re.escape(user_input)\n"
+    "data = f.read(4096)\n"
     "```"
 )
 
@@ -1657,18 +1697,30 @@ def background_scan_task(job_id: str, email: str, redacted_code: str, system_pro
         db.close()
 
 def extract_remediation_advice(cwe: str, sink_symbol: str) -> str:
-    rule = GLOBAL_RULE_REGISTRY.get_rule(cwe)
-    if rule and rule.remediation:
-        return rule.remediation
     remediations = {
         "CWE-95": "Avoid passing untrusted input to eval(). Use ast.literal_eval() for parsing Python literals, or parse structured data using json.loads().",
         "CWE-78": "Avoid shell execution with dynamic input. Use subprocess.run() with an argument list and shell=False, e.g., subprocess.run(['cmd', arg], shell=False). If shell execution is required, escape dynamic arguments using import shlex; shlex.quote(param). Never generate .replace() character blacklists.",
         "CWE-89": "Use parameterized SQL queries with bind variables instead of string concatenation/formatting, e.g., cursor.execute('SELECT * FROM tbl WHERE id = ?', (user_id,)).",
         "CWE-22": "Enforce canonical pathlib.Path resolution with containment verification (if not target_path.is_relative_to(base_dir): raise ValueError) or sanitize untrusted filenames using werkzeug.utils.secure_filename / os.path.basename. Avoid os.path.abspath without boundary checks.",
         "CWE-502": "Do not deserialize untrusted data with pickle. Use safe serialization formats such as JSON (json.loads), Protocol Buffers, or messagepack.",
-        "CWE-1336": "Avoid passing user input directly into render_template_string(). Use standard render_template() with parameterized template context variables to enforce auto-escaping."
+        "CWE-1336": "Avoid passing user input directly into render_template_string(). Use standard render_template() with parameterized template context variables to enforce auto-escaping.",
+        "CWE-918": "Validate URL with is_safe_url() or check against an allowlist before making requests. Avoid making HTTP requests directly to user-supplied URLs.",
+        "CWE-611": "Use defusedxml.ElementTree.parse() / defusedxml.ElementTree.fromstring() instead of xml.etree. Never parse untrusted XML with entity expansion enabled.",
+        "CWE-601": "Validate redirect target with is_safe_redirect_url() or ensure it is a relative path before calling redirect().",
+        "CWE-327": "Use hashlib.sha256() / sha512() or bcrypt/argon2 instead of MD5/SHA1/DES. Avoid broken cryptographic hashes.",
+        "CWE-328": "Use hashlib.sha256() / sha512() or bcrypt/argon2 instead of weak cryptographic hashes.",
+        "CWE-338": "Use secrets.token_hex(), secrets.token_urlsafe(), or secrets.choice() instead of random module for security-sensitive tokens.",
+        "CWE-295": "Enable SSL/TLS certificate verification (verify=True or default) and remove AutoAddPolicy. Never set verify=False.",
+        "CWE-400": "Escape regex input with re.escape() and enforce chunked/bounded reads with safe_read_chunked() or read(MAX_SIZE).",
+        "CWE-776": "Escape regex input with re.escape() and enforce chunked/bounded reads with safe_read_chunked().",
+        "CWE-1333": "Escape regex input with re.escape() before compilation to prevent Regular Expression Denial of Service (ReDoS)."
     }
-    return remediations.get(cwe, "Sanitize input parameters and enforce strict input validation against an explicit allow-list before passing to dangerous operations.")
+    if cwe in remediations:
+        return remediations[cwe]
+    rule = GLOBAL_RULE_REGISTRY.get_rule(cwe)
+    if rule and rule.remediation:
+        return rule.remediation
+    return "Sanitize input parameters and enforce strict input validation against an explicit allow-list before passing to dangerous operations."
 
 def detect_safe_patterns(files: Dict[str, str]) -> List[Dict[str, Any]]:
     safe_patterns = []
@@ -2302,8 +2354,14 @@ async def fix_code(payload: CodePayload, request: Request, authorization: str = 
                     "3. CWE-89 SQL Injection: Use parameterized SQL queries with bind variables (never string formatting or f-strings).\n"
                     "4. CWE-798 Secrets: Strictly source all secrets/credentials from environment variables (os.getenv), never hardcode.\n"
                     "5. CWE-502 Deserialization: Replace pickle with json or safe parsers.\n"
-                    "6. Safe XML Parsing: Use defusedxml, never standard xml.etree with entity expansion.\n"
-                    "7. Cryptography: Use 'secrets' instead of 'random' for cryptographic tokens and keys.\n"
+                    "6. CWE-1336 SSTI: Avoid passing user input directly into render_template_string(). Use standard render_template() with context variables.\n"
+                    "7. CWE-918 SSRF: Validate URLs against an allowlist with 'is_safe_url(url)' / 'validate_url(url)' or check urlparse(url).netloc before making HTTP requests.\n"
+                    "8. CWE-611 XXE: Use 'defusedxml.ElementTree' (e.g. ET.fromstring / ET.parse), never standard xml.etree with entity expansion.\n"
+                    "9. CWE-601 Open Redirect: Validate redirect URLs with 'is_safe_redirect_url(url)' or ensure target is a relative path before calling redirect().\n"
+                    "10. CWE-327 / CWE-328 Broken Crypto: Replace MD5/SHA1/DES with hashlib.sha256(), hashlib.sha512(), or bcrypt/argon2.\n"
+                    "11. CWE-338 Insecure Randomness: Use 'secrets' module (secrets.token_hex, secrets.choice, secrets.randbelow) instead of 'random'.\n"
+                    "12. CWE-295 Disabled SSL: Always enforce SSL/TLS verification (verify=True or omit parameter). Never pass verify=False or cert_reqs='CERT_NONE'.\n"
+                    "13. CWE-400 / CWE-776 Resource Exhaustion & ReDoS: Escape regex inputs with 're.escape()' and enforce bounded chunked reads (f.read(MAX_SIZE)).\n"
                     "Return ONLY the cleanly corrected, fully hardened secure code inside a markdown code block. Do not include boilerplate explanations or unit tests."
                 )
                 fixed_code = get_cached_or_generate_ai(redacted_code, standalone_prompt, is_fix=True, db=db, user_id=user.id)

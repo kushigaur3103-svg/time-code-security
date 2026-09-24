@@ -155,18 +155,30 @@ def format_confidence(conf_val: Any = None, conf_label: Optional[str] = None) ->
 
 
 def extract_remediation_advice(cwe: str, sink_symbol: str) -> str:
+    remediations = {
+        "CWE-95": "Avoid passing untrusted input to eval(). Use ast.literal_eval() for parsing Python literals, or parse structured data using json.loads().",
+        "CWE-78": "Avoid shell execution with dynamic input. Use subprocess.run() with an argument list and shell=False, e.g., subprocess.run(['cmd', arg], shell=False). If shell execution is required, escape dynamic arguments using import shlex; shlex.quote(param). Never generate .replace() character blacklists.",
+        "CWE-89": "Use parameterized SQL queries with bind variables instead of string concatenation/formatting, e.g., cursor.execute('SELECT * FROM tbl WHERE id = ?', (user_id,)).",
+        "CWE-22": "Enforce canonical pathlib.Path resolution with containment verification (if not target_path.is_relative_to(base_dir): raise ValueError) or sanitize untrusted filenames using werkzeug.utils.secure_filename / os.path.basename. Avoid os.path.abspath without boundary checks.",
+        "CWE-502": "Do not deserialize untrusted data with pickle. Use safe serialization formats such as JSON (json.loads), Protocol Buffers, or messagepack.",
+        "CWE-1336": "Avoid passing user input directly into render_template_string(). Use standard render_template() with parameterized template context variables to enforce auto-escaping.",
+        "CWE-918": "Validate URL with is_safe_url() or check against an allowlist before making requests. Avoid making HTTP requests directly to user-supplied URLs.",
+        "CWE-611": "Use defusedxml.ElementTree.parse() / defusedxml.ElementTree.fromstring() instead of xml.etree. Never parse untrusted XML with entity expansion enabled.",
+        "CWE-601": "Validate redirect target with is_safe_redirect_url() or ensure it is a relative path before calling redirect().",
+        "CWE-327": "Use hashlib.sha256() / sha512() or bcrypt/argon2 instead of MD5/SHA1/DES. Avoid broken cryptographic hashes.",
+        "CWE-328": "Use hashlib.sha256() / sha512() or bcrypt/argon2 instead of weak cryptographic hashes.",
+        "CWE-338": "Use secrets.token_hex(), secrets.token_urlsafe(), or secrets.choice() instead of random module for security-sensitive tokens.",
+        "CWE-295": "Enable SSL/TLS certificate verification (verify=True or default) and remove AutoAddPolicy. Never set verify=False.",
+        "CWE-400": "Escape regex input with re.escape() and enforce chunked/bounded reads with safe_read_chunked() or read(MAX_SIZE).",
+        "CWE-776": "Escape regex input with re.escape() and enforce chunked/bounded reads with safe_read_chunked().",
+        "CWE-1333": "Escape regex input with re.escape() before compilation to prevent Regular Expression Denial of Service (ReDoS)."
+    }
+    if cwe in remediations:
+        return remediations[cwe]
     rule = GLOBAL_RULE_REGISTRY.get_rule(cwe)
     if rule and rule.remediation:
         return rule.remediation
-    remediations = {
-        "CWE-95": "Avoid passing untrusted input to eval(). Use ast.literal_eval() for parsing Python literals, or parse structured data using json.loads().",
-        "CWE-78": "Avoid shell execution with dynamic input. Use subprocess.run() with an argument list and shell=False, e.g., subprocess.run(['cmd', arg], shell=False).",
-        "CWE-89": "Use parameterized SQL queries with bind variables instead of string concatenation/formatting, e.g., cursor.execute('SELECT * FROM tbl WHERE id = ?', (user_id,)).",
-        "CWE-22": "Validate and sanitize file paths using secure_path_join() or verify containment with os.path.abspath / pathlib.Path.resolve() against an allowed base directory.",
-        "CWE-502": "Do not deserialize untrusted data with pickle. Use safe serialization formats such as JSON (json.loads), Protocol Buffers, or messagepack.",
-        "CWE-1336": "Avoid passing user input directly into render_template_string(). Use standard render_template() with parameterized template context variables to enforce auto-escaping."
-    }
-    return remediations.get(cwe, "Sanitize input parameters and enforce strict input validation against an explicit allow-list before passing to dangerous operations.")
+    return "Sanitize input parameters and enforce strict input validation against an explicit allow-list before passing to dangerous operations."
 
 
 def execute_tcs_scan(
