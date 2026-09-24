@@ -218,6 +218,8 @@ class DiscordWebhookFormatter:
             embed["url"] = intent.link
 
         payload_obj = {
+            "content": safe_title[:2000],
+            "text": safe_title[:2000],
             "embeds": [embed]
         }
 

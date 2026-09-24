@@ -485,3 +485,11 @@ class WebhookDeliveryAdapter:
             )
 
         return idempotency_key
+
+    def dispatch_intent(
+        self,
+        intent: NotificationIntent,
+        destination: WebhookDestinationConfig
+    ) -> str:
+        """Orchestration alias used by NotificationService.handle_domain_event."""
+        return self.deliver(intent, destination)

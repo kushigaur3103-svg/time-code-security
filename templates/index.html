@@ -128,7 +128,7 @@
     </style>
 </head>
 <body class="bg-[#030712] text-white font-sans min-h-screen flex flex-col items-center py-12 relative overflow-x-hidden selection:bg-emerald-500 selection:text-black">
-    <div id="toast-container" class="fixed top-5 right-5 z-[100] flex flex-col gap-3 pointer-events-none"></div>
+    <div id="toast-container" class="fixed top-5 right-5 z-[99999] flex flex-col gap-3 pointer-events-none"></div>
     
     <!-- Deep Space Aurora Background Meshes -->
     <div class="aurora-mesh-1"></div>
@@ -1047,23 +1047,43 @@ tcs scan ./your-project --fix</div>
     // ==========================================
     function showToast(message, type = 'success') {
         if (!message) return;
+        
+        // Standardize any copy message to the universal copy toast
+        if (type === 'success' && /cop(y|ied)/i.test(message)) {
+            showUniversalCopyToast();
+            return;
+        }
+
         try {
             let container = document.getElementById('toast-container');
             if (!container) {
                 container = document.createElement('div');
                 container.id = 'toast-container';
-                container.className = 'fixed top-5 right-5 z-[100] flex flex-col gap-3 pointer-events-none';
+                container.className = 'fixed top-5 right-5 z-[99999] flex flex-col gap-3 pointer-events-none';
                 document.body.appendChild(container);
             }
+            container.style.zIndex = '99999';
             const toast = document.createElement('div');
-            const bgColor = type === 'success' ? 'bg-emerald-500' : (type === 'error' ? 'bg-rose-500' : 'bg-gray-800');
-            toast.className = `min-w-[280px] pointer-events-auto p-4 rounded-xl shadow-2xl text-white text-sm font-semibold tracking-wide transition-all duration-300 transform translate-x-full opacity-0 flex items-center justify-between ${bgColor} border border-white/10 backdrop-blur-md`;
             
-            const icon = type === 'success' 
-                ? '<svg class="w-5 h-5 mr-3 flex-shrink-0" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2.5" d="M5 13l4 4L19 7"></path></svg>' 
-                : (type === 'error' ? '<svg class="w-5 h-5 mr-3 flex-shrink-0" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2.5" d="M6 18L18 6M6 6l12 12"></path></svg>' : '');
+            // Cyberpunk dark styling with vibrant emerald green accent for success
+            let accentClasses = 'bg-gray-800 text-white border-white/10';
+            let iconSvg = '';
             
-            toast.innerHTML = `<div class="flex items-center">${icon} <span>${message}</span></div> <button onclick="this.parentElement.remove()" class="text-white/60 hover:text-white transition-colors ml-4 focus:outline-none cursor-pointer">&times;</button>`;
+            if (type === 'success') {
+                accentClasses = 'bg-[#062016]/95 text-emerald-300 border-emerald-500/50 shadow-[0_10px_30px_rgba(16,185,129,0.3)] ring-1 ring-emerald-500/30';
+                iconSvg = '<svg class="w-5 h-5 mr-3 flex-shrink-0 text-emerald-400" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2.5" d="M5 13l4 4L19 7"></path></svg>';
+            } else if (type === 'error') {
+                accentClasses = 'bg-[#20080c]/95 text-rose-300 border-rose-500/50 shadow-[0_10px_30px_rgba(244,63,94,0.3)] ring-1 ring-rose-500/30';
+                iconSvg = '<svg class="w-5 h-5 mr-3 flex-shrink-0 text-rose-400" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2.5" d="M6 18L18 6M6 6l12 12"></path></svg>';
+            } else {
+                accentClasses = 'bg-[#0f172a]/95 text-cyan-300 border-cyan-500/50 shadow-[0_10px_30px_rgba(6,182,212,0.3)] ring-1 ring-cyan-500/30';
+                iconSvg = '<svg class="w-5 h-5 mr-3 flex-shrink-0 text-cyan-400" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2.5" d="M13 16h-1v-4h-1m1-4h.01M21 12a9 9 0 11-18 0 9 9 0 0118 0z"></path></svg>';
+            }
+            
+            toast.className = `min-w-[280px] pointer-events-auto p-4 rounded-xl shadow-2xl text-sm font-semibold tracking-wide transition-all duration-300 transform translate-x-full opacity-0 flex items-center justify-between border backdrop-blur-md ${accentClasses}`;
+            toast.style.zIndex = '99999';
+            
+            toast.innerHTML = `<div class="flex items-center">${iconSvg} <span>${message}</span></div> <button onclick="this.parentElement.remove()" class="text-white/50 hover:text-white transition-colors ml-4 focus:outline-none cursor-pointer text-lg leading-none">&times;</button>`;
             
             container.appendChild(toast);
             
@@ -1080,7 +1100,7 @@ tcs scan ./your-project --fix</div>
                         if (toast && toast.parentElement) toast.remove();
                     }, 300);
                 }
-            }, 4000);
+            }, 3500);
         } catch (err) {
             console.error('Toast error:', err);
         }
@@ -1096,6 +1116,214 @@ tcs scan ./your-project --fix</div>
             showToast(msg, 'success');
         }
     };
+
+    // ==========================================
+    // UNIVERSAL COPY FEEDBACK & TOAST ENGINE
+    // ==========================================
+    let lastCopyTriggerElement = null;
+    let lastCopyToastTime = 0;
+
+    // Global listener: capture any copy trigger clicked across the entire dashboard
+    document.addEventListener('pointerdown', (e) => {
+        const btn = e.target.closest('button, [role="button"], .cursor-pointer, [onclick*="copy" i], [id*="copy" i], [class*="copy" i]');
+        if (btn) lastCopyTriggerElement = btn;
+    }, true);
+
+    document.addEventListener('click', (e) => {
+        const btn = e.target.closest('button, [role="button"], .cursor-pointer, [onclick*="copy" i], [id*="copy" i], [class*="copy" i]');
+        if (btn) lastCopyTriggerElement = btn;
+    }, true);
+
+    // Modern sleek toast notification: "✓ Copied to clipboard!" (green accent, smooth fade out after 2s)
+    function showUniversalCopyToast() {
+        const now = Date.now();
+        if (now - lastCopyToastTime < 350) return;
+        lastCopyToastTime = now;
+
+        try {
+            let container = document.getElementById('toast-container');
+            if (!container) {
+                container = document.createElement('div');
+                container.id = 'toast-container';
+                container.className = 'fixed top-5 right-5 z-[99999] flex flex-col gap-3 pointer-events-none';
+                document.body.appendChild(container);
+            }
+            container.style.zIndex = '99999';
+
+            const toast = document.createElement('div');
+            toast.className = 'min-w-[260px] pointer-events-auto px-4 py-3 rounded-xl shadow-2xl text-sm font-semibold tracking-wide transition-all duration-300 transform translate-x-full opacity-0 flex items-center justify-between border backdrop-blur-md bg-[#062016]/95 text-emerald-300 border-emerald-500/50 shadow-[0_10px_30px_rgba(16,185,129,0.3)] ring-1 ring-emerald-500/30';
+            toast.style.zIndex = '99999';
+
+            const checkSvg = '<svg class="w-4 h-4 mr-2.5 flex-shrink-0 text-emerald-400" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2.5" d="M5 13l4 4L19 7"></path></svg>';
+            toast.innerHTML = `<div class="flex items-center">${checkSvg} <span>✓ Copied to clipboard!</span></div> <button onclick="this.parentElement.remove()" class="text-emerald-400/60 hover:text-emerald-300 transition-colors ml-4 focus:outline-none cursor-pointer text-base leading-none">&times;</button>`;
+
+            container.appendChild(toast);
+
+            requestAnimationFrame(() => {
+                requestAnimationFrame(() => {
+                    toast.classList.remove('translate-x-full', 'opacity-0');
+                });
+            });
+
+            // Smooth fade-out after 2 seconds
+            setTimeout(() => {
+                if (toast && toast.parentElement) {
+                    toast.classList.add('translate-x-full', 'opacity-0');
+                    setTimeout(() => {
+                        if (toast && toast.parentElement) toast.remove();
+                    }, 300);
+                }
+            }, 2000);
+        } catch (err) {
+            console.error('Universal copy toast error:', err);
+        }
+    }
+    window.showUniversalCopyToast = showUniversalCopyToast;
+
+    // Immediate button-level visual feedback: "✓ Copied!" for 1.5 seconds
+    // Immediate button-level visual feedback: "✓ Copied!" for 1.5 seconds
+    function applyButtonCopiedFeedback(btn) {
+        if (!btn || btn._isCopyAnimating) return;
+        btn._isCopyAnimating = true;
+
+        const originalHtml = btn.innerHTML;
+        const originalBg = btn.style.backgroundColor;
+        const originalBgImage = btn.style.backgroundImage;
+        const originalColor = btn.style.color;
+        const originalBorder = btn.style.borderColor;
+        const originalShadow = btn.style.boxShadow;
+        const isGradient = btn.classList.contains('bg-gradient-to-r') || !!originalBgImage;
+
+        // If button has an internal text span (e.g. copyReportBtnText, copyEvidenceText, copyCliSnippetLabel)
+        const labelSpan = btn.querySelector('span[id*="Text"], span[id*="Label"]');
+        if (labelSpan && !btn.id?.includes('Badge') && !btn.id?.includes('Yaml')) {
+            const origSpanHtml = labelSpan.innerHTML;
+            labelSpan.innerHTML = '✓ Copied!';
+            btn.style.borderColor = '#10b981';
+            btn.style.boxShadow = '0 0 12px rgba(16, 185, 129, 0.4)';
+
+            setTimeout(() => {
+                labelSpan.innerHTML = origSpanHtml;
+                btn.style.borderColor = originalBorder;
+                btn.style.boxShadow = originalShadow;
+                btn._isCopyAnimating = false;
+            }, 1500);
+        } else {
+            btn.innerHTML = '<span class="inline-flex items-center gap-1.5 font-semibold">✓ Copied!</span>';
+            if (isGradient) {
+                btn.style.backgroundImage = 'linear-gradient(to right, #059669, #0d9488)';
+            } else {
+                btn.style.backgroundColor = '#059669';
+            }
+            btn.style.color = '#ffffff';
+            btn.style.borderColor = '#10b981';
+            btn.style.boxShadow = '0 0 14px rgba(16, 185, 129, 0.4)';
+
+            setTimeout(() => {
+                btn.innerHTML = originalHtml;
+                btn.style.backgroundColor = originalBg;
+                btn.style.backgroundImage = originalBgImage;
+                btn.style.color = originalColor;
+                btn.style.borderColor = originalBorder;
+                btn.style.boxShadow = originalShadow;
+                btn._isCopyAnimating = false;
+            }, 1500);
+        }
+    }
+    window.applyButtonCopiedFeedback = applyButtonCopiedFeedback;
+
+    // Trigger universal feedback for button and toast
+    function triggerUniversalCopyFeedback(customBtn = null) {
+        const btn = customBtn || lastCopyTriggerElement || (document.activeElement && document.activeElement.tagName === 'BUTTON' ? document.activeElement : null);
+        if (btn) {
+            applyButtonCopiedFeedback(btn);
+        }
+        showUniversalCopyToast();
+    }
+    window.triggerUniversalCopyFeedback = triggerUniversalCopyFeedback;
+
+    // Universal robust clipboard copy helper with fallback
+    async function copyTextToClipboard(text, triggerEl = null) {
+        if (!text) return false;
+        if (triggerEl) {
+            lastCopyTriggerElement = triggerEl;
+        }
+        let success = false;
+        if (navigator.clipboard && window.isSecureContext) {
+            try {
+                await navigator.clipboard.writeText(text);
+                success = true;
+            } catch (err) {
+                console.warn('[Clipboard API failed, trying fallback]', err);
+            }
+        }
+        if (!success) {
+            try {
+                const textarea = document.createElement('textarea');
+                textarea.value = text;
+                textarea.setAttribute('readonly', '');
+                textarea.style.position = 'fixed';
+                textarea.style.left = '-9999px';
+                textarea.style.top = '-9999px';
+                textarea.style.opacity = '0';
+                document.body.appendChild(textarea);
+                textarea.focus();
+                textarea.select();
+                success = document.execCommand('copy');
+                document.body.removeChild(textarea);
+                if (success) {
+                    triggerUniversalCopyFeedback(triggerEl);
+                }
+            } catch (fallbackErr) {
+                console.error('[Clipboard fallback copy failed]', fallbackErr);
+            }
+        }
+        return success;
+    }
+    window.copyTextToClipboard = copyTextToClipboard;
+
+    // Intercept native navigator.clipboard.writeText globally
+    if (navigator.clipboard && typeof navigator.clipboard.writeText === 'function') {
+        const originalWriteText = navigator.clipboard.writeText.bind(navigator.clipboard);
+        navigator.clipboard.writeText = async function(text) {
+            try {
+                const result = await originalWriteText(text);
+                triggerUniversalCopyFeedback();
+                return result;
+            } catch (err) {
+                // If native writeText throws, attempt fallback
+                const textarea = document.createElement('textarea');
+                textarea.value = text;
+                textarea.setAttribute('readonly', '');
+                textarea.style.position = 'fixed';
+                textarea.style.left = '-9999px';
+                textarea.style.top = '-9999px';
+                textarea.style.opacity = '0';
+                document.body.appendChild(textarea);
+                textarea.focus();
+                textarea.select();
+                const fallbackSuccess = document.execCommand('copy');
+                document.body.removeChild(textarea);
+                if (fallbackSuccess) {
+                    triggerUniversalCopyFeedback();
+                    return;
+                }
+                throw err;
+            }
+        };
+    }
+
+    // Intercept document.execCommand('copy') globally
+    if (typeof document.execCommand === 'function') {
+        const originalExecCommand = document.execCommand.bind(document);
+        document.execCommand = function(cmd) {
+            const res = originalExecCommand.apply(document, arguments);
+            if (cmd && String(cmd).toLowerCase() === 'copy' && res) {
+                triggerUniversalCopyFeedback();
+            }
+            return res;
+        };
+    }
 
     // ==========================================
     // AUTHENTICATION & FETCH INTERCEPTOR
@@ -1339,25 +1567,29 @@ tcs scan ./your-project --fix</div>
             }
 
             // Update Security Badge Snippets
-            const origin = window.location.origin;
-            const badgeId = userApiKey || 'default';
-            const badgeUrl = `${origin}/api/badge/${badgeId}.svg`;
-            const homeUrl = `${origin}`;
-            
-            const badgeLivePreview = document.getElementById('badgeLivePreview');
-            if (badgeLivePreview) {
-                badgeLivePreview.src = badgeUrl;
-            }
-            const markdownEl = document.getElementById('badgeMarkdownSnippet');
-            if (markdownEl) {
-                markdownEl.value = `[![TimeCodeSecurity: Grade A+](${badgeUrl})](${homeUrl})`;
-            }
-            const htmlEl = document.getElementById('badgeHtmlSnippet');
-            if (htmlEl) {
-                htmlEl.value = `<a href="${homeUrl}"><img src="${badgeUrl}" alt="TimeCodeSecurity Grade A+" /></a>`;
-            }
+            updateBadgeSnippets(userApiKey);
         } catch (e) {
             console.error('Network or parsing error in fetchPlan', e);
+        }
+    }
+
+    function updateBadgeSnippets(apiKey) {
+        const origin = window.location.origin;
+        const badgeId = apiKey || userApiKey || 'default';
+        const badgeUrl = `${origin}/api/badge/${badgeId}.svg`;
+        const homeUrl = `${origin}`;
+        
+        const badgeLivePreview = document.getElementById('badgeLivePreview');
+        if (badgeLivePreview) {
+            badgeLivePreview.src = badgeUrl;
+        }
+        const markdownEl = document.getElementById('badgeMarkdownSnippet');
+        if (markdownEl) {
+            markdownEl.value = `[![TimeCodeSecurity: Grade A+](${badgeUrl})](${homeUrl})`;
+        }
+        const htmlEl = document.getElementById('badgeHtmlSnippet');
+        if (htmlEl) {
+            htmlEl.value = `<a href="${homeUrl}"><img src="${badgeUrl}" alt="TimeCodeSecurity Grade A+" /></a>`;
         }
     }
 
@@ -1663,13 +1895,10 @@ tcs scan ./your-project --fix</div>
                         const copyBtn = row.querySelector('.copy-new-key-btn');
                         if (copyBtn) {
                             copyBtn.addEventListener('click', async (ev) => {
-                                await navigator.clipboard.writeText(ev.target.dataset.key);
+                                const btn = ev.currentTarget || ev.target;
+                                await copyTextToClipboard(btn.dataset.key, btn);
                                 const el = document.getElementById('newKeyDisplay_' + data.key_string);
                                 if (el) { el.classList.remove('blur-sm'); }
-                                ev.target.textContent = 'Copied!';
-                                ev.target.classList.replace('bg-indigo-600', 'bg-green-600');
-                                ev.target.classList.replace('hover:bg-indigo-500', 'hover:bg-green-500');
-                                showToast('API Key copied to clipboard', 'success');
                                 setTimeout(() => loadApiKeys(), 5000);
                             });
                         }
@@ -1759,55 +1988,25 @@ jobs:
     // Badge Markdown Copy
     document.getElementById('copyBadgeMarkdownBtn')?.addEventListener('click', async (e) => {
         const input = document.getElementById('badgeMarkdownSnippet');
-        if (!input || !input.value) return;
-        await navigator.clipboard.writeText(input.value);
-        const btn = e.currentTarget;
-        const originalText = btn.textContent;
-        btn.textContent = 'Copied!';
-        btn.classList.replace('text-emerald-400', 'text-white');
-        btn.classList.add('bg-emerald-600');
-        showToast('Markdown badge copied to clipboard!', 'success');
-        setTimeout(() => {
-            btn.textContent = originalText;
-            btn.classList.replace('text-white', 'text-emerald-400');
-            btn.classList.remove('bg-emerald-600');
-        }, 2500);
+        const text = input ? input.value : '';
+        if (!text) return;
+        await copyTextToClipboard(text, e.currentTarget);
     });
 
     // Badge HTML Copy
     document.getElementById('copyBadgeHtmlBtn')?.addEventListener('click', async (e) => {
         const input = document.getElementById('badgeHtmlSnippet');
-        if (!input || !input.value) return;
-        await navigator.clipboard.writeText(input.value);
-        const btn = e.currentTarget;
-        const originalText = btn.textContent;
-        btn.textContent = 'Copied!';
-        btn.classList.replace('text-blue-400', 'text-white');
-        btn.classList.add('bg-blue-600');
-        showToast('HTML badge embed code copied to clipboard!', 'success');
-        setTimeout(() => {
-            btn.textContent = originalText;
-            btn.classList.replace('text-white', 'text-blue-400');
-            btn.classList.remove('bg-blue-600');
-        }, 2500);
+        const text = input ? input.value : '';
+        if (!text) return;
+        await copyTextToClipboard(text, e.currentTarget);
     });
 
     // GitHub Action Copy
     document.getElementById('copyGithubActionYamlBtn')?.addEventListener('click', async (e) => {
         const snippetEl = document.getElementById('cicdYamlSnippet');
-        if (!snippetEl || !snippetEl.value) return;
-        await navigator.clipboard.writeText(snippetEl.value);
-        const btn = e.currentTarget;
-        const originalHtml = btn.innerHTML;
-        btn.innerHTML = '<svg class="w-4 h-4" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M5 13l4 4L19 7"></path></svg> Copied YAML!';
-        btn.classList.replace('from-indigo-600', 'from-emerald-600');
-        btn.classList.replace('to-purple-600', 'to-teal-600');
-        showToast('GitHub Action workflow copied to clipboard!', 'success');
-        setTimeout(() => {
-            btn.innerHTML = originalHtml;
-            btn.classList.replace('from-emerald-600', 'from-indigo-600');
-            btn.classList.replace('to-teal-600', 'to-purple-600');
-        }, 2500);
+        const text = snippetEl ? snippetEl.value : '';
+        if (!text) return;
+        await copyTextToClipboard(text, e.currentTarget);
     });
 
     // Workspace Create & Join
@@ -1857,12 +2056,11 @@ jobs:
         }
     });
 
-    document.getElementById('copyInviteBtn')?.addEventListener('click', () => {
+    document.getElementById('copyInviteBtn')?.addEventListener('click', async (e) => {
         const codeInput = document.getElementById('displayInviteCode');
         const code = codeInput ? codeInput.value : '';
         if (code) {
-            navigator.clipboard.writeText(code);
-            showToast('Invite code copied!', 'success');
+            await copyTextToClipboard(code, e.currentTarget);
         }
     });
     
@@ -2056,21 +2254,13 @@ jobs:
             .replace(/'/g, '&#039;');
     }
 
-    window.copyRawEvidenceJson = function() {
+    window.copyRawEvidenceJson = async function() {
         const codeBlock = document.getElementById('rawEvidenceCodeBlock');
         if (!codeBlock) return;
         const text = codeBlock.textContent || '';
         if (!text) return;
-        navigator.clipboard.writeText(text).then(() => {
-            const copyTextEl = document.getElementById('copyEvidenceText');
-            if (copyTextEl) {
-                const original = copyTextEl.textContent;
-                copyTextEl.textContent = 'Copied! ✅';
-                setTimeout(() => { copyTextEl.textContent = original; }, 2000);
-            }
-        }).catch(() => {
-            alert('Failed to copy JSON to clipboard.');
-        });
+        const btn = document.querySelector('button[onclick*="copyRawEvidenceJson"]');
+        await copyTextToClipboard(text, btn);
     };
 
     window.renderProofGraph = function(finding) {
@@ -2453,33 +2643,24 @@ jobs:
         }
     };
 
-    window.copyProofGraphJson = function() {
+    window.copyProofGraphJson = async function() {
         const finding = (window.currentScanFindings && window.selectedFindingIndex !== undefined)
             ? window.currentScanFindings[window.selectedFindingIndex]
             : null;
         if (!finding) return;
         const text = JSON.stringify(finding.proof_graph || finding, null, 2);
-        navigator.clipboard.writeText(text).then(() => {
-            const btnText = document.getElementById('copyProofText');
-            if (btnText) {
-                const orig = btnText.textContent;
-                btnText.textContent = 'Copied! ✅';
-                setTimeout(() => { btnText.textContent = orig; }, 2000);
-            }
-        }).catch(() => {
-            alert('Failed to copy JSON to clipboard.');
-        });
+        const btn = document.querySelector('button[onclick*="copyProofGraphJson"]');
+        await copyTextToClipboard(text, btn);
     };
 
-    window.copyFullAuditReport = function() {
+    window.copyFullAuditReport = async function() {
         if (!window.currentScanData) {
             const scanResult = document.getElementById('scanResult');
             const text = scanResult ? (scanResult.innerText || '').trim() : '';
             if (text) {
-                navigator.clipboard.writeText(text);
-                if (typeof showToast === 'function') {
-                    showToast('Report copied to clipboard! ✅', 'success');
-                }
+                const btn1 = document.getElementById('copyReportBtn');
+                const btn2 = document.querySelector('button[onclick*="copyFullAuditReport"]');
+                await copyTextToClipboard(text, btn1 || btn2);
             }
             return;
         }
@@ -2537,28 +2718,11 @@ jobs:
 
         lines.push("\n=======================================================");
         const fullText = lines.join('\n');
-        navigator.clipboard.writeText(fullText).then(() => {
-            if (typeof showToast === 'function') {
-                showToast('Audit Report Copied to Clipboard! ✅', 'success');
-            } else {
-                alert('Audit Report Copied to Clipboard! ✅');
-            }
-            const copyBtnText = document.getElementById('copyReportBtnText');
-            if (copyBtnText) {
-                const orig = copyBtnText.textContent;
-                copyBtnText.textContent = 'Copied! ✅';
-                setTimeout(() => { copyBtnText.textContent = orig; }, 2000);
-            }
-            const copyExecText = document.getElementById('copyExecutiveReportBtnText');
-            if (copyExecText) {
-                const orig = copyExecText.textContent;
-                copyExecText.textContent = 'Copied! ✅';
-                setTimeout(() => { copyExecText.textContent = orig; }, 2000);
-            }
-        }).catch(err => {
-            console.error(err);
-            alert('Failed to copy report to clipboard.');
-        });
+        const btn1 = document.getElementById('copyReportBtn');
+        const btn2 = document.querySelector('button[onclick*="copyFullAuditReport"]');
+        if (btn1) applyButtonCopiedFeedback(btn1);
+        if (btn2 && btn2 !== btn1) applyButtonCopiedFeedback(btn2);
+        await copyTextToClipboard(fullText, btn1 || btn2);
     };
 
     function toggleManifestPanel() {
@@ -2590,41 +2754,10 @@ jobs:
     }
     window.dismissCliBanner = dismissCliBanner;
 
-    function copyCliSnippet() {
+    async function copyCliSnippet() {
         const snippet = "pip install time-code-security\ntcs scan ./your-project --fix";
-        const copySuccess = () => {
-            const label = document.getElementById('copyCliSnippetLabel');
-            if (label) {
-                const orig = label.textContent;
-                label.textContent = 'Copied! ✅';
-                setTimeout(() => { label.textContent = orig; }, 2000);
-            }
-        };
-
-        if (navigator.clipboard && navigator.clipboard.writeText) {
-            navigator.clipboard.writeText(snippet).then(copySuccess).catch(() => {
-                fallbackCopy();
-            });
-        } else {
-            fallbackCopy();
-        }
-
-        function fallbackCopy() {
-            try {
-                const textarea = document.createElement('textarea');
-                textarea.value = snippet;
-                textarea.setAttribute('readonly', '');
-                textarea.style.position = 'absolute';
-                textarea.style.left = '-9999px';
-                document.body.appendChild(textarea);
-                textarea.select();
-                document.execCommand('copy');
-                document.body.removeChild(textarea);
-                copySuccess();
-            } catch (err) {
-                console.error('Failed to copy CLI command: ', err);
-            }
-        }
+        const btn = document.getElementById('copyCliSnippetBtn');
+        await copyTextToClipboard(snippet, btn);
     }
     window.copyCliSnippet = copyCliSnippet;
 
@@ -3364,7 +3497,7 @@ jobs:
     // Copy Report to Clipboard
     const copyReportBtn = document.getElementById('copyReportBtn');
     if (copyReportBtn) {
-        copyReportBtn.addEventListener('click', async () => {
+        copyReportBtn.addEventListener('click', async (e) => {
             if (typeof window.copyFullAuditReport === 'function' && window.currentScanData) {
                 window.copyFullAuditReport();
                 return;
@@ -3373,45 +3506,11 @@ jobs:
             const scanResult = document.getElementById('scanResult');
             const reportText = scanResult ? (scanResult.innerText || scanResult.textContent || '').trim() : '';
             if (!reportText) {
-                if (typeof showToast === 'function') {
-                    showToast('No report available to copy yet.', 'info');
-                } else {
-                    alert('No report available to copy yet.');
-                }
+                showToast('No report available to copy yet.', 'info');
                 return;
             }
 
-            try {
-                if (navigator.clipboard && navigator.clipboard.writeText) {
-                    await navigator.clipboard.writeText(reportText);
-                } else {
-                    const textarea = document.createElement('textarea');
-                    textarea.value = reportText;
-                    textarea.style.position = 'fixed';
-                    textarea.style.opacity = '0';
-                    document.body.appendChild(textarea);
-                    textarea.select();
-                    document.execCommand('copy');
-                    document.body.removeChild(textarea);
-                }
-
-                const copyBtnText = document.getElementById('copyReportBtnText');
-                if (copyBtnText) {
-                    const orig = copyBtnText.textContent;
-                    copyBtnText.textContent = 'Copied! ✅';
-                    setTimeout(() => { copyBtnText.textContent = orig; }, 2000);
-                }
-                if (typeof showToast === 'function') {
-                    showToast('Report copied to clipboard! ✅', 'success');
-                }
-            } catch (err) {
-                console.error('Failed to copy report: ', err);
-                if (typeof showToast === 'function') {
-                    showToast('Failed to copy to clipboard', 'error');
-                } else {
-                    alert('Failed to copy to clipboard');
-                }
-            }
+            await copyTextToClipboard(reportText, e.currentTarget);
         });
     }
 
@@ -3691,16 +3790,10 @@ jobs:
     }
 
     if (copyFixedCodeBtn) {
-        copyFixedCodeBtn.addEventListener('click', () => {
+        copyFixedCodeBtn.addEventListener('click', async (e) => {
             const text = fixedCodeResult ? fixedCodeResult.textContent : '';
             if (!text) return;
-            navigator.clipboard.writeText(text).then(() => {
-                const originalText = copyFixedCodeBtn.textContent;
-                copyFixedCodeBtn.textContent = 'Copied!';
-                setTimeout(() => {
-                    if (copyFixedCodeBtn) copyFixedCodeBtn.textContent = originalText;
-                }, 2000);
-            });
+            await copyTextToClipboard(text, e.currentTarget);
         });
     }
 
@@ -3760,16 +3853,10 @@ jobs:
     }
 
     if (copyTestCodeBtn) {
-        copyTestCodeBtn.addEventListener('click', () => {
+        copyTestCodeBtn.addEventListener('click', async (e) => {
             const text = testCodeResult ? testCodeResult.textContent : '';
             if (!text) return;
-            navigator.clipboard.writeText(text).then(() => {
-                const originalText = copyTestCodeBtn.textContent;
-                copyTestCodeBtn.textContent = 'Copied!';
-                setTimeout(() => {
-                    if (copyTestCodeBtn) copyTestCodeBtn.textContent = originalText;
-                }, 2000);
-            });
+            await copyTextToClipboard(text, e.currentTarget);
         });
     }
 
@@ -4078,6 +4165,11 @@ jobs:
             updateCicdYaml();
         } catch (err) {
             console.error('[INIT] updateCicdYaml error:', err);
+        }
+        try {
+            updateBadgeSnippets();
+        } catch (err) {
+            console.error('[INIT] updateBadgeSnippets error:', err);
         }
     }
 

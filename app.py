@@ -1,4 +1,5 @@
 import os
+import logging
 import requests
 import jwt
 import uuid
@@ -32,6 +33,8 @@ import tempfile
 from pathlib import Path
 from sca_reachability.engine import analyze_dependency_reachability
 import remediation
+
+logger = logging.getLogger("tcs.app")
 
 class DualConfidenceStr(str):
     """String that fuzzy-matches both 'HIGH (PATTERN_MATCH)' and legacy confidence strings."""
@@ -1484,6 +1487,65 @@ def get_cached_or_generate_ai(payload_code: str, system_prompt: str, is_fix: boo
     
     return ai_reply
 
+def resolve_webhook_format(url: str) -> str:
+    """Detects the webhook provider from the URL to select the correct payload format."""
+    lowered = (url or "").lower()
+    if "discord.com/" in lowered or "discordapp.com/" in lowered:
+        return "DISCORD"
+    if "slack.com/" in lowered:
+        return "SLACK"
+    return "GENERIC"
+
+
+def dispatch_scan_notifications(user_id: int, org_id: int, webhook_url: Optional[str], email: str, scan_result: Dict[str, Any], scan_id: str) -> None:
+    """
+    Registers the org webhook destination (provider-format aware) and publishes
+    deterministic scan events to the notification pipeline. Delivery itself is
+    asynchronous (WebhookDeliveryService worker threads).
+    """
+    from notification_policy import PolicyConfig
+    from webhook_adapter import WebhookDestinationConfig
+
+    if webhook_url:
+        try:
+            notification_service.register_destination(
+                WebhookDestinationConfig(
+                    destination_id=f"dest_{user_id}",
+                    organization_id=org_id,
+                    url=webhook_url,
+                    format=resolve_webhook_format(webhook_url),
+                )
+            )
+        except Exception as dest_err:
+            logger.error(f"Failed to register webhook destination for user {user_id}: {dest_err}")
+
+    # Fire webhook alerts for any completed scan with at least one finding (LOW+).
+    notification_service.register_policy_config(
+        PolicyConfig(
+            organization_id=org_id,
+            min_severity_in_app="LOW",
+            min_severity_webhook="LOW",
+        )
+    )
+
+    if "secret_findings" not in scan_result:
+        scan_result = {**scan_result, "secret_findings": []}
+
+    try:
+        notification_service.publish_scan_events(
+            scan_result=scan_result,
+            repository=f"org_{org_id}",
+            scan_id=scan_id,
+            metadata={
+                "user_id": user_id,
+                "organization_id": org_id,
+                "email": email,
+            },
+        )
+    except Exception as publish_err:
+        logger.error(f"Event publication failed for scan {scan_id}: {publish_err}")
+
+
 def background_scan_task(job_id: str, email: str, redacted_code: str, system_prompt: str, secrets_found: bool):
     db = SessionLocal()
     try:
@@ -1517,6 +1579,7 @@ def background_scan_task(job_id: str, email: str, redacted_code: str, system_pro
                                 destination_id=f"dest_{user.id}",
                                 organization_id=org_id,
                                 url=user.webhook_url,
+                                format=resolve_webhook_format(user.webhook_url),
                             )
                         )
                     except Exception as dest_err:
@@ -2055,20 +2118,42 @@ async def scan_code(request: Request, authorization: str = Header(None)):
             detail=f"Maximum 2000 total lines allowed per scan request (received {total_lines:,} lines)."
         )
         
+    authed_user_ctx = None
     if authorization:
         try:
             email = await get_current_user_email(authorization)
             db = SessionLocal()
-            user = db.query(User).filter(User.email == email).first()
-            if user:
-                user.scan_count = (user.scan_count or 0) + 1
-                db.commit()
-            db.close()
-        except Exception:
-            pass
+            try:
+                user = db.query(User).filter(User.email == email).first()
+                if user:
+                    user.scan_count = (user.scan_count or 0) + 1
+                    db.commit()
+                    authed_user_ctx = {
+                        "user_id": user.id,
+                        "org_id": user.org_id,
+                        "webhook_url": user.webhook_url,
+                        "email": user.email,
+                    }
+            finally:
+                db.close()
+        except Exception as auth_err:
+            logger.error(f"Scan authentication/user resolution failed: {auth_err}")
             
     manifest = data.get("manifest")
     results = execute_tcs_ast_scan(normalized_files, filename=scan_filename, manifest=manifest)
+
+    if authed_user_ctx and authed_user_ctx.get("org_id") is not None:
+        try:
+            dispatch_scan_notifications(
+                user_id=authed_user_ctx["user_id"],
+                org_id=authed_user_ctx["org_id"],
+                webhook_url=authed_user_ctx.get("webhook_url"),
+                email=authed_user_ctx["email"],
+                scan_result=results,
+                scan_id=str(uuid.uuid4()),
+            )
+        except Exception as webhook_err:
+            logger.error(f"Webhook notification dispatch failed for scan: {webhook_err}")
 
     # Vector D Auto-Remediation Integration
     target_code = code if (code and isinstance(code, str)) else (list(normalized_files.values())[0] if normalized_files else "")
