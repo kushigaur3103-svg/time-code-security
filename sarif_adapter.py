@@ -15,21 +15,19 @@ TOOL_VERSION = "1.0.0"
 TOOL_INFORMATION_URI = "https://time-code-security.onrender.com"
 
 
-def get_supported_rules(enabled_rule_ids: Optional[Union[Set[str], FrozenSet[str], List[str]]] = None) -> List[Dict[str, Any]]:
-    """Retrieve SARIF v2.1.0 rule definitions dynamically from the Rule Engine."""
-    if enabled_rule_ids is None:
-        return [
-            rule.sarif_metadata
-            for rule in GLOBAL_RULE_REGISTRY.all_rules()
-            if rule.sarif_metadata
-        ]
-    enabled_set = set(enabled_rule_ids)
-    return [
-        rule.sarif_metadata
-        for rule in GLOBAL_RULE_REGISTRY.all_rules()
-        if rule.sarif_metadata and rule.cwe_id in enabled_set
-    ]
-
+def get_supported_rules(enabled_rule_ids=None):
+    rules = {r.sarif_metadata.get('id'): r.sarif_metadata for r in GLOBAL_RULE_REGISTRY.all_rules() if getattr(r, 'sarif_metadata', None)}
+    try:
+        import json, os
+        cp = os.path.join(os.path.dirname(os.path.abspath(__file__)), 'data', 'rules_catalog.json')
+        if os.path.isfile(cp):
+            for cid, meta in json.load(open(cp, encoding='utf-8')).get('cwes', {}).items():
+                if cid not in rules:
+                    num = cid.split('-')[-1]
+                    rules[cid] = {'id': cid, 'name': meta.get('name', cid).replace(' ', '_'), 'shortDescription': {'text': meta.get('name', cid)}, 'fullDescription': {'text': meta.get('description', cid)}, 'helpUri': f'https://cwe.mitre.org/data/definitions/{num}.html', 'defaultConfiguration': {'level': 'error' if str(meta.get('severity')).upper() in ('CRITICAL', 'HIGH') else 'warning'}, 'properties': {'tags': ['security', f'external/cwe/cwe-{num.lower()}']}}
+    except Exception:
+        pass
+    return [r for r in rules.values() if r.get('id') in set(enabled_rule_ids)] if enabled_rule_ids else list(rules.values())
 
 # Backward-compatibility facade: dynamically sourced from Rule Engine
 SUPPORTED_RULES: List[Dict[str, Any]] = get_supported_rules()
@@ -86,22 +84,57 @@ def to_sarif(
     for f in findings:
         cwe = f.get("cwe", "UNKNOWN_CWE")
         rule = get_rule(cwe)
+        
+        # Ensure driver rules and ruleIndex are always 100% complete
+        if cwe not in rule_index_by_id:
+            cwe_num = cwe.split("-")[-1] if "-" in cwe else cwe
+            fallback_rule_def = {
+                "id": cwe,
+                "name": (rule.name if rule else cwe.replace("-", "_")),
+                "shortDescription": {
+                    "text": (rule.name if rule else f"Security rule {cwe}")
+                },
+                "fullDescription": {
+                    "text": (rule.remediation if rule else f"Security vulnerability rule for {cwe}")
+                },
+                "helpUri": f"https://cwe.mitre.org/data/definitions/{cwe_num}.html",
+                "defaultConfiguration": {
+                    "level": "error"
+                },
+                "properties": {
+                    "tags": ["security", f"external/cwe/cwe-{cwe_num.lower()}"]
+                }
+            }
+            rule_index_by_id[cwe] = len(driver_rules)
+            driver_rules.append(fallback_rule_def)
+
         rule_idx = rule_index_by_id.get(cwe)
         severity = str(f.get("severity") or (rule.get_severity(f.get("confidence_label", "CONFIRMED")) if rule else "HIGH")).upper()
         level = LEVEL_MAP.get(severity, "error")
-        file_uri = f.get("file") or "app.py"
-        line_num = int(f.get("line_number") or 1)
+        raw_file = f.get("file") or "app.py"
+        file_uri = str(raw_file).replace("\\", "/")
+        try:
+            line_num = max(1, int(f.get("line_number") or 1))
+        except (ValueError, TypeError):
+            line_num = 1
         code_snippet = f.get("code_snippet") or ""
         sink_symbol = f.get("sink_symbol") or "sink"
         raw_category = f.get("category") or (rule.category if rule else "Vulnerability")
         category = raw_category.replace("_", " ")
         remediation = f.get("remediation") or (rule.remediation if rule else "")
 
-        # Result primary message
-        message_text = (
-            f"{cwe} ({category}): Tainted data flow reaching dangerous sink '{sink_symbol}'. "
-            f"{remediation}".strip()
-        )
+        # Result primary message (aware of structural vs taint-flow findings)
+        is_structural = bool(not pg_nodes and not flow_steps) or cwe in ("CWE-1004", "CWE-209", "CWE-295", "CWE-326", "CWE-327", "CWE-338", "CWE-377", "CWE-732", "CWE-798") or "STRUCTURAL" in str(f.get("discovery_mode", ""))
+        if is_structural:
+            message_text = (
+                f"{cwe} ({category}): Security rule violation detected at dangerous sink or construct '{sink_symbol}'. "
+                f"{remediation}".strip()
+            )
+        else:
+            message_text = (
+                f"{cwe} ({category}): Tainted data flow reaching dangerous sink '{sink_symbol}'. "
+                f"{remediation}".strip()
+            )
 
         # Primary location
         primary_location: Dict[str, Any] = {
@@ -121,25 +154,40 @@ def to_sarif(
                 "text": code_snippet
             }
 
-        # Build threadFlowLocations from proof_graph (preferred) or flow_trace (legacy fallback)
+        # Build threadFlowLocations from proof_graph (preferred) or flow_trace (fallback)
         proof_graph = f.get("proof_graph")
         flow_steps = f.get("flow_trace", [])
         thread_flow_locations: List[Dict[str, Any]] = []
 
+        pg_nodes = []
         if proof_graph is not None:
             pg_nodes = proof_graph.nodes if hasattr(proof_graph, "nodes") else (proof_graph.get("nodes", []) if isinstance(proof_graph, dict) else [])
+
+        if pg_nodes:
             for step_idx, node in enumerate(pg_nodes):
                 is_obj = hasattr(node, "node_type")
                 node_type = node.node_type.value if (is_obj and hasattr(node.node_type, "value")) else (node.node_type if is_obj else node.get("node_type", "FLOW"))
-                step_file = node.file_path if is_obj else node.get("file_path", file_uri)
-                start_line = int(node.start_line if is_obj else node.get("start_line", line_num))
-                end_line = int(node.end_line if is_obj else node.get("end_line", start_line))
-                symbol = node.symbol if is_obj else node.get("symbol", "")
-                snippet_text = node.expression_snippet if is_obj else node.get("expression_snippet", "")
-                scope_id = node.scope_id if is_obj else node.get("scope_id", "")
+                raw_step_file = node.file_path if is_obj else node.get("file_path", file_uri)
+                step_file = str(raw_step_file or file_uri).replace("\\", "/")
+
+                raw_start = getattr(node, "start_line", None) if is_obj else node.get("start_line")
+                try:
+                    start_line = max(1, int(raw_start) if raw_start is not None else line_num)
+                except (ValueError, TypeError):
+                    start_line = line_num
+
+                raw_end = getattr(node, "end_line", None) if is_obj else node.get("end_line")
+                try:
+                    end_line = max(start_line, int(raw_end) if raw_end is not None else start_line)
+                except (ValueError, TypeError):
+                    end_line = start_line
+
+                symbol = (getattr(node, "symbol", None) if is_obj else node.get("symbol")) or ""
+                snippet_text = (getattr(node, "expression_snippet", None) if is_obj else node.get("expression_snippet")) or ""
+                scope_id = (getattr(node, "scope_id", None) if is_obj else node.get("scope_id")) or ""
                 is_essential = (step_idx == 0 or step_idx == len(pg_nodes) - 1)
 
-                msg_text = f"[{step_idx}. {node_type}] {symbol} in {scope_id}"
+                msg_text = f"[{step_idx}. {node_type}] {symbol}" + (f" in {scope_id}" if scope_id else "")
                 loc_entry: Dict[str, Any] = {
                     "location": {
                         "message": {
@@ -165,10 +213,15 @@ def to_sarif(
                         "text": snippet_text
                     }
                 thread_flow_locations.append(loc_entry)
-        elif isinstance(flow_steps, list):
+        elif isinstance(flow_steps, list) and flow_steps:
             for step_idx, step in enumerate(flow_steps):
                 step_str = str(step)
                 step_file, step_line = _parse_step_location(step_str, file_uri, line_num)
+                step_file = str(step_file).replace("\\", "/")
+                try:
+                    step_line = max(1, int(step_line) if step_line is not None else 1)
+                except (ValueError, TypeError):
+                    step_line = 1
                 is_essential = (step_idx == 0 or step_idx == len(flow_steps) - 1)
 
                 thread_flow_locations.append({
@@ -237,6 +290,7 @@ def to_sarif(
         }
 
         results.append(result_obj)
+
 
     # ---------------------------------------------------------
     # SCA (Software Composition Analysis) Findings
