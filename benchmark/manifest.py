@@ -4290,6 +4290,205 @@ BENCHMARK_TEST_CASES: List[BenchmarkTestCase] = [
     ),
 ]
 
+# ─── Batch 4: CWE-1275 & CWE-208 ────────────────────────────────────────────
+BENCHMARK_TEST_CASES += [
+    # CWE-1275: Sensitive Cookie with Improper SameSite Attribute
+    BenchmarkTestCase(
+        test_id='TCS-BENCH-CWE1275-V01-BAD',
+        cwe='CWE-1275',
+        file_path='benchmark/corpus/cwe_1275_samesite/test_v01_bad.py',
+        is_vulnerable=True,
+        expected_sinks=['set_cookie'],
+        description='set_cookie missing samesite keyword entirely'
+    ),
+    BenchmarkTestCase(
+        test_id='TCS-BENCH-CWE1275-V01-GOOD',
+        cwe='CWE-1275',
+        file_path='benchmark/corpus/cwe_1275_samesite/test_v01_good.py',
+        is_vulnerable=False,
+        expected_sinks=[],
+        description='Safe: samesite=Lax'
+    ),
+    BenchmarkTestCase(
+        test_id='TCS-BENCH-CWE1275-V02-BAD',
+        cwe='CWE-1275',
+        file_path='benchmark/corpus/cwe_1275_samesite/test_v02_bad.py',
+        is_vulnerable=True,
+        expected_sinks=['set_cookie'],
+        description='set_cookie with samesite=None (Python None constant)'
+    ),
+    BenchmarkTestCase(
+        test_id='TCS-BENCH-CWE1275-V02-GOOD',
+        cwe='CWE-1275',
+        file_path='benchmark/corpus/cwe_1275_samesite/test_v02_good.py',
+        is_vulnerable=False,
+        expected_sinks=[],
+        description='Safe: samesite=Strict'
+    ),
+    BenchmarkTestCase(
+        test_id='TCS-BENCH-CWE1275-V03-BAD',
+        cwe='CWE-1275',
+        file_path='benchmark/corpus/cwe_1275_samesite/test_v03_bad.py',
+        is_vulnerable=True,
+        expected_sinks=['set_cookie'],
+        description='set_cookie with samesite="None" as string literal'
+    ),
+    BenchmarkTestCase(
+        test_id='TCS-BENCH-CWE1275-V03-GOOD',
+        cwe='CWE-1275',
+        file_path='benchmark/corpus/cwe_1275_samesite/test_v03_good.py',
+        is_vulnerable=False,
+        expected_sinks=[],
+        description='Safe: samesite=Lax via variable'
+    ),
+    BenchmarkTestCase(
+        test_id='TCS-BENCH-CWE1275-V04-BAD',
+        cwe='CWE-1275',
+        file_path='benchmark/corpus/cwe_1275_samesite/test_v04_bad.py',
+        is_vulnerable=True,
+        expected_sinks=['set_cookie'],
+        description='Django HttpResponse.set_cookie missing samesite'
+    ),
+    BenchmarkTestCase(
+        test_id='TCS-BENCH-CWE1275-V04-GOOD',
+        cwe='CWE-1275',
+        file_path='benchmark/corpus/cwe_1275_samesite/test_v04_good.py',
+        is_vulnerable=False,
+        expected_sinks=[],
+        description='Safe: Django set_cookie with samesite=Strict'
+    ),
+    BenchmarkTestCase(
+        test_id='TCS-BENCH-CWE1275-V05-BAD',
+        cwe='CWE-1275',
+        file_path='benchmark/corpus/cwe_1275_samesite/test_v05_bad.py',
+        is_vulnerable=True,
+        expected_sinks=['set_cookie'],
+        description='set_cookie with no flags including no samesite'
+    ),
+    BenchmarkTestCase(
+        test_id='TCS-BENCH-CWE1275-V05-GOOD',
+        cwe='CWE-1275',
+        file_path='benchmark/corpus/cwe_1275_samesite/test_v05_good.py',
+        is_vulnerable=False,
+        expected_sinks=[],
+        description='Safe: fully hardened cookie with samesite=Strict'
+    ),
+    BenchmarkTestCase(
+        test_id='TCS-BENCH-CWE1275-V06-BAD',
+        cwe='CWE-1275',
+        file_path='benchmark/corpus/cwe_1275_samesite/test_v06_bad.py',
+        is_vulnerable=True,
+        expected_sinks=['set_cookie'],
+        description='Flask set_cookie with samesite=None Python constant'
+    ),
+    BenchmarkTestCase(
+        test_id='TCS-BENCH-CWE1275-V06-GOOD',
+        cwe='CWE-1275',
+        file_path='benchmark/corpus/cwe_1275_samesite/test_v06_good.py',
+        is_vulnerable=False,
+        expected_sinks=[],
+        description='Safe: Flask set_cookie with samesite=Lax'
+    ),
+
+    # CWE-208: Observable Timing Discrepancy
+    BenchmarkTestCase(
+        test_id='TCS-BENCH-CWE208-V01-BAD',
+        cwe='CWE-208',
+        file_path='benchmark/corpus/cwe_208_timing_attack/test_v01_bad.py',
+        is_vulnerable=True,
+        expected_sinks=['== comparison on token'],
+        description='Direct == comparison on request_token vs stored_token'
+    ),
+    BenchmarkTestCase(
+        test_id='TCS-BENCH-CWE208-V01-GOOD',
+        cwe='CWE-208',
+        file_path='benchmark/corpus/cwe_208_timing_attack/test_v01_good.py',
+        is_vulnerable=False,
+        expected_sinks=[],
+        description='Safe: secrets.compare_digest on token'
+    ),
+    BenchmarkTestCase(
+        test_id='TCS-BENCH-CWE208-V02-BAD',
+        cwe='CWE-208',
+        file_path='benchmark/corpus/cwe_208_timing_attack/test_v02_bad.py',
+        is_vulnerable=True,
+        expected_sinks=['!= comparison on secret'],
+        description='Direct != comparison on provided_secret vs expected_secret'
+    ),
+    BenchmarkTestCase(
+        test_id='TCS-BENCH-CWE208-V02-GOOD',
+        cwe='CWE-208',
+        file_path='benchmark/corpus/cwe_208_timing_attack/test_v02_good.py',
+        is_vulnerable=False,
+        expected_sinks=[],
+        description='Safe: hmac.compare_digest on secret'
+    ),
+    BenchmarkTestCase(
+        test_id='TCS-BENCH-CWE208-V03-BAD',
+        cwe='CWE-208',
+        file_path='benchmark/corpus/cwe_208_timing_attack/test_v03_bad.py',
+        is_vulnerable=True,
+        expected_sinks=['== comparison on api_key'],
+        description='Direct == comparison on api_key vs VALID_API_KEY'
+    ),
+    BenchmarkTestCase(
+        test_id='TCS-BENCH-CWE208-V03-GOOD',
+        cwe='CWE-208',
+        file_path='benchmark/corpus/cwe_208_timing_attack/test_v03_good.py',
+        is_vulnerable=False,
+        expected_sinks=[],
+        description='Safe: secrets.compare_digest on api_key'
+    ),
+    BenchmarkTestCase(
+        test_id='TCS-BENCH-CWE208-V04-BAD',
+        cwe='CWE-208',
+        file_path='benchmark/corpus/cwe_208_timing_attack/test_v04_bad.py',
+        is_vulnerable=True,
+        expected_sinks=['== comparison on signature'],
+        description='Direct == comparison on computed_signature vs request_signature'
+    ),
+    BenchmarkTestCase(
+        test_id='TCS-BENCH-CWE208-V04-GOOD',
+        cwe='CWE-208',
+        file_path='benchmark/corpus/cwe_208_timing_attack/test_v04_good.py',
+        is_vulnerable=False,
+        expected_sinks=[],
+        description='Safe: hmac.compare_digest on signature'
+    ),
+    BenchmarkTestCase(
+        test_id='TCS-BENCH-CWE208-V05-BAD',
+        cwe='CWE-208',
+        file_path='benchmark/corpus/cwe_208_timing_attack/test_v05_bad.py',
+        is_vulnerable=True,
+        expected_sinks=['== comparison on hmac'],
+        description='Direct == comparison on received_hmac vs expected_hmac'
+    ),
+    BenchmarkTestCase(
+        test_id='TCS-BENCH-CWE208-V05-GOOD',
+        cwe='CWE-208',
+        file_path='benchmark/corpus/cwe_208_timing_attack/test_v05_good.py',
+        is_vulnerable=False,
+        expected_sinks=[],
+        description='Safe: secrets.compare_digest on hmac variable'
+    ),
+    BenchmarkTestCase(
+        test_id='TCS-BENCH-CWE208-V06-BAD',
+        cwe='CWE-208',
+        file_path='benchmark/corpus/cwe_208_timing_attack/test_v06_bad.py',
+        is_vulnerable=True,
+        expected_sinks=['== comparison on auth_token'],
+        description='Direct == comparison on auth_token vs SESSION_TOKEN'
+    ),
+    BenchmarkTestCase(
+        test_id='TCS-BENCH-CWE208-V06-GOOD',
+        cwe='CWE-208',
+        file_path='benchmark/corpus/cwe_208_timing_attack/test_v06_good.py',
+        is_vulnerable=False,
+        expected_sinks=[],
+        description='Safe: secrets.compare_digest on auth_token'
+    ),
+]
+
 
 def get_benchmark_cases(cwe: Optional[str] = None) -> List[BenchmarkTestCase]:
     """Retrieve all benchmark test cases, optionally filtered by CWE."""
@@ -4301,11 +4500,13 @@ def get_benchmark_cases(cwe: Optional[str] = None) -> List[BenchmarkTestCase]:
     return [tc for tc in BENCHMARK_TEST_CASES if tc.cwe == cwe_norm]
 
 
-ALL_44_CWES = [
+ALL_46_CWES = [
     ("CWE-1004", "Insecure Cookie Flags"),
     ("CWE-117", "Log Injection"),
+    ("CWE-1275", "Sensitive Cookie with Improper SameSite Attribute"),
     ("CWE-1336", "Template Injection (SSTI)"),
     ("CWE-200", "Diagnostic Information Exposure"),
+    ("CWE-208", "Observable Timing Discrepancy"),
     ("CWE-209", "Sensitive Error Exposure"),
     ("CWE-22", "Path Traversal"),
     ("CWE-269", "Improper Privilege Management"),
@@ -4347,6 +4548,8 @@ ALL_44_CWES = [
     ("CWE-943", "NoSQL Injection"),
     ("CWE-95", "Code Execution (eval/exec)"),
 ]
-ALL_SUPPORTED_CWES = ALL_44_CWES
-ALL_24_CWES = ALL_44_CWES
+# Backward-compatibility aliases
+ALL_44_CWES = ALL_46_CWES
+ALL_SUPPORTED_CWES = ALL_46_CWES
+ALL_24_CWES = ALL_46_CWES
 

@@ -722,6 +722,8 @@ STRUCTURAL_SYNTHETIC_SOURCES = {
     "CWE-209": "SENSITIVE_ERROR_EXPOSURE",
     # ─── Batch 3A (data/cwe_blueprint_batch3a.json) ───
     "CWE-614": "INSECURE_COOKIE_SECURE_FLAG",
+    "CWE-1275": "INSECURE_COOKIE_SAMESITE",
+    "CWE-208": "TIMING_ATTACK",
     "CWE-916": "WEAK_PASSWORD_HASH",
     "CWE-759": "UNSALTED_PASSWORD_HASH",
     "CWE-434": "UNRESTRICTED_FILE_UPLOAD",
@@ -742,6 +744,8 @@ STRUCTURAL_SYNTHETIC_SOURCES = {
     "CWE-652": "XQUERY_INJECTION",
     "CWE-522": "CLEARTEXT_AUTH_TRANSPORT",
     "CWE-937": "DEPRECATED_INSECURE_PROTOCOL",
+    "CWE-1275": "cwe-1275_structural_violation",
+    "CWE-208": "cwe-208_structural_violation",
 }
 CWE798_TARGET_RE = re.compile(r"(?i).*(password|passwd|secret_key|api_key|access_token|auth_token).*")
 CWE326_SINK_NAMES = {"RSA.generate", "Crypto.PublicKey.RSA.generate", "rsa.generate_private_key"}
@@ -5947,6 +5951,119 @@ class TaintTracker:
                         scope_id=scope_id,
                     ))
 
+
+    def _collect_batch4_structural_findings(self) -> None:
+        """
+        Batch 4 PURE_STRUCTURAL visitors (data/cwe_blueprint_batch4.json):
+        CWE-1275: Sensitive Cookie with Improper SameSite Attribute
+        CWE-208: Observable Timing Discrepancy ('Timing Attack')
+        """
+        for mod_name, tree in self.modules.items():
+            file_path = self.file_paths.get(mod_name, "unknown.py")
+            scope_id = f"{mod_name}:global"
+            seen: set[tuple[str, int, int]] = set()
+
+            assigns_in_module: dict[str, list[tuple[int, ast.AST]]] = {}
+            for n in ast.walk(tree):
+                if isinstance(n, ast.Assign):
+                    for t in n.targets:
+                        if isinstance(t, ast.Name):
+                            assigns_in_module.setdefault(t.id, []).append((n.lineno, n.value))
+                elif isinstance(n, ast.AnnAssign):
+                    if isinstance(n.target, ast.Name) and n.value:
+                        assigns_in_module.setdefault(n.target.id, []).append((n.lineno, n.value))
+
+            def _get_assigned_val(var_name: str, before_lineno: int):
+                cands = [v for lno, v in assigns_in_module.get(var_name, []) if lno < before_lineno]
+                return cands[-1] if cands else None
+
+            for node in ast.walk(tree):
+                # CWE-1275: Insecure SameSite cookie configuration
+                if isinstance(node, ast.Call):
+                    is_set_cookie = False
+                    if isinstance(node.func, ast.Attribute) and node.func.attr == "set_cookie":
+                        is_set_cookie = True
+                    elif isinstance(node.func, ast.Name) and node.func.id == "set_cookie":
+                        is_set_cookie = True
+
+                    if is_set_cookie:
+                        samesite_kw = next((kw for kw in node.keywords if kw.arg == "samesite"), None)
+                        is_vuln = False
+                        if samesite_kw is None:
+                            is_vuln = True
+                        else:
+                            val = samesite_kw.value
+                            if isinstance(val, ast.Constant):
+                                if val.value is None or (isinstance(val.value, str) and str(val.value).lower() == "none"):
+                                    is_vuln = True
+                            elif isinstance(val, ast.Name):
+                                assigned = _get_assigned_val(val.id, getattr(node, "lineno", 1))
+                                if assigned and isinstance(assigned, ast.Constant):
+                                    if assigned.value is None or (isinstance(assigned.value, str) and str(assigned.value).lower() == "none"):
+                                        is_vuln = True
+                                elif val.id.lower() in ("none", "null"):
+                                    is_vuln = True
+
+                        if is_vuln:
+                            key = ("CWE-1275", getattr(node, "lineno", 1), getattr(node, "col_offset", 0))
+                            if key not in seen:
+                                seen.add(key)
+                                sink_id = self.next_sink_id()
+                                sink_node = SecurityNode(
+                                    id=sink_id,
+                                    node_type=NodeType.SINK,
+                                    symbol="set_cookie",
+                                    operation="INSECURE_COOKIE_SAMESITE",
+                                    location=location(node, file_path),
+                                    metadata={
+                                        "sink_type": "INSECURE_COOKIE_SAMESITE",
+                                        "category": "INSECURE_COOKIE_SAMESITE",
+                                        "cwe": "CWE-1275"
+                                    },
+                                )
+                                self.sinks.append(sink_node)
+                                self.sink_records.append(SinkRecord(
+                                    node=node,
+                                    security_node=sink_node,
+                                    lineno=getattr(node, "lineno", 1),
+                                    scope_id=scope_id,
+                                ))
+
+                # CWE-208: Timing attack on secret comparison
+                elif isinstance(node, ast.Compare):
+                    if any(isinstance(op, (ast.Eq, ast.NotEq)) for op in node.ops):
+                        has_digest = any(
+                            isinstance(c, ast.Call) and any(d in (dotted_name(c.func) or "") for d in ("compare_digest",))
+                            for c in ast.walk(node)
+                        )
+                        if not has_digest:
+                            all_names = [n.id.lower() for n in ast.walk(node) if isinstance(n, ast.Name)]
+                            sensitive_markers = ("token", "secret", "signature", "hmac", "api_key", "auth_token")
+                            if any(any(m in name for m in sensitive_markers) for name in all_names):
+                                key = ("CWE-208", getattr(node, "lineno", 1), getattr(node, "col_offset", 0))
+                                if key not in seen:
+                                    seen.add(key)
+                                    sink_id = self.next_sink_id()
+                                    sink_node = SecurityNode(
+                                        id=sink_id,
+                                        node_type=NodeType.SINK,
+                                        symbol="compare",
+                                        operation="TIMING_ATTACK",
+                                        location=location(node, file_path),
+                                        metadata={
+                                            "sink_type": "TIMING_ATTACK",
+                                            "category": "TIMING_ATTACK",
+                                            "cwe": "CWE-208"
+                                        },
+                                    )
+                                    self.sinks.append(sink_node)
+                                    self.sink_records.append(SinkRecord(
+                                        node=node,
+                                        security_node=sink_node,
+                                        lineno=getattr(node, "lineno", 1),
+                                        scope_id=scope_id,
+                                    ))
+
     def analyze(self):
         for mod_name, tree in self.modules.items():
             for node in ast.walk(tree):
@@ -6118,6 +6235,7 @@ class TaintTracker:
         self._collect_batch2_structural_findings()
         self._collect_batch3a_structural_findings()
         self._collect_batch3b_structural_findings()
+        self._collect_batch4_structural_findings()
         for assign_stmt, scope_id, lineno in self.ssl_attr_assigns:
             mod_name = scope_id.split(":")[0]
             file_path = self.file_paths.get(mod_name, "unknown.py")

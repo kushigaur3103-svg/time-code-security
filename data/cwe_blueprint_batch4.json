@@ -1,0 +1,31 @@
+{
+  "batch": "batch4",
+  "description": "Micro-Batch 4: CWE-1275 SameSite cookie + CWE-208 timing attack",
+  "total_cases": 24,
+  "cwes": [
+    {
+      "id": "CWE-1275",
+      "name": "Sensitive Cookie with Improper SameSite Attribute",
+      "category": "INSECURE_COOKIE_SAMESITE",
+      "detector_type": "PURE_STRUCTURAL",
+      "test_corpus_dir": "benchmark/corpus/cwe_1275_samesite/",
+      "bad_count": 6,
+      "good_count": 6,
+      "sink_pattern": "set_cookie() call missing samesite keyword or samesite=None|'None'",
+      "safe_pattern": "set_cookie(samesite='Lax') or set_cookie(samesite='Strict')",
+      "notes": "Any call to .set_cookie() is a sink. Flagged when samesite is absent or explicitly None."
+    },
+    {
+      "id": "CWE-208",
+      "name": "Observable Timing Discrepancy",
+      "category": "TIMING_ATTACK",
+      "detector_type": "PURE_STRUCTURAL",
+      "test_corpus_dir": "benchmark/corpus/cwe_208_timing_attack/",
+      "bad_count": 6,
+      "good_count": 6,
+      "sink_pattern": "ast.Compare with Eq/NotEq where operands contain sensitive identifiers (token/secret/signature/hmac/mac/api_key/auth_token)",
+      "safe_pattern": "secrets.compare_digest() or hmac.compare_digest()",
+      "notes": "Flag direct == / != on sensitive token variables. Exempt compare_digest calls."
+    }
+  ]
+}
