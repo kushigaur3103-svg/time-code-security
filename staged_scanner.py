@@ -457,7 +457,7 @@ def recompute_summary_metrics(
 
     if active_vulnerabilities == 0:
         risk_level = "CLEAN"
-        risk_message = "NO VULNERABILITIES DETECTED within current TCS analysis scope (6 supported CWE classes)."
+        risk_message = "NO VULNERABILITIES DETECTED within current TCS analysis scope (24 supported CWE classes)."
     elif critical_count > 0:
         risk_level = "CRITICAL"
         risk_message = "CRITICAL RISK: Arbitrary code execution or high-impact injection detected."

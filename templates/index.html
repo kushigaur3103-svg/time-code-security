@@ -2944,12 +2944,12 @@ jobs:
                         <svg class="w-8 h-8 text-emerald-400" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M5 13l4 4L19 7"></path></svg>
                     </div>
                     <h3 class="text-lg md:text-xl font-bold text-emerald-400 font-mono mb-2">
-                        NO VULNERABILITIES DETECTED within current TCS analysis scope (14 supported CWE classes).
+                        NO VULNERABILITIES DETECTED within current TCS analysis scope (24 supported CWE classes).
                     </h3>
                     <p class="text-sm text-gray-400 max-w-2xl mx-auto leading-relaxed mb-6 font-mono">
                         Deterministic AST and interprocedural data-flow analysis confirmed zero tainted data flows reaching dangerous sinks, and zero credential leaks across all scanned modules.
                     </p>
-                    <div class="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-3 gap-2 max-w-3xl mx-auto text-left text-xs font-mono">
+                    <div class="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-3 gap-2 max-w-4xl mx-auto text-left text-xs font-mono">
                         <div class="p-2.5 rounded-lg bg-emerald-950/30 border border-emerald-500/20 text-gray-300 flex items-center gap-2 transition-colors hover:border-emerald-500/50 hover:bg-emerald-950/50">
                             <span class="text-emerald-400">✓</span> CWE-95: Code Injection
                         </div>
@@ -2984,13 +2984,43 @@ jobs:
                             <span class="text-emerald-400">✓</span> CWE-601: Open Redirect
                         </div>
                         <div class="p-2.5 rounded-lg bg-emerald-950/30 border border-emerald-500/20 text-gray-300 flex items-center gap-2 transition-colors hover:border-emerald-500/50 hover:bg-emerald-950/50">
-                            <span class="text-emerald-400">✓</span> CWE-1333: Regex Injection / ReDoS
+                            <span class="text-emerald-400">✓</span> CWE-400: Resource Consumption (ReDoS)
                         </div>
                         <div class="p-2.5 rounded-lg bg-emerald-950/30 border border-emerald-500/20 text-gray-300 flex items-center gap-2 transition-colors hover:border-emerald-500/50 hover:bg-emerald-950/50">
                             <span class="text-emerald-400">✓</span> CWE-327: Broken Cryptography
                         </div>
                         <div class="p-2.5 rounded-lg bg-emerald-950/30 border border-emerald-500/20 text-gray-300 flex items-center gap-2 transition-colors hover:border-emerald-500/50 hover:bg-emerald-950/50">
-                            <span class="text-emerald-400">✓</span> CWE-798: Hardcoded Secrets &amp; Credentials (219+ Gitleaks Signatures)
+                            <span class="text-emerald-400">✓</span> CWE-798: Hardcoded Secrets &amp; Credentials
+                        </div>
+                        <div class="p-2.5 rounded-lg bg-emerald-950/30 border border-emerald-500/20 text-gray-300 flex items-center gap-2 transition-colors hover:border-emerald-500/50 hover:bg-emerald-950/50">
+                            <span class="text-emerald-400">✓</span> CWE-1004: Insecure Cookie Flags
+                        </div>
+                        <div class="p-2.5 rounded-lg bg-emerald-950/30 border border-emerald-500/20 text-gray-300 flex items-center gap-2 transition-colors hover:border-emerald-500/50 hover:bg-emerald-950/50">
+                            <span class="text-emerald-400">✓</span> CWE-117: Log Injection
+                        </div>
+                        <div class="p-2.5 rounded-lg bg-emerald-950/30 border border-emerald-500/20 text-gray-300 flex items-center gap-2 transition-colors hover:border-emerald-500/50 hover:bg-emerald-950/50">
+                            <span class="text-emerald-400">✓</span> CWE-209: Sensitive Error Exposure
+                        </div>
+                        <div class="p-2.5 rounded-lg bg-emerald-950/30 border border-emerald-500/20 text-gray-300 flex items-center gap-2 transition-colors hover:border-emerald-500/50 hover:bg-emerald-950/50">
+                            <span class="text-emerald-400">✓</span> CWE-326: Inadequate Encryption Strength
+                        </div>
+                        <div class="p-2.5 rounded-lg bg-emerald-950/30 border border-emerald-500/20 text-gray-300 flex items-center gap-2 transition-colors hover:border-emerald-500/50 hover:bg-emerald-950/50">
+                            <span class="text-emerald-400">✓</span> CWE-338: Insecure Randomness
+                        </div>
+                        <div class="p-2.5 rounded-lg bg-emerald-950/30 border border-emerald-500/20 text-gray-300 flex items-center gap-2 transition-colors hover:border-emerald-500/50 hover:bg-emerald-950/50">
+                            <span class="text-emerald-400">✓</span> CWE-377: Insecure Temporary File
+                        </div>
+                        <div class="p-2.5 rounded-lg bg-emerald-950/30 border border-emerald-500/20 text-gray-300 flex items-center gap-2 transition-colors hover:border-emerald-500/50 hover:bg-emerald-950/50">
+                            <span class="text-emerald-400">✓</span> CWE-643: XPath Injection
+                        </div>
+                        <div class="p-2.5 rounded-lg bg-emerald-950/30 border border-emerald-500/20 text-gray-300 flex items-center gap-2 transition-colors hover:border-emerald-500/50 hover:bg-emerald-950/50">
+                            <span class="text-emerald-400">✓</span> CWE-732: Insecure File Permissions
+                        </div>
+                        <div class="p-2.5 rounded-lg bg-emerald-950/30 border border-emerald-500/20 text-gray-300 flex items-center gap-2 transition-colors hover:border-emerald-500/50 hover:bg-emerald-950/50">
+                            <span class="text-emerald-400">✓</span> CWE-94: Code Injection (Module Load)
+                        </div>
+                        <div class="p-2.5 rounded-lg bg-emerald-950/30 border border-emerald-500/20 text-gray-300 flex items-center gap-2 transition-colors hover:border-emerald-500/50 hover:bg-emerald-950/50">
+                            <span class="text-emerald-400">✓</span> CWE-943: NoSQL Injection
                         </div>
                     </div>
                 </div>

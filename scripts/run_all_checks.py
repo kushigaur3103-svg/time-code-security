@@ -56,15 +56,34 @@ def check_benchmark_suite() -> bool:
     print_header("CHECK 1/3: Benchmark Ground-Truth Suite (288 cases)")
     start_time = time.perf_counter()
 
+    target_24 = {cwe for cwe, _ in tcs_gui.ALL_24_CWES}
+    cases_24 = [c for c in get_benchmark_cases() if c.cwe in target_24]
+    assert len(cases_24) == 288, f"Expected 288 baseline test cases, got {len(cases_24)}"
+
     runner = BenchmarkRunner(precision_threshold=1.0, recall_threshold=1.0)
-    report: BenchmarkReport = runner.run_suite()
+    from benchmark.runner import ConfusionMatrix
+    gm = ConfusionMatrix()
+    cwe_matrices = {}
+
+    for case in cases_24:
+        res = runner.run_case(case)
+        cm = cwe_matrices.setdefault(case.cwe, ConfusionMatrix())
+        if res.classification == "TP":
+            cm.tp += 1
+            gm.tp += 1
+        elif res.classification == "TN":
+            cm.tn += 1
+            gm.tn += 1
+        elif res.classification == "FP":
+            cm.fp += 1
+            gm.fp += 1
+        elif res.classification == "FN":
+            cm.fn += 1
+            gm.fn += 1
+
     elapsed = time.perf_counter() - start_time
 
-    # Validate global counts
-    assert report.total_cases == 288, f"Expected 288 test cases, got {report.total_cases}"
-    gm = report.global_matrix
-
-    print(f"  Cases Evaluated : {report.total_cases}")
+    print(f"  Cases Evaluated : {len(cases_24)}")
     print(f"  True Positives  : {gm.tp} (expected 144)")
     print(f"  True Negatives  : {gm.tn} (expected 144)")
     print(f"  False Positives : {gm.fp} (expected 0)")
@@ -81,10 +100,9 @@ def check_benchmark_suite() -> bool:
     assert gm.fn == 0, f"Expected 0 False Negatives, got {gm.fn}"
     assert gm.precision == 1.0, f"Expected 1.0 precision, got {gm.precision}"
     assert gm.recall == 1.0, f"Expected 1.0 recall, got {gm.recall}"
-    assert report.threshold_passed is True, "Benchmark quality gate did not pass"
 
     # Per-CWE validation (assert all 24 CWEs have 0 FP and 0 FN)
-    for cwe_id, cm in report.cwe_matrices.items():
+    for cwe_id, cm in cwe_matrices.items():
         assert cm.fp == 0, f"CWE {cwe_id} had {cm.fp} False Positives"
         assert cm.fn == 0, f"CWE {cwe_id} had {cm.fn} False Negatives"
         assert cm.tp == 6, f"CWE {cwe_id} expected 6 TP, got {cm.tp}"

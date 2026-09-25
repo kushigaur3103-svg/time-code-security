@@ -424,7 +424,7 @@ def execute_tcs_scan(
 
     if active_vulnerabilities == 0:
         risk_level = "CLEAN"
-        risk_message = "NO VULNERABILITIES DETECTED within current TCS analysis scope (6 supported CWE classes)."
+        risk_message = "NO VULNERABILITIES DETECTED within current TCS analysis scope (24 supported CWE classes)."
     elif critical_count > 0:
         risk_level = "CRITICAL"
         risk_message = "CRITICAL RISK: Arbitrary code execution or high-impact injection detected."
@@ -1407,7 +1407,7 @@ def main(argv: Optional[List[str]] = None):
                     "security_score": 100,
                     "score_label": "Security Health Score",
                     "risk_level": "CLEAN",
-                    "risk_message": "NO VULNERABILITIES DETECTED within current TCS analysis scope (6 supported CWE classes)."
+                    "risk_message": "NO VULNERABILITIES DETECTED within current TCS analysis scope (24 supported CWE classes)."
                 },
                 "findings": [],
                 "skipped_files": []
@@ -1434,7 +1434,7 @@ def main(argv: Optional[List[str]] = None):
                         "security_score": 100,
                         "score_label": "Security Health Score",
                         "risk_level": "CLEAN",
-                        "risk_message": "NO VULNERABILITIES DETECTED within current TCS analysis scope (6 supported CWE classes)."
+                        "risk_message": "NO VULNERABILITIES DETECTED within current TCS analysis scope (24 supported CWE classes)."
                     },
                     "findings": [],
                     "skipped_files": []
