@@ -4,9 +4,7 @@ __pycache__/
 .DS_Store
 
 # Local scratch scripts and temporary artifacts
-scratch/*
-# Allow canonical test files inside scratch
-!scratch/test_*.py
+scratch/
 test.py
 
 # Build & packaging artifacts
@@ -25,3 +23,6 @@ benchmark_report.txt
 
 # Local machine runtime state
 .client_storage.json
+
+data/cwe_blueprint_batch2.json
+tcs_demo_project/
