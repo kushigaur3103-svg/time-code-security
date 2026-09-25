@@ -570,7 +570,7 @@ async def login(payload: AuthPayload):
             safe_password = payload.password[:72]
             password_hash = pwd_context.hash(safe_password)
             new_api_key = "tcs_" + secrets.token_hex(16)
-            trial_end = datetime.now(timezone.utc) + timedelta(days=365)
+            trial_end = datetime.now(timezone.utc) + timedelta(days=14)
             user = User(
                 email=clean_email,
                 password_hash=password_hash,
