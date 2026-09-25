@@ -448,6 +448,27 @@ SANITIZER_REGISTRY = {
     "escape": {"protected_cwes": {"CWE-400", "CWE-776", "CWE-1333"}, "protected_sinks": {"REGEX_COMPILATION", "REGULAR_EXPRESSION_DOS", "RESOURCE_EXHAUSTION"}},
     "safe_read_chunked": {"protected_cwes": {"CWE-400", "CWE-776"}, "protected_sinks": {"RESOURCE_EXHAUSTION", "FILE_ACCESS"}},
     "read_chunked": {"protected_cwes": {"CWE-400", "CWE-776"}, "protected_sinks": {"RESOURCE_EXHAUSTION", "FILE_ACCESS"}},
+
+    # ─── Batch 2 (data/cwe_blueprint_batch2.json) sanitizers ───
+    # CWE-117: Log Injection
+    "CWE-117": {
+        "replace_crlf", "re_sub_crlf",
+        "sanitize_log_input", "sanitize_log_message",
+    },
+    # CWE-943: NoSQL Injection
+    "CWE-943": {
+        "sanitize_nosql_input", "sanitize_nosql_query",
+        "validate_nosql_query",
+    },
+
+    "replace_crlf": {"protected_cwes": {"CWE-117"}, "protected_sinks": {"LOG_INJECTION", "LOG_WRITE"}},
+    "re_sub_crlf": {"protected_cwes": {"CWE-117"}, "protected_sinks": {"LOG_INJECTION", "LOG_WRITE"}},
+    "sanitize_log_input": {"protected_cwes": {"CWE-117"}, "protected_sinks": {"LOG_INJECTION", "LOG_WRITE"}},
+    "sanitize_log_message": {"protected_cwes": {"CWE-117"}, "protected_sinks": {"LOG_INJECTION", "LOG_WRITE"}},
+
+    "sanitize_nosql_input": {"protected_cwes": {"CWE-943"}, "protected_sinks": {"NOSQL_INJECTION", "NOSQL_QUERY"}},
+    "sanitize_nosql_query": {"protected_cwes": {"CWE-943"}, "protected_sinks": {"NOSQL_INJECTION", "NOSQL_QUERY"}},
+    "validate_nosql_query": {"protected_cwes": {"CWE-943"}, "protected_sinks": {"NOSQL_INJECTION", "NOSQL_QUERY"}},
 }
 
 PRIMITIVE_NUMERIC_CASTS = {"int", "float", "bool", "math.floor", "math.ceil"}
@@ -644,7 +665,117 @@ SINK_REGISTRY = {
     "re.compile": {"operation": "REGEX_COMPILATION", "category": "RESOURCE_EXHAUSTION", "cwe": "CWE-400"},
     "re.search": {"operation": "REGEX_SEARCH", "category": "RESOURCE_EXHAUSTION", "cwe": "CWE-400"},
     "re.match": {"operation": "REGEX_MATCH", "category": "RESOURCE_EXHAUSTION", "cwe": "CWE-400"},
+
+    # ─── Batch 2 (data/cwe_blueprint_batch2.json) TAINT_FLOW sinks ───
+    # CWE-117: Log Injection
+    "logging.info": {"operation": "LOG_WRITE", "category": "LOG_INJECTION", "cwe": "CWE-117"},
+    "logging.warning": {"operation": "LOG_WRITE", "category": "LOG_INJECTION", "cwe": "CWE-117"},
+    "logging.error": {"operation": "LOG_WRITE", "category": "LOG_INJECTION", "cwe": "CWE-117"},
+    "logger.info": {"operation": "LOG_WRITE", "category": "LOG_INJECTION", "cwe": "CWE-117"},
+    "logger.warning": {"operation": "LOG_WRITE", "category": "LOG_INJECTION", "cwe": "CWE-117"},
+    "logger.error": {"operation": "LOG_WRITE", "category": "LOG_INJECTION", "cwe": "CWE-117"},
+
+    # CWE-94: Code Injection via Dynamic Module Load
+    "importlib.import_module": {"operation": "DYNAMIC_MODULE_LOAD", "category": "CODE_INJECTION", "cwe": "CWE-94"},
+    "__import__": {"operation": "DYNAMIC_MODULE_LOAD", "category": "CODE_INJECTION", "cwe": "CWE-94"},
+
+    # CWE-643: XPath Injection
+    "lxml.etree.XPath": {"operation": "XPATH_EVALUATION", "category": "XPATH_INJECTION", "cwe": "CWE-643"},
+    "etree.XPath": {"operation": "XPATH_EVALUATION", "category": "XPATH_INJECTION", "cwe": "CWE-643"},
+    "root.xpath": {"operation": "XPATH_EVALUATION", "category": "XPATH_INJECTION", "cwe": "CWE-643"},
+    "tree.xpath": {"operation": "XPATH_EVALUATION", "category": "XPATH_INJECTION", "cwe": "CWE-643"},
+
+    # CWE-943: NoSQL Injection
+    "collection.find": {"operation": "NOSQL_QUERY", "category": "NOSQL_INJECTION", "cwe": "CWE-943"},
+    "collection.find_one": {"operation": "NOSQL_QUERY", "category": "NOSQL_INJECTION", "cwe": "CWE-943"},
+    "collection.update_many": {"operation": "NOSQL_QUERY", "category": "NOSQL_INJECTION", "cwe": "CWE-943"},
 }
+
+# ─── Batch 2 structural synthetic edge sources (PURE_STRUCTURAL CWEs) ───
+STRUCTURAL_SYNTHETIC_SOURCES = {
+    "CWE-377": "INSECURE_TEMP_FILE",
+    "CWE-732": "INSECURE_FILE_PERMISSIONS",
+    "CWE-326": "WEAK_CRYPTO_KEY_SIZE",
+    "CWE-798": "HARDCODED_CREDENTIAL",
+    "CWE-1004": "INSECURE_COOKIE_FLAGS",
+    "CWE-209": "SENSITIVE_ERROR_EXPOSURE",
+}
+CWE798_TARGET_RE = re.compile(r"(?i).*(password|passwd|secret_key|api_key|access_token|auth_token).*")
+CWE326_SINK_NAMES = {"RSA.generate", "Crypto.PublicKey.RSA.generate", "rsa.generate_private_key"}
+CWE798_SAFE_SOURCES = {"os.environ.get", "os.getenv", "config.get"}
+
+def _eval_static_constant(node, assignments_by_scope, scope_id="", lineno=0, visited=None):
+    """Deterministically evaluates literal int/str/bool constants, resolving Name
+    references through the static assignment chain. Returns None when the
+    expression cannot be proven constant (no speculative findings)."""
+    if visited is None:
+        visited = set()
+    if isinstance(node, ast.Constant) and (node.value is None or isinstance(node.value, (int, str, bool))):
+        return node.value
+    if hasattr(ast, "Str") and isinstance(node, ast.Str):
+        return node.s
+    if hasattr(ast, "Num") and isinstance(node, ast.Num):
+        return node.n
+    if isinstance(node, ast.UnaryOp):
+        inner = _eval_static_constant(node.operand, assignments_by_scope, scope_id, lineno, visited)
+        if isinstance(node.op, ast.USub) and isinstance(inner, int):
+            return -inner
+        if isinstance(node.op, ast.Not) and isinstance(inner, bool):
+            return not inner
+        return None
+    if isinstance(node, ast.BinOp):
+        left = _eval_static_constant(node.left, assignments_by_scope, scope_id, lineno, visited)
+        right = _eval_static_constant(node.right, assignments_by_scope, scope_id, lineno, visited)
+        if left is None or right is None:
+            return None
+        if isinstance(node.op, ast.BitOr) and isinstance(left, int) and isinstance(right, int):
+            return left | right
+        if isinstance(node.op, ast.BitAnd) and isinstance(left, int) and isinstance(right, int):
+            return left & right
+        if isinstance(node.op, ast.Add) and isinstance(left, type(right)):
+            return left + right
+        if isinstance(node.op, ast.Sub) and isinstance(left, int) and isinstance(right, int):
+            return left - right
+        if isinstance(node.op, ast.Mult) and isinstance(left, int) and isinstance(right, int):
+            return left * right
+        return None
+    if isinstance(node, ast.Name):
+        var_key = f"{scope_id}:{node.id}"
+        if var_key in visited:
+            return None
+        visited.add(var_key)
+        mod_name = scope_id.split(":")[0] if scope_id else ""
+        curr = scope_id
+        while curr:
+            recs = assignments_by_scope.get((curr, node.id), [])
+            if lineno:
+                recs = [r for r in recs if r.lineno <= lineno]
+            if recs:
+                return _eval_static_constant(recs[-1].value_node, assignments_by_scope, recs[-1].scope_id, recs[-1].lineno, visited)
+            if "." in curr and "function" in curr:
+                curr = curr.rsplit(".", 1)[0]
+            elif ":function" in curr:
+                curr = f"{mod_name}:global"
+            elif curr != f"{mod_name}:global":
+                curr = f"{mod_name}:global"
+            else:
+                break
+        # Cross-scope fallback: resolve when every recorded assignment for this
+        # name evaluates to the same constant regardless of scope.
+        candidates = []
+        for (rec_scope, rec_name), recs in assignments_by_scope.items():
+            if rec_name != node.id or not recs:
+                continue
+            usable = [r for r in recs if r.lineno <= lineno] if lineno else recs
+            if not usable:
+                continue
+            val = _eval_static_constant(usable[-1].value_node, assignments_by_scope, usable[-1].scope_id, usable[-1].lineno, visited.copy())
+            if val is not None:
+                candidates.append(val)
+        if candidates and all(c == candidates[0] for c in candidates):
+            return candidates[0]
+        return None
+    return None
 
 def location(node: ast.AST, file_path: str) -> CodeLocation:
     return CodeLocation(
@@ -1908,8 +2039,8 @@ class TaintTracker:
         if sink is not None:
             cwe = sink.metadata.get("cwe")
             stype = sink.metadata.get("sink_type")
-            allowed_cwes = {"CWE-22", "CWE-918", "CWE-601", "CWE-400", "CWE-1333"}
-            allowed_types = {"PATH_TRAVERSAL", "FILE_ACCESS", "SSRF", "OPEN_REDIRECT", "REGEX_COMPILATION", "RESOURCE_EXHAUSTION"}
+            allowed_cwes = {"CWE-22", "CWE-918", "CWE-601", "CWE-400", "CWE-1333", "CWE-94"}
+            allowed_types = {"PATH_TRAVERSAL", "FILE_ACCESS", "SSRF", "OPEN_REDIRECT", "REGEX_COMPILATION", "RESOURCE_EXHAUSTION", "CODE_INJECTION", "XPATH_INJECTION", "NOSQL_INJECTION"}
             if cwe not in allowed_cwes and stype not in allowed_types:
                 return False
 
@@ -3212,8 +3343,8 @@ class TaintTracker:
             if fn_base in PRIMITIVE_NUMERIC_CASTS or d_base in PRIMITIVE_NUMERIC_CASTS:
                 sink_cwe = sink.metadata.get("cwe") if sink and hasattr(sink, "metadata") else None
                 sink_type = sink.metadata.get("sink_type") if sink and hasattr(sink, "metadata") else None
-                protected_cwes = {"CWE-89", "CWE-78", "CWE-22", "CWE-95", "UNKNOWN_CWE"}
-                if not sink_cwe or sink_cwe in protected_cwes or sink_type in ("SQL_INJECTION", "COMMAND_INJECTION", "PATH_TRAVERSAL", "CODE_EXECUTION", "FILE_ACCESS"):
+                protected_cwes = {"CWE-89", "CWE-78", "CWE-22", "CWE-95", "CWE-943", "CWE-643", "UNKNOWN_CWE"}
+                if not sink_cwe or sink_cwe in protected_cwes or sink_type in ("SQL_INJECTION", "COMMAND_INJECTION", "PATH_TRAVERSAL", "CODE_EXECUTION", "FILE_ACCESS", "NOSQL_INJECTION", "XPATH_INJECTION"):
                     first_tainted = next((a for a in arg_values if a.state != TaintState.CLEAN), None)
                     san_nodes = list(first_tainted.proof_nodes) if first_tainted else []
                     san_edges = list(first_tainted.proof_edges) if first_tainted else []
@@ -4867,6 +4998,147 @@ class TaintTracker:
             )
         return ProvenanceValue(state=ProvenanceState.UNKNOWN, confidence=0.50, source_trace=("unknown_expr",), origin_node=node)
 
+    def _is_bad_error_return(self, ret_node: ast.Return, handler_name: Optional[str]) -> bool:
+        """CWE-209: classifies a Return statement inside an except handler."""
+        value = ret_node.value
+        if value is None:
+            return False
+        if isinstance(value, ast.Name):
+            return bool(handler_name) and value.id == handler_name
+        if isinstance(value, ast.Call):
+            fn = dotted_name(value.func) or ""
+            if fn in ("traceback.format_exc", "format_exc"):
+                return True
+            if fn in ("str", "repr") and value.args and isinstance(value.args[0], ast.Name):
+                return bool(handler_name) and value.args[0].id == handler_name
+        return False
+
+    def _scan_error_returns(self, stmts: list, handler_name: Optional[str]) -> bool:
+        """Recursively scans handler body statements for sensitive error returns."""
+        for stmt in stmts:
+            if isinstance(stmt, ast.Return):
+                if self._is_bad_error_return(stmt, handler_name):
+                    return True
+            elif isinstance(stmt, ast.If):
+                if self._scan_error_returns(stmt.body, handler_name) or self._scan_error_returns(stmt.orelse, handler_name):
+                    return True
+            elif isinstance(stmt, (ast.For, ast.While)):
+                if self._scan_error_returns(stmt.body, handler_name) or self._scan_error_returns(stmt.orelse, handler_name):
+                    return True
+            elif isinstance(stmt, ast.Try):
+                if self._scan_error_returns(stmt.body, handler_name):
+                    return True
+                for nested in stmt.handlers:
+                    if self._scan_error_returns(nested.body, getattr(nested, "name", None)):
+                        return True
+        return False
+
+    def _collect_batch2_structural_findings(self) -> None:
+        """
+        Batch 2 PURE_STRUCTURAL visitors (data/cwe_blueprint_batch2.json):
+        CWE-377, CWE-732, CWE-326, CWE-798, CWE-1004, CWE-209.
+        Appends sinks + sink_records; analyze() emits synthetic edges for them.
+        """
+        for mod_name, tree in self.modules.items():
+            file_path = self.file_paths.get(mod_name, "unknown.py")
+            scope_id = f"{mod_name}:global"
+            seen: set[tuple[str, int, int]] = set()
+            for node in ast.walk(tree):
+                cwe_meta = None
+                if isinstance(node, ast.Call):
+                    name = dotted_name(node.func) or ""
+                    canon = self.resolve_canonical_name(node.func, scope_id) or ""
+                    names = {name, canon} - {"", None}
+
+                    # CWE-377: direct invocation of tempfile.mktemp
+                    if "tempfile.mktemp" in names:
+                        cwe_meta = {"operation": "INSECURE_TEMP_FILE", "category": "INSECURE_TEMPORARY_FILE", "cwe": "CWE-377"}
+
+                    # CWE-732: os.chmod with group/world-accessible mode bits
+                    elif "os.chmod" in names:
+                        mode_node = None
+                        for kw in getattr(node, "keywords", []):
+                            if kw.arg == "mode":
+                                mode_node = kw.value
+                                break
+                        if mode_node is None and len(node.args) >= 2:
+                            mode_node = node.args[1]
+                        if mode_node is not None:
+                            mode_val = _eval_static_constant(mode_node, self.assignments_by_scope, scope_id, getattr(node, "lineno", 0))
+                            if isinstance(mode_val, int) and (mode_val & 0o077) != 0:
+                                cwe_meta = {"operation": "INSECURE_FILE_PERMISSIONS", "category": "INSECURE_FILE_PERMISSIONS", "cwe": "CWE-732"}
+
+                    # CWE-326: RSA key generation below 2048 bits
+                    elif names & CWE326_SINK_NAMES:
+                        bits_node = None
+                        for kw in getattr(node, "keywords", []):
+                            if kw.arg == "bits":
+                                bits_node = kw.value
+                                break
+                        if bits_node is None and node.args:
+                            bits_node = node.args[0]
+                        if bits_node is not None:
+                            bits_val = _eval_static_constant(bits_node, self.assignments_by_scope, scope_id, getattr(node, "lineno", 0))
+                            if isinstance(bits_val, int) and bits_val < 2048:
+                                cwe_meta = {"operation": "WEAK_CRYPTO_KEY_SIZE", "category": "INADEQUATE_ENCRYPTION_STRENGTH", "cwe": "CWE-326"}
+
+                    # CWE-1004: set_cookie without httponly=True and secure=True
+                    elif name == "set_cookie" or name.endswith(".set_cookie") or canon == "set_cookie" or (canon and canon.endswith(".set_cookie")):
+                        httponly_ok = False
+                        secure_ok = False
+                        for kw in getattr(node, "keywords", []):
+                            if kw.arg == "httponly":
+                                httponly_ok = _eval_static_constant(kw.value, self.assignments_by_scope, scope_id, getattr(node, "lineno", 0)) is True
+                            elif kw.arg == "secure":
+                                secure_ok = _eval_static_constant(kw.value, self.assignments_by_scope, scope_id, getattr(node, "lineno", 0)) is True
+                        if not (httponly_ok and secure_ok):
+                            cwe_meta = {"operation": "INSECURE_COOKIE_FLAGS", "category": "INSECURE_COOKIE_CONFIGURATION", "cwe": "CWE-1004"}
+
+                elif isinstance(node, (ast.Assign, ast.AnnAssign)):
+                    # CWE-798: hardcoded credential literal assigned to a sensitive target
+                    value_node = node.value
+                    if isinstance(value_node, ast.Constant) and isinstance(value_node.value, str) and len(value_node.value) >= 8:
+                        targets = node.targets if isinstance(node, ast.Assign) else [node.target]
+                        for target in targets:
+                            t_str = ""
+                            if isinstance(target, ast.Name):
+                                t_str = target.id
+                            elif isinstance(target, ast.Attribute):
+                                t_str = dotted_name(target) or target.attr
+                            elif isinstance(target, ast.Subscript) and isinstance(target.value, ast.Name):
+                                t_str = target.value.id
+                            if t_str and CWE798_TARGET_RE.match(t_str):
+                                cwe_meta = {"operation": "HARDCODED_CREDENTIAL", "category": "HARDCODED_CREDENTIALS", "cwe": "CWE-798"}
+                                break
+
+                elif isinstance(node, ast.ExceptHandler):
+                    # CWE-209: sensitive error exposure from except handler
+                    handler_name = getattr(node, "name", None)
+                    if self._scan_error_returns(list(node.body), handler_name):
+                        cwe_meta = {"operation": "SENSITIVE_ERROR_EXPOSURE", "category": "SENSITIVE_ERROR_EXPOSURE", "cwe": "CWE-209"}
+
+                if cwe_meta:
+                    dedupe_key = (cwe_meta["cwe"], getattr(node, "lineno", 0), getattr(node, "col_offset", 0))
+                    if dedupe_key in seen:
+                        continue
+                    seen.add(dedupe_key)
+                    sink_id = self.next_sink_id()
+                    sink_node = SecurityNode(
+                        id=sink_id,
+                        node_type=NodeType.SINK,
+                        symbol=cwe_meta["operation"],
+                        operation=cwe_meta["operation"],
+                        location=location(node, file_path),
+                        metadata={"sink_type": cwe_meta["category"], "category": cwe_meta["category"], "cwe": cwe_meta["cwe"]},
+                    )
+                    self.sinks.append(sink_node)
+                    self.sink_records.append(SinkRecord(
+                        node=node,
+                        security_node=sink_node,
+                        lineno=getattr(node, "lineno", 1),
+                        scope_id=scope_id,
+                    ))
+
     def analyze(self):
         for mod_name, tree in self.modules.items():
             for node in ast.walk(tree):
@@ -5035,6 +5307,7 @@ class TaintTracker:
             for node in ast.walk(tree):
                 if isinstance(node, ast.Call) and self.is_source_call(node, f"{mod_name}:global"):
                     self.get_or_create_source(node, self.file_paths.get(mod_name, "unknown.py"), f"{mod_name}:global")
+        self._collect_batch2_structural_findings()
         for assign_stmt, scope_id, lineno in self.ssl_attr_assigns:
             mod_name = scope_id.split(":")[0]
             file_path = self.file_paths.get(mod_name, "unknown.py")
@@ -5100,6 +5373,16 @@ class TaintTracker:
                     kind="CONFIRMED_DATA_FLOW" if self.audit_all else "POTENTIAL_DATA_FLOW",
                     confidence=1.0 if self.audit_all else 0.85,
                     transform="insecure_random_generator"
+                ))
+                continue
+
+            if cwe in STRUCTURAL_SYNTHETIC_SOURCES:
+                self.edges.append(DataFlowEdge(
+                    source_id=STRUCTURAL_SYNTHETIC_SOURCES[cwe],
+                    target_id=sink.id,
+                    kind="CONFIRMED_DATA_FLOW",
+                    confidence=1.0,
+                    transform=op or f"{cwe.lower()}_structural_violation"
                 ))
                 continue
 

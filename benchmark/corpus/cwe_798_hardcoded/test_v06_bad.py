@@ -1,0 +1,2 @@
+passwd = "correcthorsebatterystaple"
+print(passwd)

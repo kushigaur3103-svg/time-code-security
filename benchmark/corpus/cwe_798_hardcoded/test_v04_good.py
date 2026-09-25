@@ -1,0 +1,2 @@
+password = "short"
+print(password)
