@@ -1,0 +1,193 @@
+{
+  "batch_version": "3b",
+  "note": "Phase 1 of Top 20 CWE expansion (Part B: 10 final CWEs). Deterministic AST signatures for the Batch 3B visitor implementations. All predicates must be statically resolvable from the AST without execution.",
+  "cwes": {
+    "CWE-90": {
+      "name": "Improper Neutralization of Special Elements used in an LDAP Query ('LDAP Injection')",
+      "type": "TAINT_OR_STRUCTURAL_FILTER",
+      "sinks": [
+        "ldap.search",
+        "ldap.search_s",
+        "ldap.search_st",
+        "connection.search",
+        "conn.search"
+      ],
+      "sanitizers": [
+        "ldap.filter.escape_filter_chars",
+        "ldap3.utils.conv.escape_filter_chars",
+        "escape_filter_chars"
+      ],
+      "bad_predicate": "LDAP search filter constructed via dynamic string formatting, interpolation, or concatenation with unescaped input",
+      "safe_predicate": "LDAP filter input passed through escape_filter_chars or hardcoded static constant query",
+      "remediation": "Always escape untrusted input using ldap.filter.escape_filter_chars() or ldap3.utils.conv.escape_filter_chars() before embedding in LDAP search filters."
+    },
+    "CWE-776": {
+      "name": "Improper Restriction of Recursive Entity References ('XML Entity Expansion / XML Bomb')",
+      "type": "PURE_STRUCTURAL_PARSER",
+      "sinks": [
+        "xml.etree.ElementTree.fromstring",
+        "xml.etree.ElementTree.parse",
+        "xml.dom.minidom.parseString",
+        "xml.dom.minidom.parse",
+        "xml.sax.parseString",
+        "xml.sax.parse",
+        "ET.fromstring",
+        "ET.parse"
+      ],
+      "safe_parsers": [
+        "defusedxml.ElementTree.fromstring",
+        "defusedxml.ElementTree.parse",
+        "defusedxml.minidom.parseString",
+        "defusedxml.minidom.parse",
+        "defusedxml.lxml.fromstring"
+      ],
+      "bad_predicate": "Invocation of standard library xml.etree, xml.dom.minidom, or xml.sax parsing functions vulnerable to entity expansion / Billion Laughs",
+      "safe_predicate": "Parsing XML using defusedxml wrappers (e.g. defusedxml.ElementTree.fromstring) which forbid entity expansion and DTD bombs by default",
+      "remediation": "Replace standard library XML parsers with defusedxml (defusedxml.ElementTree, defusedxml.minidom) to prevent denial of service via recursive entity expansion."
+    },
+    "CWE-200": {
+      "name": "Exposure of Sensitive Information to an Unauthorized Actor ('Diagnostic Information Leak')",
+      "type": "PURE_STRUCTURAL_EXPOSURE",
+      "sinks": [
+        "return",
+        "jsonify",
+        "response.write",
+        "resp.write"
+      ],
+      "sensitive_diagnostic_calls": [
+        "traceback.format_exc",
+        "traceback.format_exception",
+        "sys.exc_info"
+      ],
+      "sensitive_system_objects": [
+        "os.environ",
+        "dict(os.environ)",
+        "str(os.environ)"
+      ],
+      "bad_predicate": "HTTP response return statement or jsonify payload directly serializes traceback.format_exc() or entire os.environ dictionary",
+      "safe_predicate": "Logging exceptions internally via logger.error() and returning generic sanitized error responses (e.g. {'error': 'Internal error'}), or exposing only non-sensitive config keys",
+      "remediation": "Log stack traces and system diagnostics internally via application logging. Never return raw exception tracebacks or os.environ dicts in client HTTP responses."
+    },
+    "CWE-384": {
+      "name": "Session Fixation",
+      "type": "PURE_STRUCTURAL_SESSION_ASSIGN",
+      "sinks": [
+        "session['user_id']",
+        "session['user']",
+        "session['username']",
+        "session['uid']",
+        "request.session['user_id']",
+        "request.session['user']"
+      ],
+      "session_cycling_methods": [
+        "session.cycle_key",
+        "session.regenerate_id",
+        "session.regenerate",
+        "request.session.flush",
+        "session.clear"
+      ],
+      "bad_predicate": "Session dictionary assignment of user identity upon authentication without preceding session.cycle_key(), session.regenerate(), or session.flush()",
+      "safe_predicate": "Invoking session.cycle_key(), request.session.flush(), or session.regenerate() immediately prior to binding the authenticated user identity to the session",
+      "remediation": "Always invalidate and renew the session ID (e.g. session.cycle_key() in Django or session.regenerate() in Flask/FastAPI) upon successful user authentication."
+    },
+    "CWE-770": {
+      "name": "Allocation of Resources Without Limits or Throttling ('Unbounded Read')",
+      "type": "PURE_STRUCTURAL_CALL",
+      "sinks": [
+        "f.read",
+        "file.read",
+        "stream.read",
+        "request.stream.read",
+        "sock.recv"
+      ],
+      "bad_predicate": "Calling .read() or .recv() on an external file or network stream with 0 arguments (unbounded memory allocation)",
+      "safe_predicate": "Calling .read(limit) or .recv(limit) with an explicit positive integer size limit or chunked streaming loop",
+      "remediation": "Always specify an explicit buffer size limit when reading from files or streams (e.g., file.read(4096)) to prevent unbounded memory allocation."
+    },
+    "CWE-605": {
+      "name": "Multiple Binds to the Same Port / Insecure Wildcard Interface Binding",
+      "type": "PURE_STRUCTURAL_SOCKET_BIND",
+      "sinks": [
+        "sock.bind",
+        "socket.bind",
+        "s.bind",
+        "asyncio.start_server"
+      ],
+      "insecure_interfaces": [
+        "0.0.0.0",
+        "",
+        "::"
+      ],
+      "safe_interfaces": [
+        "127.0.0.1",
+        "localhost",
+        "::1"
+      ],
+      "bad_predicate": "Binding server socket to '0.0.0.0', '', or '::' wildcard interface exposing the service to all external network interfaces",
+      "safe_predicate": "Binding server socket explicitly to '127.0.0.1', 'localhost', or '::1' loopback interface",
+      "remediation": "Bind server sockets to 127.0.0.1 or localhost unless external network exposure is strictly necessary and protected by firewall/mTLS."
+    },
+    "CWE-269": {
+      "name": "Improper Privilege Management ('Permanent Root Escalation')",
+      "type": "PURE_STRUCTURAL_PRIVILEGE",
+      "sinks": [
+        "os.setuid",
+        "os.seteuid"
+      ],
+      "bad_predicate": "Escalating privileges to root (os.setuid(0) or os.seteuid(0)) without a subsequent privilege drop in a try/finally block or worker loop",
+      "safe_predicate": "Privilege drop to non-root UID (os.setuid(unprivileged_uid)) or scoped temporary elevation wrapped in a try/finally block restoring the unprivileged UID",
+      "remediation": "Drop root privileges immediately after performing privileged startup operations, or strictly wrap temporary elevations in try/finally blocks."
+    },
+    "CWE-652": {
+      "name": "Improper Neutralization of Data within XQuery Expressions ('XQuery / XML Query Injection')",
+      "type": "TAINT_OR_STRUCTURAL_QUERY",
+      "sinks": [
+        "tree.xpath",
+        "root.xpath",
+        "element.xpath",
+        "xq.execute"
+      ],
+      "bad_predicate": "XPath or XQuery expression assembled via f-string interpolation, str.format(), or %-formatting containing dynamic variables",
+      "safe_predicate": "Using parameterized XPath queries with $variable references and explicit keyword arguments (e.g. tree.xpath('//item[@id=$id]', id=item_id)) or static constant queries",
+      "remediation": "Pass parameters to XPath queries using variable references ($param) and keyword arguments rather than string formatting."
+    },
+    "CWE-522": {
+      "name": "Insufficiently Protected Credentials ('Cleartext Basic Auth Transmission')",
+      "type": "PURE_STRUCTURAL_AUTH_TRANSPORT",
+      "sinks": [
+        "requests.get",
+        "requests.post",
+        "requests.put",
+        "requests.delete",
+        "httpx.get",
+        "httpx.post",
+        "urllib.request.urlopen"
+      ],
+      "auth_markers": [
+        "auth=",
+        "HTTPBasicAuth",
+        "Authorization"
+      ],
+      "bad_predicate": "Transmitting basic authentication credentials (auth=('user', 'pwd') or HTTPBasicAuth) over an unencrypted 'http://' URL",
+      "safe_predicate": "Transmitting authentication credentials strictly over 'https://' URLs or using secure bearer token schemes over encrypted channels",
+      "remediation": "Never send HTTP Basic Authentication credentials over unencrypted HTTP. Always enforce HTTPS endpoints for credentialed requests."
+    },
+    "CWE-937": {
+      "name": "Using Components with Known Vulnerabilities ('Deprecated Insecure Protocols')",
+      "type": "PURE_STRUCTURAL_INSECURE_MODULE",
+      "sinks": [
+        "telnetlib.Telnet",
+        "Telnet",
+        "ftplib.FTP"
+      ],
+      "safe_alternatives": [
+        "paramiko.SSHClient",
+        "ftplib.FTP_TLS",
+        "fabric.Connection"
+      ],
+      "bad_predicate": "Instantiating telnetlib.Telnet (cleartext unencrypted remote shell) or ftplib.FTP (cleartext unencrypted file transfer protocol)",
+      "safe_predicate": "Using encrypted alternatives such as paramiko.SSHClient for remote command execution or ftplib.FTP_TLS with prot_p() for secure file transfer",
+      "remediation": "Replace unencrypted legacy protocols (Telnet, cleartext FTP) with modern encrypted protocols (SSH via Paramiko, FTPS via ftplib.FTP_TLS, or SFTP)."
+    }
+  }
+}

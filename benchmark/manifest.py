@@ -3328,6 +3328,966 @@ BENCHMARK_TEST_CASES: List[BenchmarkTestCase] = [
         expected_sinks=[],
         description='Safe: app.config DEBUG = False'
     ),
+    BenchmarkTestCase(
+        test_id='TCS-BENCH-CWE90-V01-BAD',
+        cwe='CWE-90',
+        file_path='benchmark/corpus/cwe_90_ldap/test_v01_bad.py',
+        is_vulnerable=True,
+        expected_sinks=['ldap.search', 'ldap.search_s', 'connection.search'],
+        description='Unescaped username formatted into LDAP search filter'
+    ),
+    BenchmarkTestCase(
+        test_id='TCS-BENCH-CWE90-V01-GOOD',
+        cwe='CWE-90',
+        file_path='benchmark/corpus/cwe_90_ldap/test_v01_good.py',
+        is_vulnerable=False,
+        expected_sinks=[],
+        description='Safe: escape_filter_chars applied to username'
+    ),
+    BenchmarkTestCase(
+        test_id='TCS-BENCH-CWE90-V02-BAD',
+        cwe='CWE-90',
+        file_path='benchmark/corpus/cwe_90_ldap/test_v02_bad.py',
+        is_vulnerable=True,
+        expected_sinks=['ldap.search', 'ldap.search_s', 'connection.search'],
+        description='LDAP3 filter concatenated from username and password'
+    ),
+    BenchmarkTestCase(
+        test_id='TCS-BENCH-CWE90-V02-GOOD',
+        cwe='CWE-90',
+        file_path='benchmark/corpus/cwe_90_ldap/test_v02_good.py',
+        is_vulnerable=False,
+        expected_sinks=[],
+        description='Safe: LDAP3 escape_filter_chars applied'
+    ),
+    BenchmarkTestCase(
+        test_id='TCS-BENCH-CWE90-V03-BAD',
+        cwe='CWE-90',
+        file_path='benchmark/corpus/cwe_90_ldap/test_v03_bad.py',
+        is_vulnerable=True,
+        expected_sinks=['ldap.search', 'ldap.search_s', 'connection.search'],
+        description='Helper function formats user into search_s filter'
+    ),
+    BenchmarkTestCase(
+        test_id='TCS-BENCH-CWE90-V03-GOOD',
+        cwe='CWE-90',
+        file_path='benchmark/corpus/cwe_90_ldap/test_v03_good.py',
+        is_vulnerable=False,
+        expected_sinks=[],
+        description='Safe: Helper escapes filter characters'
+    ),
+    BenchmarkTestCase(
+        test_id='TCS-BENCH-CWE90-V04-BAD',
+        cwe='CWE-90',
+        file_path='benchmark/corpus/cwe_90_ldap/test_v04_bad.py',
+        is_vulnerable=True,
+        expected_sinks=['ldap.search', 'ldap.search_s', 'connection.search'],
+        description='LDAP filter formatted with role string'
+    ),
+    BenchmarkTestCase(
+        test_id='TCS-BENCH-CWE90-V04-GOOD',
+        cwe='CWE-90',
+        file_path='benchmark/corpus/cwe_90_ldap/test_v04_good.py',
+        is_vulnerable=False,
+        expected_sinks=[],
+        description='Safe: Role validated against ALLOWED_ROLES whitelist'
+    ),
+    BenchmarkTestCase(
+        test_id='TCS-BENCH-CWE90-V05-BAD',
+        cwe='CWE-90',
+        file_path='benchmark/corpus/cwe_90_ldap/test_v05_bad.py',
+        is_vulnerable=True,
+        expected_sinks=['ldap.search', 'ldap.search_s', 'connection.search'],
+        description='OOP DirectoryService formats unescaped email'
+    ),
+    BenchmarkTestCase(
+        test_id='TCS-BENCH-CWE90-V05-GOOD',
+        cwe='CWE-90',
+        file_path='benchmark/corpus/cwe_90_ldap/test_v05_good.py',
+        is_vulnerable=False,
+        expected_sinks=[],
+        description='Safe: OOP DirectoryService escapes input'
+    ),
+    BenchmarkTestCase(
+        test_id='TCS-BENCH-CWE90-V06-BAD',
+        cwe='CWE-90',
+        file_path='benchmark/corpus/cwe_90_ldap/test_v06_bad.py',
+        is_vulnerable=True,
+        expected_sinks=['ldap.search', 'ldap.search_s', 'connection.search'],
+        description='Direct user query executed via conn.search'
+    ),
+    BenchmarkTestCase(
+        test_id='TCS-BENCH-CWE90-V06-GOOD',
+        cwe='CWE-90',
+        file_path='benchmark/corpus/cwe_90_ldap/test_v06_good.py',
+        is_vulnerable=False,
+        expected_sinks=[],
+        description='Safe: Static constant LDAP filter'
+    ),
+    BenchmarkTestCase(
+        test_id='TCS-BENCH-CWE776-V01-BAD',
+        cwe='CWE-776',
+        file_path='benchmark/corpus/cwe_776_xml_bomb/test_v01_bad.py',
+        is_vulnerable=True,
+        expected_sinks=['xml.etree.ElementTree.fromstring', 'xml.dom.minidom.parseString', 'xml.sax.parseString'],
+        description='Standard xml.etree fromstring vulnerable to XML bomb'
+    ),
+    BenchmarkTestCase(
+        test_id='TCS-BENCH-CWE776-V01-GOOD',
+        cwe='CWE-776',
+        file_path='benchmark/corpus/cwe_776_xml_bomb/test_v01_good.py',
+        is_vulnerable=False,
+        expected_sinks=[],
+        description='Safe: defusedxml.ElementTree fromstring'
+    ),
+    BenchmarkTestCase(
+        test_id='TCS-BENCH-CWE776-V02-BAD',
+        cwe='CWE-776',
+        file_path='benchmark/corpus/cwe_776_xml_bomb/test_v02_bad.py',
+        is_vulnerable=True,
+        expected_sinks=['xml.etree.ElementTree.fromstring', 'xml.dom.minidom.parseString', 'xml.sax.parseString'],
+        description='Standard minidom parseString without entity restrictions'
+    ),
+    BenchmarkTestCase(
+        test_id='TCS-BENCH-CWE776-V02-GOOD',
+        cwe='CWE-776',
+        file_path='benchmark/corpus/cwe_776_xml_bomb/test_v02_good.py',
+        is_vulnerable=False,
+        expected_sinks=[],
+        description='Safe: defusedxml.minidom parseString'
+    ),
+    BenchmarkTestCase(
+        test_id='TCS-BENCH-CWE776-V03-BAD',
+        cwe='CWE-776',
+        file_path='benchmark/corpus/cwe_776_xml_bomb/test_v03_bad.py',
+        is_vulnerable=True,
+        expected_sinks=['xml.etree.ElementTree.fromstring', 'xml.dom.minidom.parseString', 'xml.sax.parseString'],
+        description='Standard ET.parse on file path'
+    ),
+    BenchmarkTestCase(
+        test_id='TCS-BENCH-CWE776-V03-GOOD',
+        cwe='CWE-776',
+        file_path='benchmark/corpus/cwe_776_xml_bomb/test_v03_good.py',
+        is_vulnerable=False,
+        expected_sinks=[],
+        description='Safe: defusedxml.ElementTree parse'
+    ),
+    BenchmarkTestCase(
+        test_id='TCS-BENCH-CWE776-V04-BAD',
+        cwe='CWE-776',
+        file_path='benchmark/corpus/cwe_776_xml_bomb/test_v04_bad.py',
+        is_vulnerable=True,
+        expected_sinks=['xml.etree.ElementTree.fromstring', 'xml.dom.minidom.parseString', 'xml.sax.parseString'],
+        description='Standard xml.sax parseString'
+    ),
+    BenchmarkTestCase(
+        test_id='TCS-BENCH-CWE776-V04-GOOD',
+        cwe='CWE-776',
+        file_path='benchmark/corpus/cwe_776_xml_bomb/test_v04_good.py',
+        is_vulnerable=False,
+        expected_sinks=[],
+        description='Safe: defusedxml.sax parseString'
+    ),
+    BenchmarkTestCase(
+        test_id='TCS-BENCH-CWE776-V05-BAD',
+        cwe='CWE-776',
+        file_path='benchmark/corpus/cwe_776_xml_bomb/test_v05_bad.py',
+        is_vulnerable=True,
+        expected_sinks=['xml.etree.ElementTree.fromstring', 'xml.dom.minidom.parseString', 'xml.sax.parseString'],
+        description='Class handler parses XML with standard ET'
+    ),
+    BenchmarkTestCase(
+        test_id='TCS-BENCH-CWE776-V05-GOOD',
+        cwe='CWE-776',
+        file_path='benchmark/corpus/cwe_776_xml_bomb/test_v05_good.py',
+        is_vulnerable=False,
+        expected_sinks=[],
+        description='Safe: Class handler uses defusedxml'
+    ),
+    BenchmarkTestCase(
+        test_id='TCS-BENCH-CWE776-V06-BAD',
+        cwe='CWE-776',
+        file_path='benchmark/corpus/cwe_776_xml_bomb/test_v06_bad.py',
+        is_vulnerable=True,
+        expected_sinks=['xml.etree.ElementTree.fromstring', 'xml.dom.minidom.parseString', 'xml.sax.parseString'],
+        description='Standard minidom parse on XML input'
+    ),
+    BenchmarkTestCase(
+        test_id='TCS-BENCH-CWE776-V06-GOOD',
+        cwe='CWE-776',
+        file_path='benchmark/corpus/cwe_776_xml_bomb/test_v06_good.py',
+        is_vulnerable=False,
+        expected_sinks=[],
+        description='Safe: defusedxml minidom parse'
+    ),
+    BenchmarkTestCase(
+        test_id='TCS-BENCH-CWE200-V01-BAD',
+        cwe='CWE-200',
+        file_path='benchmark/corpus/cwe_200_info_exposure/test_v01_bad.py',
+        is_vulnerable=True,
+        expected_sinks=['traceback.format_exc', 'jsonify', 'sys.exc_info', 'os.environ'],
+        description='traceback.format_exc() returned in Flask response'
+    ),
+    BenchmarkTestCase(
+        test_id='TCS-BENCH-CWE200-V01-GOOD',
+        cwe='CWE-200',
+        file_path='benchmark/corpus/cwe_200_info_exposure/test_v01_good.py',
+        is_vulnerable=False,
+        expected_sinks=[],
+        description='Safe: Exception logged; generic error returned'
+    ),
+    BenchmarkTestCase(
+        test_id='TCS-BENCH-CWE200-V02-BAD',
+        cwe='CWE-200',
+        file_path='benchmark/corpus/cwe_200_info_exposure/test_v02_bad.py',
+        is_vulnerable=True,
+        expected_sinks=['traceback.format_exc', 'jsonify', 'sys.exc_info', 'os.environ'],
+        description='Entire os.environ dict dumped via Flask route'
+    ),
+    BenchmarkTestCase(
+        test_id='TCS-BENCH-CWE200-V02-GOOD',
+        cwe='CWE-200',
+        file_path='benchmark/corpus/cwe_200_info_exposure/test_v02_good.py',
+        is_vulnerable=False,
+        expected_sinks=[],
+        description='Safe: Only non-sensitive version key returned'
+    ),
+    BenchmarkTestCase(
+        test_id='TCS-BENCH-CWE200-V03-BAD',
+        cwe='CWE-200',
+        file_path='benchmark/corpus/cwe_200_info_exposure/test_v03_bad.py',
+        is_vulnerable=True,
+        expected_sinks=['traceback.format_exc', 'jsonify', 'sys.exc_info', 'os.environ'],
+        description='traceback.format_exc() returned in error dict'
+    ),
+    BenchmarkTestCase(
+        test_id='TCS-BENCH-CWE200-V03-GOOD',
+        cwe='CWE-200',
+        file_path='benchmark/corpus/cwe_200_info_exposure/test_v03_good.py',
+        is_vulnerable=False,
+        expected_sinks=[],
+        description='Safe: Generic failure message returned'
+    ),
+    BenchmarkTestCase(
+        test_id='TCS-BENCH-CWE200-V04-BAD',
+        cwe='CWE-200',
+        file_path='benchmark/corpus/cwe_200_info_exposure/test_v04_bad.py',
+        is_vulnerable=True,
+        expected_sinks=['traceback.format_exc', 'jsonify', 'sys.exc_info', 'os.environ'],
+        description='sys.exc_info() string serialized to client'
+    ),
+    BenchmarkTestCase(
+        test_id='TCS-BENCH-CWE200-V04-GOOD',
+        cwe='CWE-200',
+        file_path='benchmark/corpus/cwe_200_info_exposure/test_v04_good.py',
+        is_vulnerable=False,
+        expected_sinks=[],
+        description='Safe: Generic status response returned'
+    ),
+    BenchmarkTestCase(
+        test_id='TCS-BENCH-CWE200-V05-BAD',
+        cwe='CWE-200',
+        file_path='benchmark/corpus/cwe_200_info_exposure/test_v05_bad.py',
+        is_vulnerable=True,
+        expected_sinks=['traceback.format_exc', 'jsonify', 'sys.exc_info', 'os.environ'],
+        description='str(os.environ) rendered in HTML response'
+    ),
+    BenchmarkTestCase(
+        test_id='TCS-BENCH-CWE200-V05-GOOD',
+        cwe='CWE-200',
+        file_path='benchmark/corpus/cwe_200_info_exposure/test_v05_good.py',
+        is_vulnerable=False,
+        expected_sinks=[],
+        description='Safe: Generic online message rendered'
+    ),
+    BenchmarkTestCase(
+        test_id='TCS-BENCH-CWE200-V06-BAD',
+        cwe='CWE-200',
+        file_path='benchmark/corpus/cwe_200_info_exposure/test_v06_bad.py',
+        is_vulnerable=True,
+        expected_sinks=['traceback.format_exc', 'jsonify', 'sys.exc_info', 'os.environ'],
+        description='traceback.format_exception output returned to client'
+    ),
+    BenchmarkTestCase(
+        test_id='TCS-BENCH-CWE200-V06-GOOD',
+        cwe='CWE-200',
+        file_path='benchmark/corpus/cwe_200_info_exposure/test_v06_good.py',
+        is_vulnerable=False,
+        expected_sinks=[],
+        description='Safe: Exception logged via logging.exception'
+    ),
+    BenchmarkTestCase(
+        test_id='TCS-BENCH-CWE384-V01-BAD',
+        cwe='CWE-384',
+        file_path='benchmark/corpus/cwe_384_session_fixation/test_v01_bad.py',
+        is_vulnerable=True,
+        expected_sinks=['session.set', 'session.__setitem__'],
+        description='User ID assigned to session without regeneration'
+    ),
+    BenchmarkTestCase(
+        test_id='TCS-BENCH-CWE384-V01-GOOD',
+        cwe='CWE-384',
+        file_path='benchmark/corpus/cwe_384_session_fixation/test_v01_good.py',
+        is_vulnerable=False,
+        expected_sinks=[],
+        description='Safe: session.clear() called before user ID assignment'
+    ),
+    BenchmarkTestCase(
+        test_id='TCS-BENCH-CWE384-V02-BAD',
+        cwe='CWE-384',
+        file_path='benchmark/corpus/cwe_384_session_fixation/test_v02_bad.py',
+        is_vulnerable=True,
+        expected_sinks=['session.set', 'session.__setitem__'],
+        description='request.session user ID set without cycle_key'
+    ),
+    BenchmarkTestCase(
+        test_id='TCS-BENCH-CWE384-V02-GOOD',
+        cwe='CWE-384',
+        file_path='benchmark/corpus/cwe_384_session_fixation/test_v02_good.py',
+        is_vulnerable=False,
+        expected_sinks=[],
+        description='Safe: request.session.cycle_key() called before assignment'
+    ),
+    BenchmarkTestCase(
+        test_id='TCS-BENCH-CWE384-V03-BAD',
+        cwe='CWE-384',
+        file_path='benchmark/corpus/cwe_384_session_fixation/test_v03_bad.py',
+        is_vulnerable=True,
+        expected_sinks=['session.set', 'session.__setitem__'],
+        description='AuthController sets username on unrenewed session'
+    ),
+    BenchmarkTestCase(
+        test_id='TCS-BENCH-CWE384-V03-GOOD',
+        cwe='CWE-384',
+        file_path='benchmark/corpus/cwe_384_session_fixation/test_v03_good.py',
+        is_vulnerable=False,
+        expected_sinks=[],
+        description='Safe: session.regenerate() called before assignment'
+    ),
+    BenchmarkTestCase(
+        test_id='TCS-BENCH-CWE384-V04-BAD',
+        cwe='CWE-384',
+        file_path='benchmark/corpus/cwe_384_session_fixation/test_v04_bad.py',
+        is_vulnerable=True,
+        expected_sinks=['session.set', 'session.__setitem__'],
+        description='Session UID assigned without session renewal'
+    ),
+    BenchmarkTestCase(
+        test_id='TCS-BENCH-CWE384-V04-GOOD',
+        cwe='CWE-384',
+        file_path='benchmark/corpus/cwe_384_session_fixation/test_v04_good.py',
+        is_vulnerable=False,
+        expected_sinks=[],
+        description='Safe: request.session.cycle_key() invoked on login'
+    ),
+    BenchmarkTestCase(
+        test_id='TCS-BENCH-CWE384-V05-BAD',
+        cwe='CWE-384',
+        file_path='benchmark/corpus/cwe_384_session_fixation/test_v05_bad.py',
+        is_vulnerable=True,
+        expected_sinks=['session.set', 'session.__setitem__'],
+        description='complete_login sets session without regenerate_id'
+    ),
+    BenchmarkTestCase(
+        test_id='TCS-BENCH-CWE384-V05-GOOD',
+        cwe='CWE-384',
+        file_path='benchmark/corpus/cwe_384_session_fixation/test_v05_good.py',
+        is_vulnerable=False,
+        expected_sinks=[],
+        description='Safe: sess.regenerate_id() called upon valid login'
+    ),
+    BenchmarkTestCase(
+        test_id='TCS-BENCH-CWE384-V06-BAD',
+        cwe='CWE-384',
+        file_path='benchmark/corpus/cwe_384_session_fixation/test_v06_bad.py',
+        is_vulnerable=True,
+        expected_sinks=['session.set', 'session.__setitem__'],
+        description='Auth token assigned to raw session'
+    ),
+    BenchmarkTestCase(
+        test_id='TCS-BENCH-CWE384-V06-GOOD',
+        cwe='CWE-384',
+        file_path='benchmark/corpus/cwe_384_session_fixation/test_v06_good.py',
+        is_vulnerable=False,
+        expected_sinks=[],
+        description='Safe: session.clear() called before token assignment'
+    ),
+    BenchmarkTestCase(
+        test_id='TCS-BENCH-CWE770-V01-BAD',
+        cwe='CWE-770',
+        file_path='benchmark/corpus/cwe_770_unbounded_read/test_v01_bad.py',
+        is_vulnerable=True,
+        expected_sinks=['file.read', 'f.read', 'stream.read', 'sock.recv'],
+        description='Unbounded f.read() on binary file'
+    ),
+    BenchmarkTestCase(
+        test_id='TCS-BENCH-CWE770-V01-GOOD',
+        cwe='CWE-770',
+        file_path='benchmark/corpus/cwe_770_unbounded_read/test_v01_good.py',
+        is_vulnerable=False,
+        expected_sinks=[],
+        description='Safe: Bounded f.read(MAX_SIZE) with 1MB limit'
+    ),
+    BenchmarkTestCase(
+        test_id='TCS-BENCH-CWE770-V02-BAD',
+        cwe='CWE-770',
+        file_path='benchmark/corpus/cwe_770_unbounded_read/test_v02_bad.py',
+        is_vulnerable=True,
+        expected_sinks=['file.read', 'f.read', 'stream.read', 'sock.recv'],
+        description='Unbounded stream.read()'
+    ),
+    BenchmarkTestCase(
+        test_id='TCS-BENCH-CWE770-V02-GOOD',
+        cwe='CWE-770',
+        file_path='benchmark/corpus/cwe_770_unbounded_read/test_v02_good.py',
+        is_vulnerable=False,
+        expected_sinks=[],
+        description='Safe: Bounded stream.read(4096) with chunk limit'
+    ),
+    BenchmarkTestCase(
+        test_id='TCS-BENCH-CWE770-V03-BAD',
+        cwe='CWE-770',
+        file_path='benchmark/corpus/cwe_770_unbounded_read/test_v03_bad.py',
+        is_vulnerable=True,
+        expected_sinks=['file.read', 'f.read', 'stream.read', 'sock.recv'],
+        description='Unbounded request.stream.read() in Flask view'
+    ),
+    BenchmarkTestCase(
+        test_id='TCS-BENCH-CWE770-V03-GOOD',
+        cwe='CWE-770',
+        file_path='benchmark/corpus/cwe_770_unbounded_read/test_v03_good.py',
+        is_vulnerable=False,
+        expected_sinks=[],
+        description='Safe: Bounded request.stream.read(8192)'
+    ),
+    BenchmarkTestCase(
+        test_id='TCS-BENCH-CWE770-V04-BAD',
+        cwe='CWE-770',
+        file_path='benchmark/corpus/cwe_770_unbounded_read/test_v04_bad.py',
+        is_vulnerable=True,
+        expected_sinks=['file.read', 'f.read', 'stream.read', 'sock.recv'],
+        description='StreamReader.ingest performs unbounded read()'
+    ),
+    BenchmarkTestCase(
+        test_id='TCS-BENCH-CWE770-V04-GOOD',
+        cwe='CWE-770',
+        file_path='benchmark/corpus/cwe_770_unbounded_read/test_v04_good.py',
+        is_vulnerable=False,
+        expected_sinks=[],
+        description='Safe: StreamReader performs bounded 64KB read'
+    ),
+    BenchmarkTestCase(
+        test_id='TCS-BENCH-CWE770-V05-BAD',
+        cwe='CWE-770',
+        file_path='benchmark/corpus/cwe_770_unbounded_read/test_v05_bad.py',
+        is_vulnerable=True,
+        expected_sinks=['file.read', 'f.read', 'stream.read', 'sock.recv'],
+        description='Unbounded socket recv() call'
+    ),
+    BenchmarkTestCase(
+        test_id='TCS-BENCH-CWE770-V05-GOOD',
+        cwe='CWE-770',
+        file_path='benchmark/corpus/cwe_770_unbounded_read/test_v05_good.py',
+        is_vulnerable=False,
+        expected_sinks=[],
+        description='Safe: Bounded socket recv(1024)'
+    ),
+    BenchmarkTestCase(
+        test_id='TCS-BENCH-CWE770-V06-BAD',
+        cwe='CWE-770',
+        file_path='benchmark/corpus/cwe_770_unbounded_read/test_v06_bad.py',
+        is_vulnerable=True,
+        expected_sinks=['file.read', 'f.read', 'stream.read', 'sock.recv'],
+        description='Unbounded file.read() without buffer size'
+    ),
+    BenchmarkTestCase(
+        test_id='TCS-BENCH-CWE770-V06-GOOD',
+        cwe='CWE-770',
+        file_path='benchmark/corpus/cwe_770_unbounded_read/test_v06_good.py',
+        is_vulnerable=False,
+        expected_sinks=[],
+        description='Safe: file.read(2048) with explicit buffer limit'
+    ),
+    BenchmarkTestCase(
+        test_id='TCS-BENCH-CWE605-V01-BAD',
+        cwe='CWE-605',
+        file_path='benchmark/corpus/cwe_605_socket_binding/test_v01_bad.py',
+        is_vulnerable=True,
+        expected_sinks=['sock.bind', 'socket.bind', 'asyncio.start_server'],
+        description='Socket bound to 0.0.0.0 wildcard interface'
+    ),
+    BenchmarkTestCase(
+        test_id='TCS-BENCH-CWE605-V01-GOOD',
+        cwe='CWE-605',
+        file_path='benchmark/corpus/cwe_605_socket_binding/test_v01_good.py',
+        is_vulnerable=False,
+        expected_sinks=[],
+        description='Safe: Socket bound to 127.0.0.1 loopback'
+    ),
+    BenchmarkTestCase(
+        test_id='TCS-BENCH-CWE605-V02-BAD',
+        cwe='CWE-605',
+        file_path='benchmark/corpus/cwe_605_socket_binding/test_v02_bad.py',
+        is_vulnerable=True,
+        expected_sinks=['sock.bind', 'socket.bind', 'asyncio.start_server'],
+        description='Socket bound to empty string wildcard interface'
+    ),
+    BenchmarkTestCase(
+        test_id='TCS-BENCH-CWE605-V02-GOOD',
+        cwe='CWE-605',
+        file_path='benchmark/corpus/cwe_605_socket_binding/test_v02_good.py',
+        is_vulnerable=False,
+        expected_sinks=[],
+        description='Safe: Socket bound to localhost'
+    ),
+    BenchmarkTestCase(
+        test_id='TCS-BENCH-CWE605-V03-BAD',
+        cwe='CWE-605',
+        file_path='benchmark/corpus/cwe_605_socket_binding/test_v03_bad.py',
+        is_vulnerable=True,
+        expected_sinks=['sock.bind', 'socket.bind', 'asyncio.start_server'],
+        description='Helper function binds socket to 0.0.0.0'
+    ),
+    BenchmarkTestCase(
+        test_id='TCS-BENCH-CWE605-V03-GOOD',
+        cwe='CWE-605',
+        file_path='benchmark/corpus/cwe_605_socket_binding/test_v03_good.py',
+        is_vulnerable=False,
+        expected_sinks=[],
+        description='Safe: Helper function binds to 127.0.0.1'
+    ),
+    BenchmarkTestCase(
+        test_id='TCS-BENCH-CWE605-V04-BAD',
+        cwe='CWE-605',
+        file_path='benchmark/corpus/cwe_605_socket_binding/test_v04_bad.py',
+        is_vulnerable=True,
+        expected_sinks=['sock.bind', 'socket.bind', 'asyncio.start_server'],
+        description='Variable host set to 0.0.0.0 in socket bind'
+    ),
+    BenchmarkTestCase(
+        test_id='TCS-BENCH-CWE605-V04-GOOD',
+        cwe='CWE-605',
+        file_path='benchmark/corpus/cwe_605_socket_binding/test_v04_good.py',
+        is_vulnerable=False,
+        expected_sinks=[],
+        description='Safe: Socket bound to IPv6 loopback ::1'
+    ),
+    BenchmarkTestCase(
+        test_id='TCS-BENCH-CWE605-V05-BAD',
+        cwe='CWE-605',
+        file_path='benchmark/corpus/cwe_605_socket_binding/test_v05_bad.py',
+        is_vulnerable=True,
+        expected_sinks=['sock.bind', 'socket.bind', 'asyncio.start_server'],
+        description='asyncio.start_server bound to 0.0.0.0'
+    ),
+    BenchmarkTestCase(
+        test_id='TCS-BENCH-CWE605-V05-GOOD',
+        cwe='CWE-605',
+        file_path='benchmark/corpus/cwe_605_socket_binding/test_v05_good.py',
+        is_vulnerable=False,
+        expected_sinks=[],
+        description='Safe: asyncio.start_server bound to 127.0.0.1'
+    ),
+    BenchmarkTestCase(
+        test_id='TCS-BENCH-CWE605-V06-BAD',
+        cwe='CWE-605',
+        file_path='benchmark/corpus/cwe_605_socket_binding/test_v06_bad.py',
+        is_vulnerable=True,
+        expected_sinks=['sock.bind', 'socket.bind', 'asyncio.start_server'],
+        description='IPv6 socket bound to :: wildcard interface'
+    ),
+    BenchmarkTestCase(
+        test_id='TCS-BENCH-CWE605-V06-GOOD',
+        cwe='CWE-605',
+        file_path='benchmark/corpus/cwe_605_socket_binding/test_v06_good.py',
+        is_vulnerable=False,
+        expected_sinks=[],
+        description='Safe: IPv6 socket bound to ::1 loopback'
+    ),
+    BenchmarkTestCase(
+        test_id='TCS-BENCH-CWE269-V01-BAD',
+        cwe='CWE-269',
+        file_path='benchmark/corpus/cwe_269_privilege/test_v01_bad.py',
+        is_vulnerable=True,
+        expected_sinks=['os.setuid', 'os.seteuid'],
+        description='Permanent root elevation via os.setuid(0)'
+    ),
+    BenchmarkTestCase(
+        test_id='TCS-BENCH-CWE269-V01-GOOD',
+        cwe='CWE-269',
+        file_path='benchmark/corpus/cwe_269_privilege/test_v01_good.py',
+        is_vulnerable=False,
+        expected_sinks=[],
+        description='Safe: Elevated in try block with os.setuid in finally'
+    ),
+    BenchmarkTestCase(
+        test_id='TCS-BENCH-CWE269-V02-BAD',
+        cwe='CWE-269',
+        file_path='benchmark/corpus/cwe_269_privilege/test_v02_bad.py',
+        is_vulnerable=True,
+        expected_sinks=['os.setuid', 'os.seteuid'],
+        description='Permanent effective root elevation via seteuid(0)'
+    ),
+    BenchmarkTestCase(
+        test_id='TCS-BENCH-CWE269-V02-GOOD',
+        cwe='CWE-269',
+        file_path='benchmark/corpus/cwe_269_privilege/test_v02_good.py',
+        is_vulnerable=False,
+        expected_sinks=[],
+        description='Safe: try/finally restores previous effective UID'
+    ),
+    BenchmarkTestCase(
+        test_id='TCS-BENCH-CWE269-V03-BAD',
+        cwe='CWE-269',
+        file_path='benchmark/corpus/cwe_269_privilege/test_v03_bad.py',
+        is_vulnerable=True,
+        expected_sinks=['os.setuid', 'os.seteuid'],
+        description='Worker permanently escalates to UID 0'
+    ),
+    BenchmarkTestCase(
+        test_id='TCS-BENCH-CWE269-V03-GOOD',
+        cwe='CWE-269',
+        file_path='benchmark/corpus/cwe_269_privilege/test_v03_good.py',
+        is_vulnerable=False,
+        expected_sinks=[],
+        description='Safe: Worker drops privileges to worker_uid'
+    ),
+    BenchmarkTestCase(
+        test_id='TCS-BENCH-CWE269-V04-BAD',
+        cwe='CWE-269',
+        file_path='benchmark/corpus/cwe_269_privilege/test_v04_bad.py',
+        is_vulnerable=True,
+        expected_sinks=['os.setuid', 'os.seteuid'],
+        description='Service permanently sets UID 0'
+    ),
+    BenchmarkTestCase(
+        test_id='TCS-BENCH-CWE269-V04-GOOD',
+        cwe='CWE-269',
+        file_path='benchmark/corpus/cwe_269_privilege/test_v04_good.py',
+        is_vulnerable=False,
+        expected_sinks=[],
+        description='Safe: Service drops privileges to target_uid'
+    ),
+    BenchmarkTestCase(
+        test_id='TCS-BENCH-CWE269-V05-BAD',
+        cwe='CWE-269',
+        file_path='benchmark/corpus/cwe_269_privilege/test_v05_bad.py',
+        is_vulnerable=True,
+        expected_sinks=['os.setuid', 'os.seteuid'],
+        description='seteuid(0) run command without restoration'
+    ),
+    BenchmarkTestCase(
+        test_id='TCS-BENCH-CWE269-V05-GOOD',
+        cwe='CWE-269',
+        file_path='benchmark/corpus/cwe_269_privilege/test_v05_good.py',
+        is_vulnerable=False,
+        expected_sinks=[],
+        description='Safe: seteuid restored to original UID in finally'
+    ),
+    BenchmarkTestCase(
+        test_id='TCS-BENCH-CWE269-V06-BAD',
+        cwe='CWE-269',
+        file_path='benchmark/corpus/cwe_269_privilege/test_v06_bad.py',
+        is_vulnerable=True,
+        expected_sinks=['os.setuid', 'os.seteuid'],
+        description='os.setuid(admin_uid) where admin_uid is 0'
+    ),
+    BenchmarkTestCase(
+        test_id='TCS-BENCH-CWE269-V06-GOOD',
+        cwe='CWE-269',
+        file_path='benchmark/corpus/cwe_269_privilege/test_v06_good.py',
+        is_vulnerable=False,
+        expected_sinks=[],
+        description='Safe: os.setuid(nobody_uid) drops root privileges'
+    ),
+    BenchmarkTestCase(
+        test_id='TCS-BENCH-CWE652-V01-BAD',
+        cwe='CWE-652',
+        file_path='benchmark/corpus/cwe_652_xquery/test_v01_bad.py',
+        is_vulnerable=True,
+        expected_sinks=['tree.xpath', 'root.xpath', 'lxml.etree.xpath'],
+        description='f-string interpolated XPath query in tree.xpath'
+    ),
+    BenchmarkTestCase(
+        test_id='TCS-BENCH-CWE652-V01-GOOD',
+        cwe='CWE-652',
+        file_path='benchmark/corpus/cwe_652_xquery/test_v01_good.py',
+        is_vulnerable=False,
+        expected_sinks=[],
+        description='Safe: Parameterized XPath query with $name variable'
+    ),
+    BenchmarkTestCase(
+        test_id='TCS-BENCH-CWE652-V02-BAD',
+        cwe='CWE-652',
+        file_path='benchmark/corpus/cwe_652_xquery/test_v02_bad.py',
+        is_vulnerable=True,
+        expected_sinks=['tree.xpath', 'root.xpath', 'lxml.etree.xpath'],
+        description='Concatenated string XPath query on root'
+    ),
+    BenchmarkTestCase(
+        test_id='TCS-BENCH-CWE652-V02-GOOD',
+        cwe='CWE-652',
+        file_path='benchmark/corpus/cwe_652_xquery/test_v02_good.py',
+        is_vulnerable=False,
+        expected_sinks=[],
+        description='Safe: Parameterized XPath query with $id variable'
+    ),
+    BenchmarkTestCase(
+        test_id='TCS-BENCH-CWE652-V03-BAD',
+        cwe='CWE-652',
+        file_path='benchmark/corpus/cwe_652_xquery/test_v03_bad.py',
+        is_vulnerable=True,
+        expected_sinks=['tree.xpath', 'root.xpath', 'lxml.etree.xpath'],
+        description='%-formatted XPath query in query_records helper'
+    ),
+    BenchmarkTestCase(
+        test_id='TCS-BENCH-CWE652-V03-GOOD',
+        cwe='CWE-652',
+        file_path='benchmark/corpus/cwe_652_xquery/test_v03_good.py',
+        is_vulnerable=False,
+        expected_sinks=[],
+        description='Safe: Parameterized XPath query with $t parameter'
+    ),
+    BenchmarkTestCase(
+        test_id='TCS-BENCH-CWE652-V04-BAD',
+        cwe='CWE-652',
+        file_path='benchmark/corpus/cwe_652_xquery/test_v04_bad.py',
+        is_vulnerable=True,
+        expected_sinks=['tree.xpath', 'root.xpath', 'lxml.etree.xpath'],
+        description='str.format() constructed XPath expression'
+    ),
+    BenchmarkTestCase(
+        test_id='TCS-BENCH-CWE652-V04-GOOD',
+        cwe='CWE-652',
+        file_path='benchmark/corpus/cwe_652_xquery/test_v04_good.py',
+        is_vulnerable=False,
+        expected_sinks=[],
+        description='Safe: Parameterized XPath query with $c parameter'
+    ),
+    BenchmarkTestCase(
+        test_id='TCS-BENCH-CWE652-V05-BAD',
+        cwe='CWE-652',
+        file_path='benchmark/corpus/cwe_652_xquery/test_v05_bad.py',
+        is_vulnerable=True,
+        expected_sinks=['tree.xpath', 'root.xpath', 'lxml.etree.xpath'],
+        description='XMLQueryService formats dynamic tag into XPath'
+    ),
+    BenchmarkTestCase(
+        test_id='TCS-BENCH-CWE652-V05-GOOD',
+        cwe='CWE-652',
+        file_path='benchmark/corpus/cwe_652_xquery/test_v05_good.py',
+        is_vulnerable=False,
+        expected_sinks=[],
+        description='Safe: Parameterized local-name()=$tag query'
+    ),
+    BenchmarkTestCase(
+        test_id='TCS-BENCH-CWE652-V06-BAD',
+        cwe='CWE-652',
+        file_path='benchmark/corpus/cwe_652_xquery/test_v06_bad.py',
+        is_vulnerable=True,
+        expected_sinks=['tree.xpath', 'root.xpath', 'lxml.etree.xpath'],
+        description='f-string with dynamic comparison in XPath'
+    ),
+    BenchmarkTestCase(
+        test_id='TCS-BENCH-CWE652-V06-GOOD',
+        cwe='CWE-652',
+        file_path='benchmark/corpus/cwe_652_xquery/test_v06_good.py',
+        is_vulnerable=False,
+        expected_sinks=[],
+        description='Safe: Static constant XPath query expression'
+    ),
+    BenchmarkTestCase(
+        test_id='TCS-BENCH-CWE522-V01-BAD',
+        cwe='CWE-522',
+        file_path='benchmark/corpus/cwe_522_basic_auth/test_v01_bad.py',
+        is_vulnerable=True,
+        expected_sinks=['requests.get', 'requests.post', 'HTTPBasicAuth'],
+        description='HTTPBasicAuth sent over unencrypted http:// URL'
+    ),
+    BenchmarkTestCase(
+        test_id='TCS-BENCH-CWE522-V01-GOOD',
+        cwe='CWE-522',
+        file_path='benchmark/corpus/cwe_522_basic_auth/test_v01_good.py',
+        is_vulnerable=False,
+        expected_sinks=[],
+        description='Safe: HTTPBasicAuth sent over secure https:// URL'
+    ),
+    BenchmarkTestCase(
+        test_id='TCS-BENCH-CWE522-V02-BAD',
+        cwe='CWE-522',
+        file_path='benchmark/corpus/cwe_522_basic_auth/test_v02_bad.py',
+        is_vulnerable=True,
+        expected_sinks=['requests.get', 'requests.post', 'HTTPBasicAuth'],
+        description='Tuple credentials sent over unencrypted http:// URL'
+    ),
+    BenchmarkTestCase(
+        test_id='TCS-BENCH-CWE522-V02-GOOD',
+        cwe='CWE-522',
+        file_path='benchmark/corpus/cwe_522_basic_auth/test_v02_good.py',
+        is_vulnerable=False,
+        expected_sinks=[],
+        description='Safe: Tuple credentials sent over https:// URL'
+    ),
+    BenchmarkTestCase(
+        test_id='TCS-BENCH-CWE522-V03-BAD',
+        cwe='CWE-522',
+        file_path='benchmark/corpus/cwe_522_basic_auth/test_v03_bad.py',
+        is_vulnerable=True,
+        expected_sinks=['requests.get', 'requests.post', 'HTTPBasicAuth'],
+        description='httpx.get basic auth over unencrypted http://'
+    ),
+    BenchmarkTestCase(
+        test_id='TCS-BENCH-CWE522-V03-GOOD',
+        cwe='CWE-522',
+        file_path='benchmark/corpus/cwe_522_basic_auth/test_v03_good.py',
+        is_vulnerable=False,
+        expected_sinks=[],
+        description='Safe: httpx.get basic auth over https:// URL'
+    ),
+    BenchmarkTestCase(
+        test_id='TCS-BENCH-CWE522-V04-BAD',
+        cwe='CWE-522',
+        file_path='benchmark/corpus/cwe_522_basic_auth/test_v04_bad.py',
+        is_vulnerable=True,
+        expected_sinks=['requests.get', 'requests.post', 'HTTPBasicAuth'],
+        description='Authorization Basic header sent over http://'
+    ),
+    BenchmarkTestCase(
+        test_id='TCS-BENCH-CWE522-V04-GOOD',
+        cwe='CWE-522',
+        file_path='benchmark/corpus/cwe_522_basic_auth/test_v04_good.py',
+        is_vulnerable=False,
+        expected_sinks=[],
+        description='Safe: Authorization Basic header sent over https://'
+    ),
+    BenchmarkTestCase(
+        test_id='TCS-BENCH-CWE522-V05-BAD',
+        cwe='CWE-522',
+        file_path='benchmark/corpus/cwe_522_basic_auth/test_v05_bad.py',
+        is_vulnerable=True,
+        expected_sinks=['requests.get', 'requests.post', 'HTTPBasicAuth'],
+        description='urllib Request Authorization Basic header over http://'
+    ),
+    BenchmarkTestCase(
+        test_id='TCS-BENCH-CWE522-V05-GOOD',
+        cwe='CWE-522',
+        file_path='benchmark/corpus/cwe_522_basic_auth/test_v05_good.py',
+        is_vulnerable=False,
+        expected_sinks=[],
+        description='Safe: urllib Request Authorization Basic over https://'
+    ),
+    BenchmarkTestCase(
+        test_id='TCS-BENCH-CWE522-V06-BAD',
+        cwe='CWE-522',
+        file_path='benchmark/corpus/cwe_522_basic_auth/test_v06_bad.py',
+        is_vulnerable=True,
+        expected_sinks=['requests.get', 'requests.post', 'HTTPBasicAuth'],
+        description='send_creds helper posts auth tuple over http://'
+    ),
+    BenchmarkTestCase(
+        test_id='TCS-BENCH-CWE522-V06-GOOD',
+        cwe='CWE-522',
+        file_path='benchmark/corpus/cwe_522_basic_auth/test_v06_good.py',
+        is_vulnerable=False,
+        expected_sinks=[],
+        description='Safe: send_creds helper posts auth tuple over https://'
+    ),
+    BenchmarkTestCase(
+        test_id='TCS-BENCH-CWE937-V01-BAD',
+        cwe='CWE-937',
+        file_path='benchmark/corpus/cwe_937_insecure_protocol/test_v01_bad.py',
+        is_vulnerable=True,
+        expected_sinks=['telnetlib.Telnet', 'ftplib.FTP'],
+        description='Usage of telnetlib.Telnet cleartext protocol'
+    ),
+    BenchmarkTestCase(
+        test_id='TCS-BENCH-CWE937-V01-GOOD',
+        cwe='CWE-937',
+        file_path='benchmark/corpus/cwe_937_insecure_protocol/test_v01_good.py',
+        is_vulnerable=False,
+        expected_sinks=[],
+        description='Safe: paramiko.SSHClient encrypted protocol'
+    ),
+    BenchmarkTestCase(
+        test_id='TCS-BENCH-CWE937-V02-BAD',
+        cwe='CWE-937',
+        file_path='benchmark/corpus/cwe_937_insecure_protocol/test_v02_bad.py',
+        is_vulnerable=True,
+        expected_sinks=['telnetlib.Telnet', 'ftplib.FTP'],
+        description='Usage of ftplib.FTP cleartext file transfer'
+    ),
+    BenchmarkTestCase(
+        test_id='TCS-BENCH-CWE937-V02-GOOD',
+        cwe='CWE-937',
+        file_path='benchmark/corpus/cwe_937_insecure_protocol/test_v02_good.py',
+        is_vulnerable=False,
+        expected_sinks=[],
+        description='Safe: ftplib.FTP_TLS with prot_p() encryption'
+    ),
+    BenchmarkTestCase(
+        test_id='TCS-BENCH-CWE937-V03-BAD',
+        cwe='CWE-937',
+        file_path='benchmark/corpus/cwe_937_insecure_protocol/test_v03_bad.py',
+        is_vulnerable=True,
+        expected_sinks=['telnetlib.Telnet', 'ftplib.FTP'],
+        description='Helper function connects via Telnet'
+    ),
+    BenchmarkTestCase(
+        test_id='TCS-BENCH-CWE937-V03-GOOD',
+        cwe='CWE-937',
+        file_path='benchmark/corpus/cwe_937_insecure_protocol/test_v03_good.py',
+        is_vulnerable=False,
+        expected_sinks=[],
+        description='Safe: Helper function connects via paramiko SSH'
+    ),
+    BenchmarkTestCase(
+        test_id='TCS-BENCH-CWE937-V04-BAD',
+        cwe='CWE-937',
+        file_path='benchmark/corpus/cwe_937_insecure_protocol/test_v04_bad.py',
+        is_vulnerable=True,
+        expected_sinks=['telnetlib.Telnet', 'ftplib.FTP'],
+        description='ftplib.FTP anonymous connect without TLS'
+    ),
+    BenchmarkTestCase(
+        test_id='TCS-BENCH-CWE937-V04-GOOD',
+        cwe='CWE-937',
+        file_path='benchmark/corpus/cwe_937_insecure_protocol/test_v04_good.py',
+        is_vulnerable=False,
+        expected_sinks=[],
+        description='Safe: ftplib.FTP_TLS connect with prot_p()'
+    ),
+    BenchmarkTestCase(
+        test_id='TCS-BENCH-CWE937-V05-BAD',
+        cwe='CWE-937',
+        file_path='benchmark/corpus/cwe_937_insecure_protocol/test_v05_bad.py',
+        is_vulnerable=True,
+        expected_sinks=['telnetlib.Telnet', 'ftplib.FTP'],
+        description='LegacyTerminal class encapsulates telnetlib.Telnet'
+    ),
+    BenchmarkTestCase(
+        test_id='TCS-BENCH-CWE937-V05-GOOD',
+        cwe='CWE-937',
+        file_path='benchmark/corpus/cwe_937_insecure_protocol/test_v05_good.py',
+        is_vulnerable=False,
+        expected_sinks=[],
+        description='Safe: SecureTerminal class encapsulates paramiko.SSHClient'
+    ),
+    BenchmarkTestCase(
+        test_id='TCS-BENCH-CWE937-V06-BAD',
+        cwe='CWE-937',
+        file_path='benchmark/corpus/cwe_937_insecure_protocol/test_v06_bad.py',
+        is_vulnerable=True,
+        expected_sinks=['telnetlib.Telnet', 'ftplib.FTP'],
+        description='download_file helper uses cleartext FTP'
+    ),
+    BenchmarkTestCase(
+        test_id='TCS-BENCH-CWE937-V06-GOOD',
+        cwe='CWE-937',
+        file_path='benchmark/corpus/cwe_937_insecure_protocol/test_v06_good.py',
+        is_vulnerable=False,
+        expected_sinks=[],
+        description='Safe: download_file helper uses FTP_TLS with prot_p()'
+    ),
 ]
 
 

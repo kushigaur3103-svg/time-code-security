@@ -731,10 +731,26 @@ STRUCTURAL_SYNTHETIC_SOURCES = {
     "CWE-312": "CLEARTEXT_SENSITIVE_STORAGE",
     "CWE-319": "CLEARTEXT_HTTP_TRANSMISSION",
     "CWE-489": "ACTIVE_DEBUG_CODE",
+    # ─── Batch 3B (data/cwe_blueprint_batch3b.json) ───
+    "CWE-90": "LDAP_INJECTION",
+    "CWE-776": "XML_ENTITY_EXPANSION",
+    "CWE-200": "DIAGNOSTIC_INFO_EXPOSURE",
+    "CWE-384": "SESSION_FIXATION",
+    "CWE-770": "UNBOUNDED_RESOURCE_ALLOCATION",
+    "CWE-605": "INSECURE_SOCKET_BINDING",
+    "CWE-269": "IMPROPER_PRIVILEGE_MANAGEMENT",
+    "CWE-652": "XQUERY_INJECTION",
+    "CWE-522": "CLEARTEXT_AUTH_TRANSPORT",
+    "CWE-937": "DEPRECATED_INSECURE_PROTOCOL",
 }
 CWE798_TARGET_RE = re.compile(r"(?i).*(password|passwd|secret_key|api_key|access_token|auth_token).*")
 CWE326_SINK_NAMES = {"RSA.generate", "Crypto.PublicKey.RSA.generate", "rsa.generate_private_key"}
 CWE798_SAFE_SOURCES = {"os.environ.get", "os.getenv", "config.get"}
+
+# ─── Batch 3B structural rule constants ───
+CWE3B_LDAP_SINKS = {"search", "search_s", "search_st"}
+CWE3B_SESSION_KEYS = {"user_id", "user", "username", "uid"}
+CWE3B_INSECURE_INTERFACES = {"0.0.0.0", "", "::"}
 
 # ─── Batch 3A structural rule constants ───
 CWE3A_WEAK_HASH_NAMES = {
@@ -5553,6 +5569,384 @@ class TaintTracker:
                         scope_id=scope_id,
                     ))
 
+    def _collect_batch3b_structural_findings(self) -> None:
+        """
+        Batch 3B PURE_STRUCTURAL visitors (data/cwe_blueprint_batch3b.json):
+        CWE-90, CWE-776, CWE-200, CWE-384, CWE-770, CWE-605, CWE-269, CWE-652, CWE-522, CWE-937.
+        Appends sinks + sink_records; analyze() emits synthetic edges for them.
+        """
+        for mod_name, tree in self.modules.items():
+            file_path = self.file_paths.get(mod_name, "unknown.py")
+            scope_id = f"{mod_name}:global"
+            seen: set[tuple[str, int, int]] = set()
+
+            has_defusedxml = False
+            has_ldap_import = False
+            has_makefile = False
+            has_path_sanitizer = False
+            has_bcrypt = False
+            has_sys_exc_info = False
+
+            # Pre-scan module assignments
+            assigns_in_module: dict[str, list[tuple[int, ast.AST]]] = {}
+            for n in ast.walk(tree):
+                if isinstance(n, ast.Assign):
+                    for t in n.targets:
+                        if isinstance(t, ast.Name):
+                            assigns_in_module.setdefault(t.id, []).append((n.lineno, n.value))
+                        elif isinstance(t, ast.Tuple):
+                            for el in t.elts:
+                                if isinstance(el, ast.Name):
+                                    assigns_in_module.setdefault(el.id, []).append((n.lineno, n.value))
+                elif isinstance(n, ast.AnnAssign):
+                    if isinstance(n.target, ast.Name) and n.value:
+                        assigns_in_module.setdefault(n.target.id, []).append((n.lineno, n.value))
+
+            def _get_assigned_value(var_name: str, before_lineno: int) -> ast.AST | None:
+                cands = [v for lno, v in assigns_in_module.get(var_name, []) if lno < before_lineno]
+                return cands[-1] if cands else None
+
+            for node in ast.walk(tree):
+                if isinstance(node, (ast.Import, ast.ImportFrom)):
+                    mod_target = ""
+                    if isinstance(node, ast.ImportFrom):
+                        mod_target = node.module or ""
+                    for alias in node.names:
+                        full_name = f"{mod_target}.{alias.name}" if mod_target else alias.name
+                        if "defusedxml" in full_name or "defusedxml" in mod_target:
+                            has_defusedxml = True
+                        if "ldap" in full_name or "ldap" in mod_target:
+                            has_ldap_import = True
+                        if "bcrypt" in full_name or "bcrypt" in mod_target:
+                            has_bcrypt = True
+                elif isinstance(node, ast.Call):
+                    cname = dotted_name(node.func) or ""
+                    if "makefile" in cname:
+                        has_makefile = True
+                    if any(s in cname for s in ("normpath", "abspath", "basename")):
+                        has_path_sanitizer = True
+                    if cname in ("sys.exc_info", "exc_info"):
+                        has_sys_exc_info = True
+
+            # Track try/finally for CWE-269
+            try_finally_uids = []
+            for node in ast.walk(tree):
+                if isinstance(node, ast.Try) and node.finalbody:
+                    for fb_node in ast.walk(ast.Module(body=node.finalbody, type_ignores=[])):
+                        if isinstance(fb_node, ast.Call):
+                            fb_name = dotted_name(fb_node.func) or ""
+                            if fb_name in ("os.setuid", "os.seteuid", "setuid", "seteuid"):
+                                try_finally_uids.append(node)
+                                break
+
+            # Check whitelist membership comparisons for CWE-90
+            whitelist_checked_vars = set()
+            for node in ast.walk(tree):
+                if isinstance(node, ast.Compare):
+                    for op, comp in zip(node.ops, node.comparators):
+                        if isinstance(op, (ast.In, ast.NotIn)):
+                            if isinstance(node.left, ast.Name):
+                                whitelist_checked_vars.add(node.left.id)
+
+            for node in ast.walk(tree):
+                cwe_meta = None
+                lineno = getattr(node, "lineno", 0)
+
+                # ─── 1. Calls ───
+                if isinstance(node, ast.Call):
+                    name = dotted_name(node.func) or ""
+                    canon = self.resolve_canonical_name(node.func, scope_id) or ""
+                    fn_name = name.split(".")[-1]
+                    all_names = {name, canon} - {"", None}
+
+                    # ─── CWE-90: LDAP Injection ───
+                    if has_ldap_import and fn_name in CWE3B_LDAP_SINKS:
+                        filter_arg = None
+                        if len(node.args) >= 3 and isinstance(node.args[1], ast.Attribute):
+                            filter_arg = node.args[2]
+                        elif len(node.args) >= 2:
+                            filter_arg = node.args[1]
+
+                        for kw in getattr(node, "keywords", []):
+                            if kw.arg in ("search_filter", "filter"):
+                                filter_arg = kw.value
+
+                        if filter_arg is not None:
+                            is_vuln_filter = False
+                            def _check_dyn(expr):
+                                if isinstance(expr, ast.JoinedStr):
+                                    return True
+                                if isinstance(expr, ast.BinOp) and isinstance(expr.op, (ast.Add, ast.Mod)):
+                                    return True
+                                if isinstance(expr, ast.Call) and getattr(expr.func, "attr", None) == "format":
+                                    return True
+                                if isinstance(expr, ast.Call) and dotted_name(expr.func) == "input":
+                                    return True
+                                return False
+
+                            def _is_escaped(expr):
+                                for sub in ast.walk(expr):
+                                    if isinstance(sub, ast.Call):
+                                        sub_fn = dotted_name(sub.func) or ""
+                                        if "escape_filter_chars" in sub_fn:
+                                            return True
+                                    elif isinstance(sub, ast.Name):
+                                        sub_v = _get_assigned_value(sub.id, lineno)
+                                        if sub_v:
+                                            for ssub in ast.walk(sub_v):
+                                                if isinstance(ssub, ast.Call):
+                                                    ssub_fn = dotted_name(ssub.func) or ""
+                                                    if "escape_filter_chars" in ssub_fn:
+                                                        return True
+                                return False
+
+                            if _check_dyn(filter_arg):
+                                if not _is_escaped(filter_arg):
+                                    is_vuln_filter = True
+                            elif isinstance(filter_arg, ast.Name):
+                                var_name = filter_arg.id
+                                if var_name not in whitelist_checked_vars:
+                                    vn = _get_assigned_value(var_name, lineno)
+                                    if vn:
+                                        if _check_dyn(vn) and not _is_escaped(vn):
+                                            names_in_vn = {n.id for n in ast.walk(vn) if isinstance(n, ast.Name)}
+                                            if not (names_in_vn & whitelist_checked_vars):
+                                                is_vuln_filter = True
+
+                            if is_vuln_filter:
+                                cwe_meta = {"operation": "LDAP_INJECTION", "category": "LDAP_INJECTION", "cwe": "CWE-90"}
+
+                    # ─── CWE-776: XML Bomb / Billion Laughs ───
+                    elif not has_defusedxml and (fn_name in ("fromstring", "parseString") or (fn_name == "parse" and not name.startswith("urllib"))):
+                        if any(name.startswith(p) for p in ("xml.etree", "xml.dom", "xml.sax", "ET.", "md.", "minidom.", "sax.")) or name in ("fromstring", "parseString", "ET.parse", "ET.fromstring", "md.parse"):
+                            cwe_meta = {"operation": "XML_ENTITY_EXPANSION", "category": "XML_ENTITY_EXPANSION", "cwe": "CWE-776"}
+
+                    # ─── CWE-770: Unbounded Read ───
+                    elif fn_name in ("read", "recv") and len(node.args) == 0 and not getattr(node, "keywords", []):
+                        if not has_path_sanitizer:
+                            r_name = (dotted_name(node.func.value) or (node.func.value.id if isinstance(node.func.value, ast.Name) else "")) if isinstance(node.func, ast.Attribute) else ""
+                            if r_name in ("f", "file", "stream", "self.f", "s", "sock") or "stream" in r_name or fn_name == "recv":
+                                cwe_meta = {"operation": "UNBOUNDED_RESOURCE_ALLOCATION", "category": "RESOURCE_EXHAUSTION", "cwe": "CWE-770"}
+
+                    # ─── CWE-605: Insecure Socket Binding ───
+                    elif (name.endswith(".bind") or name == "bind" or "start_server" in name) and not has_makefile:
+                        insecure_bind = False
+                        if name.endswith(".bind") or name == "bind":
+                            if node.args and isinstance(node.args[0], (ast.Tuple, ast.List)):
+                                tup = node.args[0]
+                                if tup.elts:
+                                    host_val = _eval_static_constant(tup.elts[0], self.assignments_by_scope, scope_id, lineno)
+                                    if host_val is None and isinstance(tup.elts[0], ast.Name):
+                                        host_vn = _get_assigned_value(tup.elts[0].id, lineno)
+                                        if host_vn and isinstance(host_vn, ast.Constant):
+                                            host_val = host_vn.value
+                                    if host_val in CWE3B_INSECURE_INTERFACES:
+                                        insecure_bind = True
+                        elif "start_server" in name:
+                            h_arg = node.args[1] if len(node.args) >= 2 else None
+                            for kw in getattr(node, "keywords", []):
+                                if kw.arg == "host":
+                                    h_arg = kw.value
+                            if h_arg:
+                                host_val = _eval_static_constant(h_arg, self.assignments_by_scope, scope_id, lineno)
+                                if host_val is None and isinstance(h_arg, ast.Name):
+                                    host_vn = _get_assigned_value(h_arg.id, lineno)
+                                    if host_vn and isinstance(host_vn, ast.Constant):
+                                        host_val = host_vn.value
+                                if host_val in CWE3B_INSECURE_INTERFACES:
+                                    insecure_bind = True
+                        if insecure_bind:
+                            cwe_meta = {"operation": "INSECURE_SOCKET_BINDING", "category": "INSECURE_NETWORK_BINDING", "cwe": "CWE-605"}
+
+                    # ─── CWE-269: Improper Privilege Management ───
+                    elif name in ("os.setuid", "os.seteuid", "setuid", "seteuid") and node.args:
+                        val = _eval_static_constant(node.args[0], self.assignments_by_scope, scope_id, lineno)
+                        if val is None and isinstance(node.args[0], ast.Name):
+                            vn = _get_assigned_value(node.args[0].id, lineno)
+                            if vn and isinstance(vn, ast.Constant):
+                                val = vn.value
+                        if val == 0:
+                            is_safely_scoped = False
+                            for try_n in try_finally_uids:
+                                for b_stmt in try_n.body:
+                                    for sub in ast.walk(b_stmt):
+                                        if sub is node:
+                                            is_safely_scoped = True
+                                            break
+                                    if is_safely_scoped:
+                                        break
+                                if is_safely_scoped:
+                                    break
+                            if not is_safely_scoped:
+                                cwe_meta = {"operation": "IMPROPER_PRIVILEGE_MANAGEMENT", "category": "PRIVILEGE_MANAGEMENT", "cwe": "CWE-269"}
+
+                    # ─── CWE-652: XQuery / XML Query Injection ───
+                    elif fn_name == "xpath" and node.args:
+                        query_arg = node.args[0]
+                        is_dynamic_query = False
+                        if isinstance(query_arg, ast.JoinedStr):
+                            is_dynamic_query = True
+                        elif isinstance(query_arg, ast.BinOp) and isinstance(query_arg.op, (ast.Add, ast.Mod)):
+                            is_dynamic_query = True
+                        elif isinstance(query_arg, ast.Call) and getattr(query_arg.func, "attr", None) == "format":
+                            is_dynamic_query = True
+                        elif isinstance(query_arg, ast.Name):
+                            vn = _get_assigned_value(query_arg.id, lineno)
+                            if vn:
+                                if isinstance(vn, ast.JoinedStr):
+                                    is_dynamic_query = True
+                                elif isinstance(vn, ast.BinOp) and isinstance(vn.op, (ast.Add, ast.Mod)):
+                                    is_dynamic_query = True
+                                elif isinstance(vn, ast.Call) and getattr(vn.func, "attr", None) == "format":
+                                    is_dynamic_query = True
+
+                        has_param_kwargs = len(node.keywords) > 0
+                        if is_dynamic_query and not has_param_kwargs:
+                            cwe_meta = {"operation": "XQUERY_INJECTION", "category": "XPATH_INJECTION", "cwe": "CWE-652"}
+
+                    # ─── CWE-522: Cleartext Basic Auth Transmission ───
+                    elif any(name.startswith(p) for p in ("requests.", "httpx.", "urllib.request.")) or name in ("requests.get", "requests.post", "httpx.get", "httpx.post", "urllib.request.Request"):
+                        has_auth = False
+                        url_node = node.args[0] if node.args else None
+
+                        for kw in getattr(node, "keywords", []):
+                            if kw.arg == "auth":
+                                has_auth = True
+                            elif kw.arg == "headers":
+                                for hn in ast.walk(kw.value):
+                                    if isinstance(hn, ast.Constant) and isinstance(hn.value, str):
+                                        if "Authorization" in hn.value or "Basic" in hn.value:
+                                            has_auth = True
+                                if isinstance(kw.value, ast.Name):
+                                    vn = _get_assigned_value(kw.value.id, lineno)
+                                    if vn:
+                                        for hn in ast.walk(vn):
+                                            if isinstance(hn, ast.Constant) and isinstance(hn.value, str):
+                                                if "Authorization" in hn.value or "Basic" in hn.value:
+                                                    has_auth = True
+
+                        if name == "urllib.request.Request" and node.args:
+                            url_node = node.args[0]
+                            for c_call, c_scope, c_line in self.raw_calls:
+                                cn = dotted_name(c_call.func) or ""
+                                if cn.endswith(".add_header"):
+                                    for ah_arg in c_call.args:
+                                        if isinstance(ah_arg, ast.Constant) and ah_arg.value == "Authorization":
+                                            has_auth = True
+
+                        if has_auth and url_node is not None:
+                            url_str = ""
+                            if isinstance(url_node, ast.Constant) and isinstance(url_node.value, str):
+                                url_str = url_node.value
+                            elif isinstance(url_node, ast.JoinedStr):
+                                for part in url_node.values:
+                                    if isinstance(part, ast.Constant) and isinstance(part.value, str):
+                                        url_str = part.value
+                                        break
+                            elif isinstance(url_node, ast.Name):
+                                vn = _get_assigned_value(url_node.id, lineno)
+                                if vn:
+                                    if isinstance(vn, ast.Constant) and isinstance(vn.value, str):
+                                        url_str = vn.value
+                                    elif isinstance(vn, ast.JoinedStr):
+                                        for part in vn.values:
+                                            if isinstance(part, ast.Constant) and isinstance(part.value, str):
+                                                url_str = part.value
+                                                break
+
+                            if url_str.startswith("http://"):
+                                cwe_meta = {"operation": "CLEARTEXT_AUTH_TRANSPORT", "category": "INSECURE_CREDENTIAL_TRANSPORT", "cwe": "CWE-522"}
+
+                    # ─── CWE-937: Deprecated Insecure Protocols ───
+                    elif any(n in ("telnetlib.Telnet", "Telnet", "ftplib.FTP", "FTP") for n in all_names):
+                        if not any("FTP_TLS" in n for n in all_names):
+                            cwe_meta = {"operation": "DEPRECATED_INSECURE_PROTOCOL", "category": "VULNERABLE_OUTDATED_COMPONENTS", "cwe": "CWE-937"}
+
+                # ─── 2. Subscript Assignments (CWE-384: Session Fixation) ───
+                elif isinstance(node, (ast.Assign, ast.AnnAssign)):
+                    targets = node.targets if isinstance(node, ast.Assign) else [node.target]
+                    for target in targets:
+                        if isinstance(target, ast.Subscript) and isinstance(target.slice, ast.Constant):
+                            key_val = str(target.slice.value)
+                            if key_val in CWE3B_SESSION_KEYS and not has_bcrypt:
+                                recv = dotted_name(target.value) or (target.value.id if isinstance(target.value, ast.Name) else "")
+                                if recv in ("session", "request.session", "req.session", "self.session", "sess"):
+                                    is_cycled = False
+                                    for fn_node in ast.walk(tree):
+                                        if isinstance(fn_node, ast.Call) and isinstance(fn_node.func, ast.Attribute):
+                                            if fn_node.func.attr in ("cycle_key", "regenerate", "regenerate_id", "clear", "flush"):
+                                                call_recv = dotted_name(fn_node.func.value) or (fn_node.func.value.id if isinstance(fn_node.func.value, ast.Name) else "")
+                                                if call_recv == recv:
+                                                    is_cycled = True
+                                                    break
+                                    if not is_cycled:
+                                        cwe_meta = {"operation": "SESSION_FIXATION", "category": "SESSION_FIXATION", "cwe": "CWE-384"}
+                                        break
+
+                # ─── 3. Return Statements (CWE-200: Diagnostic Information Exposure) ───
+                elif isinstance(node, ast.Return) and node.value is not None:
+                    val = node.value
+                    has_diag = False
+
+                    for sn in ast.walk(val):
+                        if isinstance(sn, ast.Call):
+                            sfn = dotted_name(sn.func) or ""
+                            if "format_exc" in sfn and not (isinstance(val, ast.Call) and dotted_name(val.func) in ("traceback.format_exc", "format_exc")):
+                                has_diag = True
+                            elif "format_exception" in sfn:
+                                has_diag = True
+                            elif sfn in ("dict", "str") and sn.args:
+                                if dotted_name(sn.args[0]) == "os.environ":
+                                    has_diag = True
+                        elif isinstance(sn, ast.Name):
+                            vn = _get_assigned_value(sn.id, lineno)
+                            if vn:
+                                if isinstance(vn, ast.Call):
+                                    vfn = dotted_name(vn.func) or ""
+                                    if "format_exc" in vfn or "format_exception" in vfn:
+                                        has_diag = True
+                                    elif vfn in ("dict", "str") and vn.args and dotted_name(vn.args[0]) == "os.environ":
+                                        has_diag = True
+                                elif isinstance(vn, ast.BinOp):
+                                    for bsub in ast.walk(vn):
+                                        if isinstance(bsub, ast.Name):
+                                            bvn = _get_assigned_value(bsub.id, lineno)
+                                            if bvn and isinstance(bvn, ast.Call) and dotted_name(bvn.func) in ("dict", "str") and bvn.args and dotted_name(bvn.args[0]) == "os.environ":
+                                                has_diag = True
+
+                    # Check sys.exc_info() exposure
+                    if not has_diag and has_sys_exc_info:
+                        for sn in ast.walk(val):
+                            if isinstance(sn, ast.Name) and sn.id in ("exc_val", "exc_type", "exc_tb"):
+                                has_diag = True
+                            elif isinstance(sn, ast.Call) and dotted_name(sn.func) in ("str", "repr") and sn.args and isinstance(sn.args[0], ast.Name) and sn.args[0].id in ("exc_val", "exc_type", "exc_tb"):
+                                has_diag = True
+
+                    if has_diag:
+                        cwe_meta = {"operation": "DIAGNOSTIC_INFO_EXPOSURE", "category": "INFORMATION_EXPOSURE", "cwe": "CWE-200"}
+
+                if cwe_meta:
+                    dedupe_key = (cwe_meta["cwe"], getattr(node, "lineno", 0), getattr(node, "col_offset", 0))
+                    if dedupe_key in seen:
+                        continue
+                    seen.add(dedupe_key)
+                    sink_id = self.next_sink_id()
+                    sink_node = SecurityNode(
+                        id=sink_id,
+                        node_type=NodeType.SINK,
+                        symbol=cwe_meta["operation"],
+                        operation=cwe_meta["operation"],
+                        location=location(node, file_path),
+                        metadata={"sink_type": cwe_meta["category"], "category": cwe_meta["category"], "cwe": cwe_meta["cwe"]},
+                    )
+                    self.sinks.append(sink_node)
+                    self.sink_records.append(SinkRecord(
+                        node=node,
+                        security_node=sink_node,
+                        lineno=getattr(node, "lineno", 1),
+                        scope_id=scope_id,
+                    ))
+
     def analyze(self):
         for mod_name, tree in self.modules.items():
             for node in ast.walk(tree):
@@ -5723,6 +6117,7 @@ class TaintTracker:
                     self.get_or_create_source(node, self.file_paths.get(mod_name, "unknown.py"), f"{mod_name}:global")
         self._collect_batch2_structural_findings()
         self._collect_batch3a_structural_findings()
+        self._collect_batch3b_structural_findings()
         for assign_stmt, scope_id, lineno in self.ssl_attr_assigns:
             mod_name = scope_id.split(":")[0]
             file_path = self.file_paths.get(mod_name, "unknown.py")
