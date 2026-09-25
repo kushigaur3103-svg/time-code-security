@@ -297,9 +297,15 @@ def check_gui_components() -> bool:
     assert t_view is not None, "build_proof_graph_view returned None for taint dataflow"
     print(f"  Taint Proof Graph View   : 3-hop dataflow graph verified (SOURCE -> ASSIGNMENT -> SINK)")
 
-    # 7. Test empty state proof graph view
+    # 7. Test empty state proof graph view and clean scan view
     empty_view = tcs_gui.build_proof_graph_view([])
     assert empty_view is not None, "build_proof_graph_view returned None for empty state"
+
+    clean_view = tcs_gui.build_clean_scan_view()
+    assert clean_view is not None, "build_clean_scan_view returned None"
+    chips_row = clean_view.content.controls[3].content
+    assert len(chips_row.controls) == 24, f"Expected 24 checkmark tiles in clean scan view, got {len(chips_row.controls)}"
+    print(f"  Clean Scan View Testing  : 24 CWE green checkmark cards verified")
 
     # 8. Test helper functions
     assert tcs_gui.get_severity_color("CRITICAL") == "#dc2626"

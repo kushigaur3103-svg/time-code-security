@@ -627,6 +627,82 @@ ALL_24_CWES = [
 ]
 
 
+def build_clean_scan_view():
+    """Renders the comprehensive Clean Scan view when 0 vulnerabilities are detected,
+    displaying all 24 supported benchmark CWEs with verified green checkmark badges."""
+    chips = []
+    for cwe_id, cwe_name in ALL_24_CWES:
+        chip = ft.Container(
+            content=ft.Row(
+                [
+                    ft.Text("✓", color=COLOR_GREEN, weight=ft.FontWeight.BOLD, size=12),
+                    ft.Text(f"{cwe_id}: {cwe_name}", color="#e6edf3", size=10, font_family="monospace"),
+                ],
+                spacing=6,
+                alignment=ft.MainAxisAlignment.START,
+            ),
+            bgcolor="#061c14",
+            border=make_border(1, "#059669"),
+            border_radius=6,
+            padding=make_padding(horizontal=8, vertical=6),
+            width=275,
+        )
+        chips.append(chip)
+
+    return ft.Container(
+        content=ft.Column(
+            [
+                ft.Row(
+                    [
+                        ft.Icon(ICON_SECURITY, size=28, color=COLOR_GREEN),
+                        ft.Column(
+                            [
+                                ft.Text(
+                                    f"NO VULNERABILITIES DETECTED within current TCS analysis scope ({len(ALL_24_CWES)} supported CWE classes).",
+                                    size=12,
+                                    weight=ft.FontWeight.BOLD,
+                                    color=COLOR_GREEN,
+                                ),
+                                ft.Text(
+                                    "Deterministic AST and interprocedural data-flow analysis confirmed zero tainted data flows reaching dangerous sinks across all scanned modules.",
+                                    size=10,
+                                    color="#9ca3af",
+                                    italic=True,
+                                ),
+                            ],
+                            spacing=2,
+                            expand=True,
+                        ),
+                    ],
+                    spacing=10,
+                    alignment=ft.MainAxisAlignment.START,
+                ),
+                ft.Container(height=4),
+                ft.Text(
+                    f"VERIFIED SECURITY BASELINE ({len(ALL_24_CWES)} CWES PASSED):",
+                    size=10,
+                    weight=ft.FontWeight.BOLD,
+                    color="#6b7280",
+                ),
+                ft.Container(
+                    content=ft.Row(
+                        chips,
+                        wrap=True,
+                        spacing=6,
+                        run_spacing=6,
+                    ),
+                    expand=True,
+                ),
+            ],
+            spacing=6,
+            scroll=ft.ScrollMode.AUTO,
+            expand=True,
+        ),
+        padding=10,
+        expand=True,
+    )
+
+
 def load_rules_catalog():
     """Loads vulnerability rules catalog from data/rules_catalog.json."""
     cat_file = Path(__file__).resolve().parent / "data" / "rules_catalog.json"
@@ -1872,7 +1948,7 @@ def main(page: ft.Page):
                                 summary_banner_text.color = COLOR_GREEN
                                 selected_finding = None
                                 render_findings_list()
-                                right_container.content = build_proof_graph_view([])
+                                right_container.content = build_clean_scan_view()
 
                             results_area.value = generate_markdown_report(findings_state, code_value)
                             page.update()
@@ -1950,7 +2026,7 @@ def main(page: ft.Page):
                                 summary_banner_text.color = COLOR_GREEN
                                 selected_finding = None
                                 render_findings_list()
-                                right_container.content = build_proof_graph_view([])
+                                right_container.content = build_clean_scan_view()
 
                             results_area.value = generate_markdown_report(findings_state, code_value)
                             page.update()
