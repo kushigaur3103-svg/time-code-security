@@ -18,6 +18,7 @@ from ast_scanner import TaintTracker, render_proof_graph_ascii, ProofNodeType
 from suppression_resolver import resolve_suppressions
 from sarif_adapter import to_sarif
 from rule_engine import GLOBAL_RULE_REGISTRY
+from benchmark.manifest import ALL_44_CWES
 from manifest_parser import parse_manifest, DependencyRecord
 from osv_client import OSVClient
 from version_matcher import match_dependencies, SCAFinding
@@ -424,7 +425,7 @@ def execute_tcs_scan(
 
     if active_vulnerabilities == 0:
         risk_level = "CLEAN"
-        risk_message = "NO VULNERABILITIES DETECTED within current TCS analysis scope (24 supported CWE classes)."
+        risk_message = f"NO VULNERABILITIES DETECTED within current TCS analysis scope ({len(ALL_44_CWES)} supported CWE classes)."
     elif critical_count > 0:
         risk_level = "CRITICAL"
         risk_message = "CRITICAL RISK: Arbitrary code execution or high-impact injection detected."
@@ -1407,7 +1408,7 @@ def main(argv: Optional[List[str]] = None):
                     "security_score": 100,
                     "score_label": "Security Health Score",
                     "risk_level": "CLEAN",
-                    "risk_message": "NO VULNERABILITIES DETECTED within current TCS analysis scope (24 supported CWE classes)."
+                    "risk_message": f"NO VULNERABILITIES DETECTED within current TCS analysis scope ({len(ALL_44_CWES)} supported CWE classes)."
                 },
                 "findings": [],
                 "skipped_files": []
@@ -1434,7 +1435,7 @@ def main(argv: Optional[List[str]] = None):
                         "security_score": 100,
                         "score_label": "Security Health Score",
                         "risk_level": "CLEAN",
-                        "risk_message": "NO VULNERABILITIES DETECTED within current TCS analysis scope (24 supported CWE classes)."
+                        "risk_message": f"NO VULNERABILITIES DETECTED within current TCS analysis scope ({len(ALL_44_CWES)} supported CWE classes)."
                     },
                     "findings": [],
                     "skipped_files": []

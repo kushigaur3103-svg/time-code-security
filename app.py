@@ -33,6 +33,7 @@ import tempfile
 from pathlib import Path
 from sca_reachability.engine import analyze_dependency_reachability
 import remediation
+from benchmark.manifest import ALL_44_CWES
 
 logger = logging.getLogger("tcs.app")
 
@@ -426,7 +427,8 @@ async def home(request: Request):
 async def dashboard(request: Request):
     context = {
         "request": request,
-        "days_left": 14
+        "days_left": 14,
+        "supported_cwes": ALL_44_CWES,
     }
     return templates.TemplateResponse(request=request, name="index.html", context=context)
 
@@ -2076,7 +2078,7 @@ def execute_tcs_ast_scan(
     
     if active_vulnerabilities == 0:
         risk_level = "CLEAN"
-        risk_message = "NO VULNERABILITIES DETECTED within current TCS analysis scope."
+        risk_message = f"NO VULNERABILITIES DETECTED within current TCS analysis scope ({len(ALL_44_CWES)} supported CWE classes)."
     elif critical_count > 0:
         risk_level = "CRITICAL"
         risk_message = "CRITICAL RISK: Arbitrary code execution, injection, or hardcoded credential leak detected."
@@ -2731,7 +2733,7 @@ def shutdown_notification_service():
 async def catch_all(request: Request, full_path: str):
     if full_path.startswith("api/"):
         raise HTTPException(status_code=404, detail="API endpoint not found")
-    return templates.TemplateResponse(request=request, name="index.html", context={"request": request, "days_left": 14})
+    return templates.TemplateResponse(request=request, name="index.html", context={"request": request, "days_left": 14, "supported_cwes": ALL_44_CWES})
 
 if __name__ == "__main__":
     import os

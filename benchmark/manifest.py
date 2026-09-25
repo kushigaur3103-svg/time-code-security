@@ -4299,3 +4299,54 @@ def get_benchmark_cases(cwe: Optional[str] = None) -> List[BenchmarkTestCase]:
     if not cwe_norm.startswith("CWE-"):
         cwe_norm = f"CWE-{cwe_norm}"
     return [tc for tc in BENCHMARK_TEST_CASES if tc.cwe == cwe_norm]
+
+
+ALL_44_CWES = [
+    ("CWE-1004", "Insecure Cookie Flags"),
+    ("CWE-117", "Log Injection"),
+    ("CWE-1336", "Template Injection (SSTI)"),
+    ("CWE-200", "Diagnostic Information Exposure"),
+    ("CWE-209", "Sensitive Error Exposure"),
+    ("CWE-22", "Path Traversal"),
+    ("CWE-269", "Improper Privilege Management"),
+    ("CWE-287", "Improper Authentication"),
+    ("CWE-295", "Improper Certificate Validation"),
+    ("CWE-312", "Cleartext Sensitive Storage"),
+    ("CWE-319", "Cleartext HTTP Transmission"),
+    ("CWE-326", "Inadequate Encryption Strength"),
+    ("CWE-327", "Broken Cryptographic Algorithm"),
+    ("CWE-338", "Insecure Randomness"),
+    ("CWE-352", "Cross-Site Request Forgery (CSRF)"),
+    ("CWE-377", "Insecure Temporary File"),
+    ("CWE-384", "Session Fixation"),
+    ("CWE-400", "Resource Consumption (ReDoS)"),
+    ("CWE-434", "Unrestricted File Upload"),
+    ("CWE-489", "Active Debug Code"),
+    ("CWE-502", "Untrusted Deserialization"),
+    ("CWE-522", "Cleartext Basic Auth Transmission"),
+    ("CWE-601", "Open URL Redirect"),
+    ("CWE-605", "Insecure Socket Binding"),
+    ("CWE-611", "XML External Entity (XXE)"),
+    ("CWE-614", "Cookie Without Secure Flag"),
+    ("CWE-643", "XPath Injection"),
+    ("CWE-652", "XQuery / XML Query Injection"),
+    ("CWE-732", "Insecure File Permissions"),
+    ("CWE-759", "Unsalted Password Hash"),
+    ("CWE-770", "Unbounded Resource Allocation"),
+    ("CWE-776", "XML Entity Expansion (XML Bomb)"),
+    ("CWE-78", "OS Command Injection"),
+    ("CWE-79", "Cross-Site Scripting (XSS)"),
+    ("CWE-798", "Hardcoded Credentials"),
+    ("CWE-862", "Missing Authorization (IDOR)"),
+    ("CWE-89", "SQL Injection"),
+    ("CWE-90", "LDAP Injection"),
+    ("CWE-916", "Weak Password Hash"),
+    ("CWE-918", "Server-Side Request Forgery"),
+    ("CWE-937", "Deprecated Insecure Protocols"),
+    ("CWE-94", "Code Injection (Module Load)"),
+    ("CWE-943", "NoSQL Injection"),
+    ("CWE-95", "Code Execution (eval/exec)"),
+]
+ALL_SUPPORTED_CWES = ALL_44_CWES
+ALL_24_CWES = ALL_44_CWES
+

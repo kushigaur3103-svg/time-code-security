@@ -4,15 +4,15 @@ TimeCodeSecurity (TCS) Master Automated Verification Suite.
 
 Executes end-to-end post-commit sanity and compliance checks in one shot:
 1. Ground-Truth Benchmark Suite:
-   - Evaluates all 288 test cases (144 bad, 144 good across 24 CWEs).
-   - Strictly asserts 288/288 PASS, 100.0% Precision, 100.0% Recall (0 FP, 0 FN).
+   - Evaluates all 528 test cases (264 bad, 264 good across 44 CWEs).
+   - Strictly asserts 528/528 PASS, 100.0% Precision, 100.0% Recall (0 FP, 0 FN).
 2. SARIF v2.1.0 Export & Schema Validation:
    - Scans representative benchmark corpus files across multiple vulnerability classes.
    - Generates an OASIS SARIF v2.1.0 JSON export file.
    - Validates official SARIF schema compliance, including driver metadata,
      107 driver rules from rules catalog, and valid ruleIndex cross-referencing.
 3. Desktop GUI Component & Rules Catalog Verification:
-   - Verifies all 24 benchmark CWEs are registered and present in data/rules_catalog.json.
+   - Verifies all 44 benchmark CWEs are registered and present in data/rules_catalog.json.
    - Instantiates interactive GUI components (rules catalog container, structural view,
      proof graph view, secret view) ensuring headless execution without runtime crash.
 """

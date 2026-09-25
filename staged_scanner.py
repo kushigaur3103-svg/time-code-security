@@ -15,6 +15,7 @@ import ast
 import subprocess
 from pathlib import Path
 from typing import Dict, List, Set, Tuple, Optional, Any
+from benchmark.manifest import ALL_44_CWES
 
 # Resilience constants aligned with tcs_cli.py
 MAX_FILE_SIZE_BYTES = 5 * 1024 * 1024  # 5 MB
@@ -457,7 +458,7 @@ def recompute_summary_metrics(
 
     if active_vulnerabilities == 0:
         risk_level = "CLEAN"
-        risk_message = "NO VULNERABILITIES DETECTED within current TCS analysis scope (24 supported CWE classes)."
+        risk_message = f"NO VULNERABILITIES DETECTED within current TCS analysis scope ({len(ALL_44_CWES)} supported CWE classes)."
     elif critical_count > 0:
         risk_level = "CRITICAL"
         risk_message = "CRITICAL RISK: Arbitrary code execution or high-impact injection detected."

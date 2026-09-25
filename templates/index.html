@@ -2761,6 +2761,59 @@ jobs:
     }
     window.copyCliSnippet = copyCliSnippet;
 
+    const ALL_SUPPORTED_CWES = [
+        {% if supported_cwes %}
+        {% for cwe_id, cwe_name in supported_cwes %}
+        { id: "{{ cwe_id }}", name: "{{ cwe_name }}" },
+        {% endfor %}
+        {% else %}
+        { id: "CWE-1004", name: "Insecure Cookie Flags" },
+        { id: "CWE-117", name: "Log Injection" },
+        { id: "CWE-1336", name: "Template Injection (SSTI)" },
+        { id: "CWE-200", name: "Diagnostic Information Exposure" },
+        { id: "CWE-209", name: "Sensitive Error Exposure" },
+        { id: "CWE-22", name: "Path Traversal" },
+        { id: "CWE-269", name: "Improper Privilege Management" },
+        { id: "CWE-287", name: "Improper Authentication" },
+        { id: "CWE-295", name: "Improper Certificate Validation" },
+        { id: "CWE-312", name: "Cleartext Sensitive Storage" },
+        { id: "CWE-319", name: "Cleartext HTTP Transmission" },
+        { id: "CWE-326", name: "Inadequate Encryption Strength" },
+        { id: "CWE-327", name: "Broken Cryptographic Algorithm" },
+        { id: "CWE-338", name: "Insecure Randomness" },
+        { id: "CWE-352", name: "Cross-Site Request Forgery (CSRF)" },
+        { id: "CWE-377", name: "Insecure Temporary File" },
+        { id: "CWE-384", name: "Session Fixation" },
+        { id: "CWE-400", name: "Resource Consumption (ReDoS)" },
+        { id: "CWE-434", name: "Unrestricted File Upload" },
+        { id: "CWE-489", name: "Active Debug Code" },
+        { id: "CWE-502", name: "Untrusted Deserialization" },
+        { id: "CWE-522", name: "Cleartext Basic Auth Transmission" },
+        { id: "CWE-601", name: "Open URL Redirect" },
+        { id: "CWE-605", name: "Insecure Socket Binding" },
+        { id: "CWE-611", name: "XML External Entity (XXE)" },
+        { id: "CWE-614", name: "Cookie Without Secure Flag" },
+        { id: "CWE-643", name: "XPath Injection" },
+        { id: "CWE-652", name: "XQuery / XML Query Injection" },
+        { id: "CWE-732", name: "Insecure File Permissions" },
+        { id: "CWE-759", name: "Unsalted Password Hash" },
+        { id: "CWE-770", name: "Unbounded Resource Allocation" },
+        { id: "CWE-776", name: "XML Entity Expansion (XML Bomb)" },
+        { id: "CWE-78", name: "OS Command Injection" },
+        { id: "CWE-79", name: "Cross-Site Scripting (XSS)" },
+        { id: "CWE-798", name: "Hardcoded Credentials" },
+        { id: "CWE-862", name: "Missing Authorization (IDOR)" },
+        { id: "CWE-89", name: "SQL Injection" },
+        { id: "CWE-90", name: "LDAP Injection" },
+        { id: "CWE-916", name: "Weak Password Hash" },
+        { id: "CWE-918", name: "Server-Side Request Forgery" },
+        { id: "CWE-937", name: "Deprecated Insecure Protocols" },
+        { id: "CWE-94", name: "Code Injection (Module Load)" },
+        { id: "CWE-943", name: "NoSQL Injection" },
+        { id: "CWE-95", name: "Code Execution (eval/exec)" }
+        {% endif %}
+    ];
+
     function renderSecurityAuditReport(data) {
         const reportContainer = document.getElementById('reportContainer');
         const scanResult = document.getElementById('scanResult');
@@ -2938,90 +2991,25 @@ jobs:
 
         // Zero Findings State vs Finding Cards
         if (findings.length === 0) {
+            const cleanCweGridHtml = ALL_SUPPORTED_CWES.map(c => `
+                <div class="p-2.5 rounded-lg bg-emerald-950/30 border border-emerald-500/20 text-gray-300 flex items-center gap-2 transition-colors hover:border-emerald-500/50 hover:bg-emerald-950/50">
+                    <span class="text-emerald-400">✓</span> ${escapeHtml(c.id)}: ${escapeHtml(c.name)}
+                </div>
+            `).join('');
+
             html += `
                 <div class="p-8 rounded-2xl bg-[#061412] border border-emerald-500/30 text-center shadow-lg my-6">
                     <div class="w-16 h-16 rounded-full bg-emerald-500/20 border border-emerald-500/40 flex items-center justify-center mx-auto mb-4">
                         <svg class="w-8 h-8 text-emerald-400" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M5 13l4 4L19 7"></path></svg>
                     </div>
                     <h3 class="text-lg md:text-xl font-bold text-emerald-400 font-mono mb-2">
-                        NO VULNERABILITIES DETECTED within current TCS analysis scope (24 supported CWE classes).
+                        NO VULNERABILITIES DETECTED within current TCS analysis scope (${ALL_SUPPORTED_CWES.length} supported CWE classes).
                     </h3>
                     <p class="text-sm text-gray-400 max-w-2xl mx-auto leading-relaxed mb-6 font-mono">
                         Deterministic AST and interprocedural data-flow analysis confirmed zero tainted data flows reaching dangerous sinks, and zero credential leaks across all scanned modules.
                     </p>
                     <div class="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-3 gap-2 max-w-4xl mx-auto text-left text-xs font-mono">
-                        <div class="p-2.5 rounded-lg bg-emerald-950/30 border border-emerald-500/20 text-gray-300 flex items-center gap-2 transition-colors hover:border-emerald-500/50 hover:bg-emerald-950/50">
-                            <span class="text-emerald-400">✓</span> CWE-95: Code Injection
-                        </div>
-                        <div class="p-2.5 rounded-lg bg-emerald-950/30 border border-emerald-500/20 text-gray-300 flex items-center gap-2 transition-colors hover:border-emerald-500/50 hover:bg-emerald-950/50">
-                            <span class="text-emerald-400">✓</span> CWE-78: Command Injection
-                        </div>
-                        <div class="p-2.5 rounded-lg bg-emerald-950/30 border border-emerald-500/20 text-gray-300 flex items-center gap-2 transition-colors hover:border-emerald-500/50 hover:bg-emerald-950/50">
-                            <span class="text-emerald-400">✓</span> CWE-89: SQL Injection
-                        </div>
-                        <div class="p-2.5 rounded-lg bg-emerald-950/30 border border-emerald-500/20 text-gray-300 flex items-center gap-2 transition-colors hover:border-emerald-500/50 hover:bg-emerald-950/50">
-                            <span class="text-emerald-400">✓</span> CWE-22: Path Traversal
-                        </div>
-                        <div class="p-2.5 rounded-lg bg-emerald-950/30 border border-emerald-500/20 text-gray-300 flex items-center gap-2 transition-colors hover:border-emerald-500/50 hover:bg-emerald-950/50">
-                            <span class="text-emerald-400">✓</span> CWE-502: Deserialization
-                        </div>
-                        <div class="p-2.5 rounded-lg bg-emerald-950/30 border border-emerald-500/20 text-gray-300 flex items-center gap-2 transition-colors hover:border-emerald-500/50 hover:bg-emerald-950/50">
-                            <span class="text-emerald-400">✓</span> CWE-1336: SSTI
-                        </div>
-                        <div class="p-2.5 rounded-lg bg-emerald-950/30 border border-emerald-500/20 text-gray-300 flex items-center gap-2 transition-colors hover:border-emerald-500/50 hover:bg-emerald-950/50">
-                            <span class="text-emerald-400">✓</span> CWE-79: Cross-Site Scripting (XSS)
-                        </div>
-                        <div class="p-2.5 rounded-lg bg-emerald-950/30 border border-emerald-500/20 text-gray-300 flex items-center gap-2 transition-colors hover:border-emerald-500/50 hover:bg-emerald-950/50">
-                            <span class="text-emerald-400">✓</span> CWE-295: Broken TLS / Cert Validation
-                        </div>
-                        <div class="p-2.5 rounded-lg bg-emerald-950/30 border border-emerald-500/20 text-gray-300 flex items-center gap-2 transition-colors hover:border-emerald-500/50 hover:bg-emerald-950/50">
-                            <span class="text-emerald-400">✓</span> CWE-918: Server-Side Request Forgery (SSRF)
-                        </div>
-                        <div class="p-2.5 rounded-lg bg-emerald-950/30 border border-emerald-500/20 text-gray-300 flex items-center gap-2 transition-colors hover:border-emerald-500/50 hover:bg-emerald-950/50">
-                            <span class="text-emerald-400">✓</span> CWE-611: XML External Entity (XXE)
-                        </div>
-                        <div class="p-2.5 rounded-lg bg-emerald-950/30 border border-emerald-500/20 text-gray-300 flex items-center gap-2 transition-colors hover:border-emerald-500/50 hover:bg-emerald-950/50">
-                            <span class="text-emerald-400">✓</span> CWE-601: Open Redirect
-                        </div>
-                        <div class="p-2.5 rounded-lg bg-emerald-950/30 border border-emerald-500/20 text-gray-300 flex items-center gap-2 transition-colors hover:border-emerald-500/50 hover:bg-emerald-950/50">
-                            <span class="text-emerald-400">✓</span> CWE-400: Resource Consumption (ReDoS)
-                        </div>
-                        <div class="p-2.5 rounded-lg bg-emerald-950/30 border border-emerald-500/20 text-gray-300 flex items-center gap-2 transition-colors hover:border-emerald-500/50 hover:bg-emerald-950/50">
-                            <span class="text-emerald-400">✓</span> CWE-327: Broken Cryptography
-                        </div>
-                        <div class="p-2.5 rounded-lg bg-emerald-950/30 border border-emerald-500/20 text-gray-300 flex items-center gap-2 transition-colors hover:border-emerald-500/50 hover:bg-emerald-950/50">
-                            <span class="text-emerald-400">✓</span> CWE-798: Hardcoded Secrets &amp; Credentials
-                        </div>
-                        <div class="p-2.5 rounded-lg bg-emerald-950/30 border border-emerald-500/20 text-gray-300 flex items-center gap-2 transition-colors hover:border-emerald-500/50 hover:bg-emerald-950/50">
-                            <span class="text-emerald-400">✓</span> CWE-1004: Insecure Cookie Flags
-                        </div>
-                        <div class="p-2.5 rounded-lg bg-emerald-950/30 border border-emerald-500/20 text-gray-300 flex items-center gap-2 transition-colors hover:border-emerald-500/50 hover:bg-emerald-950/50">
-                            <span class="text-emerald-400">✓</span> CWE-117: Log Injection
-                        </div>
-                        <div class="p-2.5 rounded-lg bg-emerald-950/30 border border-emerald-500/20 text-gray-300 flex items-center gap-2 transition-colors hover:border-emerald-500/50 hover:bg-emerald-950/50">
-                            <span class="text-emerald-400">✓</span> CWE-209: Sensitive Error Exposure
-                        </div>
-                        <div class="p-2.5 rounded-lg bg-emerald-950/30 border border-emerald-500/20 text-gray-300 flex items-center gap-2 transition-colors hover:border-emerald-500/50 hover:bg-emerald-950/50">
-                            <span class="text-emerald-400">✓</span> CWE-326: Inadequate Encryption Strength
-                        </div>
-                        <div class="p-2.5 rounded-lg bg-emerald-950/30 border border-emerald-500/20 text-gray-300 flex items-center gap-2 transition-colors hover:border-emerald-500/50 hover:bg-emerald-950/50">
-                            <span class="text-emerald-400">✓</span> CWE-338: Insecure Randomness
-                        </div>
-                        <div class="p-2.5 rounded-lg bg-emerald-950/30 border border-emerald-500/20 text-gray-300 flex items-center gap-2 transition-colors hover:border-emerald-500/50 hover:bg-emerald-950/50">
-                            <span class="text-emerald-400">✓</span> CWE-377: Insecure Temporary File
-                        </div>
-                        <div class="p-2.5 rounded-lg bg-emerald-950/30 border border-emerald-500/20 text-gray-300 flex items-center gap-2 transition-colors hover:border-emerald-500/50 hover:bg-emerald-950/50">
-                            <span class="text-emerald-400">✓</span> CWE-643: XPath Injection
-                        </div>
-                        <div class="p-2.5 rounded-lg bg-emerald-950/30 border border-emerald-500/20 text-gray-300 flex items-center gap-2 transition-colors hover:border-emerald-500/50 hover:bg-emerald-950/50">
-                            <span class="text-emerald-400">✓</span> CWE-732: Insecure File Permissions
-                        </div>
-                        <div class="p-2.5 rounded-lg bg-emerald-950/30 border border-emerald-500/20 text-gray-300 flex items-center gap-2 transition-colors hover:border-emerald-500/50 hover:bg-emerald-950/50">
-                            <span class="text-emerald-400">✓</span> CWE-94: Code Injection (Module Load)
-                        </div>
-                        <div class="p-2.5 rounded-lg bg-emerald-950/30 border border-emerald-500/20 text-gray-300 flex items-center gap-2 transition-colors hover:border-emerald-500/50 hover:bg-emerald-950/50">
-                            <span class="text-emerald-400">✓</span> CWE-943: NoSQL Injection
-                        </div>
+                        ${cleanCweGridHtml}
                     </div>
                 </div>
             `;
