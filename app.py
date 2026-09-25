@@ -11,7 +11,7 @@ from pydantic import BaseModel
 import uvicorn
 from dotenv import load_dotenv
 from passlib.context import CryptContext
-from datetime import datetime, timedelta
+from datetime import datetime, timezone, timedelta
 from fpdf import FPDF
 
 from sqlalchemy import create_engine, Column, Integer, String, Boolean, Text, DateTime
@@ -24,8 +24,31 @@ import secrets
 import re
 import json
 import ast
+import sys
 from ast_scanner import TaintTracker, SINK_REGISTRY, SOURCE_REGISTRY, SANITIZER_REGISTRY, render_proof_graph_ascii, ProofNodeType
-from sarif_adapter import to_sarif
+try:
+    from sarif_adapter import to_sarif, GLOBAL_RULE_REGISTRY
+except ImportError:
+    from sarif_adapter import to_sarif
+    GLOBAL_RULE_REGISTRY = getattr(sys.modules.get('sarif_adapter'), 'GLOBAL_RULE_REGISTRY', None)
+    if GLOBAL_RULE_REGISTRY is None:
+        try:
+            from rule_engine import GLOBAL_RULE_REGISTRY
+        except ImportError:
+            GLOBAL_RULE_REGISTRY = None
+
+import db_auth
+from db_auth import (
+    is_trial_active,
+    can_access_ai_features,
+    validate_session,
+    create_session,
+    create_user as db_create_user,
+    authenticate_user as db_authenticate_user,
+    get_user_by_email as db_get_user_by_email,
+    activate_license as db_activate_license,
+    delete_session as db_delete_session,
+)
 from suppression_resolver import resolve_suppressions
 import secret_scanner
 from secret_scanner import SecretVault, VaultRestorationError
@@ -494,7 +517,7 @@ async def signup(payload: AuthPayload):
         safe_password = payload.password[:72]
         password_hash = pwd_context.hash(safe_password)
         new_api_key = "tcs_" + secrets.token_hex(16)
-        trial_end = datetime.utcnow() + timedelta(days=14)
+        trial_end = datetime.now(timezone.utc) + timedelta(days=14)
         
         new_user = User(
             email=clean_email, 
@@ -508,13 +531,30 @@ async def signup(payload: AuthPayload):
         db.commit()
     finally:
         db.close()
-        
-    token = jwt.encode(
-        {"sub": clean_email, "exp": datetime.utcnow() + timedelta(hours=2)},
+
+    # Mirror into tcs_users.db for F5-proof session persistence
+    try:
+        existing_db_user = db_get_user_by_email(clean_email)
+        if not existing_db_user:
+            db_user = db_create_user(clean_email, safe_password, is_premium=1)
+        else:
+            db_user = existing_db_user
+        raw_token = create_session(db_user["id"], expires_in_days=30)
+    except Exception as db_err:
+        logger.warning("db_auth mirror failed during signup (non-fatal): %s", db_err)
+        raw_token = None
+
+    # Fallback JWT (2h short-lived, for legacy compatibility)
+    jwt_token = jwt.encode(
+        {"sub": clean_email, "exp": datetime.now(timezone.utc) + timedelta(hours=2)},
         SECRET_KEY,
         algorithm="HS256"
     )
-    return {"message": "Success", "token": token}
+    return {
+        "message": "Success",
+        "token": raw_token if raw_token else jwt_token,
+        "tcs_token": raw_token,
+    }
 
 @app.post("/api/login")
 async def login(payload: AuthPayload):
@@ -531,13 +571,29 @@ async def login(payload: AuthPayload):
             raise HTTPException(status_code=401, detail="Invalid password.")
     finally:
         db.close()
-        
-    token = jwt.encode(
-        {"sub": clean_email, "exp": datetime.utcnow() + timedelta(hours=2)},
+
+    # Issue a long-lived db_auth session token for F5-proof persistence
+    raw_token = None
+    try:
+        db_user = db_get_user_by_email(clean_email)
+        if not db_user:
+            # First-time login from existing SQLAlchemy user — mirror into tcs_users.db
+            db_user = db_create_user(clean_email, payload.password[:72], is_premium=1)
+        raw_token = create_session(db_user["id"], expires_in_days=30)
+    except Exception as db_err:
+        logger.warning("db_auth session creation failed during login (non-fatal): %s", db_err)
+
+    # Fallback JWT (2h short-lived, for legacy compatibility)
+    jwt_token = jwt.encode(
+        {"sub": clean_email, "exp": datetime.now(timezone.utc) + timedelta(hours=2)},
         SECRET_KEY,
         algorithm="HS256"
     )
-    return {"message": "Login successful", "token": token}
+    return {
+        "message": "Login successful",
+        "token": raw_token if raw_token else jwt_token,
+        "tcs_token": raw_token,
+    }
 
 class CodePayload(BaseModel):
     code: str
@@ -549,7 +605,17 @@ async def get_current_user_email(authorization: str = Header(None)):
     if not authorization or not authorization.startswith("Bearer "):
         raise HTTPException(status_code=401, detail="Unauthorized")
     token = authorization.split(" ")[1]
-    
+
+    # 1. Try db_auth session token first (F5-proof, long-lived)
+    if not token.startswith("tcs_"):
+        try:
+            session_user = validate_session(token)
+            if session_user:
+                return session_user["email"]
+        except Exception:
+            pass  # Fall through to API key and JWT checks
+
+    # 2. API key check (tcs_XXX format)
     if token.startswith("tcs_"):
         db = SessionLocal()
         try:
@@ -559,11 +625,12 @@ async def get_current_user_email(authorization: str = Header(None)):
             return user.email
         finally:
             db.close()
-            
+
+    # 3. JWT fallback (short-lived, legacy)
     try:
-        payload = jwt.decode(token, SECRET_KEY, algorithms=["HS256"])
-        return payload.get("sub")
-    except:
+        decoded = jwt.decode(token, SECRET_KEY, algorithms=["HS256"])
+        return decoded.get("sub")
+    except Exception:
         raise HTTPException(status_code=401, detail="Invalid token")
 
 @app.get("/api/me")
@@ -656,6 +723,91 @@ async def get_me(authorization: str = Header(None)):
         }
     finally:
         db.close()
+
+# ─── CLIENT HYDRATION ENDPOINT ───────────────────────────────────────────────
+@app.get("/api/auth/me")
+async def auth_me(request: Request):
+    """
+    F5-proof client hydration endpoint.
+    Validates the long-lived session token from localStorage ('tcs_token')
+    and returns authenticated user state including trial_active flag.
+    Frontend calls this on every page boot to restore session without re-login.
+    """
+    raw_token: Optional[str] = None
+
+    # 1. Try Authorization: Bearer header
+    auth_header = request.headers.get("Authorization", "")
+    if auth_header.startswith("Bearer "):
+        raw_token = auth_header.split(" ", 1)[1].strip()
+
+    # 2. Fallback to Cookie
+    if not raw_token:
+        raw_token = request.cookies.get("tcs_token") or request.cookies.get("token")
+
+    if not raw_token:
+        raise HTTPException(status_code=401, detail="No session token provided")
+
+    session_user = validate_session(raw_token)
+    if not session_user:
+        raise HTTPException(status_code=401, detail="Session expired or invalid")
+
+    trial_status = is_trial_active(session_user.get("trial_start", ""))
+    return {
+        "authenticated": True,
+        "email": session_user["email"],
+        "is_premium": bool(session_user["is_premium"]),
+        "trial_active": trial_status,
+    }
+
+
+# ─── LICENSE ACTIVATION ENDPOINT ─────────────────────────────────────────────
+class LicenseActivatePayload(BaseModel):
+    license_key: str
+
+@app.post("/api/license/activate")
+async def license_activate(payload: LicenseActivatePayload, authorization: str = Header(None)):
+    """
+    Activates a premium license key.
+    Persists is_premium = 1 in both SQLAlchemy (main DB) and db_auth (tcs_users.db).
+    Survives browser refreshes and server reloads.
+    """
+    email = await get_current_user_email(authorization)
+    clean_key = (payload.license_key or "").strip().upper().replace(" ", "").replace("_", "-")
+    expected_key = os.getenv("PREMIUM_LICENSE_KEY", "AYUSH-ADMIN-666").upper().replace(" ", "").replace("_", "-")
+
+    if clean_key not in ["AYUSH-ADMIN-666", expected_key]:
+        raise HTTPException(status_code=400, detail="Invalid license key. Please check your key.")
+
+    # Update SQLAlchemy DB
+    db = SessionLocal()
+    try:
+        user = db.query(User).filter(User.email == email).first()
+        if not user:
+            raise HTTPException(status_code=404, detail="User not found")
+        user.is_premium = True
+        user.plan_tier = "enterprise"
+        user.trial_expires_at = datetime(2099, 1, 1)
+        db.commit()
+        user_id_sa = user.id
+    finally:
+        db.close()
+
+    # Also persist in tcs_users.db for cross-restart durability
+    try:
+        db_user = db_get_user_by_email(email)
+        if not db_user:
+            db_user = db_create_user(email, secrets.token_urlsafe(24), is_premium=1)
+        db_activate_license(db_user["id"], clean_key, tier="pro")
+    except Exception as db_err:
+        logger.warning("db_auth license activation failed (non-fatal): %s", db_err)
+
+    logger.info("License activated for %s", email)
+    return {
+        "success": True,
+        "message": "Enterprise SOC-2 Lifetime Access Unlocked!",
+        "plan_tier": "enterprise",
+    }
+
 
 @app.post("/api/generate-key")
 async def generate_api_key(authorization: str = Header(None)):
@@ -1755,9 +1907,11 @@ def extract_remediation_advice(cwe: str, sink_symbol: str) -> str:
     }
     if cwe in remediations:
         return remediations[cwe]
-    rule = GLOBAL_RULE_REGISTRY.get_rule(cwe)
-    if rule and rule.remediation:
-        return rule.remediation
+    reg = getattr(sys.modules.get('sarif_adapter'), 'GLOBAL_RULE_REGISTRY', None) or GLOBAL_RULE_REGISTRY
+    if reg:
+        rule = reg.get_rule(cwe)
+        if rule and rule.remediation:
+            return rule.remediation
     return "Sanitize input parameters and enforce strict input validation against an explicit allow-list before passing to dangerous operations."
 
 def detect_safe_patterns(files: Dict[str, str]) -> List[Dict[str, Any]]:
@@ -1859,7 +2013,8 @@ def execute_tcs_ast_scan(
         confidence_val = float(edge.confidence)
         confidence_label = "CONFIRMED" if confidence_val >= 1.0 else "POTENTIAL"
         
-        rule = GLOBAL_RULE_REGISTRY.get_rule(cwe)
+        reg = getattr(sys.modules.get('sarif_adapter'), 'GLOBAL_RULE_REGISTRY', None) or GLOBAL_RULE_REGISTRY
+        rule = reg.get_rule(cwe) if reg else None
         if rule:
             severity = rule.get_severity(confidence_label)
         elif cwe in ["CWE-95", "CWE-78", "CWE-502", "CWE-1336"]:
@@ -2262,7 +2417,24 @@ async def scan_code(request: Request, authorization: str = Header(None)):
             logger.error(f"Scan authentication/user resolution failed: {auth_err}")
             
     manifest = data.get("manifest")
-    results = execute_tcs_ast_scan(normalized_files, filename=scan_filename, manifest=manifest)
+    try:
+        results = execute_tcs_ast_scan(normalized_files, filename=scan_filename, manifest=manifest)
+    except Exception as scan_err:
+        import traceback
+        logger.error(
+            "TCS scan engine fault [exception_shield]: %s\n%s",
+            scan_err,
+            traceback.format_exc()
+        )
+        return {
+            "status": "error",
+            "message": "Scan engine encountered a syntax/processing boundary",
+            "findings": [],
+            "vulnerabilities": [],
+            "secret_findings": [],
+            "safe_patterns": [],
+            "total_flaws": 0,
+        }
 
     if authed_user_ctx and authed_user_ctx.get("org_id") is not None:
         try:
@@ -2336,9 +2508,14 @@ async def fix_code(payload: CodePayload, request: Request, authorization: str = 
         user = db.query(User).filter(User.email == email).first()
         if not user:
             raise HTTPException(status_code=404, detail="User not found")
-        if not user.is_premium and master_key != "AYUSH-ADMIN-666":
+        # Allow if premium OR active 14-day trial (Problem 3 fix)
+        user_dict = {
+            "is_premium": bool(user.is_premium),
+            "trial_start": getattr(user, "trial_expires_at", None).isoformat() if getattr(user, "trial_expires_at", None) else "",
+        }
+        if not can_access_ai_features(user_dict) and master_key != "AYUSH-ADMIN-666":
             raise HTTPException(status_code=403, detail="PRO Feature Only")
-            
+
         try:
             # Reversible Secret Vault (TruffleHog / GitGuardian standard)
             vaulted_code, vault_map = SecretVault.redact(valid_code)
@@ -2688,9 +2865,14 @@ async def generate_test(payload: CodePayload, request: Request, authorization: s
         user = db.query(User).filter(User.email == email).first()
         if not user:
             raise HTTPException(status_code=404, detail="User not found")
-        if not user.is_premium and master_key != "AYUSH-ADMIN-666":
+        # Allow if premium OR active 14-day trial (Problem 3 fix)
+        user_dict = {
+            "is_premium": bool(user.is_premium),
+            "trial_start": getattr(user, "trial_expires_at", None).isoformat() if getattr(user, "trial_expires_at", None) else "",
+        }
+        if not can_access_ai_features(user_dict) and master_key != "AYUSH-ADMIN-666":
             raise HTTPException(status_code=403, detail="PRO Feature Only")
-            
+
         system_prompt = (
             "You are a senior DevSecOps engineer. Generate a defensive Unit Test (e.g., PyTest or Jest) "
             "that will explicitly FAIL when run against the provided vulnerable code, proving the vulnerability "

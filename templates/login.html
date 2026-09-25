@@ -159,7 +159,9 @@
                     errorMsg.classList.remove('hidden');
                     showToast(detail, 'error');
                 } else {
-                    localStorage.setItem('token', data.token);
+                    // Persist both token formats for F5-proof hydration
+                    if (data.token) localStorage.setItem('token', data.token);
+                    if (data.tcs_token) localStorage.setItem('tcs_token', data.tcs_token);
                     if (!isLogin) {
                         showToast("Account created successfully!", "success");
                     }
@@ -174,6 +176,29 @@
                 submitBtn.disabled = false;
             }
         });
+
+        // ── AUTO-REDIRECT: If a valid session already exists, skip the login screen ──
+        (async function checkExistingSession() {
+            const tcsToken = localStorage.getItem('tcs_token') || localStorage.getItem('token');
+            if (!tcsToken) return;
+            try {
+                const res = await fetch('/api/auth/me', {
+                    headers: { 'Authorization': 'Bearer ' + tcsToken }
+                });
+                if (res.ok) {
+                    const data = await res.json();
+                    if (data.authenticated) {
+                        window.location.replace('/dashboard');
+                    }
+                } else {
+                    // Token invalid/expired — clear storage
+                    localStorage.removeItem('token');
+                    localStorage.removeItem('tcs_token');
+                }
+            } catch (e) {
+                // Network offline — allow login form to show
+            }
+        })();
 
         if (window.location.search.includes('vip=true')) {
             try { localStorage.setItem('isVIP', 'true'); } catch (e) {}

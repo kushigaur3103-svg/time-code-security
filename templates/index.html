@@ -1328,7 +1328,7 @@ tcs scan ./your-project --fix</div>
     // ==========================================
     // AUTHENTICATION & FETCH INTERCEPTOR
     // ==========================================
-    const token = localStorage.getItem('token');
+    const token = localStorage.getItem('token') || localStorage.getItem('tcs_token');
     if (!token) {
         window.location.replace('/login');
     }
@@ -1339,6 +1339,7 @@ tcs scan ./your-project --fix</div>
             const response = await originalFetch.apply(this, arguments);
             if (response && response.status === 401) {
                 localStorage.removeItem('token');
+                localStorage.removeItem('tcs_token');
                 window.location.replace('/login');
             }
             return response;
@@ -1349,12 +1350,46 @@ tcs scan ./your-project --fix</div>
 
     // Global State
     let isPremium = false;
+    let isTrialActive = false;
     let isEnterprise = false;
     let scanCount = 0;
     let userApiKey = null;
     let vaultData = [];
     let activityChartInstance = null;
     let severityChartInstance = null;
+
+    // ── F5-PROOF HYDRATION ─────────────────────────────────────────────────────
+    // On every page boot (including F5 refresh), validate the long-lived session
+    // token via /api/auth/me and restore full state without re-login.
+    (async function hydrateSession() {
+        const tcsToken = localStorage.getItem('tcs_token') || localStorage.getItem('token');
+        if (!tcsToken) return;
+        try {
+            const res = await originalFetch('/api/auth/me', {
+                headers: { 'Authorization': 'Bearer ' + tcsToken }
+            });
+            if (res.ok) {
+                const data = await res.json();
+                isPremium = data.is_premium === true;
+                isTrialActive = data.trial_active === true;
+                isEnterprise = isPremium;
+                // Persist token under both keys for backward compatibility
+                if (data.authenticated) {
+                    localStorage.setItem('token', tcsToken);
+                    localStorage.setItem('tcs_token', tcsToken);
+                }
+            } else {
+                // Session expired — clear and redirect to login
+                localStorage.removeItem('token');
+                localStorage.removeItem('tcs_token');
+                window.location.replace('/login');
+            }
+        } catch (e) {
+            // Network error — keep existing token, don't redirect
+            console.warn('[TCS] /api/auth/me hydration error:', e);
+        }
+    })();
+    // ── END HYDRATION ──────────────────────────────────────────────────────────
 
     // Subtitle helper
     function updateSubtitle(tier) {
@@ -1446,7 +1481,7 @@ tcs scan ./your-project --fix</div>
     // Fetch Plan & User Info
     async function fetchPlan() {
         try {
-            const currentToken = localStorage.getItem('token');
+            const currentToken = localStorage.getItem('tcs_token') || localStorage.getItem('token');
             if (!currentToken) return;
             const res = await fetch('/api/me', { headers: { 'Authorization': 'Bearer ' + currentToken } });
             if (!res.ok) return;
@@ -1459,7 +1494,9 @@ tcs scan ./your-project --fix</div>
 
             isPremium = (data.plan_tier === 'enterprise' || data.plan_tier === 'developer');
             isEnterprise = (data.plan_tier === 'enterprise');
-            
+            // Trial active if plan_tier is enterprise AND not lifetime (i.e. trial period)
+            isTrialActive = isPremium || (data.days_left && !data.days_left.toLowerCase().includes('0 days'));
+
             updateSubtitle(data.plan_tier);
             
             scanCount = data.scans_used || 0;
@@ -3757,7 +3794,7 @@ jobs:
 
     if (fixCodeBtn) {
         fixCodeBtn.addEventListener('click', async () => {
-            if (!isPremium) {
+            if (!isPremium && !isTrialActive) {
                 document.getElementById('upgradeModal')?.classList.remove('hidden');
                 return;
             }
@@ -3823,7 +3860,7 @@ jobs:
 
     if (generateTestBtn) {
         generateTestBtn.addEventListener('click', async () => {
-            if (!isPremium) {
+            if (!isPremium && !isTrialActive) {
                 document.getElementById('upgradeModal')?.classList.remove('hidden');
                 return;
             }
