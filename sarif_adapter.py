@@ -123,6 +123,13 @@ def to_sarif(
         category = raw_category.replace("_", " ")
         remediation = f.get("remediation") or (rule.remediation if rule else "")
 
+        # Extract proof_graph and flow_trace to determine flow structure
+        proof_graph = f.get("proof_graph")
+        flow_steps = f.get("flow_trace", [])
+        pg_nodes = []
+        if proof_graph is not None:
+            pg_nodes = proof_graph.nodes if hasattr(proof_graph, "nodes") else (proof_graph.get("nodes", []) if isinstance(proof_graph, dict) else [])
+
         # Result primary message (aware of structural vs taint-flow findings)
         is_structural = bool(not pg_nodes and not flow_steps) or cwe in ("CWE-1004", "CWE-209", "CWE-295", "CWE-326", "CWE-327", "CWE-338", "CWE-377", "CWE-732", "CWE-798") or "STRUCTURAL" in str(f.get("discovery_mode", ""))
         if is_structural:
@@ -155,13 +162,7 @@ def to_sarif(
             }
 
         # Build threadFlowLocations from proof_graph (preferred) or flow_trace (fallback)
-        proof_graph = f.get("proof_graph")
-        flow_steps = f.get("flow_trace", [])
         thread_flow_locations: List[Dict[str, Any]] = []
-
-        pg_nodes = []
-        if proof_graph is not None:
-            pg_nodes = proof_graph.nodes if hasattr(proof_graph, "nodes") else (proof_graph.get("nodes", []) if isinstance(proof_graph, dict) else [])
 
         if pg_nodes:
             for step_idx, node in enumerate(pg_nodes):

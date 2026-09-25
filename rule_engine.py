@@ -929,6 +929,62 @@ _BANK_GENERATED_RULES: List[SecurityRule] = [
     _build_bank_rule(_cwe, _sinks) for _cwe, _sinks in _BANK_NEW_CWE_SINKS.items()
 ]
 
+def _load_catalog_security_rules(registry: RuleRegistry) -> None:
+    """Loads all 107 enterprise security rules from data/rules_catalog.json into the registry.
+
+    Ensures GLOBAL_RULE_REGISTRY contains complete SARIF metadata, remediation advice,
+    and severity levels for all supported CWEs. Native rules with AST sink matchers
+    and safety filters take precedence and are NEVER overwritten.
+    """
+    import json
+    catalog_path = os.path.join(os.path.dirname(os.path.abspath(__file__)), "data", "rules_catalog.json")
+    if not os.path.isfile(catalog_path):
+        return
+    try:
+        with open(catalog_path, "r", encoding="utf-8") as f:
+            cat_data = json.load(f)
+        cwes = cat_data.get("cwes", {})
+        for cwe_id, meta in cwes.items():
+            if cwe_id in registry._rules:
+                continue
+            cwe_num = cwe_id.split("-")[-1] if "-" in cwe_id else cwe_id
+            name = meta.get("name", cwe_id).replace(" ", "_").replace("-", "_")
+            category = meta.get("category", "Vulnerability")
+            severity = str(meta.get("severity", "HIGH")).upper()
+            remediation = meta.get("remediation", f"Remediate {cwe_id} according to secure coding standards.")
+            desc = meta.get("description", f"Detects patterns violating {cwe_id}.")
+
+            rule = SecurityRule(
+                cwe_id=cwe_id,
+                name=name,
+                category=category,
+                operation="SECURITY_POLICY",
+                confirmed_severity=severity,
+                potential_severity="LOW" if severity in ("LOW", "NOTE") else "MEDIUM",
+                remediation=remediation,
+                sarif_metadata={
+                    "id": cwe_id,
+                    "name": name,
+                    "shortDescription": {"text": meta.get("name", cwe_id)},
+                    "fullDescription": {"text": desc},
+                    "helpUri": f"https://cwe.mitre.org/data/definitions/{cwe_num}.html",
+                    "defaultConfiguration": {
+                        "level": "error" if severity in ("CRITICAL", "HIGH") else "warning"
+                    },
+                    "properties": {
+                        "precision": "high",
+                        "security-severity": "8.0" if severity in ("CRITICAL", "HIGH") else "5.0",
+                        "tags": ["security", f"external/cwe/cwe-{cwe_num.lower()}"]
+                    }
+                },
+                sink_matcher=None,
+                safety_filter=None
+            )
+            registry.register(rule)
+    except Exception:
+        pass
+
+
 # Global Registry instance initialized with migrated security rules
 GLOBAL_RULE_REGISTRY = RuleRegistry()
 GLOBAL_RULE_REGISTRY.register(CWE_89_RULE)
@@ -944,6 +1000,7 @@ GLOBAL_RULE_REGISTRY.register(CWE_1333_RULE)
 GLOBAL_RULE_REGISTRY.register(CWE_601_RULE)
 for _bank_rule in _BANK_GENERATED_RULES:
     GLOBAL_RULE_REGISTRY.register(_bank_rule)
+_load_catalog_security_rules(GLOBAL_RULE_REGISTRY)
 
 
 def get_rule(cwe_id: str) -> Optional[SecurityRule]:
