@@ -599,39 +599,60 @@ def build_secret_view(finding):
     )
 
 
-ALL_24_CWES = [
+ALL_44_CWES = [
     ("CWE-1004", "Insecure Cookie Flags"),
     ("CWE-117", "Log Injection"),
     ("CWE-1336", "Template Injection (SSTI)"),
+    ("CWE-200", "Diagnostic Information Exposure"),
     ("CWE-209", "Sensitive Error Exposure"),
     ("CWE-22", "Path Traversal"),
+    ("CWE-269", "Improper Privilege Management"),
+    ("CWE-287", "Improper Authentication"),
     ("CWE-295", "Improper Certificate Validation"),
+    ("CWE-312", "Cleartext Sensitive Storage"),
+    ("CWE-319", "Cleartext HTTP Transmission"),
     ("CWE-326", "Inadequate Encryption Strength"),
     ("CWE-327", "Broken Cryptographic Algorithm"),
     ("CWE-338", "Insecure Randomness"),
+    ("CWE-352", "Cross-Site Request Forgery (CSRF)"),
     ("CWE-377", "Insecure Temporary File"),
+    ("CWE-384", "Session Fixation"),
     ("CWE-400", "Resource Consumption (ReDoS)"),
+    ("CWE-434", "Unrestricted File Upload"),
+    ("CWE-489", "Active Debug Code"),
     ("CWE-502", "Untrusted Deserialization"),
+    ("CWE-522", "Cleartext Basic Auth Transmission"),
     ("CWE-601", "Open URL Redirect"),
+    ("CWE-605", "Insecure Socket Binding"),
     ("CWE-611", "XML External Entity (XXE)"),
+    ("CWE-614", "Cookie Without Secure Flag"),
     ("CWE-643", "XPath Injection"),
+    ("CWE-652", "XQuery / XML Query Injection"),
     ("CWE-732", "Insecure File Permissions"),
+    ("CWE-759", "Unsalted Password Hash"),
+    ("CWE-770", "Unbounded Resource Allocation"),
+    ("CWE-776", "XML Entity Expansion (XML Bomb)"),
     ("CWE-78", "OS Command Injection"),
     ("CWE-79", "Cross-Site Scripting (XSS)"),
     ("CWE-798", "Hardcoded Credentials"),
+    ("CWE-862", "Missing Authorization (IDOR)"),
     ("CWE-89", "SQL Injection"),
+    ("CWE-90", "LDAP Injection"),
+    ("CWE-916", "Weak Password Hash"),
     ("CWE-918", "Server-Side Request Forgery"),
+    ("CWE-937", "Deprecated Insecure Protocols"),
     ("CWE-94", "Code Injection (Module Load)"),
     ("CWE-943", "NoSQL Injection"),
     ("CWE-95", "Code Execution (eval/exec)"),
 ]
+ALL_24_CWES = ALL_44_CWES  # Retained alias pointing to full benchmark CWE suite
 
 
 def build_clean_scan_view():
     """Renders the comprehensive Clean Scan view when 0 vulnerabilities are detected,
-    displaying all 24 supported benchmark CWEs with verified green checkmark badges."""
+    displaying all 44 supported benchmark CWEs with verified green checkmark badges."""
     chips = []
-    for cwe_id, cwe_name in ALL_24_CWES:
+    for cwe_id, cwe_name in ALL_44_CWES:
         chip = ft.Container(
             content=ft.Row(
                 [
@@ -658,7 +679,7 @@ def build_clean_scan_view():
                         ft.Column(
                             [
                                 ft.Text(
-                                    f"NO VULNERABILITIES DETECTED within current TCS analysis scope ({len(ALL_24_CWES)} supported CWE classes).",
+                                    f"NO VULNERABILITIES DETECTED within current TCS analysis scope ({len(ALL_44_CWES)} supported CWE classes).",
                                     size=12,
                                     weight=ft.FontWeight.BOLD,
                                     color=COLOR_GREEN,
@@ -679,7 +700,7 @@ def build_clean_scan_view():
                 ),
                 ft.Container(height=4),
                 ft.Text(
-                    f"VERIFIED SECURITY BASELINE ({len(ALL_24_CWES)} CWES PASSED):",
+                    f"VERIFIED SECURITY BASELINE ({len(ALL_44_CWES)} CWES PASSED):",
                     size=10,
                     weight=ft.FontWeight.BOLD,
                     color="#6b7280",
@@ -704,23 +725,44 @@ def build_clean_scan_view():
 
 
 def load_rules_catalog():
-    """Loads vulnerability rules catalog from data/rules_catalog.json."""
+    """Loads vulnerability rules catalog from data/rules_catalog.json and blueprint metadata."""
     cat_file = Path(__file__).resolve().parent / "data" / "rules_catalog.json"
+    data = {}
     if cat_file.exists():
         try:
             with open(cat_file, "r", encoding="utf-8") as f:
-                data = json.load(f)
-                return data.get("cwes", {})
+                raw = json.load(f)
+                data = raw.get("cwes", {})
         except Exception:
             pass
-    return {}
+
+    # Augment with any benchmark blueprint definitions if not already present
+    for bp_filename in ("cwe_blueprint_batch3a.json", "cwe_blueprint_batch3b.json"):
+        bp_file = Path(__file__).resolve().parent / "data" / bp_filename
+        if bp_file.exists():
+            try:
+                with open(bp_file, "r", encoding="utf-8") as f:
+                    bp_data = json.load(f).get("cwes", {})
+                    for cwe_id, cwe_meta in bp_data.items():
+                        if cwe_id not in data:
+                            data[cwe_id] = {
+                                "name": cwe_meta.get("name", cwe_id),
+                                "category": cwe_meta.get("type", "Vulnerability"),
+                                "severity": "HIGH",
+                                "sinks": cwe_meta.get("sinks", []),
+                                "description": cwe_meta.get("bad_predicate", ""),
+                                "remediation": cwe_meta.get("remediation", ""),
+                            }
+            except Exception:
+                pass
+    return data
 
 
 def build_rules_catalog_container():
-    """Builds the interactive 24 CWE Rules Catalog view for TCS Desktop."""
+    """Builds the interactive 44 CWE Rules Catalog view for TCS Desktop."""
     rules_cat = load_rules_catalog()
     cards = []
-    for cwe_id, cwe_name in ALL_24_CWES:
+    for cwe_id, cwe_name in ALL_44_CWES:
         meta = rules_cat.get(cwe_id, {})
         sev = meta.get("severity") or ("CRITICAL" if cwe_id in ("CWE-95", "CWE-78", "CWE-502", "CWE-798", "CWE-94", "CWE-1336") else "HIGH" if cwe_id in ("CWE-89", "CWE-22", "CWE-326", "CWE-377", "CWE-643", "CWE-732", "CWE-943") else "MEDIUM")
         sev_bg = get_severity_color(sev)
@@ -1438,7 +1480,7 @@ def main(page: ft.Page):
             width=1020,
         )
 
-        # CWE Filter Dropdown (All 24 Benchmark CWEs)
+        # CWE Filter Dropdown (All 44 Benchmark CWEs)
         def filter_cwe_change(e):
             val = e.control.value if e and hasattr(e, "control") else "ALL"
             render_findings_list(filter_cwe=val)
@@ -1446,10 +1488,10 @@ def main(page: ft.Page):
 
         cwe_filter_dropdown = ft.Dropdown(
             options=[
-                ft.dropdown.Option("ALL", "All CWEs (24 Rules)"),
+                ft.dropdown.Option("ALL", f"All CWEs ({len(ALL_44_CWES)} Rules)"),
                 *[
                     ft.dropdown.Option(cwe, f"{cwe}: {name}")
-                    for cwe, name in ALL_24_CWES
+                    for cwe, name in ALL_44_CWES
                 ]
             ],
             value="ALL",

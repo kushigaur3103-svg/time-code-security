@@ -201,28 +201,30 @@ def check_sarif_export() -> bool:
 
 
 def check_gui_components() -> bool:
-    """Check 3: Verifies 24 CWE rules catalog and GUI structural/proof-graph components."""
-    print_header("CHECK 3/3: GUI Component & Rules Catalog Verification (24 CWEs)")
+    """Check 3: Verifies 44 CWE rules catalog and GUI structural/proof-graph components."""
+    gui_cwes = getattr(tcs_gui, "ALL_44_CWES", tcs_gui.ALL_24_CWES)
+    total_gui_cwes = len(gui_cwes)
+    print_header(f"CHECK 3/3: GUI Component & Rules Catalog Verification ({total_gui_cwes} CWEs)")
     start_time = time.perf_counter()
 
-    # 1. Verify 24 CWEs registry
-    assert len(tcs_gui.ALL_24_CWES) == 24, f"Expected 24 CWEs in ALL_24_CWES, got {len(tcs_gui.ALL_24_CWES)}"
-    print(f"  GUI Registry Entries     : {len(tcs_gui.ALL_24_CWES)} CWEs")
+    # 1. Verify 44 CWEs registry
+    assert len(gui_cwes) == 44, f"Expected 44 CWEs in ALL_44_CWES, got {len(gui_cwes)}"
+    print(f"  GUI Registry Entries     : {len(gui_cwes)} CWEs")
 
     # 2. Verify rules catalog loading
     rules_cat = tcs_gui.load_rules_catalog()
-    assert len(rules_cat) >= 24, f"Rules catalog contains fewer than 24 CWEs: {len(rules_cat)}"
-    for cwe_id, cwe_name in tcs_gui.ALL_24_CWES:
+    assert len(rules_cat) >= 44, f"Rules catalog contains fewer than 44 CWEs: {len(rules_cat)}"
+    for cwe_id, cwe_name in gui_cwes:
         assert cwe_id in rules_cat, f"Benchmark CWE {cwe_id} missing from data/rules_catalog.json"
-    print(f"  Catalog Rules Loaded     : {len(rules_cat)} CWEs (all 24 benchmark CWEs present)")
+    print(f"  Catalog Rules Loaded     : {len(rules_cat)} CWEs (all {total_gui_cwes} benchmark CWEs present)")
 
     # 3. Instantiate rules catalog interactive view
     cat_view = tcs_gui.build_rules_catalog_container()
     assert cat_view is not None, "build_rules_catalog_container returned None"
     assert hasattr(cat_view, "content"), "cat_view missing content"
     cards_column = cat_view.content.controls[2]
-    assert len(cards_column.controls) == 24, f"Expected 24 cards in rules catalog, got {len(cards_column.controls)}"
-    print(f"  Rules Catalog Container  : Instantiated with 24 interactive rule cards")
+    assert len(cards_column.controls) == total_gui_cwes, f"Expected {total_gui_cwes} cards in rules catalog, got {len(cards_column.controls)}"
+    print(f"  Rules Catalog Container  : Instantiated with {total_gui_cwes} interactive rule cards")
 
     # 4. Instantiate structural view across structural CWEs
     structural_cwes_to_test = [
@@ -317,8 +319,8 @@ def check_gui_components() -> bool:
     clean_view = tcs_gui.build_clean_scan_view()
     assert clean_view is not None, "build_clean_scan_view returned None"
     chips_row = clean_view.content.controls[3].content
-    assert len(chips_row.controls) == 24, f"Expected 24 checkmark tiles in clean scan view, got {len(chips_row.controls)}"
-    print(f"  Clean Scan View Testing  : 24 CWE green checkmark cards verified")
+    assert len(chips_row.controls) == total_gui_cwes, f"Expected {total_gui_cwes} checkmark tiles in clean scan view, got {len(chips_row.controls)}"
+    print(f"  Clean Scan View Testing  : {total_gui_cwes} CWE green checkmark cards verified")
 
     # 8. Test helper functions
     assert tcs_gui.get_severity_color("CRITICAL") == "#dc2626"
