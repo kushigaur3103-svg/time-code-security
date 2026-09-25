@@ -388,8 +388,8 @@ SANITIZER_REGISTRY = {
     "quote": {"protected_cwes": {"CWE-78"}, "protected_sinks": {"COMMAND_INJECTION", "OS_COMMAND_EXECUTION"}},
     "os.path.basename": {"protected_cwes": {"CWE-22"}, "protected_sinks": {"PATH_TRAVERSAL", "FILE_ACCESS"}},
     "basename": {"protected_cwes": {"CWE-22"}, "protected_sinks": {"PATH_TRAVERSAL", "FILE_ACCESS"}},
-    "werkzeug.utils.secure_filename": {"protected_cwes": {"CWE-22"}, "protected_sinks": {"PATH_TRAVERSAL", "FILE_ACCESS"}},
-    "secure_filename": {"protected_cwes": {"CWE-22"}, "protected_sinks": {"PATH_TRAVERSAL", "FILE_ACCESS"}},
+    "werkzeug.utils.secure_filename": {"protected_cwes": {"CWE-22", "CWE-434"}, "protected_sinks": {"PATH_TRAVERSAL", "FILE_ACCESS", "UNRESTRICTED_FILE_UPLOAD", "FILE_UPLOAD"}},
+    "secure_filename": {"protected_cwes": {"CWE-22", "CWE-434"}, "protected_sinks": {"PATH_TRAVERSAL", "FILE_ACCESS", "UNRESTRICTED_FILE_UPLOAD", "FILE_UPLOAD"}},
     "pathlib.Path.name": {"protected_cwes": {"CWE-22"}, "protected_sinks": {"PATH_TRAVERSAL", "FILE_ACCESS"}},
     "Path.name": {"protected_cwes": {"CWE-22"}, "protected_sinks": {"PATH_TRAVERSAL", "FILE_ACCESS"}},
     "uuid.UUID": {"protected_cwes": {"CWE-22"}, "protected_sinks": {"PATH_TRAVERSAL", "FILE_ACCESS"}},
@@ -417,15 +417,15 @@ SANITIZER_REGISTRY = {
     "url_has_allowed_host_and_scheme": {"protected_cwes": {"CWE-601"}, "protected_sinks": {"OPEN_REDIRECT", "URL_REDIRECTION"}},
     "is_relative_url": {"protected_cwes": {"CWE-601"}, "protected_sinks": {"OPEN_REDIRECT", "URL_REDIRECTION"}},
 
-    # CWE-327 / CWE-328 Sanitizers
-    "hashlib.sha256": {"protected_cwes": {"CWE-327", "CWE-328"}, "protected_sinks": {"WEAK_HASH", "WEAK_CRYPTOGRAPHY"}},
+    # CWE-327 / CWE-328 / CWE-312 Sanitizers
+    "hashlib.sha256": {"protected_cwes": {"CWE-327", "CWE-328", "CWE-312"}, "protected_sinks": {"WEAK_HASH", "WEAK_CRYPTOGRAPHY", "CLEARTEXT_SENSITIVE_STORAGE"}},
     "sha256": {"protected_cwes": {"CWE-327", "CWE-328"}, "protected_sinks": {"WEAK_HASH", "WEAK_CRYPTOGRAPHY"}},
-    "hashlib.sha512": {"protected_cwes": {"CWE-327", "CWE-328"}, "protected_sinks": {"WEAK_HASH", "WEAK_CRYPTOGRAPHY"}},
+    "hashlib.sha512": {"protected_cwes": {"CWE-327", "CWE-328", "CWE-312"}, "protected_sinks": {"WEAK_HASH", "WEAK_CRYPTOGRAPHY", "CLEARTEXT_SENSITIVE_STORAGE"}},
     "sha512": {"protected_cwes": {"CWE-327", "CWE-328"}, "protected_sinks": {"WEAK_HASH", "WEAK_CRYPTOGRAPHY"}},
-    "bcrypt.hashpw": {"protected_cwes": {"CWE-327", "CWE-328"}, "protected_sinks": {"WEAK_HASH", "WEAK_CRYPTOGRAPHY"}},
-    "bcrypt": {"protected_cwes": {"CWE-327", "CWE-328"}, "protected_sinks": {"WEAK_HASH", "WEAK_CRYPTOGRAPHY"}},
+    "bcrypt.hashpw": {"protected_cwes": {"CWE-327", "CWE-328", "CWE-312"}, "protected_sinks": {"WEAK_HASH", "WEAK_CRYPTOGRAPHY", "CLEARTEXT_SENSITIVE_STORAGE"}},
+    "bcrypt": {"protected_cwes": {"CWE-327", "CWE-328", "CWE-312"}, "protected_sinks": {"WEAK_HASH", "WEAK_CRYPTOGRAPHY", "CLEARTEXT_SENSITIVE_STORAGE"}},
     "argon2.PasswordHasher": {"protected_cwes": {"CWE-327", "CWE-328"}, "protected_sinks": {"WEAK_HASH", "WEAK_CRYPTOGRAPHY"}},
-    "argon2": {"protected_cwes": {"CWE-327", "CWE-328"}, "protected_sinks": {"WEAK_HASH", "WEAK_CRYPTOGRAPHY"}},
+    "argon2": {"protected_cwes": {"CWE-327", "CWE-328", "CWE-312"}, "protected_sinks": {"WEAK_HASH", "WEAK_CRYPTOGRAPHY", "CLEARTEXT_SENSITIVE_STORAGE"}},
 
     # CWE-338 Sanitizers
     "secrets.token_hex": {"protected_cwes": {"CWE-338"}, "protected_sinks": {"INSECURE_RANDOM", "INSECURE_RANDOMNESS"}},
@@ -469,6 +469,29 @@ SANITIZER_REGISTRY = {
     "sanitize_nosql_input": {"protected_cwes": {"CWE-943"}, "protected_sinks": {"NOSQL_INJECTION", "NOSQL_QUERY"}},
     "sanitize_nosql_query": {"protected_cwes": {"CWE-943"}, "protected_sinks": {"NOSQL_INJECTION", "NOSQL_QUERY"}},
     "validate_nosql_query": {"protected_cwes": {"CWE-943"}, "protected_sinks": {"NOSQL_INJECTION", "NOSQL_QUERY"}},
+    # ─── Batch 3A sanitizers (data/cwe_blueprint_batch3a.json) ───
+    # NOTE: names that already exist as dict-rules above (secure_filename,
+    # hashlib.sha256/sha512, bcrypt(.hashpw), argon2) have CWE-434/CWE-312
+    # merged into their existing entries instead of redefined here.
+    "CWE-434": {
+        "secure_filename", "sanitize_filename", "werkzeug.utils.secure_filename",
+        "uuid4", "uuid.uuid4", "uuid4_rename", "basename_only",
+    },
+    "sanitize_filename": {"protected_cwes": {"CWE-434"}, "protected_sinks": {"UNRESTRICTED_FILE_UPLOAD", "FILE_UPLOAD"}},
+    "uuid4": {"protected_cwes": {"CWE-434"}, "protected_sinks": {"UNRESTRICTED_FILE_UPLOAD", "FILE_UPLOAD"}},
+    "uuid.uuid4": {"protected_cwes": {"CWE-434"}, "protected_sinks": {"UNRESTRICTED_FILE_UPLOAD", "FILE_UPLOAD"}},
+    "uuid4_rename": {"protected_cwes": {"CWE-434"}, "protected_sinks": {"UNRESTRICTED_FILE_UPLOAD", "FILE_UPLOAD"}},
+    "CWE-312": {
+        "Fernet.encrypt", "encrypt", "hash_pw", "bcrypt", "bcrypt.hashpw",
+        "argon2", "argon2.PasswordHasher.hash", "mask_secret", "redact",
+        "hashlib.sha256", "hashlib.sha512",
+    },
+    "Fernet.encrypt": {"protected_cwes": {"CWE-312"}, "protected_sinks": {"CLEARTEXT_SENSITIVE_STORAGE"}},
+    "encrypt": {"protected_cwes": {"CWE-312"}, "protected_sinks": {"CLEARTEXT_SENSITIVE_STORAGE"}},
+    "hash_pw": {"protected_cwes": {"CWE-312"}, "protected_sinks": {"CLEARTEXT_SENSITIVE_STORAGE"}},
+    "argon2.PasswordHasher.hash": {"protected_cwes": {"CWE-312"}, "protected_sinks": {"CLEARTEXT_SENSITIVE_STORAGE"}},
+    "mask_secret": {"protected_cwes": {"CWE-312"}, "protected_sinks": {"CLEARTEXT_SENSITIVE_STORAGE"}},
+    "redact": {"protected_cwes": {"CWE-312"}, "protected_sinks": {"CLEARTEXT_SENSITIVE_STORAGE"}},
 }
 
 PRIMITIVE_NUMERIC_CASTS = {"int", "float", "bool", "math.floor", "math.ceil"}
@@ -642,8 +665,6 @@ SINK_REGISTRY = {
     "django.shortcuts.redirect": {"operation": "OPEN_REDIRECT", "category": "URL_REDIRECTION", "cwe": "CWE-601"},
 
     # CWE-327 / CWE-328: Broken Cryptographic Hashes & Ciphers
-    "hashlib.md5": {"operation": "WEAK_HASH", "category": "WEAK_CRYPTOGRAPHY", "cwe": "CWE-327"},
-    "hashlib.sha1": {"operation": "WEAK_HASH", "category": "WEAK_CRYPTOGRAPHY", "cwe": "CWE-327"},
     "Crypto.Cipher.DES": {"operation": "WEAK_CIPHER", "category": "WEAK_CRYPTOGRAPHY", "cwe": "CWE-327"},
     "Crypto.Cipher.DES.new": {"operation": "WEAK_CIPHER", "category": "WEAK_CRYPTOGRAPHY", "cwe": "CWE-327"},
     "DES.new": {"operation": "WEAK_CIPHER", "category": "WEAK_CRYPTOGRAPHY", "cwe": "CWE-327"},
@@ -699,10 +720,66 @@ STRUCTURAL_SYNTHETIC_SOURCES = {
     "CWE-798": "HARDCODED_CREDENTIAL",
     "CWE-1004": "INSECURE_COOKIE_FLAGS",
     "CWE-209": "SENSITIVE_ERROR_EXPOSURE",
+    # ─── Batch 3A (data/cwe_blueprint_batch3a.json) ───
+    "CWE-614": "INSECURE_COOKIE_SECURE_FLAG",
+    "CWE-916": "WEAK_PASSWORD_HASH",
+    "CWE-759": "UNSALTED_PASSWORD_HASH",
+    "CWE-434": "UNRESTRICTED_FILE_UPLOAD",
+    "CWE-352": "CSRF_MISSING_PROTECTION",
+    "CWE-287": "IMPROPER_AUTHENTICATION",
+    "CWE-862": "MISSING_AUTHORIZATION",
+    "CWE-312": "CLEARTEXT_SENSITIVE_STORAGE",
+    "CWE-319": "CLEARTEXT_HTTP_TRANSMISSION",
+    "CWE-489": "ACTIVE_DEBUG_CODE",
 }
 CWE798_TARGET_RE = re.compile(r"(?i).*(password|passwd|secret_key|api_key|access_token|auth_token).*")
 CWE326_SINK_NAMES = {"RSA.generate", "Crypto.PublicKey.RSA.generate", "rsa.generate_private_key"}
 CWE798_SAFE_SOURCES = {"os.environ.get", "os.getenv", "config.get"}
+
+# ─── Batch 3A structural rule constants ───
+CWE3A_WEAK_HASH_NAMES = {
+    "hashlib.md5", "hashlib.sha1", "hashlib.sha256", "hashlib.sha512",
+    "md5", "sha1", "sha256", "sha512",
+}
+CWE3A_PASSWORD_NAME_RE = re.compile(r"(?i).*(password|passwd|pwd|\bpw\b|user_pass|secret|pin|auth|credential).*")
+CWE3A_SALT_NAME_RE = re.compile(r"(?i)^(salt|pepper|nonce|iv)$")
+CWE3A_SENSITIVE_VALUE_RE = re.compile(r"(?i).*(password|passwd|pwd|secret|api_key|access_token|credential|token|secret_key).*")
+CWE3A_IDOR_MODELS = {"user", "account", "profile", "invoice", "order", "payment", "document", "token"}
+CWE3A_LOCALHOST_HOSTS = {"localhost", "127.0.0.1", "0.0.0.0", "::1"}
+CWE3A_SCHEMA_DOMAINS = {"w3.org", "schemas.xmlsoap.org", "json-schema.org"}
+CWE3A_NETWORK_SINKS = {
+    "requests.get", "requests.post", "requests.put", "requests.delete",
+    "urllib.request.urlopen", "urlopen", "httpx.get", "httpx.post",
+}
+CWE3A_UPLOAD_SANITIZERS = {"secure_filename", "sanitize_filename", "werkzeug.utils.secure_filename"}
+CWE3A_UPLOAD_RANDOMIZERS = {"uuid4", "uuid.uuid4", "uuid4_rename"}
+CWE3A_STORAGE_SANITIZERS = {
+    "Fernet.encrypt", "encrypt", "hash_pw", "bcrypt", "bcrypt.hashpw",
+    "argon2", "argon2.PasswordHasher.hash", "mask_secret", "redact",
+    "hashlib.sha256", "hashlib.sha512",
+}
+CWE3A_USER_SOURCE_CALLS = {"input", "request.args.get", "request.form.get", "request.values.get"}
+CWE3A_DEBUG_VAR_RE = re.compile(r"(?i)^debug(_mode)?$")
+CWE3A_USER_NAME_RE = re.compile(r"(?i)^(user|username|email)$")
+CWE3A_STATE_CHANGING_METHODS = {"POST", "PUT", "PATCH", "DELETE"}
+
+def _eval_dict_constants(dict_node, assignments_by_scope, scope_id="", lineno=0):
+    """Evaluates a dictionary node or dictionary Name reference to a dict of {str: val}."""
+    if isinstance(dict_node, ast.Name):
+        recs = assignments_by_scope.get((scope_id, dict_node.id), [])
+        recs_before = [r for r in recs if r.lineno < lineno]
+        if recs_before and isinstance(recs_before[-1].value_node, ast.Dict):
+            dict_node = recs_before[-1].value_node
+        else:
+            return {}
+    if not isinstance(dict_node, ast.Dict):
+        return {}
+    res = {}
+    for k_node, v_node in zip(dict_node.keys, dict_node.values):
+        if isinstance(k_node, ast.Constant) and isinstance(k_node.value, str):
+            val = _eval_static_constant(v_node, assignments_by_scope, scope_id, lineno)
+            res[k_node.value] = val
+    return res
 
 def _eval_static_constant(node, assignments_by_scope, scope_id="", lineno=0, visited=None):
     """Deterministically evaluates literal int/str/bool constants, resolving Name
@@ -5091,6 +5168,12 @@ class TaintTracker:
                                 httponly_ok = _eval_static_constant(kw.value, self.assignments_by_scope, scope_id, getattr(node, "lineno", 0)) is True
                             elif kw.arg == "secure":
                                 secure_ok = _eval_static_constant(kw.value, self.assignments_by_scope, scope_id, getattr(node, "lineno", 0)) is True
+                            elif kw.arg is None:
+                                d_opts = _eval_dict_constants(kw.value, self.assignments_by_scope, scope_id, getattr(node, "lineno", 0))
+                                if d_opts.get("httponly") is True:
+                                    httponly_ok = True
+                                if d_opts.get("secure") is True:
+                                    secure_ok = True
                         if not (httponly_ok and secure_ok):
                             cwe_meta = {"operation": "INSECURE_COOKIE_FLAGS", "category": "INSECURE_COOKIE_CONFIGURATION", "cwe": "CWE-1004"}
 
@@ -5116,6 +5199,337 @@ class TaintTracker:
                     handler_name = getattr(node, "name", None)
                     if self._scan_error_returns(list(node.body), handler_name):
                         cwe_meta = {"operation": "SENSITIVE_ERROR_EXPOSURE", "category": "SENSITIVE_ERROR_EXPOSURE", "cwe": "CWE-209"}
+
+                if cwe_meta:
+                    dedupe_key = (cwe_meta["cwe"], getattr(node, "lineno", 0), getattr(node, "col_offset", 0))
+                    if dedupe_key in seen:
+                        continue
+                    seen.add(dedupe_key)
+                    sink_id = self.next_sink_id()
+                    sink_node = SecurityNode(
+                        id=sink_id,
+                        node_type=NodeType.SINK,
+                        symbol=cwe_meta["operation"],
+                        operation=cwe_meta["operation"],
+                        location=location(node, file_path),
+                        metadata={"sink_type": cwe_meta["category"], "category": cwe_meta["category"], "cwe": cwe_meta["cwe"]},
+                    )
+                    self.sinks.append(sink_node)
+                    self.sink_records.append(SinkRecord(
+                        node=node,
+                        security_node=sink_node,
+                        lineno=getattr(node, "lineno", 1),
+                        scope_id=scope_id,
+                    ))
+
+    def _collect_batch3a_structural_findings(self) -> None:
+        """
+        Batch 3A PURE_STRUCTURAL visitors (data/cwe_blueprint_batch3a.json):
+        CWE-614, CWE-916, CWE-759, CWE-434, CWE-352, CWE-287, CWE-862, CWE-312, CWE-319, CWE-489.
+        Appends sinks + sink_records; analyze() emits synthetic edges for them.
+        """
+        for mod_name, tree in self.modules.items():
+            file_path = self.file_paths.get(mod_name, "unknown.py")
+            scope_id = f"{mod_name}:global"
+            seen: set[tuple[str, int, int]] = set()
+
+            # Pre-scan module for extension whitelist, sanitizers, CSRF config, auth settings
+            has_extension_whitelist = False
+            has_csrf_form_validation = False
+            has_owner_check = False
+            has_auth_decorator = False
+            module_csrf_disabled = False
+            module_csrf_enabled = False
+
+            for node in ast.walk(tree):
+                if isinstance(node, ast.Compare):
+                    names_comp = {n.id for n in ast.walk(node) if isinstance(n, ast.Name)}
+                    attrs_comp = {n.attr for n in ast.walk(node) if isinstance(n, ast.Attribute)}
+                    if "ALLOWED_EXTENSIONS" in names_comp or "splitext" in attrs_comp:
+                        has_extension_whitelist = True
+                    if "owner_id" in attrs_comp or "owner" in attrs_comp:
+                        has_owner_check = True
+
+                elif isinstance(node, ast.Call):
+                    cname = dotted_name(node.func) or ""
+                    if "validate_on_submit" in cname:
+                        has_csrf_form_validation = True
+                    if cname in ("login_required", "flask_login.login_required"):
+                        has_auth_decorator = True
+
+                elif isinstance(node, (ast.Assign, ast.AnnAssign)):
+                    val_c = _eval_static_constant(node.value, self.assignments_by_scope, scope_id, getattr(node, "lineno", 0))
+                    targets = node.targets if isinstance(node, ast.Assign) else [node.target]
+                    for target in targets:
+                        if isinstance(target, ast.Name) and target.id == "CSRF_ENABLED":
+                            if val_c is False:
+                                module_csrf_disabled = True
+                            elif val_c is True:
+                                module_csrf_enabled = True
+                        elif isinstance(target, ast.Subscript) and isinstance(target.slice, ast.Constant) and target.slice.value == "WTF_CSRF_ENABLED":
+                            if val_c is False:
+                                module_csrf_disabled = True
+                            elif val_c is True:
+                                module_csrf_enabled = True
+
+            for node in ast.walk(tree):
+                cwe_meta = None
+                lineno = getattr(node, "lineno", 0)
+
+                # ─── 1. Calls ───
+                if isinstance(node, ast.Call):
+                    name = dotted_name(node.func) or ""
+                    canon = self.resolve_canonical_name(node.func, scope_id) or ""
+                    names = {name, canon} - {"", None}
+
+                    # ─── CWE-614: set_cookie without secure=True ───
+                    if name == "set_cookie" or name.endswith(".set_cookie") or canon == "set_cookie" or (canon and canon.endswith(".set_cookie")):
+                        secure_ok = False
+                        for kw in getattr(node, "keywords", []):
+                            if kw.arg == "secure":
+                                secure_ok = _eval_static_constant(kw.value, self.assignments_by_scope, scope_id, lineno) is True
+                            elif kw.arg is None:
+                                d_opts = _eval_dict_constants(kw.value, self.assignments_by_scope, scope_id, lineno)
+                                if d_opts.get("secure") is True:
+                                    secure_ok = True
+                        if not secure_ok:
+                            cwe_meta = {"operation": "INSECURE_COOKIE_SECURE_FLAG", "category": "INSECURE_COOKIE_CONFIGURATION", "cwe": "CWE-614"}
+
+                    # ─── CWE-916 & CWE-759: Weak Password Hash & Unsalted Hash ───
+                    elif names & CWE3A_WEAK_HASH_NAMES:
+                        if node.args:
+                            arg0 = node.args[0]
+                            names_in_arg = {n.id for n in ast.walk(arg0) if isinstance(n, ast.Name)}
+                            is_pw_hash = any(CWE3A_PASSWORD_NAME_RE.match(n) for n in names_in_arg)
+                            for scope_cand in (scope_id, name):
+                                if CWE3A_PASSWORD_NAME_RE.search(scope_cand):
+                                    is_pw_hash = True
+                            for s_const in [n.value for n in ast.walk(arg0) if isinstance(n, ast.Constant) and isinstance(n.value, str)]:
+                                if CWE3A_PASSWORD_NAME_RE.search(s_const):
+                                    is_pw_hash = True
+
+                            if is_pw_hash:
+                                has_salt = False
+                                for n in names_in_arg:
+                                    if CWE3A_SALT_NAME_RE.match(n) or "salt" in n.lower():
+                                        has_salt = True
+                                for s_const in [n.value for n in ast.walk(arg0) if isinstance(n, ast.Constant) and isinstance(n.value, str)]:
+                                    if "salt" in s_const.lower():
+                                        has_salt = True
+
+                                cwe_meta = {"operation": "WEAK_PASSWORD_HASH", "category": "WEAK_PASSWORD_HASH", "cwe": "CWE-916"}
+
+                                if not has_salt:
+                                    sink_id = self.next_sink_id()
+                                    sink_node_759 = SecurityNode(
+                                        id=sink_id,
+                                        node_type=NodeType.SINK,
+                                        symbol="UNSALTED_PASSWORD_HASH",
+                                        operation="UNSALTED_PASSWORD_HASH",
+                                        location=location(node, file_path),
+                                        metadata={"sink_type": "UNSALTED_PASSWORD_HASH", "category": "UNSALTED_PASSWORD_HASH", "cwe": "CWE-759"},
+                                    )
+                                    self.sinks.append(sink_node_759)
+                                    self.sink_records.append(SinkRecord(
+                                        node=node,
+                                        security_node=sink_node_759,
+                                        lineno=lineno,
+                                        scope_id=scope_id,
+                                    ))
+
+                    # ─── CWE-434: Unrestricted File Upload ───
+                    elif (name.endswith(".save") or canon.endswith(".save") or name == "save") and len(node.args) >= 1:
+                        has_sanitizer = False
+                        for tree_call in ast.walk(tree):
+                            if isinstance(tree_call, ast.Call):
+                                tc_name = dotted_name(tree_call.func) or ""
+                                if tc_name in CWE3A_UPLOAD_SANITIZERS or tc_name in CWE3A_UPLOAD_RANDOMIZERS:
+                                    has_sanitizer = True
+                                    break
+                        if not has_sanitizer and not has_extension_whitelist:
+                            cwe_meta = {"operation": "UNRESTRICTED_FILE_UPLOAD", "category": "UNRESTRICTED_FILE_UPLOAD", "cwe": "CWE-434"}
+
+                    # ─── CWE-352: Cross-Site Request Forgery (Calls like csrf.exempt(func)) ───
+                    elif name in ("csrf.exempt", "csrf_exempt") and len(node.args) >= 1:
+                        cwe_meta = {"operation": "CSRF_MISSING_PROTECTION", "category": "CSRF_MISSING_PROTECTION", "cwe": "CWE-352"}
+
+                    # ─── CWE-862: Missing Authorization / IDOR ───
+                    elif (name == "get_object_or_404" or name.endswith(".objects.get") or name.endswith(".query.get") or (name.endswith(".query.filter_by") or name == "filter_by") or canon.endswith(".objects.get") or canon.endswith(".query.get")):
+                        has_owner_param = False
+                        for kw in getattr(node, "keywords", []):
+                            if kw.arg in ("owner", "user", "user_id", "owner_id"):
+                                has_owner_param = True
+                                break
+                        if not has_owner_param and not has_owner_check:
+                            cwe_meta = {"operation": "MISSING_AUTHORIZATION", "category": "MISSING_AUTHORIZATION", "cwe": "CWE-862"}
+
+                    # ─── CWE-319: Cleartext HTTP Transmission ───
+                    elif (names & CWE3A_NETWORK_SINKS) or any(name.startswith(ns) for ns in ("requests.", "httpx.", "urllib.request.")):
+                        url_arg = node.args[0] if node.args else None
+                        if url_arg:
+                            url_val = _eval_static_constant(url_arg, self.assignments_by_scope, scope_id, lineno)
+                            if isinstance(url_val, str) and url_val.startswith("http://"):
+                                is_whitelisted = False
+                                for host in CWE3A_LOCALHOST_HOSTS:
+                                    if f"://{host}" in url_val:
+                                        is_whitelisted = True
+                                        break
+                                for schema in CWE3A_SCHEMA_DOMAINS:
+                                    if schema in url_val:
+                                        is_whitelisted = True
+                                        break
+                                if not is_whitelisted:
+                                    cwe_meta = {"operation": "CLEARTEXT_HTTP_TRANSMISSION", "category": "CLEARTEXT_HTTP_TRANSMISSION", "cwe": "CWE-319"}
+
+                    # ─── CWE-489: Active Debug Code in Production (app.run(debug=True) / uvicorn.run(debug=True)) ───
+                    elif name in ("app.run", "Flask.run", "uvicorn.run") or name.endswith(".run"):
+                        for kw in getattr(node, "keywords", []):
+                            if kw.arg == "debug":
+                                if isinstance(kw.value, ast.Constant) and kw.value.value is True:
+                                    cwe_meta = {"operation": "ACTIVE_DEBUG_CODE", "category": "ACTIVE_DEBUG_CODE", "cwe": "CWE-489"}
+
+                    # ─── CWE-312: Cleartext Storage of Sensitive Information (f.write / json.dump) ───
+                    elif name in ("f.write", "file.write") or name.endswith(".write"):
+                        if not name.startswith("vault"):
+                            if node.args:
+                                arg0 = node.args[0]
+                                arg_names = {n.id for n in ast.walk(arg0) if isinstance(n, ast.Name)}
+                                is_sensitive = any(CWE3A_SENSITIVE_VALUE_RE.match(n) for n in arg_names)
+                                is_sanitized = False
+                                for tc in ast.walk(arg0):
+                                    if isinstance(tc, ast.Call):
+                                        tcn = dotted_name(tc.func) or ""
+                                        if tcn in CWE3A_STORAGE_SANITIZERS or any(tcn.endswith(s) for s in ("encrypt", "hashpw", "mask_secret", "sha256", "redact")):
+                                            is_sanitized = True
+                                if is_sensitive and not is_sanitized:
+                                    for aname in arg_names:
+                                        recs = self.assignments_by_scope.get((scope_id, aname), [])
+                                        recs_b = [r for r in recs if r.lineno < lineno]
+                                        if recs_b and isinstance(recs_b[-1].value_node, ast.Call):
+                                            fn_name = dotted_name(recs_b[-1].value_node.func) or ""
+                                            if fn_name in CWE3A_STORAGE_SANITIZERS or any(fn_name.endswith(s) for s in ("encrypt", "hashpw", "mask_secret", "sha256", "redact")):
+                                                is_sanitized = True
+                                if is_sensitive and not is_sanitized:
+                                    cwe_meta = {"operation": "CLEARTEXT_SENSITIVE_STORAGE", "category": "CLEARTEXT_SENSITIVE_STORAGE", "cwe": "CWE-312"}
+
+                    elif name == "json.dump" and len(node.args) >= 1:
+                        dict_arg = node.args[0]
+                        has_sensitive_key = False
+                        if isinstance(dict_arg, ast.Dict):
+                            for k, v in zip(dict_arg.keys, dict_arg.values):
+                                if isinstance(k, ast.Constant) and isinstance(k.value, str):
+                                    if CWE3A_SENSITIVE_VALUE_RE.match(k.value):
+                                        has_sensitive_key = True
+                        if has_sensitive_key:
+                            cwe_meta = {"operation": "CLEARTEXT_SENSITIVE_STORAGE", "category": "CLEARTEXT_SENSITIVE_STORAGE", "cwe": "CWE-312"}
+
+                    elif name.endswith(".execute") or canon.endswith(".execute"):
+                        if node.args and isinstance(node.args[0], ast.Constant) and isinstance(node.args[0].value, str):
+                            sql_str = node.args[0].value.upper()
+                            if "INSERT INTO" in sql_str and "PASSWORD" in sql_str:
+                                if len(node.args) >= 2:
+                                    param_arg = node.args[1]
+                                    param_names = {n.id for n in ast.walk(param_arg) if isinstance(n, ast.Name)}
+                                    if any(CWE3A_PASSWORD_NAME_RE.match(p) and "hash" not in p.lower() for p in param_names):
+                                        cwe_meta = {"operation": "CLEARTEXT_SENSITIVE_STORAGE", "category": "CLEARTEXT_SENSITIVE_STORAGE", "cwe": "CWE-312"}
+
+                # ─── 2. Assignments ───
+                elif isinstance(node, (ast.Assign, ast.AnnAssign)):
+                    val_node = node.value
+                    val_const = _eval_static_constant(val_node, self.assignments_by_scope, scope_id, lineno)
+                    targets = node.targets if isinstance(node, ast.Assign) else [node.target]
+
+                    for target in targets:
+                        t_str = ""
+                        slice_str = ""
+                        if isinstance(target, ast.Name):
+                            t_str = target.id
+                        elif isinstance(target, ast.Attribute):
+                            t_str = dotted_name(target) or target.attr
+                        elif isinstance(target, ast.Subscript):
+                            if isinstance(target.slice, ast.Constant):
+                                slice_str = str(target.slice.value)
+
+                        # CWE-489: DEBUG = True or app.config["DEBUG"] = True or app.debug = True
+                        if val_const is True:
+                            if t_str in ("DEBUG", "DEBUG_MODE") or t_str.endswith(".debug") or slice_str == "DEBUG":
+                                cwe_meta = {"operation": "ACTIVE_DEBUG_CODE", "category": "ACTIVE_DEBUG_CODE", "cwe": "CWE-489"}
+                                break
+
+                        # CWE-352: CSRF_ENABLED = False or app.config["WTF_CSRF_ENABLED"] = False
+                        if val_const is False:
+                            if t_str == "CSRF_ENABLED" or slice_str == "WTF_CSRF_ENABLED":
+                                cwe_meta = {"operation": "CSRF_MISSING_PROTECTION", "category": "CSRF_MISSING_PROTECTION", "cwe": "CWE-352"}
+                                break
+
+                        # CWE-287: authenticated = True / AUTH_ENABLED = False
+                        if t_str == "authenticated" and val_const is True:
+                            cwe_meta = {"operation": "IMPROPER_AUTHENTICATION", "category": "IMPROPER_AUTHENTICATION", "cwe": "CWE-287"}
+                            break
+                        if t_str == "AUTH_ENABLED" and val_const is False:
+                            cwe_meta = {"operation": "IMPROPER_AUTHENTICATION", "category": "IMPROPER_AUTHENTICATION", "cwe": "CWE-287"}
+                            break
+
+                # ─── 3. Function Definitions (Decorators for CSRF & Auth) ───
+                elif isinstance(node, ast.FunctionDef):
+                    dec_names = set()
+                    has_route_post_or_put = False
+                    has_csrf_exempt_dec = False
+                    has_csrf_protect_dec = False
+
+                    for dec in node.decorator_list:
+                        d_name = dotted_name(dec.func if isinstance(dec, ast.Call) else dec) or ""
+                        dec_names.add(d_name)
+                        if d_name in ("csrf_exempt", "csrf.exempt"):
+                            has_csrf_exempt_dec = True
+                        if d_name in ("csrf_protect", "csrf.protect"):
+                            has_csrf_protect_dec = True
+                        if d_name in ("app.route", "route") and isinstance(dec, ast.Call):
+                            for kw in dec.keywords:
+                                if kw.arg == "methods":
+                                    m_vals = [n.value for n in ast.walk(kw.value) if isinstance(n, ast.Constant)]
+                                    if any(m in CWE3A_STATE_CHANGING_METHODS for m in m_vals):
+                                        has_route_post_or_put = True
+
+                    if has_csrf_exempt_dec:
+                        cwe_meta = {"operation": "CSRF_MISSING_PROTECTION", "category": "CSRF_MISSING_PROTECTION", "cwe": "CWE-352"}
+                    elif has_route_post_or_put and not has_csrf_protect_dec and not has_csrf_form_validation and not module_csrf_enabled:
+                        cwe_meta = {"operation": "CSRF_MISSING_PROTECTION", "category": "CSRF_MISSING_PROTECTION", "cwe": "CWE-352"}
+
+                # ─── 4. Comparison Expressions (Hardcoded Authentication) ───
+                elif isinstance(node, ast.Compare):
+                    left = node.left
+                    for op, right in zip(node.ops, node.comparators):
+                        if isinstance(op, (ast.Eq, ast.Is)):
+                            left_name = left.id if isinstance(left, ast.Name) else ""
+                            right_name = right.id if isinstance(right, ast.Name) else ""
+                            left_const = right.value if isinstance(right, ast.Constant) else None
+                            right_const = left.value if isinstance(left, ast.Constant) else None
+
+                            ident = left_name or right_name
+                            const_val = left_const if left_const is not None else right_const
+
+                            if ident and isinstance(const_val, str):
+                                if CWE3A_PASSWORD_NAME_RE.match(ident):
+                                    cwe_meta = {"operation": "IMPROPER_AUTHENTICATION", "category": "IMPROPER_AUTHENTICATION", "cwe": "CWE-287"}
+                                    break
+                                elif ident in ("user", "username") and const_val == "admin":
+                                    cwe_meta = {"operation": "IMPROPER_AUTHENTICATION", "category": "IMPROPER_AUTHENTICATION", "cwe": "CWE-287"}
+                                    break
+
+                            if isinstance(left, ast.Call) and isinstance(const_val, str) and const_val in ("1", "true"):
+                                call_name = dotted_name(left.func) or ""
+                                if "request" in call_name and any(isinstance(a, ast.Constant) and a.value == "auth" for a in left.args):
+                                    cwe_meta = {"operation": "IMPROPER_AUTHENTICATION", "category": "IMPROPER_AUTHENTICATION", "cwe": "CWE-287"}
+                                    break
+
+                # ─── 5. If Statement condition (DEBUG_MODE bypass) ───
+                elif isinstance(node, ast.If):
+                    if isinstance(node.test, ast.Name) and node.test.id == "DEBUG_MODE":
+                        for s in node.body:
+                            if isinstance(s, ast.Return) and isinstance(s.value, ast.Constant) and "granted" in str(s.value.value).lower():
+                                cwe_meta = {"operation": "IMPROPER_AUTHENTICATION", "category": "IMPROPER_AUTHENTICATION", "cwe": "CWE-287"}
+                                break
 
                 if cwe_meta:
                     dedupe_key = (cwe_meta["cwe"], getattr(node, "lineno", 0), getattr(node, "col_offset", 0))
@@ -5308,6 +5722,7 @@ class TaintTracker:
                 if isinstance(node, ast.Call) and self.is_source_call(node, f"{mod_name}:global"):
                     self.get_or_create_source(node, self.file_paths.get(mod_name, "unknown.py"), f"{mod_name}:global")
         self._collect_batch2_structural_findings()
+        self._collect_batch3a_structural_findings()
         for assign_stmt, scope_id, lineno in self.ssl_attr_assigns:
             mod_name = scope_id.split(":")[0]
             file_path = self.file_paths.get(mod_name, "unknown.py")

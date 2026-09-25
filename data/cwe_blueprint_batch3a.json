@@ -1,0 +1,213 @@
+{
+  "batch_version": "3a",
+  "note": "Phase 1 of Top 20 CWE expansion. Deterministic AST signatures for the Batch 3A visitor implementations (Phase 2). All predicates must be statically resolvable from the AST without execution.",
+  "cwes": {
+    "CWE-614": {
+      "name": "Sensitive Cookie Without Secure Flag",
+      "type": "PURE_STRUCTURAL_ARG",
+      "sinks": [
+        "response.set_cookie",
+        "set_cookie"
+      ],
+      "required_kws": {
+        "secure": true
+      },
+      "bad_predicate": "secure kwarg absent or statically False",
+      "safe_predicate": "secure kwarg statically True (including resolution through a kwargs dict: set_cookie(name, value, **opts) with opts['secure'] == True)",
+      "remediation": "Always set secure=True (and httponly=True) on session/auth cookies and serve all traffic over HTTPS."
+    },
+    "CWE-916": {
+      "name": "Use of Weak Password Hash",
+      "type": "PURE_STRUCTURAL_PASSWORD_HASH",
+      "sinks": [
+        "hashlib.md5",
+        "hashlib.sha1",
+        "hashlib.sha256",
+        "hashlib.sha512",
+        "hashlib.new"
+      ],
+      "password_context_regex": "(?i).*(password|passwd|pwd|secret|credential).*",
+      "bad_predicate": "fast hash applied to a value bound to a password-context name (including salted variants; salt does not cure insufficient computational effort)",
+      "safe_algorithms": [
+        "bcrypt.hashpw",
+        "argon2.PasswordHasher.hash",
+        "passlib.hash.pbkdf2_sha256.hash",
+        "passlib.hash.bcrypt.hash",
+        "hashlib.pbkdf2_hmac",
+        "django.contrib.auth.hashers.make_password"
+      ],
+      "context_exemption": "fast hashes on non-password-context values (checksums, integrity digests) are safe",
+      "remediation": "Use bcrypt, argon2, or PBKDF2 with high iteration counts for passwords. Fast hashes are acceptable only for non-secret integrity checksums."
+    },
+    "CWE-759": {
+      "name": "Use of One-Way Hash without a Salt",
+      "type": "PURE_STRUCTURAL_PASSWORD_HASH",
+      "sinks": [
+        "hashlib.md5",
+        "hashlib.sha1",
+        "hashlib.sha256",
+        "hashlib.sha512",
+        "hashlib.new"
+      ],
+      "password_context_regex": "(?i).*(password|passwd|pwd|secret|credential).*",
+      "bad_predicate": "password-context hash computed without any salt operand (binary + with salt, or salted KDF)",
+      "safe_mechanisms": [
+        "pbkdf2_hmac_with_random_salt",
+        "bcrypt.gensalt",
+        "argon2_internal_salt",
+        "secrets/os.urandom salt concatenation",
+        "make_password (PBKDF2 salted)"
+      ],
+      "context_exemption": "unsalted hashes on non-password-context values (integrity checksums) are safe",
+      "remediation": "Always salt password hashes with a unique per-user salt (bcrypt.gensalt(), os.urandom(16)/secrets.token_bytes(16), or PBKDF2 with a random salt)."
+    },
+    "CWE-434": {
+      "name": "Unrestricted File Upload",
+      "type": "TAINT_FLOW",
+      "sinks": [
+        "file.save",
+        "upload.save",
+        "shutil.copyfileobj",
+        "open"
+      ],
+      "taint_sources": [
+        "input",
+        "request.files",
+        "file.filename",
+        "upload.filename"
+      ],
+      "sanitizers": [
+        "secure_filename",
+        "sanitize_filename",
+        "uuid4_rename",
+        "basename_only"
+      ],
+      "guards": [
+        "ext_whitelist",
+        "allowed_extensions_containment"
+      ],
+      "bad_predicate": "user-controlled filename reaches save()/copy destination without sanitization or extension-whitelist containment",
+      "remediation": "Sanitize filenames with werkzeug secure_filename(), enforce an extension whitelist, rename with uuid4, and store uploads outside the web root."
+    },
+    "CWE-352": {
+      "name": "Cross-Site Request Forgery",
+      "type": "PURE_STRUCTURAL_DECORATOR",
+      "state_changing_methods": [
+        "POST",
+        "PUT",
+        "PATCH",
+        "DELETE"
+      ],
+      "bad_patterns": [
+        "@csrf_exempt on state-changing handler",
+        "csrf.exempt(...) call-form exemption",
+        "WTF_CSRF_ENABLED = False",
+        "CSRF_ENABLED = False",
+        "state-changing route without csrf_protect or token validation"
+      ],
+      "safe_patterns": [
+        "@csrf_protect",
+        "FlaskForm.validate_on_submit",
+        "WTF_CSRF_ENABLED = True",
+        "CSRF_ENABLED = True",
+        "GET-only routes"
+      ],
+      "remediation": "Enable framework CSRF protection globally and validate tokens in every state-changing handler."
+    },
+    "CWE-287": {
+      "name": "Improper Authentication (Hardcoded Bypass)",
+      "type": "PURE_STRUCTURAL_AUTH",
+      "bad_patterns": [
+        "hardcoded credential equality in auth branch (password == 'literal')",
+        "auth flag forced True (authenticated = True)",
+        "AUTH_ENABLED = False",
+        "debug-driven bypass (if DEBUG_MODE: authenticated = True)",
+        "username-only grant (if user == 'admin')",
+        "query-param bypass (request.args.get('auth') == '1')"
+      ],
+      "safe_patterns": [
+        "@login_required",
+        "bcrypt.checkpw",
+        "session presence check with abort(401)",
+        "AUTH_ENABLED = True",
+        "JWT signature verification",
+        "credential verification via auth backend (db.authenticate)"
+      ],
+      "remediation": "Enforce a single authentication path with verified credentials. Never gate auth on debug flags, hardcoded comparisons, or client-controlled parameters."
+    },
+    "CWE-862": {
+      "name": "Missing Authorization (Insecure Direct Object Reference)",
+      "type": "PURE_STRUCTURAL_IDOR",
+      "sinks": [
+        "get_object_or_404",
+        "Model.objects.get",
+        "Query.get",
+        "Query.filter_by",
+        "session.query"
+      ],
+      "bad_predicate": "object fetched by user-supplied id without an owner/user filter or authorization check in the same scope",
+      "safe_predicate": "owner=request.user filter present, or explicit ownership check (abort(403)) before access",
+      "remediation": "Always scope object lookups to the authenticated principal (owner=request.user) and verify authorization before returning data."
+    },
+    "CWE-312": {
+      "name": "Cleartext Storage of Sensitive Information",
+      "type": "TAINT_FLOW",
+      "sinks": [
+        "open_write",
+        "json.dump",
+        "file.write",
+        "sqlite_insert_with_sensitive_column"
+      ],
+      "sensitive_value_regex": "(?i).*(password|passwd|pwd|secret|api_key|access_token|credential).*",
+      "sanitizers": [
+        "Fernet.encrypt",
+        "bcrypt.hashpw",
+        "vault_write",
+        "mask_secret",
+        "redact",
+        "hash_of_token"
+      ],
+      "context_exemption": "persisting non-sensitive fields is safe; persisting one-way hashes of secrets is safe",
+      "remediation": "Encrypt secrets at rest (Fernet/KMS/vault) or store only salted hashes. Never persist plaintext credentials."
+    },
+    "CWE-319": {
+      "name": "Cleartext Transmission of Sensitive Information",
+      "type": "PURE_STRUCTURAL_TRANSPORT",
+      "sinks": [
+        "requests.get",
+        "requests.post",
+        "requests.put",
+        "urllib.request.urlopen",
+        "urlopen",
+        "httpx.get",
+        "httpx.post"
+      ],
+      "bad_predicate": "URL scheme statically resolves to http:// (literal constant or constant through simple variable propagation)",
+      "safe_predicate": "https:// scheme, or scheme validated at runtime (raise on non-https)",
+      "remediation": "Use HTTPS/TLS for all sensitive traffic and enforce scheme validation before transmitting credentials."
+    },
+    "CWE-489": {
+      "name": "Active Debug Code in Production",
+      "type": "PURE_STRUCTURAL_DEBUG",
+      "sinks": [
+        "app.run",
+        "Flask.run",
+        "uvicorn.run",
+        "werkzeug.serving.run_simple"
+      ],
+      "bad_patterns": [
+        "debug=True kwarg in run call",
+        "DEBUG = True module assignment",
+        "app.config['DEBUG'] = True",
+        "app.debug = True attribute assignment"
+      ],
+      "safe_patterns": [
+        "debug kwarg absent",
+        "DEBUG = False",
+        "app.config['DEBUG'] = False",
+        "debug flag sourced from environment with safe default"
+      ],
+      "remediation": "Disable debug mode in production. Source the flag from environment configuration with a safe default (off)."
+    }
+  }
+}

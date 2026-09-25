@@ -2366,6 +2366,968 @@ BENCHMARK_TEST_CASES: List[BenchmarkTestCase] = [
         expected_sinks=[],
         description='Safe: sanitize_nosql_input inline in dict literal'
     ),
+
+    # ─── Batch 3A (data/cwe_blueprint_batch3a.json) Multi-Variant Corpus (120 cases) ───
+    BenchmarkTestCase(
+        test_id='TCS-BENCH-CWE614-V01-BAD',
+        cwe='CWE-614',
+        file_path='benchmark/corpus/cwe_614_cookie_secure/test_v01_bad.py',
+        is_vulnerable=True,
+        expected_sinks=['response.set_cookie', 'set_cookie'],
+        description='Cookie set with httponly but missing secure flag'
+    ),
+    BenchmarkTestCase(
+        test_id='TCS-BENCH-CWE614-V01-GOOD',
+        cwe='CWE-614',
+        file_path='benchmark/corpus/cwe_614_cookie_secure/test_v01_good.py',
+        is_vulnerable=False,
+        expected_sinks=[],
+        description='Safe: secure=True with httponly=True'
+    ),
+    BenchmarkTestCase(
+        test_id='TCS-BENCH-CWE614-V02-BAD',
+        cwe='CWE-614',
+        file_path='benchmark/corpus/cwe_614_cookie_secure/test_v02_bad.py',
+        is_vulnerable=True,
+        expected_sinks=['response.set_cookie', 'set_cookie'],
+        description='secure=False explicitly disables transport protection'
+    ),
+    BenchmarkTestCase(
+        test_id='TCS-BENCH-CWE614-V02-GOOD',
+        cwe='CWE-614',
+        file_path='benchmark/corpus/cwe_614_cookie_secure/test_v02_good.py',
+        is_vulnerable=False,
+        expected_sinks=[],
+        description='Safe: both flags plus samesite=Lax'
+    ),
+    BenchmarkTestCase(
+        test_id='TCS-BENCH-CWE614-V03-BAD',
+        cwe='CWE-614',
+        file_path='benchmark/corpus/cwe_614_cookie_secure/test_v03_bad.py',
+        is_vulnerable=True,
+        expected_sinks=['response.set_cookie', 'set_cookie'],
+        description='Multi-hop: helper issues cookie without secure'
+    ),
+    BenchmarkTestCase(
+        test_id='TCS-BENCH-CWE614-V03-GOOD',
+        cwe='CWE-614',
+        file_path='benchmark/corpus/cwe_614_cookie_secure/test_v03_good.py',
+        is_vulnerable=False,
+        expected_sinks=[],
+        description='Safe: OOP cookie with secure and httponly'
+    ),
+    BenchmarkTestCase(
+        test_id='TCS-BENCH-CWE614-V04-BAD',
+        cwe='CWE-614',
+        file_path='benchmark/corpus/cwe_614_cookie_secure/test_v04_bad.py',
+        is_vulnerable=True,
+        expected_sinks=['response.set_cookie', 'set_cookie'],
+        description='OOP: self.response.set_cookie missing secure'
+    ),
+    BenchmarkTestCase(
+        test_id='TCS-BENCH-CWE614-V04-GOOD',
+        cwe='CWE-614',
+        file_path='benchmark/corpus/cwe_614_cookie_secure/test_v04_good.py',
+        is_vulnerable=False,
+        expected_sinks=[],
+        description='Safe: bare set_cookie with both flags'
+    ),
+    BenchmarkTestCase(
+        test_id='TCS-BENCH-CWE614-V05-BAD',
+        cwe='CWE-614',
+        file_path='benchmark/corpus/cwe_614_cookie_secure/test_v05_bad.py',
+        is_vulnerable=True,
+        expected_sinks=['response.set_cookie', 'set_cookie'],
+        description='Branch: non-prod arm drops secure flag'
+    ),
+    BenchmarkTestCase(
+        test_id='TCS-BENCH-CWE614-V05-GOOD',
+        cwe='CWE-614',
+        file_path='benchmark/corpus/cwe_614_cookie_secure/test_v05_good.py',
+        is_vulnerable=False,
+        expected_sinks=[],
+        description='Safe: both branches set secure and httponly'
+    ),
+    BenchmarkTestCase(
+        test_id='TCS-BENCH-CWE614-V06-BAD',
+        cwe='CWE-614',
+        file_path='benchmark/corpus/cwe_614_cookie_secure/test_v06_bad.py',
+        is_vulnerable=True,
+        expected_sinks=['response.set_cookie', 'set_cookie'],
+        description='Bare set_cookie without secure flag'
+    ),
+    BenchmarkTestCase(
+        test_id='TCS-BENCH-CWE614-V06-GOOD',
+        cwe='CWE-614',
+        file_path='benchmark/corpus/cwe_614_cookie_secure/test_v06_good.py',
+        is_vulnerable=False,
+        expected_sinks=[],
+        description='Safe: flags supplied via kwargs dict'
+    ),
+    BenchmarkTestCase(
+        test_id='TCS-BENCH-CWE916-V01-BAD',
+        cwe='CWE-916',
+        file_path='benchmark/corpus/cwe_916_weak_hash/test_v01_bad.py',
+        is_vulnerable=True,
+        expected_sinks=['hashlib.md5', 'hashlib.sha1', 'hashlib.sha256', 'hashlib.sha512'],
+        description='SHA-256 hash applied to password'
+    ),
+    BenchmarkTestCase(
+        test_id='TCS-BENCH-CWE916-V01-GOOD',
+        cwe='CWE-916',
+        file_path='benchmark/corpus/cwe_916_weak_hash/test_v01_good.py',
+        is_vulnerable=False,
+        expected_sinks=[],
+        description='Safe: bcrypt.hashpw with gensalt'
+    ),
+    BenchmarkTestCase(
+        test_id='TCS-BENCH-CWE916-V02-BAD',
+        cwe='CWE-916',
+        file_path='benchmark/corpus/cwe_916_weak_hash/test_v02_bad.py',
+        is_vulnerable=True,
+        expected_sinks=['hashlib.md5', 'hashlib.sha1', 'hashlib.sha256', 'hashlib.sha512'],
+        description='Multi-hop: hash_password helper uses sha256'
+    ),
+    BenchmarkTestCase(
+        test_id='TCS-BENCH-CWE916-V02-GOOD',
+        cwe='CWE-916',
+        file_path='benchmark/corpus/cwe_916_weak_hash/test_v02_good.py',
+        is_vulnerable=False,
+        expected_sinks=[],
+        description='Safe: argon2 PasswordHasher'
+    ),
+    BenchmarkTestCase(
+        test_id='TCS-BENCH-CWE916-V03-BAD',
+        cwe='CWE-916',
+        file_path='benchmark/corpus/cwe_916_weak_hash/test_v03_bad.py',
+        is_vulnerable=True,
+        expected_sinks=['hashlib.md5', 'hashlib.sha1', 'hashlib.sha256', 'hashlib.sha512'],
+        description='Weak hash stored in dict record'
+    ),
+    BenchmarkTestCase(
+        test_id='TCS-BENCH-CWE916-V03-GOOD',
+        cwe='CWE-916',
+        file_path='benchmark/corpus/cwe_916_weak_hash/test_v03_good.py',
+        is_vulnerable=False,
+        expected_sinks=[],
+        description='Safe: passlib pbkdf2_sha256'
+    ),
+    BenchmarkTestCase(
+        test_id='TCS-BENCH-CWE916-V04-BAD',
+        cwe='CWE-916',
+        file_path='benchmark/corpus/cwe_916_weak_hash/test_v04_bad.py',
+        is_vulnerable=True,
+        expected_sinks=['hashlib.md5', 'hashlib.sha1', 'hashlib.sha256', 'hashlib.sha512'],
+        description='OOP: sha256 password hash in __init__'
+    ),
+    BenchmarkTestCase(
+        test_id='TCS-BENCH-CWE916-V04-GOOD',
+        cwe='CWE-916',
+        file_path='benchmark/corpus/cwe_916_weak_hash/test_v04_good.py',
+        is_vulnerable=False,
+        expected_sinks=[],
+        description='Safe: hashlib.pbkdf2_hmac 200k iterations'
+    ),
+    BenchmarkTestCase(
+        test_id='TCS-BENCH-CWE916-V05-BAD',
+        cwe='CWE-916',
+        file_path='benchmark/corpus/cwe_916_weak_hash/test_v05_bad.py',
+        is_vulnerable=True,
+        expected_sinks=['hashlib.md5', 'hashlib.sha1', 'hashlib.sha256', 'hashlib.sha512'],
+        description='Branch: sha1/sha256 password hashes'
+    ),
+    BenchmarkTestCase(
+        test_id='TCS-BENCH-CWE916-V05-GOOD',
+        cwe='CWE-916',
+        file_path='benchmark/corpus/cwe_916_weak_hash/test_v05_good.py',
+        is_vulnerable=False,
+        expected_sinks=[],
+        description='Safe: sha256 integrity checksum on non-password data'
+    ),
+    BenchmarkTestCase(
+        test_id='TCS-BENCH-CWE916-V06-BAD',
+        cwe='CWE-916',
+        file_path='benchmark/corpus/cwe_916_weak_hash/test_v06_bad.py',
+        is_vulnerable=True,
+        expected_sinks=['hashlib.md5', 'hashlib.sha1', 'hashlib.sha256', 'hashlib.sha512'],
+        description='Salted but weak sha256 (static salt)'
+    ),
+    BenchmarkTestCase(
+        test_id='TCS-BENCH-CWE916-V06-GOOD',
+        cwe='CWE-916',
+        file_path='benchmark/corpus/cwe_916_weak_hash/test_v06_good.py',
+        is_vulnerable=False,
+        expected_sinks=[],
+        description='Safe: django make_password'
+    ),
+    BenchmarkTestCase(
+        test_id='TCS-BENCH-CWE759-V01-BAD',
+        cwe='CWE-759',
+        file_path='benchmark/corpus/cwe_759_unsalted_hash/test_v01_bad.py',
+        is_vulnerable=True,
+        expected_sinks=['hashlib.md5', 'hashlib.sha1', 'hashlib.sha256', 'hashlib.sha512'],
+        description='Unsalted sha256 password hash'
+    ),
+    BenchmarkTestCase(
+        test_id='TCS-BENCH-CWE759-V01-GOOD',
+        cwe='CWE-759',
+        file_path='benchmark/corpus/cwe_759_unsalted_hash/test_v01_good.py',
+        is_vulnerable=False,
+        expected_sinks=[],
+        description='Safe: PBKDF2 with os.urandom salt'
+    ),
+    BenchmarkTestCase(
+        test_id='TCS-BENCH-CWE759-V02-BAD',
+        cwe='CWE-759',
+        file_path='benchmark/corpus/cwe_759_unsalted_hash/test_v02_bad.py',
+        is_vulnerable=True,
+        expected_sinks=['hashlib.md5', 'hashlib.sha1', 'hashlib.sha256', 'hashlib.sha512'],
+        description='Unsalted sha1 password hash'
+    ),
+    BenchmarkTestCase(
+        test_id='TCS-BENCH-CWE759-V02-GOOD',
+        cwe='CWE-759',
+        file_path='benchmark/corpus/cwe_759_unsalted_hash/test_v02_good.py',
+        is_vulnerable=False,
+        expected_sinks=[],
+        description='Safe: bcrypt with gensalt'
+    ),
+    BenchmarkTestCase(
+        test_id='TCS-BENCH-CWE759-V03-BAD',
+        cwe='CWE-759',
+        file_path='benchmark/corpus/cwe_759_unsalted_hash/test_v03_bad.py',
+        is_vulnerable=True,
+        expected_sinks=['hashlib.md5', 'hashlib.sha1', 'hashlib.sha256', 'hashlib.sha512'],
+        description='Unsalted md5 hash stored in dict'
+    ),
+    BenchmarkTestCase(
+        test_id='TCS-BENCH-CWE759-V03-GOOD',
+        cwe='CWE-759',
+        file_path='benchmark/corpus/cwe_759_unsalted_hash/test_v03_good.py',
+        is_vulnerable=False,
+        expected_sinks=[],
+        description='Safe: argon2 internal salt'
+    ),
+    BenchmarkTestCase(
+        test_id='TCS-BENCH-CWE759-V04-BAD',
+        cwe='CWE-759',
+        file_path='benchmark/corpus/cwe_759_unsalted_hash/test_v04_bad.py',
+        is_vulnerable=True,
+        expected_sinks=['hashlib.md5', 'hashlib.sha1', 'hashlib.sha256', 'hashlib.sha512'],
+        description='OOP: unsalted sha256 in __init__'
+    ),
+    BenchmarkTestCase(
+        test_id='TCS-BENCH-CWE759-V04-GOOD',
+        cwe='CWE-759',
+        file_path='benchmark/corpus/cwe_759_unsalted_hash/test_v04_good.py',
+        is_vulnerable=False,
+        expected_sinks=[],
+        description='Safe: passlib pbkdf2_sha256 (salted)'
+    ),
+    BenchmarkTestCase(
+        test_id='TCS-BENCH-CWE759-V05-BAD',
+        cwe='CWE-759',
+        file_path='benchmark/corpus/cwe_759_unsalted_hash/test_v05_bad.py',
+        is_vulnerable=True,
+        expected_sinks=['hashlib.md5', 'hashlib.sha1', 'hashlib.sha256', 'hashlib.sha512'],
+        description='Branch: unsalted md5/sha256'
+    ),
+    BenchmarkTestCase(
+        test_id='TCS-BENCH-CWE759-V05-GOOD',
+        cwe='CWE-759',
+        file_path='benchmark/corpus/cwe_759_unsalted_hash/test_v05_good.py',
+        is_vulnerable=False,
+        expected_sinks=[],
+        description='Safe: django make_password (salted PBKDF2)'
+    ),
+    BenchmarkTestCase(
+        test_id='TCS-BENCH-CWE759-V06-BAD',
+        cwe='CWE-759',
+        file_path='benchmark/corpus/cwe_759_unsalted_hash/test_v06_bad.py',
+        is_vulnerable=True,
+        expected_sinks=['hashlib.md5', 'hashlib.sha1', 'hashlib.sha256', 'hashlib.sha512'],
+        description='Multi-hop: unsalted digest via helper'
+    ),
+    BenchmarkTestCase(
+        test_id='TCS-BENCH-CWE759-V06-GOOD',
+        cwe='CWE-759',
+        file_path='benchmark/corpus/cwe_759_unsalted_hash/test_v06_good.py',
+        is_vulnerable=False,
+        expected_sinks=[],
+        description='Safe: unsalted checksum on non-password data'
+    ),
+    BenchmarkTestCase(
+        test_id='TCS-BENCH-CWE434-V01-BAD',
+        cwe='CWE-434',
+        file_path='benchmark/corpus/cwe_434_upload/test_v01_bad.py',
+        is_vulnerable=True,
+        expected_sinks=['file.save'],
+        description='User filename saved directly'
+    ),
+    BenchmarkTestCase(
+        test_id='TCS-BENCH-CWE434-V01-GOOD',
+        cwe='CWE-434',
+        file_path='benchmark/corpus/cwe_434_upload/test_v01_good.py',
+        is_vulnerable=False,
+        expected_sinks=[],
+        description='Safe: secure_filename before save'
+    ),
+    BenchmarkTestCase(
+        test_id='TCS-BENCH-CWE434-V02-BAD',
+        cwe='CWE-434',
+        file_path='benchmark/corpus/cwe_434_upload/test_v02_bad.py',
+        is_vulnerable=True,
+        expected_sinks=['file.save'],
+        description='Multi-hop: dest() joins raw filename'
+    ),
+    BenchmarkTestCase(
+        test_id='TCS-BENCH-CWE434-V02-GOOD',
+        cwe='CWE-434',
+        file_path='benchmark/corpus/cwe_434_upload/test_v02_good.py',
+        is_vulnerable=False,
+        expected_sinks=[],
+        description='Safe: secure_filename on upload.filename'
+    ),
+    BenchmarkTestCase(
+        test_id='TCS-BENCH-CWE434-V03-BAD',
+        cwe='CWE-434',
+        file_path='benchmark/corpus/cwe_434_upload/test_v03_bad.py',
+        is_vulnerable=True,
+        expected_sinks=['file.save'],
+        description='Raw filename via dict container'
+    ),
+    BenchmarkTestCase(
+        test_id='TCS-BENCH-CWE434-V03-GOOD',
+        cwe='CWE-434',
+        file_path='benchmark/corpus/cwe_434_upload/test_v03_good.py',
+        is_vulnerable=False,
+        expected_sinks=[],
+        description='Safe: extension whitelist containment guard'
+    ),
+    BenchmarkTestCase(
+        test_id='TCS-BENCH-CWE434-V04-BAD',
+        cwe='CWE-434',
+        file_path='benchmark/corpus/cwe_434_upload/test_v04_bad.py',
+        is_vulnerable=True,
+        expected_sinks=['file.save'],
+        description='OOP: self.filename saved directly'
+    ),
+    BenchmarkTestCase(
+        test_id='TCS-BENCH-CWE434-V04-GOOD',
+        cwe='CWE-434',
+        file_path='benchmark/corpus/cwe_434_upload/test_v04_good.py',
+        is_vulnerable=False,
+        expected_sinks=[],
+        description='Safe: uuid4 rename with extension'
+    ),
+    BenchmarkTestCase(
+        test_id='TCS-BENCH-CWE434-V05-BAD',
+        cwe='CWE-434',
+        file_path='benchmark/corpus/cwe_434_upload/test_v05_bad.py',
+        is_vulnerable=True,
+        expected_sinks=['file.save'],
+        description='Branch: both arms save raw filename'
+    ),
+    BenchmarkTestCase(
+        test_id='TCS-BENCH-CWE434-V05-GOOD',
+        cwe='CWE-434',
+        file_path='benchmark/corpus/cwe_434_upload/test_v05_good.py',
+        is_vulnerable=False,
+        expected_sinks=[],
+        description='Safe: secure_filename with empty-name guard'
+    ),
+    BenchmarkTestCase(
+        test_id='TCS-BENCH-CWE434-V06-BAD',
+        cwe='CWE-434',
+        file_path='benchmark/corpus/cwe_434_upload/test_v06_bad.py',
+        is_vulnerable=True,
+        expected_sinks=['file.save'],
+        description='Concatenated path from raw filename'
+    ),
+    BenchmarkTestCase(
+        test_id='TCS-BENCH-CWE434-V06-GOOD',
+        cwe='CWE-434',
+        file_path='benchmark/corpus/cwe_434_upload/test_v06_good.py',
+        is_vulnerable=False,
+        expected_sinks=[],
+        description='Safe: secure_filename then join dest'
+    ),
+    BenchmarkTestCase(
+        test_id='TCS-BENCH-CWE352-V01-BAD',
+        cwe='CWE-352',
+        file_path='benchmark/corpus/cwe_352_csrf/test_v01_bad.py',
+        is_vulnerable=True,
+        expected_sinks=[],
+        description='csrf_exempt on POST transfer route'
+    ),
+    BenchmarkTestCase(
+        test_id='TCS-BENCH-CWE352-V01-GOOD',
+        cwe='CWE-352',
+        file_path='benchmark/corpus/cwe_352_csrf/test_v01_good.py',
+        is_vulnerable=False,
+        expected_sinks=[],
+        description='Safe: csrf_protect on POST route'
+    ),
+    BenchmarkTestCase(
+        test_id='TCS-BENCH-CWE352-V02-BAD',
+        cwe='CWE-352',
+        file_path='benchmark/corpus/cwe_352_csrf/test_v02_bad.py',
+        is_vulnerable=True,
+        expected_sinks=[],
+        description='WTF_CSRF_ENABLED = False'
+    ),
+    BenchmarkTestCase(
+        test_id='TCS-BENCH-CWE352-V02-GOOD',
+        cwe='CWE-352',
+        file_path='benchmark/corpus/cwe_352_csrf/test_v02_good.py',
+        is_vulnerable=False,
+        expected_sinks=[],
+        description='Safe: WTF_CSRF_ENABLED = True'
+    ),
+    BenchmarkTestCase(
+        test_id='TCS-BENCH-CWE352-V03-BAD',
+        cwe='CWE-352',
+        file_path='benchmark/corpus/cwe_352_csrf/test_v03_bad.py',
+        is_vulnerable=True,
+        expected_sinks=[],
+        description='PUT route without CSRF protection'
+    ),
+    BenchmarkTestCase(
+        test_id='TCS-BENCH-CWE352-V03-GOOD',
+        cwe='CWE-352',
+        file_path='benchmark/corpus/cwe_352_csrf/test_v03_good.py',
+        is_vulnerable=False,
+        expected_sinks=[],
+        description='Safe: FlaskForm.validate_on_submit'
+    ),
+    BenchmarkTestCase(
+        test_id='TCS-BENCH-CWE352-V04-BAD',
+        cwe='CWE-352',
+        file_path='benchmark/corpus/cwe_352_csrf/test_v04_bad.py',
+        is_vulnerable=True,
+        expected_sinks=[],
+        description='csrf.exempt decorator form'
+    ),
+    BenchmarkTestCase(
+        test_id='TCS-BENCH-CWE352-V04-GOOD',
+        cwe='CWE-352',
+        file_path='benchmark/corpus/cwe_352_csrf/test_v04_good.py',
+        is_vulnerable=False,
+        expected_sinks=[],
+        description='Safe: GET-only route (no state change)'
+    ),
+    BenchmarkTestCase(
+        test_id='TCS-BENCH-CWE352-V05-BAD',
+        cwe='CWE-352',
+        file_path='benchmark/corpus/cwe_352_csrf/test_v05_bad.py',
+        is_vulnerable=True,
+        expected_sinks=[],
+        description='CSRF_ENABLED = False config'
+    ),
+    BenchmarkTestCase(
+        test_id='TCS-BENCH-CWE352-V05-GOOD',
+        cwe='CWE-352',
+        file_path='benchmark/corpus/cwe_352_csrf/test_v05_good.py',
+        is_vulnerable=False,
+        expected_sinks=[],
+        description='Safe: CSRF_ENABLED = True'
+    ),
+    BenchmarkTestCase(
+        test_id='TCS-BENCH-CWE352-V06-BAD',
+        cwe='CWE-352',
+        file_path='benchmark/corpus/cwe_352_csrf/test_v06_bad.py',
+        is_vulnerable=True,
+        expected_sinks=[],
+        description='csrf.exempt() call form on handler'
+    ),
+    BenchmarkTestCase(
+        test_id='TCS-BENCH-CWE352-V06-GOOD',
+        cwe='CWE-352',
+        file_path='benchmark/corpus/cwe_352_csrf/test_v06_good.py',
+        is_vulnerable=False,
+        expected_sinks=[],
+        description='Safe: csrf_protect on PUT route'
+    ),
+    BenchmarkTestCase(
+        test_id='TCS-BENCH-CWE287-V01-BAD',
+        cwe='CWE-287',
+        file_path='benchmark/corpus/cwe_287_auth/test_v01_bad.py',
+        is_vulnerable=True,
+        expected_sinks=[],
+        description='Hardcoded password equality in auth branch'
+    ),
+    BenchmarkTestCase(
+        test_id='TCS-BENCH-CWE287-V01-GOOD',
+        cwe='CWE-287',
+        file_path='benchmark/corpus/cwe_287_auth/test_v01_good.py',
+        is_vulnerable=False,
+        expected_sinks=[],
+        description='Safe: @login_required decorator'
+    ),
+    BenchmarkTestCase(
+        test_id='TCS-BENCH-CWE287-V02-BAD',
+        cwe='CWE-287',
+        file_path='benchmark/corpus/cwe_287_auth/test_v02_bad.py',
+        is_vulnerable=True,
+        expected_sinks=[],
+        description='authenticated flag forced True'
+    ),
+    BenchmarkTestCase(
+        test_id='TCS-BENCH-CWE287-V02-GOOD',
+        cwe='CWE-287',
+        file_path='benchmark/corpus/cwe_287_auth/test_v02_good.py',
+        is_vulnerable=False,
+        expected_sinks=[],
+        description='Safe: bcrypt.checkpw verification'
+    ),
+    BenchmarkTestCase(
+        test_id='TCS-BENCH-CWE287-V03-BAD',
+        cwe='CWE-287',
+        file_path='benchmark/corpus/cwe_287_auth/test_v03_bad.py',
+        is_vulnerable=True,
+        expected_sinks=[],
+        description='AUTH_ENABLED = False bypasses verification'
+    ),
+    BenchmarkTestCase(
+        test_id='TCS-BENCH-CWE287-V03-GOOD',
+        cwe='CWE-287',
+        file_path='benchmark/corpus/cwe_287_auth/test_v03_good.py',
+        is_vulnerable=False,
+        expected_sinks=[],
+        description='Safe: session check with abort(401)'
+    ),
+    BenchmarkTestCase(
+        test_id='TCS-BENCH-CWE287-V04-BAD',
+        cwe='CWE-287',
+        file_path='benchmark/corpus/cwe_287_auth/test_v04_bad.py',
+        is_vulnerable=True,
+        expected_sinks=[],
+        description='DEBUG_MODE bypass grants access'
+    ),
+    BenchmarkTestCase(
+        test_id='TCS-BENCH-CWE287-V04-GOOD',
+        cwe='CWE-287',
+        file_path='benchmark/corpus/cwe_287_auth/test_v04_good.py',
+        is_vulnerable=False,
+        expected_sinks=[],
+        description='Safe: AUTH_ENABLED = True enforced'
+    ),
+    BenchmarkTestCase(
+        test_id='TCS-BENCH-CWE287-V05-BAD',
+        cwe='CWE-287',
+        file_path='benchmark/corpus/cwe_287_auth/test_v05_bad.py',
+        is_vulnerable=True,
+        expected_sinks=[],
+        description='Username-only admin grant without password'
+    ),
+    BenchmarkTestCase(
+        test_id='TCS-BENCH-CWE287-V05-GOOD',
+        cwe='CWE-287',
+        file_path='benchmark/corpus/cwe_287_auth/test_v05_good.py',
+        is_vulnerable=False,
+        expected_sinks=[],
+        description='Safe: JWT signature verification'
+    ),
+    BenchmarkTestCase(
+        test_id='TCS-BENCH-CWE287-V06-BAD',
+        cwe='CWE-287',
+        file_path='benchmark/corpus/cwe_287_auth/test_v06_bad.py',
+        is_vulnerable=True,
+        expected_sinks=[],
+        description='Query-param auth bypass'
+    ),
+    BenchmarkTestCase(
+        test_id='TCS-BENCH-CWE287-V06-GOOD',
+        cwe='CWE-287',
+        file_path='benchmark/corpus/cwe_287_auth/test_v06_good.py',
+        is_vulnerable=False,
+        expected_sinks=[],
+        description='Safe: auth backend credential check'
+    ),
+    BenchmarkTestCase(
+        test_id='TCS-BENCH-CWE862-V01-BAD',
+        cwe='CWE-862',
+        file_path='benchmark/corpus/cwe_862_idor/test_v01_bad.py',
+        is_vulnerable=True,
+        expected_sinks=['get_object_or_404', 'Model.objects.get', 'Query.get'],
+        description='get_object_or_404 by raw id, no owner'
+    ),
+    BenchmarkTestCase(
+        test_id='TCS-BENCH-CWE862-V01-GOOD',
+        cwe='CWE-862',
+        file_path='benchmark/corpus/cwe_862_idor/test_v01_good.py',
+        is_vulnerable=False,
+        expected_sinks=[],
+        description='Safe: owner=request.user filter'
+    ),
+    BenchmarkTestCase(
+        test_id='TCS-BENCH-CWE862-V02-BAD',
+        cwe='CWE-862',
+        file_path='benchmark/corpus/cwe_862_idor/test_v02_bad.py',
+        is_vulnerable=True,
+        expected_sinks=['get_object_or_404', 'Model.objects.get', 'Query.get'],
+        description='Document.objects.get(pk) without owner'
+    ),
+    BenchmarkTestCase(
+        test_id='TCS-BENCH-CWE862-V02-GOOD',
+        cwe='CWE-862',
+        file_path='benchmark/corpus/cwe_862_idor/test_v02_good.py',
+        is_vulnerable=False,
+        expected_sinks=[],
+        description='Safe: owner=user filter'
+    ),
+    BenchmarkTestCase(
+        test_id='TCS-BENCH-CWE862-V03-BAD',
+        cwe='CWE-862',
+        file_path='benchmark/corpus/cwe_862_idor/test_v03_bad.py',
+        is_vulnerable=True,
+        expected_sinks=['get_object_or_404', 'Model.objects.get', 'Query.get'],
+        description='filter_by(id) without user scoping'
+    ),
+    BenchmarkTestCase(
+        test_id='TCS-BENCH-CWE862-V03-GOOD',
+        cwe='CWE-862',
+        file_path='benchmark/corpus/cwe_862_idor/test_v03_good.py',
+        is_vulnerable=False,
+        expected_sinks=[],
+        description='Safe: ownership check with abort(403)'
+    ),
+    BenchmarkTestCase(
+        test_id='TCS-BENCH-CWE862-V04-BAD',
+        cwe='CWE-862',
+        file_path='benchmark/corpus/cwe_862_idor/test_v04_bad.py',
+        is_vulnerable=True,
+        expected_sinks=['get_object_or_404', 'Model.objects.get', 'Query.get'],
+        description='OOP: self.doc_id lookup without owner'
+    ),
+    BenchmarkTestCase(
+        test_id='TCS-BENCH-CWE862-V04-GOOD',
+        cwe='CWE-862',
+        file_path='benchmark/corpus/cwe_862_idor/test_v04_good.py',
+        is_vulnerable=False,
+        expected_sinks=[],
+        description='Safe: user_id filter in query'
+    ),
+    BenchmarkTestCase(
+        test_id='TCS-BENCH-CWE862-V05-BAD',
+        cwe='CWE-862',
+        file_path='benchmark/corpus/cwe_862_idor/test_v05_bad.py',
+        is_vulnerable=True,
+        expected_sinks=['get_object_or_404', 'Model.objects.get', 'Query.get'],
+        description='Branch: two unscoped order lookups'
+    ),
+    BenchmarkTestCase(
+        test_id='TCS-BENCH-CWE862-V05-GOOD',
+        cwe='CWE-862',
+        file_path='benchmark/corpus/cwe_862_idor/test_v05_good.py',
+        is_vulnerable=False,
+        expected_sinks=[],
+        description='Safe: OOP owner-scoped lookup'
+    ),
+    BenchmarkTestCase(
+        test_id='TCS-BENCH-CWE862-V06-BAD',
+        cwe='CWE-862',
+        file_path='benchmark/corpus/cwe_862_idor/test_v06_bad.py',
+        is_vulnerable=True,
+        expected_sinks=['get_object_or_404', 'Model.objects.get', 'Query.get'],
+        description='Order.query.get unscoped'
+    ),
+    BenchmarkTestCase(
+        test_id='TCS-BENCH-CWE862-V06-GOOD',
+        cwe='CWE-862',
+        file_path='benchmark/corpus/cwe_862_idor/test_v06_good.py',
+        is_vulnerable=False,
+        expected_sinks=[],
+        description='Safe: current_user.id scoping'
+    ),
+    BenchmarkTestCase(
+        test_id='TCS-BENCH-CWE312-V01-BAD',
+        cwe='CWE-312',
+        file_path='benchmark/corpus/cwe_312_cleartext_store/test_v01_bad.py',
+        is_vulnerable=True,
+        expected_sinks=['open_write', 'json.dump', 'file.write'],
+        description='Plaintext password written to file'
+    ),
+    BenchmarkTestCase(
+        test_id='TCS-BENCH-CWE312-V01-GOOD',
+        cwe='CWE-312',
+        file_path='benchmark/corpus/cwe_312_cleartext_store/test_v01_good.py',
+        is_vulnerable=False,
+        expected_sinks=[],
+        description='Safe: Fernet encryption before write'
+    ),
+    BenchmarkTestCase(
+        test_id='TCS-BENCH-CWE312-V02-BAD',
+        cwe='CWE-312',
+        file_path='benchmark/corpus/cwe_312_cleartext_store/test_v02_bad.py',
+        is_vulnerable=True,
+        expected_sinks=['open_write', 'json.dump', 'file.write'],
+        description='json.dump of plaintext password'
+    ),
+    BenchmarkTestCase(
+        test_id='TCS-BENCH-CWE312-V02-GOOD',
+        cwe='CWE-312',
+        file_path='benchmark/corpus/cwe_312_cleartext_store/test_v02_good.py',
+        is_vulnerable=False,
+        expected_sinks=[],
+        description='Safe: bcrypt hash before DB insert'
+    ),
+    BenchmarkTestCase(
+        test_id='TCS-BENCH-CWE312-V03-BAD',
+        cwe='CWE-312',
+        file_path='benchmark/corpus/cwe_312_cleartext_store/test_v03_bad.py',
+        is_vulnerable=True,
+        expected_sinks=['open_write', 'json.dump', 'file.write'],
+        description='Plaintext password INSERT into DB'
+    ),
+    BenchmarkTestCase(
+        test_id='TCS-BENCH-CWE312-V03-GOOD',
+        cwe='CWE-312',
+        file_path='benchmark/corpus/cwe_312_cleartext_store/test_v03_good.py',
+        is_vulnerable=False,
+        expected_sinks=[],
+        description='Safe: vault write for secret'
+    ),
+    BenchmarkTestCase(
+        test_id='TCS-BENCH-CWE312-V04-BAD',
+        cwe='CWE-312',
+        file_path='benchmark/corpus/cwe_312_cleartext_store/test_v04_bad.py',
+        is_vulnerable=True,
+        expected_sinks=['open_write', 'json.dump', 'file.write'],
+        description='Plaintext api_key written to file'
+    ),
+    BenchmarkTestCase(
+        test_id='TCS-BENCH-CWE312-V04-GOOD',
+        cwe='CWE-312',
+        file_path='benchmark/corpus/cwe_312_cleartext_store/test_v04_good.py',
+        is_vulnerable=False,
+        expected_sinks=[],
+        description='Safe: mask_secret before write'
+    ),
+    BenchmarkTestCase(
+        test_id='TCS-BENCH-CWE312-V05-BAD',
+        cwe='CWE-312',
+        file_path='benchmark/corpus/cwe_312_cleartext_store/test_v05_bad.py',
+        is_vulnerable=True,
+        expected_sinks=['open_write', 'json.dump', 'file.write'],
+        description='Access token appended to plaintext file'
+    ),
+    BenchmarkTestCase(
+        test_id='TCS-BENCH-CWE312-V05-GOOD',
+        cwe='CWE-312',
+        file_path='benchmark/corpus/cwe_312_cleartext_store/test_v05_good.py',
+        is_vulnerable=False,
+        expected_sinks=[],
+        description='Safe: hash of token stored instead'
+    ),
+    BenchmarkTestCase(
+        test_id='TCS-BENCH-CWE312-V06-BAD',
+        cwe='CWE-312',
+        file_path='benchmark/corpus/cwe_312_cleartext_store/test_v06_bad.py',
+        is_vulnerable=True,
+        expected_sinks=['open_write', 'json.dump', 'file.write'],
+        description='Secret key written to plaintext file'
+    ),
+    BenchmarkTestCase(
+        test_id='TCS-BENCH-CWE312-V06-GOOD',
+        cwe='CWE-312',
+        file_path='benchmark/corpus/cwe_312_cleartext_store/test_v06_good.py',
+        is_vulnerable=False,
+        expected_sinks=[],
+        description='Safe: non-sensitive fields persisted'
+    ),
+    BenchmarkTestCase(
+        test_id='TCS-BENCH-CWE319-V01-BAD',
+        cwe='CWE-319',
+        file_path='benchmark/corpus/cwe_319_cleartext_transmit/test_v01_bad.py',
+        is_vulnerable=True,
+        expected_sinks=['requests.get', 'requests.post', 'urllib.request.urlopen', 'urlopen', 'httpx.get', 'httpx.post'],
+        description='http:// login POST with credentials'
+    ),
+    BenchmarkTestCase(
+        test_id='TCS-BENCH-CWE319-V01-GOOD',
+        cwe='CWE-319',
+        file_path='benchmark/corpus/cwe_319_cleartext_transmit/test_v01_good.py',
+        is_vulnerable=False,
+        expected_sinks=[],
+        description='Safe: https:// login POST'
+    ),
+    BenchmarkTestCase(
+        test_id='TCS-BENCH-CWE319-V02-BAD',
+        cwe='CWE-319',
+        file_path='benchmark/corpus/cwe_319_cleartext_transmit/test_v02_bad.py',
+        is_vulnerable=True,
+        expected_sinks=['requests.get', 'requests.post', 'urllib.request.urlopen', 'urlopen', 'httpx.get', 'httpx.post'],
+        description='urlopen on http:// URL'
+    ),
+    BenchmarkTestCase(
+        test_id='TCS-BENCH-CWE319-V02-GOOD',
+        cwe='CWE-319',
+        file_path='benchmark/corpus/cwe_319_cleartext_transmit/test_v02_good.py',
+        is_vulnerable=False,
+        expected_sinks=[],
+        description='Safe: urlopen on https://'
+    ),
+    BenchmarkTestCase(
+        test_id='TCS-BENCH-CWE319-V03-BAD',
+        cwe='CWE-319',
+        file_path='benchmark/corpus/cwe_319_cleartext_transmit/test_v03_bad.py',
+        is_vulnerable=True,
+        expected_sinks=['requests.get', 'requests.post', 'urllib.request.urlopen', 'urlopen', 'httpx.get', 'httpx.post'],
+        description='Multi-hop: http URL via variable'
+    ),
+    BenchmarkTestCase(
+        test_id='TCS-BENCH-CWE319-V03-GOOD',
+        cwe='CWE-319',
+        file_path='benchmark/corpus/cwe_319_cleartext_transmit/test_v03_good.py',
+        is_vulnerable=False,
+        expected_sinks=[],
+        description='Safe: runtime scheme validation'
+    ),
+    BenchmarkTestCase(
+        test_id='TCS-BENCH-CWE319-V04-BAD',
+        cwe='CWE-319',
+        file_path='benchmark/corpus/cwe_319_cleartext_transmit/test_v04_bad.py',
+        is_vulnerable=True,
+        expected_sinks=['requests.get', 'requests.post', 'urllib.request.urlopen', 'urlopen', 'httpx.get', 'httpx.post'],
+        description='Branch: two http:// endpoints'
+    ),
+    BenchmarkTestCase(
+        test_id='TCS-BENCH-CWE319-V04-GOOD',
+        cwe='CWE-319',
+        file_path='benchmark/corpus/cwe_319_cleartext_transmit/test_v04_good.py',
+        is_vulnerable=False,
+        expected_sinks=[],
+        description='Safe: https:// constant URL'
+    ),
+    BenchmarkTestCase(
+        test_id='TCS-BENCH-CWE319-V05-BAD',
+        cwe='CWE-319',
+        file_path='benchmark/corpus/cwe_319_cleartext_transmit/test_v05_bad.py',
+        is_vulnerable=True,
+        expected_sinks=['requests.get', 'requests.post', 'urllib.request.urlopen', 'urlopen', 'httpx.get', 'httpx.post'],
+        description='http:// auth POST with creds data'
+    ),
+    BenchmarkTestCase(
+        test_id='TCS-BENCH-CWE319-V05-GOOD',
+        cwe='CWE-319',
+        file_path='benchmark/corpus/cwe_319_cleartext_transmit/test_v05_good.py',
+        is_vulnerable=False,
+        expected_sinks=[],
+        description='Safe: https endpoints in both branches'
+    ),
+    BenchmarkTestCase(
+        test_id='TCS-BENCH-CWE319-V06-BAD',
+        cwe='CWE-319',
+        file_path='benchmark/corpus/cwe_319_cleartext_transmit/test_v06_bad.py',
+        is_vulnerable=True,
+        expected_sinks=['requests.get', 'requests.post', 'urllib.request.urlopen', 'urlopen', 'httpx.get', 'httpx.post'],
+        description='httpx.post over http://'
+    ),
+    BenchmarkTestCase(
+        test_id='TCS-BENCH-CWE319-V06-GOOD',
+        cwe='CWE-319',
+        file_path='benchmark/corpus/cwe_319_cleartext_transmit/test_v06_good.py',
+        is_vulnerable=False,
+        expected_sinks=[],
+        description='Safe: httpx.post over https://'
+    ),
+    BenchmarkTestCase(
+        test_id='TCS-BENCH-CWE489-V01-BAD',
+        cwe='CWE-489',
+        file_path='benchmark/corpus/cwe_489_debug/test_v01_bad.py',
+        is_vulnerable=True,
+        expected_sinks=['app.run', 'Flask.run', 'uvicorn.run'],
+        description='app.run(debug=True)'
+    ),
+    BenchmarkTestCase(
+        test_id='TCS-BENCH-CWE489-V01-GOOD',
+        cwe='CWE-489',
+        file_path='benchmark/corpus/cwe_489_debug/test_v01_good.py',
+        is_vulnerable=False,
+        expected_sinks=[],
+        description='Safe: app.run() without debug'
+    ),
+    BenchmarkTestCase(
+        test_id='TCS-BENCH-CWE489-V02-BAD',
+        cwe='CWE-489',
+        file_path='benchmark/corpus/cwe_489_debug/test_v02_bad.py',
+        is_vulnerable=True,
+        expected_sinks=['app.run', 'Flask.run', 'uvicorn.run'],
+        description='DEBUG = True module config'
+    ),
+    BenchmarkTestCase(
+        test_id='TCS-BENCH-CWE489-V02-GOOD',
+        cwe='CWE-489',
+        file_path='benchmark/corpus/cwe_489_debug/test_v02_good.py',
+        is_vulnerable=False,
+        expected_sinks=[],
+        description='Safe: DEBUG = False'
+    ),
+    BenchmarkTestCase(
+        test_id='TCS-BENCH-CWE489-V03-BAD',
+        cwe='CWE-489',
+        file_path='benchmark/corpus/cwe_489_debug/test_v03_bad.py',
+        is_vulnerable=True,
+        expected_sinks=['app.run', 'Flask.run', 'uvicorn.run'],
+        description='app.config DEBUG = True'
+    ),
+    BenchmarkTestCase(
+        test_id='TCS-BENCH-CWE489-V03-GOOD',
+        cwe='CWE-489',
+        file_path='benchmark/corpus/cwe_489_debug/test_v03_good.py',
+        is_vulnerable=False,
+        expected_sinks=[],
+        description='Safe: env-driven debug flag'
+    ),
+    BenchmarkTestCase(
+        test_id='TCS-BENCH-CWE489-V04-BAD',
+        cwe='CWE-489',
+        file_path='benchmark/corpus/cwe_489_debug/test_v04_bad.py',
+        is_vulnerable=True,
+        expected_sinks=['app.run', 'Flask.run', 'uvicorn.run'],
+        description='uvicorn.run debug=True'
+    ),
+    BenchmarkTestCase(
+        test_id='TCS-BENCH-CWE489-V04-GOOD',
+        cwe='CWE-489',
+        file_path='benchmark/corpus/cwe_489_debug/test_v04_good.py',
+        is_vulnerable=False,
+        expected_sinks=[],
+        description='Safe: run kwargs without debug'
+    ),
+    BenchmarkTestCase(
+        test_id='TCS-BENCH-CWE489-V05-BAD',
+        cwe='CWE-489',
+        file_path='benchmark/corpus/cwe_489_debug/test_v05_bad.py',
+        is_vulnerable=True,
+        expected_sinks=['app.run', 'Flask.run', 'uvicorn.run'],
+        description='app.run kwargs with debug=True'
+    ),
+    BenchmarkTestCase(
+        test_id='TCS-BENCH-CWE489-V05-GOOD',
+        cwe='CWE-489',
+        file_path='benchmark/corpus/cwe_489_debug/test_v05_good.py',
+        is_vulnerable=False,
+        expected_sinks=[],
+        description='Safe: uvicorn.run without debug'
+    ),
+    BenchmarkTestCase(
+        test_id='TCS-BENCH-CWE489-V06-BAD',
+        cwe='CWE-489',
+        file_path='benchmark/corpus/cwe_489_debug/test_v06_bad.py',
+        is_vulnerable=True,
+        expected_sinks=['app.run', 'Flask.run', 'uvicorn.run'],
+        description='app.debug = True attribute'
+    ),
+    BenchmarkTestCase(
+        test_id='TCS-BENCH-CWE489-V06-GOOD',
+        cwe='CWE-489',
+        file_path='benchmark/corpus/cwe_489_debug/test_v06_good.py',
+        is_vulnerable=False,
+        expected_sinks=[],
+        description='Safe: app.config DEBUG = False'
+    ),
 ]
 
 
