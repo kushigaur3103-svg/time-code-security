@@ -582,6 +582,12 @@ SINK_REGISTRY = {
     "flask.render_template_string": {"operation": "TEMPLATE_EVALUATION", "category": "SSTI", "cwe": "CWE-1336"},
     "jinja2.Template": {"operation": "TEMPLATE_EVALUATION", "category": "SSTI", "cwe": "CWE-1336"},
 
+    # CWE-79: Cross-Site Scripting (XSS)
+    "markupsafe.Markup": {"operation": "XSS_HTML_RESPONSE", "category": "CROSS_SITE_SCRIPTING", "cwe": "CWE-79"},
+    "Markup": {"operation": "XSS_HTML_RESPONSE", "category": "CROSS_SITE_SCRIPTING", "cwe": "CWE-79"},
+    "django.utils.safestring.mark_safe": {"operation": "XSS_HTML_RESPONSE", "category": "CROSS_SITE_SCRIPTING", "cwe": "CWE-79"},
+    "mark_safe": {"operation": "XSS_HTML_RESPONSE", "category": "CROSS_SITE_SCRIPTING", "cwe": "CWE-79"},
+
     # CWE-89: SQL Injection
     "raw": {"operation": "SQL_EXECUTION", "category": "SQL_INJECTION", "cwe": "CWE-89"},
     "extra": {"operation": "SQL_EXECUTION", "category": "SQL_INJECTION", "cwe": "CWE-89"},
@@ -740,6 +746,8 @@ class TaintTracker:
         self.containment_guards: list[dict] = []
         self.list_mutations: dict[tuple[str, str], list[tuple[int, ast.AST]]] = {}
         self.instance_field_writes: dict[tuple[str, str], list[tuple[int, ast.AST, str]]] = {}
+        # CWE-295: obj.verify = False attribute assignments (not keyword args)
+        self.ssl_attr_assigns: list[tuple[ast.Assign, str, int]] = []
         self._source_counter = 0
         self._sink_counter = 0
 
@@ -1256,10 +1264,62 @@ class TaintTracker:
 
         return False
 
-    def _has_disabled_ssl(self, node: ast.Call) -> bool:
+    def _has_disabled_ssl(self, node: ast.Call, scope_id: str = "") -> bool:
         for kw in getattr(node, "keywords", []):
-            if kw.arg == "verify" and isinstance(kw.value, ast.Constant) and kw.value.value is False:
-                return True
+            if kw.arg == "verify":
+                if isinstance(kw.value, ast.Constant) and kw.value.value is False:
+                    return True
+                if isinstance(kw.value, ast.Name):
+                    curr_scope = scope_id
+                    while curr_scope:
+                        recs = self.assignments_by_scope.get((curr_scope, kw.value.id), [])
+                        for r in recs:
+                            if isinstance(r.value_node, ast.Constant) and r.value_node.value is False:
+                                return True
+                        if "." in curr_scope:
+                            curr_scope = curr_scope.rsplit(".", 1)[0]
+                        else:
+                            break
+                if isinstance(kw.value, ast.Attribute):
+                    attr_name = kw.value.attr
+                    for (sc, target_attr), recs in self.class_field_assignments.items():
+                        if target_attr == attr_name:
+                            for r in recs:
+                                if isinstance(r.value_node, ast.Constant) and r.value_node.value is False:
+                                    return True
+                    curr_scope = scope_id
+                    while curr_scope:
+                        recs = self.assignments_by_scope.get((curr_scope, attr_name), [])
+                        for r in recs:
+                            if isinstance(r.value_node, ast.Constant) and r.value_node.value is False:
+                                return True
+                        if "." in curr_scope:
+                            curr_scope = curr_scope.rsplit(".", 1)[0]
+                        else:
+                            break
+            if kw.arg is None:
+                # Keyword unpacking: requests.get(url, **options)
+                if isinstance(kw.value, ast.Dict):
+                    for k, v in zip(kw.value.keys, kw.value.values):
+                        if isinstance(k, (ast.Constant, ast.Str)):
+                            k_str = k.value if isinstance(k, ast.Constant) else k.s
+                            if k_str == "verify" and isinstance(v, ast.Constant) and v.value is False:
+                                return True
+                elif isinstance(kw.value, ast.Name):
+                    curr_scope = scope_id
+                    while curr_scope:
+                        recs = self.assignments_by_scope.get((curr_scope, kw.value.id), [])
+                        for r in recs:
+                            if isinstance(r.value_node, ast.Dict):
+                                for k, v in zip(r.value_node.keys, r.value_node.values):
+                                    if isinstance(k, (ast.Constant, ast.Str)):
+                                        k_str = k.value if isinstance(k, ast.Constant) else k.s
+                                        if k_str == "verify" and isinstance(v, ast.Constant) and v.value is False:
+                                            return True
+                        if "." in curr_scope:
+                            curr_scope = curr_scope.rsplit(".", 1)[0]
+                        else:
+                            break
             if kw.arg == "cert_reqs" and isinstance(kw.value, ast.Constant) and str(kw.value.value).upper() in ("CERT_NONE", "NONE"):
                 return True
         return False
@@ -1293,6 +1353,15 @@ class TaintTracker:
                 if isinstance(curr.target, ast.Attribute) and is_security_identifier(curr.target.attr):
                     return True
                 break
+            elif isinstance(curr, ast.Dict):
+                # CWE-338: random.* used as a VALUE in a dict literal whose KEY is a
+                # security-sensitive identifier, e.g. {"auth_secret": random.random()}
+                for k, v in zip(curr.keys, curr.values):
+                    if v is node or any(sub is node for sub in ast.walk(v)):
+                        if isinstance(k, (ast.Constant, ast.Str)):
+                            key_str = k.value if isinstance(k, ast.Constant) else k.s
+                            if isinstance(key_str, str) and is_security_identifier(key_str):
+                                return True
             elif isinstance(curr, ast.Call) and curr is not node:
                 func_name = (dotted_name(curr.func) or "").lower()
                 func_tokens = tokenize_identifier(func_name)
@@ -1417,6 +1486,68 @@ class TaintTracker:
                     return True
         return False
 
+    # CWE-22 sanitizers that break the taint chain when wrapping a path expression.
+    _CWE22_SANITIZER_NAMES = frozenset({
+        "secure_filename", "werkzeug.utils.secure_filename",
+        "os.path.basename", "posixpath.basename", "ntpath.basename", "basename",
+    })
+
+    def _dict_value_has_cwe22_sanitizer(self, value_node: ast.AST) -> bool:
+        """Return True if *value_node* contains a call to a recognized CWE-22 path sanitizer."""
+        if value_node is None:
+            return False
+        for sub in ast.walk(value_node):
+            if isinstance(sub, ast.Call):
+                fn = dotted_name(sub.func) or ""
+                if fn in self._CWE22_SANITIZER_NAMES or fn.split(".")[-1] in self._CWE22_SANITIZER_NAMES:
+                    return True
+        return False
+
+    def _is_html_construction_expr(self, expr: Optional[ast.AST], scope_id: str = "") -> bool:
+        """Return True if *expr* constructs an HTML fragment (e.g. f'<h1>{name}</h1>')."""
+        if expr is None:
+            return False
+        html_tags_re = re.compile(
+            r'<\s*/?\s*(?:html|body|head|div|span|h[1-6]|p|table|tr|td|th|ul|ol|li|a|b|i|strong|em|script|iframe|img|form|input|button|header|footer|nav|section|article)\b',
+            re.IGNORECASE
+        )
+        if isinstance(expr, ast.JoinedStr):
+            const_strs = []
+            for part in expr.values:
+                if isinstance(part, (ast.Constant, ast.Str)):
+                    val = part.value if isinstance(part, ast.Constant) else part.s
+                    if isinstance(val, str):
+                        const_strs.append(val)
+                        if html_tags_re.search(val):
+                            return True
+            combined_consts = "".join(const_strs)
+            if ("<" in combined_consts and ">" in combined_consts) or ("</" in combined_consts):
+                if any(isinstance(p, ast.FormattedValue) for p in expr.values):
+                    return True
+        elif isinstance(expr, ast.BinOp) and isinstance(expr.op, ast.Mod):
+            if isinstance(expr.left, (ast.Constant, ast.Str)):
+                val = expr.left.value if isinstance(expr.left, ast.Constant) else expr.left.s
+                if isinstance(val, str) and (html_tags_re.search(val) or ("<" in val and ">" in val)):
+                    return True
+        elif isinstance(expr, ast.Call):
+            if isinstance(expr.func, ast.Attribute) and expr.func.attr == "format":
+                if isinstance(expr.func.value, (ast.Constant, ast.Str)):
+                    val = expr.func.value.value if isinstance(expr.func.value, ast.Constant) else expr.func.value.s
+                    if isinstance(val, str) and (html_tags_re.search(val) or ("<" in val and ">" in val)):
+                        return True
+        elif isinstance(expr, ast.Name) and scope_id:
+            curr = scope_id
+            while curr:
+                recs = self.assignments_by_scope.get((curr, expr.id), [])
+                for r in recs:
+                    if self._is_html_construction_expr(r.value_node, curr):
+                        return True
+                if "." in curr:
+                    curr = curr.rsplit(".", 1)[0]
+                else:
+                    break
+        return False
+
     def _is_untrusted_stream(self, receiver: ast.AST, scope_id: str, lineno: int, recv_taint: Optional[TaintValue] = None) -> bool:
         # 1. Receiver is tracked as tainted
         if recv_taint and recv_taint.state == TaintState.TAINTED:
@@ -1499,7 +1630,7 @@ class TaintTracker:
             return False
 
         # Check for CWE-295 (Disabled SSL verification in HTTP / socket calls)
-        if self._has_disabled_ssl(node):
+        if self._has_disabled_ssl(node, scope_id):
             return True
 
         # Check for hashlib.new(...) with weak algorithm (CWE-327)
@@ -1609,7 +1740,7 @@ class TaintTracker:
             else:
                 meta = {}
                 # 1. Check for CWE-295: disabled SSL/TLS verification
-                if self._has_disabled_ssl(node):
+                if self._has_disabled_ssl(node, scope_id):
                     meta = {"operation": "DISABLED_SSL_VERIFICATION", "category": "INSECURE_TRANSPORT", "cwe": "CWE-295"}
                 # 2. Check for hashlib.new(...) with weak algorithm (CWE-327)
                 elif (hashlib_algo := self._get_hashlib_new_algo(node, scope_id)) in ("md5", "sha1", "des"):
@@ -1697,12 +1828,30 @@ class TaintTracker:
         pairs = []
         if isinstance(test_node, ast.Compare):
             for op, comp in zip(test_node.ops, test_node.comparators):
-                if isinstance(op, ast.In):
+                if isinstance(op, (ast.In, ast.NotIn)):
                     target_name = self._extract_target_from_parents_attr(comp)
                     if target_name:
                         pairs.append((target_name, test_node.left))
                     elif isinstance(test_node.left, ast.Name):
                         pairs.append((test_node.left.id, comp))
+                    elif isinstance(test_node.left, ast.Attribute):
+                        dname = dotted_name(test_node.left)
+                        if dname:
+                            pairs.append((dname, comp))
+                        if isinstance(test_node.left.value, ast.Call):
+                            call_node = test_node.left.value
+                            if call_node.args and isinstance(call_node.args[0], ast.Name):
+                                pairs.append((call_node.args[0].id, comp))
+                            elif call_node.args and isinstance(call_node.args[0], ast.Attribute):
+                                d_arg = dotted_name(call_node.args[0])
+                                if d_arg:
+                                    pairs.append((d_arg, comp))
+                    elif isinstance(test_node.left, ast.Subscript):
+                        key = self._extract_subscript_key(test_node.left.slice, "")
+                        if isinstance(test_node.left.value, ast.Name):
+                            comp_key = f"{test_node.left.value.id}[{key}]" if key is not None else test_node.left.value.id
+                            pairs.append((comp_key, comp))
+                            pairs.append((test_node.left.value.id, comp))
         elif isinstance(test_node, ast.UnaryOp) and isinstance(test_node.op, ast.Not):
             # Inverted containment check (e.g., `if not target.is_relative_to(base):`)
             return self._extract_containment_pairs(test_node.operand)
@@ -2087,6 +2236,13 @@ class TaintTracker:
                 self.scan_for_sinks(stmt.value, scope_id, stmt.lineno)
                 self._collect_calls_in_expr(stmt.value, scope_id, stmt.lineno)
                 self._collect_named_exprs(stmt.value, scope_id, stmt.lineno, is_conditional=is_conditional)
+                # CWE-295: detect `session.verify = False` / `obj.verify = False`
+                for target in stmt.targets:
+                    if (isinstance(target, ast.Attribute)
+                            and target.attr == "verify"
+                            and isinstance(stmt.value, ast.Constant)
+                            and stmt.value.value is False):
+                        self.ssl_attr_assigns.append((stmt, scope_id, stmt.lineno))
             elif isinstance(stmt, ast.AnnAssign):
                 if isinstance(stmt.target, ast.Name) and stmt.value:
                     record = AssignmentRecord(target_name=stmt.target.id, value_node=stmt.value, lineno=stmt.lineno, scope_id=scope_id, is_conditional=is_conditional)
@@ -2164,46 +2320,86 @@ class TaintTracker:
                 self._collect_named_exprs(stmt.test, scope_id, stmt.lineno, is_conditional=False)
                 pairs = self._extract_containment_pairs(stmt.test)
                 if pairs:
-                    is_inverted = isinstance(stmt.test, ast.UnaryOp) and isinstance(stmt.test.op, ast.Not)
+                    is_inverted = (
+                        (isinstance(stmt.test, ast.UnaryOp) and isinstance(stmt.test.op, ast.Not)) or
+                        (isinstance(stmt.test, ast.Compare) and any(isinstance(op, (ast.NotIn, ast.NotEq)) for op in stmt.test.ops))
+                    )
                     body_terminates = any(isinstance(s, (ast.Raise, ast.Return)) for s in stmt.body)
+
+                    def _expand_root_url_vars(t_name: str) -> list[str]:
+                        expanded = [t_name]
+                        curr_sc = scope_id
+                        while curr_sc:
+                            recs = self.assignments_by_scope.get((curr_sc, t_name), [])
+                            for r in recs:
+                                if r.lineno < stmt.lineno:
+                                    for sub in ast.walk(r.value_node):
+                                        if isinstance(sub, ast.Call) and any(fn in (dotted_name(sub.func) or "") for fn in ("urlparse", "urllib.parse.urlparse")):
+                                            if sub.args and isinstance(sub.args[0], ast.Name):
+                                                expanded.append(sub.args[0].id)
+                                            elif sub.args and isinstance(sub.args[0], ast.Attribute):
+                                                attr_str = dotted_name(sub.args[0])
+                                                if attr_str:
+                                                    expanded.append(attr_str)
+                            if "[" in t_name and t_name.endswith("]"):
+                                base_v, s_key = t_name[:-1].split("[", 1)
+                                s_key_clean = s_key.strip("'\"")
+                                base_recs = self.assignments_by_scope.get((curr_sc, base_v), [])
+                                for br in base_recs:
+                                    if br.lineno < stmt.lineno and isinstance(br.value_node, ast.Dict):
+                                        for k, v in zip(br.value_node.keys, br.value_node.values):
+                                            if self._extract_subscript_key(k, curr_sc) == s_key_clean:
+                                                for sub in ast.walk(v):
+                                                    if isinstance(sub, ast.Call) and any(fn in (dotted_name(sub.func) or "") for fn in ("urlparse", "urllib.parse.urlparse")):
+                                                        if sub.args and isinstance(sub.args[0], ast.Name):
+                                                            expanded.append(sub.args[0].id)
+                            if "." in curr_sc:
+                                curr_sc = curr_sc.rsplit(".", 1)[0]
+                            else:
+                                break
+                        return expanded
+
                     if is_inverted and body_terminates:
                         # Control-flow static analysis for guard clauses:
-                        # When `if not target.is_relative_to(safe_base):` terminates unconditionally
+                        # When `if host not in ALLOWED:` terminates unconditionally
                         # via raise or return, all subsequent statements in the scope are guaranteed
                         # to execute only if containment was satisfied.
                         for target_name, base_node in pairs:
-                            self.containment_guards.append({
-                                "var_name": target_name,
-                                "base_node": base_node,
-                                "scope_id": scope_id,
-                                "check_line": stmt.lineno,
-                                "start_line": stmt.lineno + 1,
-                                "end_line": 999999,
-                            })
+                            for var_target in _expand_root_url_vars(target_name):
+                                self.containment_guards.append({
+                                    "var_name": var_target,
+                                    "base_node": base_node,
+                                    "scope_id": scope_id,
+                                    "check_line": stmt.lineno,
+                                    "start_line": stmt.lineno + 1,
+                                    "end_line": 999999,
+                                })
                     elif not is_inverted and stmt.body:
                         body_start = stmt.body[0].lineno
                         body_end = max(getattr(s, "end_lineno", s.lineno) for s in stmt.body)
                         for target_name, base_node in pairs:
-                            self.containment_guards.append({
-                                "var_name": target_name,
-                                "base_node": base_node,
-                                "scope_id": scope_id,
-                                "check_line": stmt.lineno,
-                                "start_line": body_start,
-                                "end_line": body_end,
-                            })
+                            for var_target in _expand_root_url_vars(target_name):
+                                self.containment_guards.append({
+                                    "var_name": var_target,
+                                    "base_node": base_node,
+                                    "scope_id": scope_id,
+                                    "check_line": stmt.lineno,
+                                    "start_line": body_start,
+                                    "end_line": body_end,
+                                })
                     elif is_inverted and stmt.orelse:
                         orelse_start = stmt.orelse[0].lineno
                         orelse_end = max(getattr(s, "end_lineno", s.lineno) for s in stmt.orelse)
                         for target_name, base_node in pairs:
-                            self.containment_guards.append({
-                                "var_name": target_name,
-                                "base_node": base_node,
-                                "scope_id": scope_id,
-                                "check_line": stmt.lineno,
-                                "start_line": orelse_start,
-                                "end_line": orelse_end,
-                            })
+                            for var_target in _expand_root_url_vars(target_name):
+                                self.containment_guards.append({
+                                    "var_name": var_target,
+                                    "base_node": base_node,
+                                    "scope_id": scope_id,
+                                    "check_line": stmt.lineno,
+                                    "start_line": orelse_start,
+                                    "end_line": orelse_end,
+                                })
                 self.collect_statements(stmt.body, scope_id=scope_id, is_conditional=True)
                 self.collect_statements(stmt.orelse, scope_id=scope_id, is_conditional=True)
             elif isinstance(stmt, (ast.For, ast.AsyncFor, ast.While)):
@@ -2252,6 +2448,25 @@ class TaintTracker:
             elif isinstance(stmt, ast.Return):
                 self.returns_by_scope.setdefault(scope_id, []).append(stmt)
                 if stmt.value:
+                    if self._is_html_construction_expr(stmt.value, scope_id):
+                        mod_name = scope_id.split(":")[0]
+                        file_path = self.file_paths.get(mod_name, "unknown.py")
+                        sink_id = self.next_sink_id()
+                        sink_node = SecurityNode(
+                            id=sink_id,
+                            node_type=NodeType.SINK,
+                            symbol="html_response",
+                            operation="XSS_HTML_RESPONSE",
+                            location=location(stmt, file_path),
+                            metadata={"sink_type": "XSS", "category": "CROSS_SITE_SCRIPTING", "cwe": "CWE-79"}
+                        )
+                        self.sinks.append(sink_node)
+                        self.sink_records.append(SinkRecord(
+                            node=stmt,
+                            security_node=sink_node,
+                            lineno=stmt.lineno,
+                            scope_id=scope_id
+                        ))
                     self.scan_for_sinks(stmt.value, scope_id, stmt.lineno)
                     self._collect_calls_in_expr(stmt.value, scope_id, stmt.lineno)
                     self._collect_named_exprs(stmt.value, scope_id, stmt.lineno, is_conditional=is_conditional)
@@ -2358,7 +2573,7 @@ class TaintTracker:
                 if not self.check_sink_safety(subnode, canon_name):
                     sink_node = self.get_or_create_sink(subnode, file_path, scope_id)
                     self.sink_records.append(SinkRecord(node=subnode, security_node=sink_node, lineno=call_lineno, scope_id=scope_id))
-                    if sink_node.metadata.get("cwe") != "CWE-295" and self._has_disabled_ssl(subnode):
+                    if sink_node.metadata.get("cwe") != "CWE-295" and self._has_disabled_ssl(subnode, scope_id):
                         ssl_sink = self.get_or_create_sink(subnode, file_path, scope_id, force_cwe="CWE-295")
                         self.sink_records.append(SinkRecord(node=subnode, security_node=ssl_sink, lineno=call_lineno, scope_id=scope_id))
 
@@ -3082,7 +3297,7 @@ class TaintTracker:
                     return TaintValue(state=TaintState.CLEAN, source_id=None, confidence=1.0, path=[*first_tainted.path, f"{file_name}:{function_name}()"], last_operation=f"sanitized:{function_name}", proof_nodes=[*first_tainted.proof_nodes, san_pn], proof_edges=new_edges)
                 return TaintValue(state=TaintState.CLEAN, confidence=1.0, last_operation=function_name)
 
-            if function_name in SANITIZER_REGISTRY:
+            if function_name in SANITIZER_REGISTRY and not self._resolve_function_scope(function_name, scope_id):
                 first_tainted = next((arg for arg in arg_values if arg.state != TaintState.CLEAN), None)
                 if first_tainted:
                     return TaintValue(state=TaintState.TAINTED, source_id=first_tainted.source_id, confidence=0.50, path=[*first_tainted.path, f"{file_name}:{function_name}()"], last_operation=f"irrelevant_sanitizer:{function_name}")
@@ -3661,7 +3876,17 @@ class TaintTracker:
                             if key_v_key not in visited:
                                 v_copy = visited.copy()
                                 v_copy.add(key_v_key)
-                                return self.resolve_expression(matched_key_val, sink, found_base_record.scope_id, found_base_record.lineno, v_copy, call_context)
+                                res = self.resolve_expression(matched_key_val, sink, found_base_record.scope_id, found_base_record.lineno, v_copy, call_context)
+                                # CWE-22 dict taint normalization: if the sink is CWE-22 and the
+                                # dict value expression is wrapped in a recognized path sanitizer
+                                # (secure_filename, os.path.basename, etc.), preserve the sanitized
+                                # (CLEAN) state through dict storage and retrieval.
+                                if (res.state != TaintState.CLEAN
+                                        and sink is not None
+                                        and sink.metadata.get("cwe") == "CWE-22"
+                                        and self._dict_value_has_cwe22_sanitizer(matched_key_val)):
+                                    return TaintValue(state=TaintState.CLEAN, confidence=1.0, last_operation=f"sanitized_dict_key:{key}")
+                                return res
                     elif isinstance(val_node, (ast.List, ast.Tuple)) and isinstance(key, int):
                         if -len(val_node.elts) <= key < len(val_node.elts):
                             matched_elt = val_node.elts[key]
@@ -4061,6 +4286,39 @@ class TaintTracker:
                 return ProvenanceValue(state=ProvenanceState.STATIC, confidence=1.0, source_trace=("collection_static",), origin_node=node)
             return ProvenanceValue(state=ProvenanceState.INTERNAL_DYNAMIC, confidence=1.0, source_trace=("collection_dynamic",), origin_node=node)
 
+        # 4c. Dict
+        if isinstance(node, ast.Dict):
+            items_to_check = []
+            for k in node.keys:
+                if k: items_to_check.append(k)
+            items_to_check.extend(node.values)
+            if not items_to_check:
+                return ProvenanceValue(state=ProvenanceState.STATIC, confidence=1.0, source_trace=("empty_dict",), origin_node=node)
+            item_provs = [self.resolve_path_provenance(item, sink, scope_id, current_lineno, visited.copy(), call_context) for item in items_to_check]
+            tainted_items = [e for e in item_provs if e.state == ProvenanceState.TAINTED]
+            if tainted_items:
+                best_e = max(tainted_items, key=lambda e: e.confidence)
+                return ProvenanceValue(
+                    state=ProvenanceState.TAINTED,
+                    confidence=best_e.confidence,
+                    source_id=best_e.source_id,
+                    source_trace=(*best_e.source_trace, "dict"),
+                    origin_node=node
+                )
+            unknown_items = [e for e in item_provs if e.state == ProvenanceState.UNKNOWN]
+            if unknown_items:
+                first_u = unknown_items[0]
+                return ProvenanceValue(
+                    state=ProvenanceState.UNKNOWN,
+                    confidence=0.50,
+                    source_id=first_u.source_id,
+                    source_trace=(*first_u.source_trace, "dict"),
+                    origin_node=node
+                )
+            if all(e.state == ProvenanceState.STATIC for e in item_provs):
+                return ProvenanceValue(state=ProvenanceState.STATIC, confidence=1.0, source_trace=("dict_static",), origin_node=node)
+            return ProvenanceValue(state=ProvenanceState.INTERNAL_DYNAMIC, confidence=1.0, source_trace=("dict_dynamic",), origin_node=node)
+
         # 5. Call
         if isinstance(node, ast.Call):
             if self.is_source_call(node, scope_id):
@@ -4350,6 +4608,88 @@ class TaintTracker:
                     source_trace=(src.id,),
                     origin_node=node
                 )
+            base_var = node.value.id if isinstance(node.value, ast.Name) else None
+            key = self._extract_subscript_key(node.slice, scope_id)
+
+            # 1. Direct container write check: d[key] = clean_val or d[key] = tainted_val
+            if base_var and key is not None:
+                comp_key = f"{base_var}[{key}]"
+                current_scope = scope_id
+                found_record = None
+                while current_scope:
+                    recs = self.assignments_by_scope.get((current_scope, comp_key), [])
+                    recs_before = [r for r in recs if r.lineno < current_lineno]
+                    if recs_before:
+                        uncond = [r for r in recs_before if not r.is_conditional]
+                        found_record = uncond[-1] if uncond else recs_before[-1]
+                        break
+                    if "." in current_scope and "function" in current_scope:
+                        current_scope = current_scope.rsplit(".", 1)[0]
+                    elif ":function" in current_scope:
+                        current_scope = f"{mod_name}:global"
+                    elif current_scope != f"{mod_name}:global":
+                        current_scope = f"{mod_name}:global"
+                    else:
+                        break
+                if found_record:
+                    v_key = f"prov:{found_record.scope_id}:{comp_key}:{found_record.lineno}"
+                    if v_key not in visited:
+                        v_copy = visited.copy()
+                        v_copy.add(v_key)
+                        return self.resolve_path_provenance(found_record.value_node, sink, found_record.scope_id, found_record.lineno, v_copy, call_context)
+
+            # 2. Check base variable definition if initialized as dict/list literal
+            if base_var and key is not None:
+                current_scope = scope_id
+                found_base_record = None
+                while current_scope:
+                    recs = self.assignments_by_scope.get((current_scope, base_var), [])
+                    recs_before = [r for r in recs if r.lineno < current_lineno]
+                    if recs_before:
+                        uncond = [r for r in recs_before if not r.is_conditional]
+                        found_base_record = uncond[-1] if uncond else recs_before[-1]
+                        break
+                    if "." in current_scope and "function" in current_scope:
+                        current_scope = current_scope.rsplit(".", 1)[0]
+                    elif ":function" in current_scope:
+                        current_scope = f"{mod_name}:global"
+                    elif current_scope != f"{mod_name}:global":
+                        current_scope = f"{mod_name}:global"
+                    else:
+                        break
+                if found_base_record:
+                    val_node = found_base_record.value_node
+                    if isinstance(val_node, ast.Dict):
+                        matched_key_val = None
+                        for k, v in zip(val_node.keys, val_node.values):
+                            k_val = self._extract_subscript_key(k, found_base_record.scope_id)
+                            if k_val == key:
+                                matched_key_val = v
+                                break
+                        if matched_key_val is not None:
+                            key_v_key = f"prov:{found_base_record.scope_id}:{base_var}[{key}]:{found_base_record.lineno}"
+                            if key_v_key not in visited:
+                                v_copy = visited.copy()
+                                v_copy.add(key_v_key)
+                                return self.resolve_path_provenance(matched_key_val, sink, found_base_record.scope_id, found_base_record.lineno, v_copy, call_context)
+                    elif isinstance(val_node, (ast.List, ast.Tuple)) and isinstance(key, int):
+                        if -len(val_node.elts) <= key < len(val_node.elts):
+                            matched_elt = val_node.elts[key]
+                            elt_v_key = f"prov:{found_base_record.scope_id}:{base_var}[{key}]:{found_base_record.lineno}"
+                            if elt_v_key not in visited:
+                                v_copy = visited.copy()
+                                v_copy.add(elt_v_key)
+                                return self.resolve_path_provenance(matched_elt, sink, found_base_record.scope_id, found_base_record.lineno, v_copy, call_context)
+
+            if isinstance(node.value, ast.Dict) and key is not None:
+                for k, v in zip(node.value.keys, node.value.values):
+                    k_val = self._extract_subscript_key(k, scope_id)
+                    if k_val == key:
+                        return self.resolve_path_provenance(v, sink, scope_id, current_lineno, visited.copy(), call_context)
+            elif isinstance(node.value, (ast.List, ast.Tuple)) and isinstance(key, int):
+                if -len(node.value.elts) <= key < len(node.value.elts):
+                    return self.resolve_path_provenance(node.value.elts[key], sink, scope_id, current_lineno, visited.copy(), call_context)
+
             val_prov = self.resolve_path_provenance(node.value, sink, scope_id, current_lineno, visited.copy(), call_context)
             if val_prov.state == ProvenanceState.TAINTED:
                 return ProvenanceValue(state=ProvenanceState.TAINTED, confidence=val_prov.confidence, source_id=val_prov.source_id, source_trace=(*val_prov.source_trace, "subscript"), origin_node=node)
@@ -4518,6 +4858,13 @@ class TaintTracker:
                 source_trace=tuple(t_val.path) or (t_val.source_id,),
                 origin_node=node
             )
+        elif t_val.state == TaintState.CLEAN:
+            return ProvenanceValue(
+                state=ProvenanceState.INTERNAL_DYNAMIC,
+                confidence=1.0,
+                source_trace=("clean_expr",),
+                origin_node=node
+            )
         return ProvenanceValue(state=ProvenanceState.UNKNOWN, confidence=0.50, source_trace=("unknown_expr",), origin_node=node)
 
     def analyze(self):
@@ -4680,7 +5027,7 @@ class TaintTracker:
                         file_path = self.file_paths.get(mod_name, "unknown.py")
                         sink_node = self.get_or_create_sink(call_node, file_path, caller_scope)
                         self.sink_records.append(SinkRecord(node=call_node, security_node=sink_node, lineno=lineno, scope_id=caller_scope))
-                        if sink_node.metadata.get("cwe") != "CWE-295" and self._has_disabled_ssl(call_node):
+                        if sink_node.metadata.get("cwe") != "CWE-295" and self._has_disabled_ssl(call_node, caller_scope):
                             ssl_sink = self.get_or_create_sink(call_node, file_path, caller_scope, force_cwe="CWE-295")
                             self.sink_records.append(SinkRecord(node=call_node, security_node=ssl_sink, lineno=lineno, scope_id=caller_scope))
 
@@ -4688,25 +5035,49 @@ class TaintTracker:
             for node in ast.walk(tree):
                 if isinstance(node, ast.Call) and self.is_source_call(node, f"{mod_name}:global"):
                     self.get_or_create_source(node, self.file_paths.get(mod_name, "unknown.py"), f"{mod_name}:global")
+        for assign_stmt, scope_id, lineno in self.ssl_attr_assigns:
+            mod_name = scope_id.split(":")[0]
+            file_path = self.file_paths.get(mod_name, "unknown.py")
+            sink_id = self.next_sink_id()
+            sink_node = SecurityNode(
+                id=sink_id,
+                node_type=NodeType.SINK,
+                symbol="verify",
+                operation="DISABLE_SSL_VERIFICATION",
+                location=location(assign_stmt, file_path),
+                metadata={"sink_type": "SSL_VERIFICATION_DISABLED", "category": "INSECURE_CONFIGURATION", "cwe": "CWE-295"}
+            )
+            self.sinks.append(sink_node)
+            self.edges.append(DataFlowEdge(
+                source_id="INSECURE_CONFIGURATION",
+                target_id=sink_node.id,
+                kind="CONFIRMED_DATA_FLOW",
+                confidence=1.0,
+                transform="disabled_ssl_verification"
+            ))
+
         for record in self.sink_records:
             sink = record.security_node
             target_expr = None
-            if isinstance(record.node.func, ast.Attribute) and (record.node.func.attr in {"read_text", "read_bytes", "write_text", "write_bytes", "extractall", "extract"} or (record.node.func.attr == "open" and self._is_path_expr(record.node.func.value, record.scope_id))):
-                target_expr = record.node.func.value
-            elif isinstance(record.node.func, ast.Attribute) and record.node.func.attr == "render":
-                if self._is_jinja_template_expr(record.node.func.value, record.scope_id):
+            if isinstance(record.node, ast.Return):
+                target_expr = record.node.value
+            elif isinstance(record.node, ast.Call):
+                if isinstance(record.node.func, ast.Attribute) and (record.node.func.attr in {"read_text", "read_bytes", "write_text", "write_bytes", "extractall", "extract"} or (record.node.func.attr == "open" and self._is_path_expr(record.node.func.value, record.scope_id))):
                     target_expr = record.node.func.value
-                else:
-                    if sink in self.sinks:
-                        self.sinks.remove(sink)
-                    continue
-            elif record.node.args:
-                target_expr = record.node.args[0]
-            elif getattr(record.node, "keywords", []):
-                for kw in record.node.keywords:
-                    if kw.arg in ("source", "template", "s"):
-                        target_expr = kw.value
-                        break
+                elif isinstance(record.node.func, ast.Attribute) and record.node.func.attr == "render":
+                    if self._is_jinja_template_expr(record.node.func.value, record.scope_id):
+                        target_expr = record.node.func.value
+                    else:
+                        if sink in self.sinks:
+                            self.sinks.remove(sink)
+                        continue
+                elif record.node.args:
+                    target_expr = record.node.args[0]
+                elif getattr(record.node, "keywords", []):
+                    for kw in record.node.keywords:
+                        if kw.arg in ("source", "template", "s"):
+                            target_expr = kw.value
+                            break
 
             cwe = sink.metadata.get("cwe")
             stype = sink.metadata.get("sink_type")
@@ -4732,7 +5103,7 @@ class TaintTracker:
                 ))
                 continue
 
-            if op == "UNBOUNDED_READ" or (cwe in ("CWE-400", "CWE-776") and isinstance(record.node.func, ast.Attribute) and record.node.func.attr == "read" and len(record.node.args) == 0):
+            if op == "UNBOUNDED_READ" or (cwe in ("CWE-400", "CWE-776") and isinstance(record.node, ast.Call) and isinstance(record.node.func, ast.Attribute) and record.node.func.attr == "read" and len(record.node.args) == 0):
                 receiver = record.node.func.value
                 recv_taint = self.resolve_expression(receiver, sink, record.scope_id, record.lineno, call_context=record.call_context)
                 if not self._is_untrusted_stream(receiver, record.scope_id, record.lineno, recv_taint):
@@ -4803,6 +5174,7 @@ class TaintTracker:
                     self.edges.append(DataFlowEdge(source_id=taint.source_id or "UNKNOWN", target_id=sink.id, kind=kind, confidence=taint.confidence, transform=full_path_str, proof_graph=pg))
                 elif taint.state == TaintState.UNKNOWN:
                     self.edges.append(DataFlowEdge(source_id=taint.source_id or "UNKNOWN", target_id=sink.id, kind="POTENTIAL_DATA_FLOW", confidence=0.50, transform=full_path_str, proof_graph=pg))
+
         return self.sources, self.sinks, self.edges
 
     def _build_proof_graph(self, taint: TaintValue, sink: SecurityNode, record: SinkRecord, cwe: str) -> ProofGraphIR:

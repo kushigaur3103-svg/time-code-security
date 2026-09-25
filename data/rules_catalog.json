@@ -1,0 +1,2575 @@
+{
+  "metadata": {
+    "total_code_cwes": 107,
+    "total_dangerous_sinks": 316,
+    "generated_at": "2026-09-25T02:38:00.262290Z",
+    "sources": [
+      "MITRE_Static",
+      "Bandit",
+      "Semgrep",
+      "CodeQL"
+    ],
+    "filter": "strictly_ast_and_code_detectable",
+    "exclusion_criteria": [
+      "manual_business_logic_errors",
+      "physical_social_engineering_hardware",
+      "pure_c_cpp_memory_corruption"
+    ]
+  },
+  "cwes": {
+    "CWE-20": {
+      "name": "Improper Input Validation",
+      "category": "SSRF/Network",
+      "severity": "MEDIUM",
+      "detection_type": "semantic_rule",
+      "sinks": [
+        "socket.inet_aton",
+        "socket.gethostbyname"
+      ],
+      "sanitizers": [
+        "ipaddress.ip_address",
+        "pydantic.validate_call"
+      ],
+      "description": "Failing to validate network addresses, ports, or protocols before passing to network socket APIs.",
+      "attack_vector": "Submitting malformed IP strings or octal IP encodings (e.g. 0177.0.0.1) to bypass IP filters.",
+      "remediation": "Use ipaddress.ip_address() for canonical IP parsing and validation.",
+      "sources": [
+        "MITRE_Static",
+        "Bandit",
+        "Semgrep",
+        "CodeQL"
+      ]
+    },
+    "CWE-22": {
+      "name": "Improper Limitation of a Pathname to a Restricted Directory ('Path Traversal')",
+      "category": "File/OS",
+      "severity": "CRITICAL",
+      "detection_type": "taint_tracking",
+      "sinks": [
+        "open",
+        "os.open",
+        "pathlib.Path",
+        "os.remove",
+        "os.unlink",
+        "shutil.rmtree",
+        "shutil.move",
+        "shutil.copy"
+      ],
+      "sanitizers": [
+        "werkzeug.utils.secure_filename",
+        "os.path.basename",
+        "os.path.realpath_containment"
+      ],
+      "description": "Using untrusted input in file system operations without directory confinement allows arbitrary file access.",
+      "attack_vector": "Directory traversal sequences (../ or ..\\) escaping the root storage directory.",
+      "remediation": "Use werkzeug.utils.secure_filename() or verify os.path.realpath(target).startswith(base).",
+      "sources": [
+        "MITRE_Static",
+        "Bandit",
+        "Semgrep",
+        "CodeQL"
+      ]
+    },
+    "CWE-23": {
+      "name": "Relative Path Traversal",
+      "category": "File/OS",
+      "severity": "HIGH",
+      "detection_type": "taint_tracking",
+      "sinks": [
+        "os.path.join",
+        "pathlib.Path.joinpath"
+      ],
+      "sanitizers": [
+        "os.path.abspath(target).startswith(base_dir)",
+        "pathlib.Path.resolve"
+      ],
+      "description": "Resolving relative path components without asserting that the resolved path stays within safe roots.",
+      "attack_vector": "Supplying relative segments like ../../../etc/shadow.",
+      "remediation": "Resolve absolute canonical paths and verify prefix confinement.",
+      "sources": [
+        "MITRE_Static",
+        "Semgrep",
+        "CodeQL"
+      ]
+    },
+    "CWE-36": {
+      "name": "Absolute Path Traversal",
+      "category": "File/OS",
+      "severity": "HIGH",
+      "detection_type": "taint_tracking",
+      "sinks": [
+        "os.path.join"
+      ],
+      "sanitizers": [
+        "os.path.normpath",
+        "user_path.lstrip('/')",
+        "secure_filename"
+      ],
+      "description": "In os.path.join(base, user_path), if user_path starts with a slash, base is discarded.",
+      "attack_vector": "Submitting '/etc/passwd' causing os.path.join('/var/uploads', '/etc/passwd') to return '/etc/passwd'.",
+      "remediation": "Strip leading slashes and drive letters before path joining.",
+      "sources": [
+        "MITRE_Static",
+        "Semgrep",
+        "CodeQL"
+      ]
+    },
+    "CWE-59": {
+      "name": "Improper Link Resolution Before File Access ('Link Following')",
+      "category": "File/OS",
+      "severity": "HIGH",
+      "detection_type": "ast_pattern",
+      "sinks": [
+        "os.symlink",
+        "os.link",
+        "os.readlink"
+      ],
+      "sanitizers": [
+        "os.O_NOFOLLOW",
+        "os.path.realpath",
+        "Path.resolve(strict=True)"
+      ],
+      "description": "Opening files without verifying if the path is a symbolic link pointing to a protected target.",
+      "attack_vector": "Symlink pointing to /etc/passwd opened by a privileged script.",
+      "remediation": "Pass os.O_NOFOLLOW to os.open() and verify canonical path resolution.",
+      "sources": [
+        "MITRE_Static",
+        "Semgrep",
+        "CodeQL"
+      ]
+    },
+    "CWE-73": {
+      "name": "External Control of File Name or Path",
+      "category": "File/OS",
+      "severity": "MEDIUM",
+      "detection_type": "taint_tracking",
+      "sinks": [
+        "open",
+        "tempfile.NamedTemporaryFile"
+      ],
+      "sanitizers": [
+        "uuid.uuid4()",
+        "whitelist_filenames"
+      ],
+      "description": "Allowing clients to directly determine filename or extension on disk enables overwriting critical files.",
+      "attack_vector": "Writing files with .py or .sh extensions to autorun or cgi-bin folders.",
+      "remediation": "Generate random alphanumeric file IDs (e.g. UUIDv4) on the server side.",
+      "sources": [
+        "MITRE_Static",
+        "CodeQL"
+      ]
+    },
+    "CWE-77": {
+      "name": "Command Injection (General)",
+      "category": "Injection",
+      "severity": "CRITICAL",
+      "detection_type": "taint_tracking",
+      "sinks": [
+        "os.system",
+        "commands.getoutput",
+        "commands.getstatusoutput",
+        "popen2.popen2",
+        "popen2.popen3"
+      ],
+      "sanitizers": [
+        "shlex.quote",
+        "subprocess_exec_list"
+      ],
+      "description": "Passing unneutralized data into command interpreters leading to modified control flow.",
+      "attack_vector": "Command string interpolation with untrusted user input.",
+      "remediation": "Replace shell execution with native Python APIs or strictly validated arguments.",
+      "sources": [
+        "MITRE_Static",
+        "Bandit",
+        "Semgrep",
+        "CodeQL"
+      ]
+    },
+    "CWE-78": {
+      "name": "OS Command Injection",
+      "category": "Injection",
+      "severity": "CRITICAL",
+      "detection_type": "taint_tracking",
+      "sinks": [
+        "os.system",
+        "os.popen",
+        "subprocess.run",
+        "subprocess.call",
+        "subprocess.check_call",
+        "subprocess.check_output",
+        "subprocess.Popen",
+        "asyncio.create_subprocess_shell",
+        "asyncio.create_subprocess_exec",
+        "posix.system",
+        "platform.popen"
+      ],
+      "sanitizers": [
+        "shlex.quote",
+        "subprocess_list_args",
+        "shell_equals_false"
+      ],
+      "description": "Executing system shell commands with untrusted input permits arbitrary host command execution.",
+      "attack_vector": "Shell metacharacters (; | & `) injected into shell execution calls.",
+      "remediation": "Pass arguments as lists with shell=False, or sanitize with shlex.quote().",
+      "sources": [
+        "MITRE_Static",
+        "Bandit",
+        "Semgrep",
+        "CodeQL"
+      ]
+    },
+    "CWE-79": {
+      "name": "Cross-Site Scripting (XSS)",
+      "category": "Injection",
+      "severity": "HIGH",
+      "detection_type": "taint_tracking",
+      "sinks": [
+        "markupsafe.Markup",
+        "django.utils.safestring.mark_safe",
+        "flask.render_template_string",
+        "fastapi.responses.HTMLResponse",
+        "django.http.HttpResponse"
+      ],
+      "sanitizers": [
+        "html.escape",
+        "bleach.clean",
+        "autoescape_true"
+      ],
+      "description": "Rendering untrusted user input directly into HTML output without escaping enables browser script injection.",
+      "attack_vector": "Unescaped HTML tags or JavaScript injected into rendered web templates or responses.",
+      "remediation": "Enable autoescape in Jinja2/Django templates and use html.escape() or bleach.clean().",
+      "sources": [
+        "MITRE_Static",
+        "Bandit",
+        "Semgrep",
+        "CodeQL"
+      ]
+    },
+    "CWE-80": {
+      "name": "Improper Neutralization of Script-Related HTML Tags in a Web Page",
+      "category": "Injection",
+      "severity": "HIGH",
+      "detection_type": "taint_tracking",
+      "sinks": [
+        "response.write",
+        "wsgiref.simple_server",
+        "aiohttp.web.Response"
+      ],
+      "sanitizers": [
+        "html.escape",
+        "bleach.clean"
+      ],
+      "description": "Web page generation scripts emitting unvalidated HTML elements allowing script injection.",
+      "attack_vector": "Direct injection of <script> or event handlers into raw HTTP responses.",
+      "remediation": "Always encode HTML special characters before returning data in HTTP responses.",
+      "sources": [
+        "MITRE_Static",
+        "Semgrep"
+      ]
+    },
+    "CWE-88": {
+      "name": "Argument Injection",
+      "category": "Injection",
+      "severity": "HIGH",
+      "detection_type": "taint_tracking",
+      "sinks": [
+        "subprocess.Popen",
+        "subprocess.run",
+        "os.spawnl",
+        "os.spawnlp",
+        "os.spawnv",
+        "os.spawnvp",
+        "os.execv",
+        "os.execvp"
+      ],
+      "sanitizers": [
+        "argument_prefix_validation",
+        "explicit_double_dash_delimiter"
+      ],
+      "description": "Passing user-controlled input as arguments that can be interpreted as option flags (e.g. --eval).",
+      "attack_vector": "Arguments beginning with '-' or '--' altering program behavior.",
+      "remediation": "Prepend '--' before positional arguments and validate argument formats.",
+      "sources": [
+        "MITRE_Static",
+        "Semgrep",
+        "CodeQL"
+      ]
+    },
+    "CWE-89": {
+      "name": "SQL Injection",
+      "category": "Injection",
+      "severity": "CRITICAL",
+      "detection_type": "taint_tracking",
+      "sinks": [
+        "cursor.execute",
+        "cursor.executemany",
+        "session.execute",
+        "connection.execute",
+        "objects.raw",
+        "objects.extra",
+        "RawSQL",
+        "engine.execute",
+        "db.session.execute"
+      ],
+      "sanitizers": [
+        "parameterized_query",
+        "orm_filter",
+        "sql_parameter_binding",
+        "psycopg2.sql.Identifier",
+        "sqlalchemy.bindparam"
+      ],
+      "description": "Constructing SQL commands with concatenated untrusted input allows execution of arbitrary queries.",
+      "attack_vector": "Tainted input dynamically injected into raw SQL strings without parameter binding.",
+      "remediation": "Use parameterized queries, ORM query builders, or bound variables.",
+      "sources": [
+        "MITRE_Static",
+        "Bandit",
+        "Semgrep",
+        "CodeQL"
+      ],
+      "structural_checks": [
+        "sqlite3.connect().execute",
+        "psycopg2.connect().cursor().execute"
+      ]
+    },
+    "CWE-90": {
+      "name": "Improper Neutralization of Special Elements used in an LDAP Query ('LDAP Injection')",
+      "category": "Injection",
+      "severity": "HIGH",
+      "detection_type": "taint_tracking",
+      "sinks": [
+        "ldap.search_st",
+        "ldap3.Connection.search",
+        "ldap3.Server"
+      ],
+      "sanitizers": [
+        "ldap3.utils.conv.escape_filter_chars",
+        "ldap.filter.escape_filter_chars"
+      ],
+      "description": "Constructing LDAP filter queries with unescaped user input alters search predicates.",
+      "attack_vector": "Special characters like * ( ) \\ NUL injected into LDAP search filters.",
+      "remediation": "Use ldap3.utils.conv.escape_filter_chars() on all untrusted filter components.",
+      "sources": [
+        "MITRE_Static",
+        "Semgrep",
+        "CodeQL"
+      ],
+      "structural_checks": [
+        "ldap.initialize().search_s"
+      ]
+    },
+    "CWE-91": {
+      "name": "XML Injection (Blind XPath / Node Injection)",
+      "category": "Injection",
+      "severity": "MEDIUM",
+      "detection_type": "taint_tracking",
+      "sinks": [
+        "xml.dom.minidom.parseString",
+        "lxml.etree.XML"
+      ],
+      "sanitizers": [
+        "xml.sax.saxutils.escape",
+        "defusedxml"
+      ],
+      "description": "Embedding raw user input into XML documents without escaping XML markup characters.",
+      "attack_vector": "Injecting closing tags and new XML elements into structured XML payloads.",
+      "remediation": "Use proper XML builders or escape special XML characters with xml.sax.saxutils.escape().",
+      "sources": [
+        "MITRE_Static",
+        "Semgrep"
+      ]
+    },
+    "CWE-94": {
+      "name": "Improper Control of Generation of Code ('Code Injection')",
+      "category": "Injection",
+      "severity": "CRITICAL",
+      "detection_type": "taint_tracking",
+      "sinks": [
+        "code.InteractiveInterpreter.runsource",
+        "code.InteractiveConsole.push",
+        "codeop.compile_command",
+        "importlib.import_module"
+      ],
+      "sanitizers": [
+        "static_function_dispatcher",
+        "allowlisted_module_lookup"
+      ],
+      "description": "Dynamically generating code or importing arbitrary modules from untrusted names.",
+      "attack_vector": "Attacker selects or generates executable module names or interpreter commands.",
+      "remediation": "Use a static dictionary dispatch table instead of dynamic code execution.",
+      "sources": [
+        "MITRE_Static",
+        "Semgrep",
+        "CodeQL"
+      ]
+    },
+    "CWE-95": {
+      "name": "Improper Neutralization of Directives in Dynamically Evaluated Code ('Eval Injection')",
+      "category": "Injection",
+      "severity": "CRITICAL",
+      "detection_type": "taint_tracking",
+      "sinks": [
+        "eval",
+        "exec",
+        "compile",
+        "builtins.eval",
+        "builtins.exec",
+        "builtins.compile",
+        "timeit.timeit",
+        "timeit.repeat"
+      ],
+      "sanitizers": [
+        "ast.literal_eval",
+        "safe_eval_parser",
+        "json.loads"
+      ],
+      "description": "Executing dynamic code strings containing untrusted input executes arbitrary Python bytecode.",
+      "attack_vector": "Untrusted Python expressions passed to eval() or exec().",
+      "remediation": "Use ast.literal_eval() for data parsing, or dedicated expression parsing libraries.",
+      "sources": [
+        "MITRE_Static",
+        "Bandit",
+        "Semgrep",
+        "CodeQL"
+      ]
+    },
+    "CWE-96": {
+      "name": "Improper Neutralization of Directives in Statically Saved Code",
+      "category": "Injection",
+      "severity": "HIGH",
+      "detection_type": "taint_tracking",
+      "sinks": [],
+      "sanitizers": [
+        "strict_template_escaping",
+        "disallow_dynamic_script_generation"
+      ],
+      "description": "Writing unneutralized user input into files that are subsequently executed as scripts.",
+      "attack_vector": "Writing arbitrary Python statements into generated configuration or script files.",
+      "remediation": "Store data as structured formats (JSON, YAML, TOML) rather than executable code.",
+      "sources": [
+        "MITRE_Static",
+        "Semgrep"
+      ],
+      "structural_checks": [
+        "open(script_path, 'w').write",
+        "tempfile.NamedTemporaryFile(suffix='.py').write"
+      ]
+    },
+    "CWE-113": {
+      "name": "HTTP Response Splitting / Header Injection",
+      "category": "Injection",
+      "severity": "MEDIUM",
+      "detection_type": "taint_tracking",
+      "sinks": [
+        "response.headers.__setitem__",
+        "response.set_header",
+        "wsgiref.headers.Headers.add_header",
+        "flask.Response.headers"
+      ],
+      "sanitizers": [
+        "strip_newlines",
+        "validate_header_value"
+      ],
+      "description": "Injecting CRLF characters into HTTP response headers enables setting arbitrary response headers or splitting body.",
+      "attack_vector": "\\r\\n injected into Set-Cookie, Location, or custom header values.",
+      "remediation": "Disallow newline characters in header keys and values.",
+      "sources": [
+        "MITRE_Static",
+        "Semgrep",
+        "CodeQL"
+      ]
+    },
+    "CWE-116": {
+      "name": "Improper Encoding or Escaping of Output",
+      "category": "Injection",
+      "severity": "MEDIUM",
+      "detection_type": "ast_pattern",
+      "sinks": [
+        "str.replace",
+        "manual_string_interpolation"
+      ],
+      "sanitizers": [
+        "context_aware_encoder",
+        "xml.sax.saxutils.escape",
+        "html.escape"
+      ],
+      "description": "Manual or incomplete encoding when generating structured outputs like XML, JSON, or CSV.",
+      "attack_vector": "Data breaking out of delimiter boundaries due to partial character replacement.",
+      "remediation": "Rely on standard serializing libraries (json, csv, defusedxml) rather than manual string building.",
+      "sources": [
+        "MITRE_Static",
+        "Semgrep",
+        "CodeQL"
+      ]
+    },
+    "CWE-117": {
+      "name": "Improper Output Handling for Logs ('Log Injection')",
+      "category": "Injection",
+      "severity": "MEDIUM",
+      "detection_type": "taint_tracking",
+      "sinks": [
+        "logging.info",
+        "logging.warning",
+        "logging.error",
+        "logging.debug",
+        "logger.log",
+        "logging.critical"
+      ],
+      "sanitizers": [
+        "crlf_strip",
+        "sanitize_log_record",
+        "encoder_newline_escape"
+      ],
+      "description": "Writing unescaped user input with CRLF characters into logs enables log forging and poisoning.",
+      "attack_vector": "Carriage return and newline characters injected into logged string fields.",
+      "remediation": "Strip carriage returns and newlines, or use structured JSON logging.",
+      "sources": [
+        "MITRE_Static",
+        "Semgrep",
+        "CodeQL"
+      ]
+    },
+    "CWE-134": {
+      "name": "Use of Externally-Controlled Format String",
+      "category": "Injection",
+      "severity": "MEDIUM",
+      "detection_type": "taint_tracking",
+      "sinks": [
+        "str.format",
+        "string.Template.substitute",
+        "percent_format"
+      ],
+      "sanitizers": [
+        "constant_format_template",
+        "f_string_with_literal_template"
+      ],
+      "description": "Using an untrusted string as the format specification allows attackers to extract object attributes.",
+      "attack_vector": "'{user.__init__.__globals__}'.format(...) leaking process memory and global variables.",
+      "remediation": "Never allow user-supplied strings as format templates.",
+      "sources": [
+        "MITRE_Static",
+        "CodeQL"
+      ]
+    },
+    "CWE-155": {
+      "name": "Improper Neutralization of Wildcards or Matching Symbols",
+      "category": "Injection",
+      "severity": "LOW",
+      "detection_type": "taint_tracking",
+      "sinks": [
+        "glob.glob",
+        "fnmatch.filter",
+        "pathlib.Path.glob"
+      ],
+      "sanitizers": [
+        "glob.escape",
+        "whitelist_filename_patterns"
+      ],
+      "description": "Passing user input directly to file globbing functions can cause unexpected file matching.",
+      "attack_vector": "Wildcards (* ? [) used to enumerate files outside intended boundaries.",
+      "remediation": "Sanitize wildcard patterns using glob.escape().",
+      "sources": [
+        "MITRE_Static",
+        "Bandit",
+        "Semgrep"
+      ]
+    },
+    "CWE-200": {
+      "name": "Exposure of Sensitive Information to an Unauthorized Actor",
+      "category": "Auth/Tokens",
+      "severity": "MEDIUM",
+      "detection_type": "taint_tracking",
+      "sinks": [
+        "response.json",
+        "leaky_user_serialization"
+      ],
+      "sanitizers": [
+        "pydantic.BaseModel_private_fields",
+        "explicit_serializer_fields"
+      ],
+      "description": "Accidentally serializing internal model fields (password hashes, secret tokens) in public API responses.",
+      "attack_vector": "Calling user profile APIs that return password hashes or private contact details in response bodies.",
+      "remediation": "Use explicit response schemas (e.g. Pydantic response_model) excluding private attributes.",
+      "sources": [
+        "MITRE_Static",
+        "Bandit",
+        "Semgrep",
+        "CodeQL"
+      ]
+    },
+    "CWE-208": {
+      "name": "Observable Timing Discrepancy ('Timing Attack')",
+      "category": "Crypto",
+      "severity": "MEDIUM",
+      "detection_type": "semantic_rule",
+      "sinks": [
+        "equality_operator_on_secrets"
+      ],
+      "sanitizers": [
+        "hmac.compare_digest",
+        "secrets.compare_digest"
+      ],
+      "description": "Comparing cryptographic tokens or passwords with standard non-constant-time equality operators (==).",
+      "attack_vector": "Measuring response time variations character-by-character to deduce secret tokens.",
+      "remediation": "Use hmac.compare_digest() or secrets.compare_digest() for constant-time comparisons.",
+      "sources": [
+        "MITRE_Static",
+        "Semgrep",
+        "CodeQL"
+      ],
+      "structural_checks": [
+        "token == request_token"
+      ]
+    },
+    "CWE-209": {
+      "name": "Generation of Error Message Containing Sensitive Information",
+      "category": "File/OS",
+      "severity": "MEDIUM",
+      "detection_type": "ast_pattern",
+      "sinks": [
+        "traceback.print_exc()",
+        "traceback.format_exc()",
+        "sys.exc_info()"
+      ],
+      "sanitizers": [
+        "generic_error_handler",
+        "internal_logging_only"
+      ],
+      "description": "Returning raw Python stack traces to API clients leaks framework versions, file paths, and database queries.",
+      "attack_vector": "Forcing exceptions to map internal server directory structure and dependencies.",
+      "remediation": "Catch exceptions globally and return opaque error IDs while logging details internally.",
+      "sources": [
+        "MITRE_Static",
+        "Semgrep",
+        "CodeQL"
+      ]
+    },
+    "CWE-213": {
+      "name": "Exposure of Sensitive Information Due to Incompatible Policies",
+      "category": "Auth/Tokens",
+      "severity": "MEDIUM",
+      "detection_type": "semantic_rule",
+      "sinks": [
+        "jsonify",
+        "vars"
+      ],
+      "sanitizers": [
+        "explicit_dto_mapping"
+      ],
+      "description": "Dumping object dictionaries directly to external clients exposing private internal state.",
+      "attack_vector": "Extracting server internal states or session metadata from raw object dumps.",
+      "remediation": "Map domain objects to explicit Data Transfer Objects (DTOs) with vetted fields.",
+      "sources": [
+        "MITRE_Static",
+        "Semgrep"
+      ]
+    },
+    "CWE-215": {
+      "name": "Insertion of Sensitive Information Into Debugging Code",
+      "category": "File/OS",
+      "severity": "HIGH",
+      "detection_type": "configuration_check",
+      "sinks": [
+        "app.run"
+      ],
+      "sanitizers": [
+        "debug=False",
+        "os.environ.get('DEBUG', '0') == '1'"
+      ],
+      "description": "Enabling interactive web debuggers (like Werkzeug debugger) in production allows arbitrary remote code execution via PIN.",
+      "attack_vector": "Navigating to Werkzeug interactive console on error pages to execute arbitrary Python code.",
+      "remediation": "Never set debug=True in production deployments.",
+      "sources": [
+        "MITRE_Static",
+        "Bandit",
+        "Semgrep",
+        "CodeQL"
+      ],
+      "structural_checks": [
+        "app.debug = True",
+        "DEBUG = True"
+      ]
+    },
+    "CWE-250": {
+      "name": "Execution with Unnecessary Privileges",
+      "category": "Auth/Tokens",
+      "severity": "HIGH",
+      "detection_type": "ast_pattern",
+      "sinks": [
+        "os.setuid",
+        "run_as_root"
+      ],
+      "sanitizers": [
+        "os.setuid(unprivileged_uid)",
+        "non_root_container"
+      ],
+      "description": "Running entire applications or helper processes as superuser/root without dropping privileges.",
+      "attack_vector": "Any command execution or path traversal vulnerability leads directly to total host takeover.",
+      "remediation": "Drop root privileges immediately after binding privileged ports.",
+      "sources": [
+        "MITRE_Static",
+        "Bandit",
+        "Semgrep"
+      ]
+    },
+    "CWE-259": {
+      "name": "Use of Hard-coded Password",
+      "category": "Auth/Tokens",
+      "severity": "CRITICAL",
+      "detection_type": "ast_pattern",
+      "sinks": [],
+      "sanitizers": [
+        "getpass.getpass()",
+        "os.environ.get('DB_PASSWORD')"
+      ],
+      "description": "Embedding administrative or user passwords as string literals in code.",
+      "attack_vector": "Attackers discover default or embedded passwords in source code to authenticate as administrator.",
+      "remediation": "Prompt for passwords at runtime or load securely from protected environment variables.",
+      "sources": [
+        "MITRE_Static",
+        "Bandit",
+        "Semgrep",
+        "CodeQL"
+      ],
+      "structural_checks": [
+        "password = 'admin'",
+        "PASSWORD = '...'",
+        "db_pass = '...'"
+      ]
+    },
+    "CWE-261": {
+      "name": "Weak Cryptography for Passwords",
+      "category": "Crypto",
+      "severity": "HIGH",
+      "detection_type": "semantic_rule",
+      "sinks": [
+        "hashlib.sha256",
+        "hashlib.sha512"
+      ],
+      "sanitizers": [
+        "bcrypt.hashpw",
+        "argon2.PasswordHasher",
+        "hashlib.scrypt"
+      ],
+      "description": "Hashing passwords with fast cryptographic digests (SHA-256) rather than adaptive slow password KDFs.",
+      "attack_vector": "GPU-accelerated offline rainbow table and dictionary cracking at billions of hashes/second.",
+      "remediation": "Use Argon2id, bcrypt, or scrypt with adequate work factors.",
+      "sources": [
+        "MITRE_Static",
+        "Semgrep",
+        "CodeQL"
+      ]
+    },
+    "CWE-269": {
+      "name": "Improper Privilege Management",
+      "category": "Auth/Tokens",
+      "severity": "HIGH",
+      "detection_type": "ast_pattern",
+      "sinks": [
+        "subprocess_sudo",
+        "improper_privilege_elevation"
+      ],
+      "sanitizers": [
+        "unprivileged_service_account"
+      ],
+      "description": "Invoking sudo commands from code without proper privilege boundary enforcement.",
+      "attack_vector": "Subprocess command manipulation escalating execution to root.",
+      "remediation": "Refactor logic to eliminate reliance on sudo in application code.",
+      "sources": [
+        "MITRE_Static",
+        "Semgrep"
+      ]
+    },
+    "CWE-276": {
+      "name": "Incorrect Default Permissions",
+      "category": "File/OS",
+      "severity": "MEDIUM",
+      "detection_type": "configuration_check",
+      "sinks": [
+        "open",
+        "os.open"
+      ],
+      "sanitizers": [
+        "os.umask(0o077)",
+        "explicit_mode_0600"
+      ],
+      "description": "Creating files in directories with overly broad default umasks produces world-accessible outputs.",
+      "attack_vector": "Default umask leaving created files readable by all local system users.",
+      "remediation": "Explicitly set umask to 0o077 prior to sensitive file creation.",
+      "sources": [
+        "MITRE_Static",
+        "Bandit",
+        "Semgrep"
+      ]
+    },
+    "CWE-287": {
+      "name": "Improper Authentication",
+      "category": "Auth/Tokens",
+      "severity": "HIGH",
+      "detection_type": "semantic_rule",
+      "sinks": [
+        "pam.authenticate",
+        "custom_password_check"
+      ],
+      "sanitizers": [
+        "django.contrib.auth.authenticate",
+        "standard_idp_verification"
+      ],
+      "description": "Implementing flawed custom authentication routines that fail to properly authenticate actor identity.",
+      "attack_vector": "Bypassing custom authentication checks with empty strings, special characters, or type confusion.",
+      "remediation": "Use well-tested standard authentication frameworks (Django Auth, FastAPI Security).",
+      "sources": [
+        "MITRE_Static",
+        "Semgrep",
+        "CodeQL"
+      ]
+    },
+    "CWE-295": {
+      "name": "Improper Certificate Validation",
+      "category": "SSRF/Network",
+      "severity": "HIGH",
+      "detection_type": "configuration_check",
+      "sinks": [
+        "requests.get",
+        "requests.post",
+        "ssl.create_default_context",
+        "paramiko.AutoAddPolicy",
+        "ssl.CERT_NONE",
+        "urllib3.disable_warnings",
+        "ssl._create_unverified_context"
+      ],
+      "sanitizers": [
+        "verify=True",
+        "ssl.create_default_context()",
+        "paramiko.RejectPolicy"
+      ],
+      "description": "Disabling TLS certificate validation permits attackers to intercept or modify encrypted network traffic.",
+      "attack_vector": "Man-in-the-middle proxy intercepting credentials and injecting payloads.",
+      "remediation": "Always enable TLS verification (verify=True) and use trusted CA bundles.",
+      "sources": [
+        "MITRE_Static",
+        "Bandit",
+        "Semgrep",
+        "CodeQL"
+      ]
+    },
+    "CWE-296": {
+      "name": "Improper Following of a Certificate's Chain of Trust",
+      "category": "SSRF/Network",
+      "severity": "HIGH",
+      "detection_type": "configuration_check",
+      "sinks": [
+        "custom_ssl_callback_return_true"
+      ],
+      "sanitizers": [
+        "standard_ca_chain_verification"
+      ],
+      "description": "Custom TLS validation callbacks that always return True bypass chain of trust verification.",
+      "attack_vector": "Self-signed or untrusted certificates accepted by flawed custom callbacks.",
+      "remediation": "Rely on standard OpenSSL/certifi certificate validation routines.",
+      "sources": [
+        "MITRE_Static",
+        "Semgrep"
+      ]
+    },
+    "CWE-297": {
+      "name": "Improper Validation of Certificate Host Mismatch",
+      "category": "SSRF/Network",
+      "severity": "HIGH",
+      "detection_type": "configuration_check",
+      "sinks": [],
+      "sanitizers": [
+        "ssl_context.check_hostname = True"
+      ],
+      "description": "Validating the certificate authority but skipping hostname verification allows certificates for other domains to be accepted.",
+      "attack_vector": "Attacker presents a valid certificate for attacker.com to intercept traffic intended for target.com.",
+      "remediation": "Ensure ssl_context.check_hostname is set to True.",
+      "sources": [
+        "MITRE_Static",
+        "Bandit",
+        "Semgrep",
+        "CodeQL"
+      ],
+      "structural_checks": [
+        "ssl_context.check_hostname = False"
+      ]
+    },
+    "CWE-298": {
+      "name": "Impairment of Certificate Revocation Checking",
+      "category": "SSRF/Network",
+      "severity": "MEDIUM",
+      "detection_type": "ast_pattern",
+      "sinks": [
+        "urllib3.disable_warnings()",
+        "disable_revocation_checks"
+      ],
+      "sanitizers": [
+        "ca_bundle_with_crl"
+      ],
+      "description": "Silencing SSL certificate warnings hides critical security defects and compromised certificates.",
+      "attack_vector": "Using compromised or revoked certificates undetected because warnings are suppressed.",
+      "remediation": "Fix underlying certificate errors rather than silencing warnings.",
+      "sources": [
+        "MITRE_Static",
+        "Bandit",
+        "Semgrep"
+      ]
+    },
+    "CWE-300": {
+      "name": "Channel Accessible by Non-Endpoint ('Man-in-the-Middle')",
+      "category": "SSRF/Network",
+      "severity": "HIGH",
+      "detection_type": "ast_pattern",
+      "sinks": [
+        "http_url_literal_for_sensitive_service",
+        "insecure_endpoint_uri"
+      ],
+      "sanitizers": [
+        "enforce_https_urls",
+        "hsts_header"
+      ],
+      "description": "Configuring backend API integrations with unencrypted HTTP endpoints enables MITM manipulation.",
+      "attack_vector": "Intercepting unencrypted traffic between microservices on shared networks.",
+      "remediation": "Enforce HTTPS for all outgoing API and microservice calls.",
+      "sources": [
+        "MITRE_Static",
+        "Semgrep",
+        "CodeQL"
+      ]
+    },
+    "CWE-306": {
+      "name": "Missing Authentication for Critical Function",
+      "category": "Auth/Tokens",
+      "severity": "HIGH",
+      "detection_type": "semantic_rule",
+      "sinks": [
+        "route_missing_auth_decorator"
+      ],
+      "sanitizers": [
+        "@login_required",
+        "@jwt_required()",
+        "Depends(verify_auth)"
+      ],
+      "description": "Exposing administrative or sensitive functions without authentication checks.",
+      "attack_vector": "Unauthenticated attackers sending HTTP requests directly to private handler endpoints.",
+      "remediation": "Apply authentication decorators or middleware globally or on every sensitive route.",
+      "sources": [
+        "MITRE_Static",
+        "Semgrep",
+        "CodeQL"
+      ],
+      "structural_checks": [
+        "@app.route('/admin')"
+      ]
+    },
+    "CWE-307": {
+      "name": "Improper Restriction of Excessive Authentication Attempts",
+      "category": "Auth/Tokens",
+      "severity": "MEDIUM",
+      "detection_type": "semantic_rule",
+      "sinks": [
+        "login_endpoint_without_ratelimit"
+      ],
+      "sanitizers": [
+        "@limiter.limit('5/minute')",
+        "account_lockout_mechanism"
+      ],
+      "description": "Permitting unlimited login attempts allows automated credential stuffing and brute-force attacks.",
+      "attack_vector": "Automated brute-force password spraying against login endpoints.",
+      "remediation": "Implement IP- and user-based rate limiting on authentication routes.",
+      "sources": [
+        "MITRE_Static",
+        "Semgrep"
+      ]
+    },
+    "CWE-311": {
+      "name": "Missing Encryption of Sensitive Data",
+      "category": "SSRF/Network",
+      "severity": "HIGH",
+      "detection_type": "ast_pattern",
+      "sinks": [
+        "socket.socket()",
+        "raw_tcp_send"
+      ],
+      "sanitizers": [
+        "ssl.wrap_socket",
+        "ssl_context.wrap_socket"
+      ],
+      "description": "Transmitting sensitive application data over unencrypted raw TCP sockets.",
+      "attack_vector": "Eavesdropping on raw socket streams.",
+      "remediation": "Wrap sockets with SSLContext.wrap_socket() prior to transmitting sensitive data.",
+      "sources": [
+        "MITRE_Static",
+        "Semgrep",
+        "CodeQL"
+      ]
+    },
+    "CWE-312": {
+      "name": "Cleartext Storage of Sensitive Information",
+      "category": "Crypto",
+      "severity": "HIGH",
+      "detection_type": "taint_tracking",
+      "sinks": [
+        "db.save"
+      ],
+      "sanitizers": [
+        "bcrypt.hashpw",
+        "Fernet.encrypt",
+        "argon2.PasswordHasher"
+      ],
+      "description": "Storing plaintext credentials, credit cards, or PII in files or databases without encryption.",
+      "attack_vector": "Local file read or database leak exposing unencrypted credentials.",
+      "remediation": "Hash passwords using bcrypt/argon2; encrypt sensitive data at rest using authenticated ciphers.",
+      "sources": [
+        "MITRE_Static",
+        "Semgrep",
+        "CodeQL"
+      ],
+      "structural_checks": [
+        "open(cred_file, 'w').write(password)"
+      ]
+    },
+    "CWE-319": {
+      "name": "Cleartext Transmission of Sensitive Information",
+      "category": "Crypto",
+      "severity": "HIGH",
+      "detection_type": "ast_pattern",
+      "sinks": [
+        "ftplib.FTP",
+        "telnetlib.Telnet",
+        "http.client.HTTPConnection",
+        "urllib.request.urlopen"
+      ],
+      "sanitizers": [
+        "ftplib.FTP_TLS",
+        "ssl.create_default_context",
+        "https://"
+      ],
+      "description": "Transmitting sensitive credentials or communications over unencrypted protocols (FTP, Telnet, HTTP).",
+      "attack_vector": "Man-in-the-middle packet sniffing capturing credentials in cleartext.",
+      "remediation": "Enforce TLS for all network transmissions (HTTPS, SFTP, FTPS).",
+      "sources": [
+        "MITRE_Static",
+        "Bandit",
+        "Semgrep",
+        "CodeQL"
+      ]
+    },
+    "CWE-321": {
+      "name": "Use of Hard-coded Cryptographic Key",
+      "category": "Crypto",
+      "severity": "CRITICAL",
+      "detection_type": "ast_pattern",
+      "sinks": [
+        "AES.new",
+        "Fernet"
+      ],
+      "sanitizers": [
+        "os.environ.get('ENCRYPTION_KEY')",
+        "secrets_manager.get_key()"
+      ],
+      "description": "Hardcoding symmetric keys in source code allows anyone with repo access to decrypt all ciphertext.",
+      "attack_vector": "Extracting key from codebase or version history to decrypt stored data.",
+      "remediation": "Load keys dynamically from environment variables or a dedicated key management service (KMS).",
+      "sources": [
+        "MITRE_Static",
+        "Bandit",
+        "Semgrep",
+        "CodeQL"
+      ]
+    },
+    "CWE-326": {
+      "name": "Inadequate Encryption Strength",
+      "category": "Crypto",
+      "severity": "HIGH",
+      "detection_type": "ast_pattern",
+      "sinks": [
+        "Crypto.PublicKey.RSA.generate",
+        "rsa.generate_private_key"
+      ],
+      "sanitizers": [
+        "RSA.generate(2048)",
+        "RSA.generate(4096)",
+        "Ed25519"
+      ],
+      "description": "Generating cryptographic keys with insufficient key length (e.g. RSA < 2048 bits).",
+      "attack_vector": "Factorization of 1024-bit RSA keys using distributed computation.",
+      "remediation": "Use RSA keys of at least 2048 (preferably 4096) bits, or modern elliptic curves (Ed25519).",
+      "sources": [
+        "MITRE_Static",
+        "Bandit",
+        "Semgrep",
+        "CodeQL"
+      ]
+    },
+    "CWE-327": {
+      "name": "Use of a Broken or Risky Cryptographic Algorithm",
+      "category": "Crypto",
+      "severity": "HIGH",
+      "detection_type": "ast_pattern",
+      "sinks": [
+        "hashlib.md5",
+        "hashlib.sha1",
+        "Crypto.Cipher.DES",
+        "Crypto.Cipher.ARC4",
+        "Crypto.Cipher.Blowfish",
+        "cryptography.hazmat.primitives.ciphers.algorithms.TripleDES"
+      ],
+      "sanitizers": [
+        "hashlib.sha256",
+        "hashlib.sha3_256",
+        "AES.new(..., AES.MODE_GCM)"
+      ],
+      "description": "Using obsolete or broken ciphers and hashes (MD5, SHA1, DES, RC4) compromises confidentiality and integrity.",
+      "attack_vector": "Collision attacks against MD5/SHA1 or key-recovery attacks against single-DES/RC4.",
+      "remediation": "Migrate to AES-GCM or ChaCha20-Poly1305 for ciphers, and SHA-256/SHA-3 for hashing.",
+      "sources": [
+        "MITRE_Static",
+        "Bandit",
+        "Semgrep",
+        "CodeQL"
+      ]
+    },
+    "CWE-328": {
+      "name": "Use of Weak Hash",
+      "category": "Crypto",
+      "severity": "MEDIUM",
+      "detection_type": "ast_pattern",
+      "sinks": [
+        "hashlib.md5",
+        "hashlib.sha1",
+        "Crypto.Hash.MD4",
+        "Crypto.Hash.MD5",
+        "Crypto.Hash.SHA1"
+      ],
+      "sanitizers": [
+        "hashlib.sha256",
+        "hashlib.sha512",
+        "hashlib.blake2b"
+      ],
+      "description": "Employing collision-vulnerable hash algorithms (MD5, SHA-1) in cryptographic verification contexts.",
+      "attack_vector": "Generating colliding documents or forged certificates.",
+      "remediation": "Use SHA-256, SHA-512, or BLAKE2b for secure hashing.",
+      "sources": [
+        "MITRE_Static",
+        "Bandit",
+        "Semgrep",
+        "CodeQL"
+      ]
+    },
+    "CWE-329": {
+      "name": "Generation of Predictable IV with CBC Mode",
+      "category": "Crypto",
+      "severity": "HIGH",
+      "detection_type": "ast_pattern",
+      "sinks": [
+        "Crypto.Cipher.AES.new",
+        "AES.new"
+      ],
+      "sanitizers": [
+        "os.urandom(16)",
+        "secrets.token_bytes(16)"
+      ],
+      "description": "Reusing static or predictable Initialization Vectors (IVs) in CBC mode leaks plaintext equivalence.",
+      "attack_vector": "Chosen-plaintext attacks and block boundary analysis against deterministic IVs.",
+      "remediation": "Generate a unique, cryptographically random IV for every encryption using os.urandom(16).",
+      "sources": [
+        "MITRE_Static",
+        "Semgrep",
+        "CodeQL"
+      ]
+    },
+    "CWE-330": {
+      "name": "Use of Insufficiently Random Values",
+      "category": "Crypto",
+      "severity": "MEDIUM",
+      "detection_type": "ast_pattern",
+      "sinks": [
+        "random.seed",
+        "random.Random"
+      ],
+      "sanitizers": [
+        "secrets.SystemRandom",
+        "os.urandom"
+      ],
+      "description": "Seeding PRNGs with low-entropy sources (timestamps, PIDs) generates predictable pseudorandom streams.",
+      "attack_vector": "Brute-forcing seed space to predict session identifiers or verification codes.",
+      "remediation": "Use system CSPRNG (secrets.SystemRandom or os.urandom) without manual pseudo-seeding.",
+      "sources": [
+        "MITRE_Static",
+        "Bandit",
+        "Semgrep"
+      ]
+    },
+    "CWE-335": {
+      "name": "Incorrect Usage of Seeds in PRNG",
+      "category": "Crypto",
+      "severity": "MEDIUM",
+      "detection_type": "ast_pattern",
+      "sinks": [
+        "random.seed"
+      ],
+      "sanitizers": [
+        "secrets.SystemRandom",
+        "os.urandom"
+      ],
+      "description": "Using deterministic or coarse-grained time seeds resets PRNG output sequences to predictable states.",
+      "attack_vector": "Timing analysis allows attackers to reconstruct random sequences and predict security tokens.",
+      "remediation": "Do not manually re-seed PRNGs; rely on OS-level entropy pools.",
+      "sources": [
+        "MITRE_Static",
+        "Bandit",
+        "Semgrep"
+      ],
+      "structural_checks": [
+        "random.seed(int(time.time()))"
+      ]
+    },
+    "CWE-338": {
+      "name": "Use of Cryptographically Feeble PRNG",
+      "category": "Crypto",
+      "severity": "MEDIUM",
+      "detection_type": "semantic_rule",
+      "sinks": [
+        "random.random",
+        "random.randint",
+        "random.choice",
+        "random.randrange",
+        "random.sample",
+        "numpy.random.rand"
+      ],
+      "sanitizers": [
+        "secrets.token_hex",
+        "secrets.token_urlsafe",
+        "secrets.choice",
+        "os.urandom"
+      ],
+      "description": "Using Python's standard random module (Mersenne Twister) for security-sensitive tokens, passwords, or keys.",
+      "attack_vector": "Predicting past and future outputs of Mersenne Twister after observing 624 outputs.",
+      "remediation": "Use the standard secrets module or os.urandom() for all security credentials.",
+      "sources": [
+        "MITRE_Static",
+        "Bandit",
+        "Semgrep",
+        "CodeQL"
+      ]
+    },
+    "CWE-345": {
+      "name": "Insufficient Verification of Data Authenticity",
+      "category": "Crypto",
+      "severity": "MEDIUM",
+      "detection_type": "ast_pattern",
+      "sinks": [],
+      "sanitizers": [
+        "hmac.new(key, data, hashlib.sha256)",
+        "cryptography.fernet"
+      ],
+      "description": "Verifying data integrity using plain hashes rather than keyed cryptographic signatures or MACs.",
+      "attack_vector": "An active attacker modifies data and re-computes the unauthenticated hash.",
+      "remediation": "Use HMAC (hash-based message authentication code) with a shared secret key.",
+      "sources": [
+        "MITRE_Static",
+        "Semgrep",
+        "CodeQL"
+      ],
+      "structural_checks": [
+        "hashlib.sha256(data).digest()"
+      ]
+    },
+    "CWE-346": {
+      "name": "Origin Validation Error (WebSocket / CORS)",
+      "category": "Crypto",
+      "severity": "MEDIUM",
+      "detection_type": "semantic_rule",
+      "sinks": [
+        "websocket.accept",
+        "cross_domain_post_message"
+      ],
+      "sanitizers": [
+        "validate_origin(origin, allowed_domains)"
+      ],
+      "description": "Failing to validate the Origin header in WebSocket connections allows cross-site hijacking.",
+      "attack_vector": "Malicious webpage opening WebSocket connections to authenticated backend on user's behalf.",
+      "remediation": "Inspect and whitelist the Origin header on incoming WebSocket handshake requests.",
+      "sources": [
+        "MITRE_Static",
+        "Semgrep"
+      ]
+    },
+    "CWE-347": {
+      "name": "Improper Verification of Cryptographic Signature",
+      "category": "Crypto",
+      "severity": "CRITICAL",
+      "detection_type": "configuration_check",
+      "sinks": [
+        "jwt.decode"
+      ],
+      "sanitizers": [
+        "jwt.decode(token, key, algorithms=['HS256'])",
+        "verify_signature=True"
+      ],
+      "description": "Decoding JSON Web Tokens without signature verification enables arbitrary token tampering.",
+      "attack_vector": "Modifying JWT payload claims (e.g. sub=admin) without possessing the signing key.",
+      "remediation": "Always verify signatures with explicit key and approved algorithm list.",
+      "sources": [
+        "MITRE_Static",
+        "Semgrep",
+        "CodeQL"
+      ]
+    },
+    "CWE-352": {
+      "name": "Cross-Site Request Forgery (CSRF)",
+      "category": "Auth/Tokens",
+      "severity": "HIGH",
+      "detection_type": "configuration_check",
+      "sinks": [
+        "CSRFProtect.exempt",
+        "csrf_protection_disabled"
+      ],
+      "sanitizers": [
+        "flask_wtf.csrf.CSRFProtect",
+        "django.middleware.csrf.CsrfViewMiddleware"
+      ],
+      "description": "Disabling CSRF middleware or exempting state-changing routes allows malicious sites to forge user actions.",
+      "attack_vector": "Victim browser tricked into submitting unauthorized POST requests to banking or account settings.",
+      "remediation": "Enable global CSRF protection middleware and validate anti-CSRF tokens on all state-changing requests.",
+      "sources": [
+        "MITRE_Static",
+        "Semgrep",
+        "CodeQL"
+      ],
+      "structural_checks": [
+        "@csrf_exempt"
+      ]
+    },
+    "CWE-353": {
+      "name": "Missing Support for Integrity Check",
+      "category": "Crypto",
+      "severity": "MEDIUM",
+      "detection_type": "semantic_rule",
+      "sinks": [
+        "pickle.loads",
+        "marshal.loads"
+      ],
+      "sanitizers": [
+        "hmac.compare_digest(calculated_mac, expected_mac)"
+      ],
+      "description": "Receiving and processing serialized objects over untrusted channels without verifying MAC signatures.",
+      "attack_vector": "Tampering with transmitted payload in-transit without detection.",
+      "remediation": "Wrap untrusted payloads in HMAC-SHA256 signatures and verify before decoding.",
+      "sources": [
+        "MITRE_Static",
+        "Semgrep"
+      ]
+    },
+    "CWE-377": {
+      "name": "Insecure Temporary File",
+      "category": "File/OS",
+      "severity": "HIGH",
+      "detection_type": "ast_pattern",
+      "sinks": [
+        "tempfile.mktemp",
+        "os.tempnam",
+        "os.tmpnam"
+      ],
+      "sanitizers": [
+        "tempfile.NamedTemporaryFile",
+        "tempfile.mkstemp",
+        "tempfile.TemporaryDirectory"
+      ],
+      "description": "Using insecure temporary file functions that generate predictable filenames subject to race conditions.",
+      "attack_vector": "Symlink race condition (TOCTOU) hijacking temporary file creation to overwrite arbitrary files.",
+      "remediation": "Use tempfile.NamedTemporaryFile() or tempfile.mkstemp() with O_EXCL.",
+      "sources": [
+        "MITRE_Static",
+        "Bandit",
+        "Semgrep",
+        "CodeQL"
+      ],
+      "structural_checks": [
+        "/tmp/hardcoded_filename"
+      ]
+    },
+    "CWE-379": {
+      "name": "Creation of Temporary File in Directory with Incorrect Permissions",
+      "category": "File/OS",
+      "severity": "MEDIUM",
+      "detection_type": "ast_pattern",
+      "sinks": [
+        "tempfile.mkstemp",
+        "tempfile.NamedTemporaryFile"
+      ],
+      "sanitizers": [
+        "tempfile.TemporaryDirectory()",
+        "dedicated_secure_tempdir"
+      ],
+      "description": "Creating temporary files in shared directories (/tmp) where local attackers can manipulate filesystem objects.",
+      "attack_vector": "Local unprivileged users observing filenames and attempting race condition attacks.",
+      "remediation": "Use private temporary directories with 0700 permissions restricted to the running user.",
+      "sources": [
+        "MITRE_Static",
+        "Bandit",
+        "Semgrep"
+      ]
+    },
+    "CWE-390": {
+      "name": "Detection of Error Condition Without Action",
+      "category": "File/OS",
+      "severity": "LOW",
+      "detection_type": "ast_pattern",
+      "sinks": [
+        "try_except_pass_on_security_check"
+      ],
+      "sanitizers": [
+        "raise_security_error",
+        "fail_closed"
+      ],
+      "description": "Catching security-critical exceptions (token expiration, auth failure) and silently continuing execution.",
+      "attack_vector": "Authentication check fails with exception, but code continues into protected functionality.",
+      "remediation": "Fail closed: when an authorization or validation error occurs, abort execution immediately.",
+      "sources": [
+        "MITRE_Static",
+        "Bandit",
+        "Semgrep"
+      ]
+    },
+    "CWE-400": {
+      "name": "Uncontrolled Resource Consumption ('Resource Exhaustion')",
+      "category": "File/OS",
+      "severity": "HIGH",
+      "detection_type": "ast_pattern",
+      "sinks": [
+        "file.read",
+        "stream.read",
+        "sys.stdin.read",
+        "request.body"
+      ],
+      "sanitizers": [
+        "file.read(chunk_size)",
+        "MAX_CONTENT_LENGTH",
+        "streaming_iteration"
+      ],
+      "description": "Reading entire streams or files into memory without size limits causes Out-Of-Memory denial of service.",
+      "attack_vector": "Submitting multi-gigabyte files to endpoints performing unbounded f.read().",
+      "remediation": "Read data in fixed-size chunks (e.g. f.read(65536)) and enforce request payload limits.",
+      "sources": [
+        "MITRE_Static",
+        "Bandit",
+        "Semgrep",
+        "CodeQL"
+      ]
+    },
+    "CWE-404": {
+      "name": "Improper Resource Shutdown or Release",
+      "category": "File/OS",
+      "severity": "LOW",
+      "detection_type": "ast_pattern",
+      "sinks": [
+        "open_without_context_manager",
+        "socket_without_close"
+      ],
+      "sanitizers": [
+        "with open(...) as f:",
+        "contextlib.closing"
+      ],
+      "description": "Failing to release file handles, locks, or sockets after use leads to system resource exhaustion.",
+      "attack_vector": "Triggering repetitive operations that exhaust the process file descriptor table.",
+      "remediation": "Always manage system resources within Python 'with' context managers.",
+      "sources": [
+        "MITRE_Static",
+        "Semgrep"
+      ]
+    },
+    "CWE-409": {
+      "name": "Improper Handling of Highly Compressed Data ('Zip Bomb' / Tar Slip)",
+      "category": "File/OS",
+      "severity": "HIGH",
+      "detection_type": "ast_pattern",
+      "sinks": [
+        "zipfile.ZipFile.extractall",
+        "tarfile.TarFile.extractall",
+        "gzip.decompress"
+      ],
+      "sanitizers": [
+        "tarfile.data_filter",
+        "safe_tar_extract",
+        "zip_extract_containment"
+      ],
+      "description": "Extracting archives without checking for path traversal filenames or expansion ratios causes disk exhaustion or file overwrite.",
+      "attack_vector": "Malicious zip/tar archives with member filenames starting with '../' or huge uncompressed sizes.",
+      "remediation": "Use tarfile.data_filter (Python 3.12+) or manually validate archive member names and total extracted bytes.",
+      "sources": [
+        "MITRE_Static",
+        "Bandit",
+        "Semgrep",
+        "CodeQL"
+      ]
+    },
+    "CWE-426": {
+      "name": "Untrusted Search Path",
+      "category": "File/OS",
+      "severity": "HIGH",
+      "detection_type": "ast_pattern",
+      "sinks": [
+        "ctypes.CDLL",
+        "sys.path.append"
+      ],
+      "sanitizers": [
+        "absolute_binary_path",
+        "explicit_dll_directory"
+      ],
+      "description": "Searching for executables or DLLs in untrusted or relative directories allows binary hijacking.",
+      "attack_vector": "Planting a malicious executable in the current working directory.",
+      "remediation": "Specify absolute paths to system binaries or use safe PATH configurations.",
+      "sources": [
+        "MITRE_Static",
+        "Bandit",
+        "Semgrep",
+        "CodeQL"
+      ],
+      "structural_checks": [
+        "os.environ['PATH']"
+      ]
+    },
+    "CWE-427": {
+      "name": "Uncontrolled Search Path Element",
+      "category": "File/OS",
+      "severity": "HIGH",
+      "detection_type": "ast_pattern",
+      "sinks": [
+        "sys.path.insert"
+      ],
+      "sanitizers": [
+        "hardcoded_sys_path",
+        "isolated_virtualenv"
+      ],
+      "description": "Inserting mutable or user-writable folders into sys.path enables arbitrary Python module hijacking.",
+      "attack_vector": "Placing a malicious module (e.g. requests.py) in the user-controlled folder.",
+      "remediation": "Never prepend user-controlled or world-writable directories to sys.path.",
+      "sources": [
+        "MITRE_Static",
+        "Semgrep",
+        "CodeQL"
+      ],
+      "structural_checks": [
+        "os.environ['PYTHONPATH']"
+      ]
+    },
+    "CWE-440": {
+      "name": "Expected Behavior Violation ('Httpoxy')",
+      "category": "SSRF/Network",
+      "severity": "MEDIUM",
+      "detection_type": "configuration_check",
+      "sinks": [
+        "os.environ.get",
+        "import_httpoxy"
+      ],
+      "sanitizers": [
+        "strip_proxy_header",
+        "explicit_proxy_config"
+      ],
+      "description": "CGI/WSGI applications converting HTTP 'Proxy' headers into HTTP_PROXY environment variables allows traffic hijacking.",
+      "attack_vector": "Attacker supplies 'Proxy: attacker-proxy.com' to redirect all outgoing requests.",
+      "remediation": "Strip incoming 'Proxy' headers at the web server gateway.",
+      "sources": [
+        "MITRE_Static",
+        "Bandit",
+        "Semgrep"
+      ]
+    },
+    "CWE-441": {
+      "name": "Unintended Proxy or Intermediary ('Confused Deputy')",
+      "category": "SSRF/Network",
+      "severity": "HIGH",
+      "detection_type": "taint_tracking",
+      "sinks": [
+        "requests.request",
+        "urllib.request.Request"
+      ],
+      "sanitizers": [
+        "strict_url_whitelist",
+        "disallow_internal_redirects"
+      ],
+      "description": "Acting as an open proxy forwarding user requests without destination restrictions.",
+      "attack_vector": "Using the server as an intermediary to attack third parties or bypass IP restrictions.",
+      "remediation": "Do not implement general-purpose URL forwarders; strictly whitelist destinations.",
+      "sources": [
+        "MITRE_Static",
+        "Semgrep",
+        "CodeQL"
+      ]
+    },
+    "CWE-470": {
+      "name": "Use of Externally-Controlled Input to Select Classes or Code ('Unsafe Reflection')",
+      "category": "Injection",
+      "severity": "HIGH",
+      "detection_type": "taint_tracking",
+      "sinks": [
+        "getattr",
+        "importlib.import_module",
+        "__import__"
+      ],
+      "sanitizers": [
+        "allowlist_class_dispatcher",
+        "safe_attribute_mapping"
+      ],
+      "description": "Using untrusted strings to lookup classes, methods, or modules via getattr() or importlib.",
+      "attack_vector": "Attacker supplies internal method names like '__del__' or private helper methods.",
+      "remediation": "Map user choices through a hardcoded dictionary whitelist of allowed functions.",
+      "sources": [
+        "MITRE_Static",
+        "CodeQL"
+      ],
+      "structural_checks": [
+        "globals().__getitem__"
+      ]
+    },
+    "CWE-489": {
+      "name": "Active Debug Code in Production",
+      "category": "File/OS",
+      "severity": "HIGH",
+      "detection_type": "configuration_check",
+      "sinks": [
+        "flask.Flask.run"
+      ],
+      "sanitizers": [
+        "production_config_class",
+        "disable_debug_in_prod"
+      ],
+      "description": "Deploying web applications with active debug endpoints or diagnostic backdoors.",
+      "attack_vector": "Exploiting diagnostic routes or debug profiling endpoints to extract state.",
+      "remediation": "Separate dev and production configuration classes; ensure debug flags default to False.",
+      "sources": [
+        "MITRE_Static",
+        "Bandit",
+        "Semgrep",
+        "CodeQL"
+      ],
+      "structural_checks": [
+        "django.conf.settings.DEBUG = True"
+      ]
+    },
+    "CWE-502": {
+      "name": "Deserialization of Untrusted Data",
+      "category": "Injection",
+      "severity": "CRITICAL",
+      "detection_type": "taint_tracking",
+      "sinks": [
+        "pickle.loads",
+        "pickle.load",
+        "_pickle.loads",
+        "_pickle.load",
+        "yaml.load",
+        "yaml.unsafe_load",
+        "shelve.open",
+        "marshal.loads",
+        "jsonpickle.decode",
+        "dill.loads",
+        "joblib.load",
+        "torch.load"
+      ],
+      "sanitizers": [
+        "json.loads",
+        "yaml.safe_load",
+        "torch.load(weights_only=True)",
+        "safetensors.torch.load_file"
+      ],
+      "description": "Deserializing untrusted pickle, yaml, or marshal payloads executes arbitrary code via __reduce__.",
+      "attack_vector": "Crafted pickle or YAML payload with __reduce__ invoking os.system.",
+      "remediation": "Use safe serializers like json, yaml.safe_load(), or safetensors.",
+      "sources": [
+        "MITRE_Static",
+        "Bandit",
+        "Semgrep",
+        "CodeQL"
+      ]
+    },
+    "CWE-521": {
+      "name": "Weak Password Requirements",
+      "category": "Auth/Tokens",
+      "severity": "LOW",
+      "detection_type": "configuration_check",
+      "sinks": [
+        "password_validation_length_less_than_8"
+      ],
+      "sanitizers": [
+        "validate_password_complexity",
+        "zxcvbn_scoring"
+      ],
+      "description": "Allowing short or trivial passwords facilitates dictionary and credential guessing attacks.",
+      "attack_vector": "Users selecting common passwords like '123456' that are cracked in seconds.",
+      "remediation": "Enforce minimum password length (at least 12 characters) and check against breached password lists.",
+      "sources": [
+        "MITRE_Static",
+        "Semgrep"
+      ]
+    },
+    "CWE-522": {
+      "name": "Insufficiently Protected Credentials",
+      "category": "Auth/Tokens",
+      "severity": "HIGH",
+      "detection_type": "ast_pattern",
+      "sinks": [
+        "base64.b64encode",
+        "cleartext_credential_storage"
+      ],
+      "sanitizers": [
+        "argon2.PasswordHasher",
+        "bcrypt.hashpw"
+      ],
+      "description": "Encoding passwords with reversible schemes like Base64 or storing them in plain text.",
+      "attack_vector": "Reversing Base64 strings to obtain original credentials.",
+      "remediation": "Use one-way salted adaptive hashing algorithms (Argon2, bcrypt).",
+      "sources": [
+        "MITRE_Static",
+        "Semgrep",
+        "CodeQL"
+      ]
+    },
+    "CWE-554": {
+      "name": "Session State Without Integrity or Encryption",
+      "category": "SSRF/Network",
+      "severity": "MEDIUM",
+      "detection_type": "configuration_check",
+      "sinks": [
+        "unencrypted_client_session"
+      ],
+      "sanitizers": [
+        "itsdangerous.URLSafeTimedSerializer",
+        "server_side_session_store"
+      ],
+      "description": "Storing session state in cookies without cryptographic signatures or encryption allows session tampering.",
+      "attack_vector": "Modifying session payload to alter user IDs or permissions.",
+      "remediation": "Use signed session cookies or server-side session stores (Redis).",
+      "sources": [
+        "MITRE_Static",
+        "Semgrep"
+      ]
+    },
+    "CWE-601": {
+      "name": "URL Redirection to Untrusted Site ('Open Redirect')",
+      "category": "Auth/Tokens",
+      "severity": "MEDIUM",
+      "detection_type": "taint_tracking",
+      "sinks": [
+        "flask.redirect",
+        "django.shortcuts.redirect",
+        "bottle.redirect",
+        "web.seeother"
+      ],
+      "sanitizers": [
+        "is_safe_url",
+        "url_has_allowed_host_and_scheme",
+        "relative_url_enforcement"
+      ],
+      "description": "Redirecting users to untrusted URL parameters facilitates convincing phishing attacks.",
+      "attack_vector": "https://example.com/login?next=https://attacker-phishing.com",
+      "remediation": "Validate target redirection URLs against an allowed domain whitelist, or restrict to relative paths.",
+      "sources": [
+        "MITRE_Static",
+        "Semgrep",
+        "CodeQL"
+      ]
+    },
+    "CWE-605": {
+      "name": "Multiple Binds to the Same Port",
+      "category": "SSRF/Network",
+      "severity": "LOW",
+      "detection_type": "configuration_check",
+      "sinks": [
+        "socket.SO_REUSEPORT",
+        "socket.SO_REUSEADDR"
+      ],
+      "sanitizers": [
+        "exclusive_socket_binding"
+      ],
+      "description": "Enabling SO_REUSEPORT without proper user isolation can allow another local process to hijack incoming connections.",
+      "attack_vector": "Co-located malicious process binding to same port to steal incoming requests.",
+      "remediation": "Avoid port reuse flags unless running in dedicated isolated containers.",
+      "sources": [
+        "MITRE_Static",
+        "Semgrep"
+      ]
+    },
+    "CWE-611": {
+      "name": "XML External Entity (XXE) Injection",
+      "category": "Injection",
+      "severity": "HIGH",
+      "detection_type": "ast_pattern",
+      "sinks": [
+        "xml.etree.ElementTree.parse",
+        "xml.etree.ElementTree.fromstring",
+        "xml.dom.minidom.parse",
+        "xml.dom.pulldom.parse",
+        "lxml.etree.parse",
+        "lxml.etree.fromstring",
+        "xml.sax.parse",
+        "xml.sax.parseString"
+      ],
+      "sanitizers": [
+        "defusedxml.ElementTree.parse",
+        "defusedxml.fromstring",
+        "defusedxml.minidom.parse",
+        "XMLParser(resolve_entities=False)"
+      ],
+      "description": "Parsing untrusted XML documents with external entity resolution enabled leads to file disclosure or SSRF.",
+      "attack_vector": "<!ENTITY xxe SYSTEM 'file:///etc/passwd'> in XML payload.",
+      "remediation": "Use defusedxml package or disable entity resolution in XML parsers.",
+      "sources": [
+        "MITRE_Static",
+        "Bandit",
+        "Semgrep",
+        "CodeQL"
+      ]
+    },
+    "CWE-614": {
+      "name": "Sensitive Cookie in HTTPS Session Without 'Secure' Attribute",
+      "category": "Auth/Tokens",
+      "severity": "MEDIUM",
+      "detection_type": "configuration_check",
+      "sinks": [
+        "response.set_cookie"
+      ],
+      "sanitizers": [
+        "secure=True",
+        "SESSION_COOKIE_SECURE = True"
+      ],
+      "description": "Setting authentication or session cookies without the 'Secure' flag allows transmission over unencrypted HTTP.",
+      "attack_vector": "Network eavesdropper intercepting session cookie over cleartext HTTP requests.",
+      "remediation": "Always set secure=True for all session and authentication cookies.",
+      "sources": [
+        "MITRE_Static",
+        "Semgrep",
+        "CodeQL"
+      ],
+      "structural_checks": [
+        "SESSION_COOKIE_SECURE = False"
+      ]
+    },
+    "CWE-617": {
+      "name": "Reachable Assertion",
+      "category": "File/OS",
+      "severity": "LOW",
+      "detection_type": "ast_pattern",
+      "sinks": [
+        "assert_used_for_validation"
+      ],
+      "sanitizers": [
+        "if not condition: raise ValueError(...)"
+      ],
+      "description": "Using Python 'assert' statements for input validation; assertions are stripped when running with python -O.",
+      "attack_vector": "Running with optimization flag (-O) disables assertions, bypassing all access control checks.",
+      "remediation": "Use explicit if-statements raising appropriate exceptions (ValueError, PermissionError).",
+      "sources": [
+        "MITRE_Static",
+        "Bandit",
+        "Semgrep",
+        "CodeQL"
+      ]
+    },
+    "CWE-643": {
+      "name": "XPath Injection",
+      "category": "Injection",
+      "severity": "HIGH",
+      "detection_type": "taint_tracking",
+      "sinks": [
+        "lxml.etree.XPath",
+        "xml.dom.minidom"
+      ],
+      "sanitizers": [
+        "xpath_variable_binding",
+        "xpath_quote_literal"
+      ],
+      "description": "Constructing XPath expressions using string concatenation allows manipulating node selection.",
+      "attack_vector": "XPath query syntax injected to bypass authentication or extract sensitive XML nodes.",
+      "remediation": "Use parameterized XPath variables with lxml.etree.XPath(query, ...).",
+      "sources": [
+        "MITRE_Static",
+        "Semgrep",
+        "CodeQL"
+      ],
+      "structural_checks": [
+        "lxml.etree.fromstring().xpath",
+        "xml.etree.ElementTree.fromstring().findall"
+      ]
+    },
+    "CWE-644": {
+      "name": "Improper Neutralization of HTTP Headers for Scripting Syntax ('Host Header Injection')",
+      "category": "SSRF/Network",
+      "severity": "MEDIUM",
+      "detection_type": "taint_tracking",
+      "sinks": [
+        "request.host",
+        "request.headers.get"
+      ],
+      "sanitizers": [
+        "django.http.HttpRequest.get_host()",
+        "ALLOWED_HOSTS_whitelist"
+      ],
+      "description": "Trusting the client-supplied Host header to generate password reset links enables account takeover.",
+      "attack_vector": "Supplying Host: evil.com causing password reset link to point to evil.com/reset-password.",
+      "remediation": "Configure a strict ALLOWED_HOSTS whitelist and do not generate URLs solely from the Host header.",
+      "sources": [
+        "MITRE_Static",
+        "Semgrep",
+        "CodeQL"
+      ]
+    },
+    "CWE-668": {
+      "name": "Exposure of Resource to Wrong Sphere",
+      "category": "SSRF/Network",
+      "severity": "HIGH",
+      "detection_type": "configuration_check",
+      "sinks": [
+        "app.run"
+      ],
+      "sanitizers": [
+        "loopback_binding",
+        "reverse_proxy_auth"
+      ],
+      "description": "Exposing internal debugging or administrative interfaces directly to external networks.",
+      "attack_vector": "External attackers connecting directly to unprotected debug consoles.",
+      "remediation": "Confine administrative endpoints behind firewalls or reverse proxies with authentication.",
+      "sources": [
+        "MITRE_Static",
+        "Bandit",
+        "Semgrep"
+      ]
+    },
+    "CWE-669": {
+      "name": "Incorrect Resource Transfer Between Spheres",
+      "category": "SSRF/Network",
+      "severity": "LOW",
+      "detection_type": "configuration_check",
+      "sinks": [
+        "socket_descriptor_inheritance",
+        "leaked_child_descriptors"
+      ],
+      "sanitizers": [
+        "os.set_inheritable(fd, False)",
+        "subprocess_close_fds_true"
+      ],
+      "description": "Leaking socket or network file descriptors into untrusted child processes via inheritance.",
+      "attack_vector": "Child process utilizing inherited socket descriptors to communicate with internal networks.",
+      "remediation": "Set close_fds=True when invoking subprocesses.",
+      "sources": [
+        "MITRE_Static",
+        "Semgrep"
+      ]
+    },
+    "CWE-703": {
+      "name": "Improper Check or Handling of Exceptional Conditions",
+      "category": "File/OS",
+      "severity": "LOW",
+      "detection_type": "ast_pattern",
+      "sinks": [
+        "bare_except_pass"
+      ],
+      "sanitizers": [
+        "specific_exception_handling",
+        "logging.exception"
+      ],
+      "description": "Silencing all exceptions with bare 'except: pass' hides critical security or database failures.",
+      "attack_vector": "Attacker triggers an error that fails open because exception handling is completely suppressed.",
+      "remediation": "Catch specific exception classes and log failures explicitly.",
+      "sources": [
+        "MITRE_Static",
+        "Bandit",
+        "Semgrep"
+      ],
+      "structural_checks": [
+        "except Exception: pass"
+      ]
+    },
+    "CWE-732": {
+      "name": "Incorrect Permission Assignment for Critical Resource",
+      "category": "File/OS",
+      "severity": "HIGH",
+      "detection_type": "ast_pattern",
+      "sinks": [
+        "os.chmod",
+        "os.umask"
+      ],
+      "sanitizers": [
+        "os.chmod(path, 0o600)",
+        "os.chmod(path, 0o640)"
+      ],
+      "description": "Assigning overly permissive permissions (e.g. 0777 or 0666) to files allows unauthorized local users to read/modify them.",
+      "attack_vector": "Local unprivileged users reading sensitive configs or injecting malicious code into world-writable files.",
+      "remediation": "Use restrictive file permissions (0600 for secrets, 0640 or 0750 for group-shared resources).",
+      "sources": [
+        "MITRE_Static",
+        "Bandit",
+        "Semgrep",
+        "CodeQL"
+      ],
+      "structural_checks": [
+        "stat.S_IRWXU | stat.S_IRWXG | stat.S_IRWXO"
+      ]
+    },
+    "CWE-754": {
+      "name": "Improper Check for Unusual or Exceptional Conditions in Network Stream",
+      "category": "SSRF/Network",
+      "severity": "LOW",
+      "detection_type": "ast_pattern",
+      "sinks": [
+        "socket.recv_without_eof_check"
+      ],
+      "sanitizers": [
+        "if not data: break",
+        "handle_connection_reset"
+      ],
+      "description": "Reading from sockets in loops without handling EOF or connection reset conditions.",
+      "attack_vector": "Closing connection causing server to spin in 100% CPU infinite loop reading 0 bytes.",
+      "remediation": "Check if returned bytes are empty and break loop when connection is closed.",
+      "sources": [
+        "MITRE_Static",
+        "Semgrep"
+      ]
+    },
+    "CWE-757": {
+      "name": "Selection of Less-Secure Algorithm During Negotiation",
+      "category": "Crypto",
+      "severity": "HIGH",
+      "detection_type": "configuration_check",
+      "sinks": [
+        "ssl.PROTOCOL_SSLv23",
+        "ssl.PROTOCOL_TLSv1",
+        "ssl.PROTOCOL_SSLv3"
+      ],
+      "sanitizers": [
+        "ssl.PROTOCOL_TLS_CLIENT",
+        "ssl.TLSVersion.TLSv1_3"
+      ],
+      "description": "Enabling obsolete SSL/TLS protocol versions (SSLv2, SSLv3, TLS 1.0, TLS 1.1) vulnerable to downgrade attacks.",
+      "attack_vector": "POODLE or BEAST downgrade attacks forcing insecure legacy protocol suites.",
+      "remediation": "Configure ssl.PROTOCOL_TLS_CLIENT and set minimum_version to TLSv1_2 or TLSv1_3.",
+      "sources": [
+        "MITRE_Static",
+        "Bandit",
+        "Semgrep"
+      ]
+    },
+    "CWE-759": {
+      "name": "Use of a One-Way Hash without a Salt",
+      "category": "Crypto",
+      "severity": "HIGH",
+      "detection_type": "ast_pattern",
+      "sinks": [
+        "hashlib.md5"
+      ],
+      "sanitizers": [
+        "bcrypt.hashpw(password, bcrypt.gensalt())",
+        "hashlib.pbkdf2_hmac"
+      ],
+      "description": "Hashing passwords without unique per-user cryptographic salts enables lookup table attacks.",
+      "attack_vector": "Precomputed rainbow tables matching common unsalted password digests.",
+      "remediation": "Always generate a cryptographically random salt (at least 16 bytes) per credential.",
+      "sources": [
+        "MITRE_Static",
+        "Semgrep",
+        "CodeQL"
+      ],
+      "structural_checks": [
+        "hashlib.sha256(password.encode())"
+      ]
+    },
+    "CWE-760": {
+      "name": "Use of a One-Way Hash with a Predictable Salt",
+      "category": "Crypto",
+      "severity": "HIGH",
+      "detection_type": "ast_pattern",
+      "sinks": [
+        "hashlib.pbkdf2_hmac"
+      ],
+      "sanitizers": [
+        "os.urandom(16)",
+        "secrets.token_bytes(16)"
+      ],
+      "description": "Employing static, hardcoded, or easily guessable salts across multiple password hashes.",
+      "attack_vector": "Generating a single rainbow table targeted against the known static salt.",
+      "remediation": "Generate random, unique salts per user via os.urandom(16).",
+      "sources": [
+        "MITRE_Static",
+        "Semgrep",
+        "CodeQL"
+      ],
+      "structural_checks": [
+        "pbkdf2_hmac(..., salt=username.encode())"
+      ]
+    },
+    "CWE-770": {
+      "name": "Allocation of Resources Without Limits or Throttling",
+      "category": "File/OS",
+      "severity": "MEDIUM",
+      "detection_type": "ast_pattern",
+      "sinks": [
+        "asyncio.gather",
+        "ThreadPoolExecutor"
+      ],
+      "sanitizers": [
+        "asyncio.Semaphore(max_concurrent)",
+        "rate_limiter"
+      ],
+      "description": "Spawning unbounded threads, tasks, or worker processes on external input exhausts host memory and threads.",
+      "attack_vector": "Flooding service with concurrent requests that cause thread or process starvation.",
+      "remediation": "Apply concurrency limits using semaphores, bounded thread pools, and rate limiting.",
+      "sources": [
+        "MITRE_Static",
+        "CodeQL"
+      ]
+    },
+    "CWE-775": {
+      "name": "Missing Release of File Descriptor or Handle after Effective Lifetime",
+      "category": "File/OS",
+      "severity": "LOW",
+      "detection_type": "ast_pattern",
+      "sinks": [
+        "socket.socket",
+        "os.open"
+      ],
+      "sanitizers": [
+        "contextlib.closing",
+        "with statement"
+      ],
+      "description": "Leaking socket or low-level file handles across long-running daemon lifecycles.",
+      "attack_vector": "Denial of service via file descriptor exhaustion (EMFILE).",
+      "remediation": "Ensure all low-level sockets and descriptors are closed in try/finally blocks.",
+      "sources": [
+        "MITRE_Static",
+        "Semgrep"
+      ]
+    },
+    "CWE-776": {
+      "name": "Improper Restriction of Recursive Entity References ('Billion Laughs')",
+      "category": "Injection",
+      "severity": "MEDIUM",
+      "detection_type": "ast_pattern",
+      "sinks": [
+        "xml.etree.ElementTree.parse",
+        "xml.dom.minidom.parse",
+        "lxml.etree.parse"
+      ],
+      "sanitizers": [
+        "defusedxml.ElementTree.parse",
+        "defusedxml.minidom.parse"
+      ],
+      "description": "Recursively expanding nested XML entities consumes all system memory (Billion Laughs attack).",
+      "attack_vector": "XML document with 10 levels of recursive entities expanding to gigabytes.",
+      "remediation": "Use defusedxml, which explicitly blocks recursive entity expansion.",
+      "sources": [
+        "MITRE_Static",
+        "Bandit",
+        "Semgrep",
+        "CodeQL"
+      ]
+    },
+    "CWE-798": {
+      "name": "Use of Hard-coded Credentials",
+      "category": "Auth/Tokens",
+      "severity": "CRITICAL",
+      "detection_type": "ast_pattern",
+      "sinks": [],
+      "sanitizers": [
+        "os.environ.get",
+        "vault_client.get_secret",
+        "keyring.get_password"
+      ],
+      "description": "Hardcoding API tokens, service keys, or shared secrets directly in Python source code.",
+      "attack_vector": "Extracting hardcoded credentials through source code access, git history, or decompiled packages.",
+      "remediation": "Store secrets in environment variables, HashiCorp Vault, or AWS Secrets Manager.",
+      "sources": [
+        "MITRE_Static",
+        "Bandit",
+        "Semgrep",
+        "CodeQL"
+      ],
+      "structural_checks": [
+        "password = '...'",
+        "api_key = '...'",
+        "token = 'ghp_...'",
+        "secret_key = '...'"
+      ]
+    },
+    "CWE-827": {
+      "name": "Improper Control of Document Type Definition (DTD)",
+      "category": "Injection",
+      "severity": "MEDIUM",
+      "detection_type": "configuration_check",
+      "sinks": [
+        "lxml.etree.XMLParser",
+        "lxml.etree.iterparse"
+      ],
+      "sanitizers": [
+        "XMLParser(load_dtd=False)",
+        "defusedxml"
+      ],
+      "description": "Allowing external DTDs during XML parsing enables denial of service or external entity retrieval.",
+      "attack_vector": "External DTD references pointing to malicious remote schemas.",
+      "remediation": "Explicitly set load_dtd=False and resolve_entities=False in XMLParser.",
+      "sources": [
+        "MITRE_Static",
+        "Semgrep"
+      ]
+    },
+    "CWE-862": {
+      "name": "Missing Authorization (IDOR)",
+      "category": "Auth/Tokens",
+      "severity": "HIGH",
+      "detection_type": "semantic_rule",
+      "sinks": [
+        "User.get",
+        "Document.query.get"
+      ],
+      "sanitizers": [
+        "check_permission(user, resource)",
+        "query.filter_by(owner=current_user)"
+      ],
+      "description": "Failing to verify that an authenticated user has permission to access a specific requested object (IDOR).",
+      "attack_vector": "Altering ID parameters in URL to access other users' private records.",
+      "remediation": "Enforce object-level permissions by filtering queries against the current authenticated user identity.",
+      "sources": [
+        "MITRE_Static",
+        "Semgrep",
+        "CodeQL"
+      ]
+    },
+    "CWE-863": {
+      "name": "Incorrect Authorization",
+      "category": "Auth/Tokens",
+      "severity": "HIGH",
+      "detection_type": "semantic_rule",
+      "sinks": [
+        "user.is_authenticated_only_check"
+      ],
+      "sanitizers": [
+        "user.has_role('admin')",
+        "has_permission('resource:write')"
+      ],
+      "description": "Checking only if a user is logged in rather than verifying appropriate role or permission level.",
+      "attack_vector": "Standard user accessing admin dashboard endpoints because only login status is verified.",
+      "remediation": "Implement granular role-based or attribute-based access control (RBAC/ABAC).",
+      "sources": [
+        "MITRE_Static",
+        "Semgrep"
+      ]
+    },
+    "CWE-915": {
+      "name": "Improperly Controlled Modification of Dynamically-Determined Object Attributes ('Mass Assignment')",
+      "category": "Auth/Tokens",
+      "severity": "HIGH",
+      "detection_type": "ast_pattern",
+      "sinks": [
+        "user.__dict__.update",
+        "setattr_in_loop_from_untrusted_input"
+      ],
+      "sanitizers": [
+        "explicit_field_whitelist",
+        "pydantic_validated_model"
+      ],
+      "description": "Binding arbitrary JSON request fields directly to object attributes allows setting is_admin or permissions.",
+      "attack_vector": "Submitting {'is_admin': True, 'role': 'superuser'} in registration or update requests.",
+      "remediation": "Bind request data only through strict, vetted schema fields.",
+      "sources": [
+        "MITRE_Static",
+        "Semgrep",
+        "CodeQL"
+      ]
+    },
+    "CWE-916": {
+      "name": "Use of Password Hash With Insufficient Computational Effort",
+      "category": "Crypto",
+      "severity": "MEDIUM",
+      "detection_type": "configuration_check",
+      "sinks": [
+        "hashlib.pbkdf2_hmac",
+        "bcrypt.kdf"
+      ],
+      "sanitizers": [
+        "iterations=600000",
+        "bcrypt.gensalt(rounds=12)"
+      ],
+      "description": "Configuring password-hashing iteration counts too low, making brute-force cracking trivial.",
+      "attack_vector": "Offline dictionary attack against low-iteration PBKDF2 or low-round bcrypt hashes.",
+      "remediation": "Use at least 600,000 iterations for PBKDF2-HMAC-SHA256, or work factor 12 for bcrypt.",
+      "sources": [
+        "MITRE_Static",
+        "Semgrep",
+        "CodeQL"
+      ]
+    },
+    "CWE-918": {
+      "name": "Server-Side Request Forgery ('SSRF')",
+      "category": "SSRF/Network",
+      "severity": "HIGH",
+      "detection_type": "taint_tracking",
+      "sinks": [
+        "requests.get",
+        "requests.post",
+        "requests.put",
+        "requests.delete",
+        "urllib.request.urlopen",
+        "httpx.get",
+        "httpx.post",
+        "aiohttp.ClientSession.get",
+        "aiohttp.ClientSession.post",
+        "pycurl.Curl.perform"
+      ],
+      "sanitizers": [
+        "is_safe_url",
+        "check_domain_allowlist",
+        "validate_private_ip"
+      ],
+      "description": "Fetching arbitrary remote URLs provided by users allows scanning internal networks and cloud metadata.",
+      "attack_vector": "Submitting 'http://169.254.169.254/latest/meta-data/' to steal AWS IAM credentials.",
+      "remediation": "Validate target URLs against an allowlist of domains, resolve IP addresses, and block private/link-local ranges.",
+      "sources": [
+        "MITRE_Static",
+        "Bandit",
+        "Semgrep",
+        "CodeQL"
+      ]
+    },
+    "CWE-924": {
+      "name": "Improper Enforcement of Message Integrity During Transmission",
+      "category": "SSRF/Network",
+      "severity": "MEDIUM",
+      "detection_type": "semantic_rule",
+      "sinks": [
+        "socket.sendall",
+        "raw_tcp_send"
+      ],
+      "sanitizers": [
+        "tls_wrap",
+        "hmac_signed_packets"
+      ],
+      "description": "Sending administrative control commands across TCP streams without tamper-evident signatures or encryption.",
+      "attack_vector": "Injecting or modifying packets on unauthenticated network connections.",
+      "remediation": "Authenticate and encrypt messages using TLS or authenticated message formats.",
+      "sources": [
+        "MITRE_Static",
+        "Semgrep"
+      ]
+    },
+    "CWE-942": {
+      "name": "Permissive Cross-Origin Resource Sharing Policy ('CORS Misconfiguration')",
+      "category": "SSRF/Network",
+      "severity": "MEDIUM",
+      "detection_type": "configuration_check",
+      "sinks": [
+        "CORS"
+      ],
+      "sanitizers": [
+        "whitelist_cors_origins",
+        "supports_credentials=False"
+      ],
+      "description": "Configuring Access-Control-Allow-Origin: * alongside credentials allows arbitrary websites to read authenticated API responses.",
+      "attack_vector": "Malicious site making cross-origin requests and extracting victim's confidential data.",
+      "remediation": "Specify explicit trusted origins and avoid wildcards when credentials are supported.",
+      "sources": [
+        "MITRE_Static",
+        "Semgrep",
+        "CodeQL"
+      ],
+      "structural_checks": [
+        "Access-Control-Allow-Origin: *"
+      ]
+    },
+    "CWE-943": {
+      "name": "NoSQL Injection",
+      "category": "Injection",
+      "severity": "HIGH",
+      "detection_type": "taint_tracking",
+      "sinks": [
+        "pymongo.collection.Collection.find",
+        "pymongo.collection.Collection.update",
+        "motor.motor_asyncio.AsyncIOMotorCollection.find"
+      ],
+      "sanitizers": [
+        "mongo_sanitizer",
+        "explicit_type_cast_to_string_or_int"
+      ],
+      "description": "Passing unvalidated dictionary expressions or operator objects to NoSQL database queries.",
+      "attack_vector": "Submitting JSON with $ne, $gt, or $where operators to bypass authentication or filter criteria.",
+      "remediation": "Enforce strict schema validation and cast inputs explicitly to primitive types.",
+      "sources": [
+        "MITRE_Static",
+        "Semgrep",
+        "CodeQL"
+      ],
+      "structural_checks": [
+        "$where"
+      ]
+    },
+    "CWE-1004": {
+      "name": "Sensitive Cookie Without 'HttpOnly' Flag",
+      "category": "Auth/Tokens",
+      "severity": "MEDIUM",
+      "detection_type": "configuration_check",
+      "sinks": [
+        "response.set_cookie"
+      ],
+      "sanitizers": [
+        "httponly=True",
+        "SESSION_COOKIE_HTTPONLY = True"
+      ],
+      "description": "Failing to set the HttpOnly flag on cookies allows client-side JavaScript to access session tokens.",
+      "attack_vector": "Cross-Site Scripting (XSS) payload reading document.cookie to hijack user accounts.",
+      "remediation": "Always set httponly=True on all sensitive and session cookies.",
+      "sources": [
+        "MITRE_Static",
+        "Semgrep",
+        "CodeQL"
+      ],
+      "structural_checks": [
+        "SESSION_COOKIE_HTTPONLY = False"
+      ]
+    },
+    "CWE-1021": {
+      "name": "Improper Restriction of Rendered UI Layers or Frames ('Clickjacking')",
+      "category": "SSRF/Network",
+      "severity": "LOW",
+      "detection_type": "configuration_check",
+      "sinks": [
+        "missing_x_frame_options",
+        "x_frame_options_allowall"
+      ],
+      "sanitizers": [
+        "X-Frame-Options: DENY",
+        "X-Frame-Options: SAMEORIGIN",
+        "Content-Security-Policy: frame-ancestors"
+      ],
+      "description": "Allowing sensitive pages to be embedded in iframes allows clickjacking attacks.",
+      "attack_vector": "Overlaying transparent iframes to trick users into clicking buttons.",
+      "remediation": "Set X-Frame-Options: DENY or Content-Security-Policy: frame-ancestors 'self'.",
+      "sources": [
+        "MITRE_Static",
+        "Semgrep",
+        "CodeQL"
+      ]
+    },
+    "CWE-1188": {
+      "name": "Insecure Default Initialization of Resource",
+      "category": "Auth/Tokens",
+      "severity": "MEDIUM",
+      "detection_type": "ast_pattern",
+      "sinks": [
+        "default_admin_true",
+        "default_insecure_flag"
+      ],
+      "sanitizers": [
+        "least_privilege_defaults"
+      ],
+      "description": "Initializing administrative accounts or permissions with insecure default settings.",
+      "attack_vector": "Default accounts enabled out-of-the-box with standard credentials.",
+      "remediation": "Enforce safe defaults: require credentials setup on first boot and disable debug flags.",
+      "sources": [
+        "MITRE_Static",
+        "Bandit",
+        "Semgrep"
+      ]
+    },
+    "CWE-1275": {
+      "name": "Sensitive Cookie with Improper SameSite Attribute",
+      "category": "Auth/Tokens",
+      "severity": "LOW",
+      "detection_type": "configuration_check",
+      "sinks": [
+        "response.set_cookie"
+      ],
+      "sanitizers": [
+        "samesite='Lax'",
+        "samesite='Strict'"
+      ],
+      "description": "Setting SameSite=None without proper cross-origin controls leaves cookies vulnerable to CSRF.",
+      "attack_vector": "Third-party sites triggering cross-origin requests that automatically include authentication cookies.",
+      "remediation": "Set SameSite='Lax' or 'Strict' on sensitive cookies.",
+      "sources": [
+        "MITRE_Static",
+        "Semgrep"
+      ],
+      "structural_checks": [
+        "samesite='None'_without_secure"
+      ]
+    },
+    "CWE-1327": {
+      "name": "Binding to All Network Interfaces",
+      "category": "SSRF/Network",
+      "severity": "MEDIUM",
+      "detection_type": "configuration_check",
+      "sinks": [
+        "app.run"
+      ],
+      "sanitizers": [
+        "bind(('127.0.0.1', port))",
+        "bind_loopback"
+      ],
+      "description": "Binding servers to 0.0.0.0 exposes internal management or debugging interfaces to all network interfaces.",
+      "attack_vector": "Accessing internal administrative ports from external networks.",
+      "remediation": "Bind development and internal services strictly to 127.0.0.1.",
+      "sources": [
+        "MITRE_Static",
+        "Bandit",
+        "Semgrep",
+        "CodeQL"
+      ],
+      "structural_checks": [
+        "socket.bind(('0.0.0.0', port))"
+      ]
+    },
+    "CWE-1333": {
+      "name": "Inefficient Regular Expression Complexity ('ReDoS')",
+      "category": "Injection",
+      "severity": "MEDIUM",
+      "detection_type": "ast_pattern",
+      "sinks": [
+        "re.compile",
+        "re.match",
+        "re.search",
+        "re.findall",
+        "re.sub",
+        "regex.compile"
+      ],
+      "sanitizers": [
+        "re.escape",
+        "linear_regex_engine",
+        "regex_timeout_guard"
+      ],
+      "description": "Evaluating catastrophic backtracking regular expressions on untrusted input causes CPU exhaustion.",
+      "attack_vector": "Specially crafted repetitive input triggering exponential backtracking in regex engine.",
+      "remediation": "Avoid nested quantifiers like (a+)+, use re.escape(), or deploy linear-time regex engines.",
+      "sources": [
+        "MITRE_Static",
+        "Bandit",
+        "Semgrep",
+        "CodeQL"
+      ]
+    },
+    "CWE-1336": {
+      "name": "Server-Side Template Injection (SSTI)",
+      "category": "Injection",
+      "severity": "HIGH",
+      "detection_type": "taint_tracking",
+      "sinks": [
+        "jinja2.Template",
+        "flask.render_template_string",
+        "mako.template.Template",
+        "tornado.template.Template",
+        "django.template.Template"
+      ],
+      "sanitizers": [
+        "render_template_file_only",
+        "jinja2.Environment(autoescape=True)"
+      ],
+      "description": "Rendering templates from runtime-constructed strings rather than static template files.",
+      "attack_vector": "{{config.__class__.__init__.__globals__['os'].popen('id').read()}} in template string.",
+      "remediation": "Render only trusted template files; pass user input solely as template context variables.",
+      "sources": [
+        "MITRE_Static",
+        "Bandit",
+        "Semgrep",
+        "CodeQL"
+      ]
+    }
+  }
+}
