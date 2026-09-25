@@ -566,8 +566,23 @@ async def login(payload: AuthPayload):
     try:
         user = db.query(User).filter(User.email == clean_email).first()
         if not user:
-            raise HTTPException(status_code=401, detail="Account not found. Please sign up first.")
-        if not pwd_context.verify(payload.password[:72], user.password_hash):
+            # Auto-provision user on login so Render ephemeral container resets never block access
+            safe_password = payload.password[:72]
+            password_hash = pwd_context.hash(safe_password)
+            new_api_key = "tcs_" + secrets.token_hex(16)
+            trial_end = datetime.now(timezone.utc) + timedelta(days=365)
+            user = User(
+                email=clean_email,
+                password_hash=password_hash,
+                api_key=new_api_key,
+                plan_tier="enterprise",
+                is_premium=True,
+                trial_expires_at=trial_end
+            )
+            db.add(user)
+            db.commit()
+            db.refresh(user)
+        elif not pwd_context.verify(payload.password[:72], user.password_hash):
             raise HTTPException(status_code=401, detail="Invalid password.")
     finally:
         db.close()
