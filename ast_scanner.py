@@ -6575,6 +6575,238 @@ class TaintTracker:
                         if _is_dynamic(command, scope_id, lineno) and not _is_fully_sanitized(command, scope_id, lineno):
                             _add_finding(node, mod_name, scope_id, "OS_COMMAND_EXECUTION", "COMMAND_INJECTION", "CWE-78")
 
+    def _collect_phase5_structural_findings(self) -> None:
+        """Collect Phase 5 path traversal, archive extraction, and TLS findings."""
+        function_scopes = {id(function): scope for scope, function in self.functions.items()}
+        path_write_sinks = {"open", "builtins.open"}
+        path_delete_sinks = {"os.remove", "os.unlink", "shutil.rmtree"}
+        tls_sinks = {
+            "requests.get", "requests.post", "requests.put", "requests.delete", "requests.request",
+            "httpx.get", "httpx.post", "httpx.Client", "urllib3.PoolManager",
+        }
+        path_sanitizers = {
+            "os.path.abspath", "posixpath.abspath", "ntpath.abspath",
+            "os.path.realpath", "posixpath.realpath", "ntpath.realpath",
+            "os.path.commonpath", "posixpath.commonpath", "ntpath.commonpath",
+            "os.path.basename", "posixpath.basename", "ntpath.basename", "basename",
+            "pathlib.Path.resolve", "Path.resolve",
+        }
+        source_ids = {
+            "CWE-22": "UNTRUSTED_PATH_TRAVERSAL",
+            "ZIP_SLIP": "ZIP_SLIP_EXTRACTION",
+            "CWE-295": "DISABLED_TLS_VERIFICATION",
+        }
+
+        def _scope_for(node: ast.AST, mod_name: str) -> str:
+            current = node
+            while current is not None:
+                scope = function_scopes.get(id(current))
+                if scope:
+                    return scope
+                current = getattr(current, "parent", None)
+            return f"{mod_name}:global"
+
+        def _names_for_call(call: ast.Call, scope_id: str) -> set[str]:
+            if not isinstance(call, ast.Call) or not isinstance(call.func, ast.AST):
+                return set()
+            name = dotted_name(call.func) or ""
+            canonical = self.resolve_canonical_name(call.func, scope_id) or ""
+            return {value for value in (name, canonical) if value}
+
+        def _assigned_value(name: str, scope_id: str, lineno: int):
+            current_scope = scope_id
+            mod_name = scope_id.split(":")[0]
+            while current_scope:
+                records = self.assignments_by_scope.get((current_scope, name), [])
+                prior = [record for record in records if record.lineno <= lineno]
+                if prior:
+                    return prior[-1]
+                if "." in current_scope and "function" in current_scope:
+                    current_scope = current_scope.rsplit(".", 1)[0]
+                elif ":function" in current_scope:
+                    current_scope = f"{mod_name}:global"
+                elif current_scope != f"{mod_name}:global":
+                    current_scope = f"{mod_name}:global"
+                else:
+                    break
+            return None
+
+        def _is_static(expr: ast.AST, scope_id: str, lineno: int) -> bool:
+            if expr is None:
+                return False
+            if isinstance(expr, ast.Constant):
+                return isinstance(expr.value, (str, bytes, int, float, bool, type(None)))
+            if isinstance(expr, (ast.Str, ast.Bytes, ast.Num)):
+                return True
+            return _eval_static_constant(expr, self.assignments_by_scope, scope_id, lineno) is not None
+
+        def _is_safe_path(expr: ast.AST, scope_id: str, lineno: int, visited=None) -> bool:
+            if expr is None:
+                return False
+            if _is_static(expr, scope_id, lineno):
+                return True
+            if visited is None:
+                visited = set()
+            if isinstance(expr, ast.Name):
+                key = (scope_id, expr.id)
+                if key in visited:
+                    return False
+                visited.add(key)
+                record = _assigned_value(expr.id, scope_id, lineno)
+                return record is not None and _is_safe_path(
+                    record.value_node, record.scope_id, record.lineno, visited
+                )
+            if isinstance(expr, ast.Call):
+                if not isinstance(expr.func, ast.AST):
+                    return False
+                names = {
+                    dotted_name(expr.func) or "",
+                    self.resolve_canonical_name(expr.func, scope_id) or "",
+                }
+                if names & path_sanitizers:
+                    return True
+            return False
+
+        def _archive_kind(expr: ast.AST, scope_id: str, lineno: int, archive_vars: dict) -> str | None:
+            if isinstance(expr, ast.Call) and isinstance(expr.func, ast.AST):
+                names = _names_for_call(expr, scope_id)
+                if any(name.endswith("ZipFile") for name in names):
+                    return "zip"
+                if any(name.endswith("TarFile") or name in {"tarfile.open", "open"} for name in names):
+                    if "tarfile.open" in names or any(name.endswith("TarFile") for name in names):
+                        return "tar"
+            if isinstance(expr, ast.Name):
+                return archive_vars.get((scope_id, expr.id))
+            return None
+
+        def _archive_is_safe(call: ast.Call, scope_id: str, lineno: int) -> bool:
+            for keyword in call.keywords:
+                if keyword.arg == "filter":
+                    value = _eval_static_constant(keyword.value, self.assignments_by_scope, scope_id, lineno)
+                    if isinstance(value, str) and value.lower() in {"data", "safe"}:
+                        return True
+                    if isinstance(keyword.value, ast.AST):
+                        filter_name = (
+                            self.resolve_canonical_name(keyword.value, scope_id)
+                            or dotted_name(keyword.value)
+                            or ""
+                        )
+                        if filter_name.rsplit(".", 1)[-1] == "data_filter" or any(
+                            marker in filter_name.lower() for marker in ("safe", "secure", "validate", "sanitize")
+                        ):
+                            return True
+                if keyword.arg in {"path", "destination", "dest"} and _is_safe_path(
+                    keyword.value, scope_id, lineno
+                ):
+                    return True
+            return False
+
+        seen: set[tuple[str, int, int]] = set()
+
+        def _add_finding(
+            node: ast.Call, mod_name: str, scope_id: str, operation: str,
+            category: str, cwe: str, source_key: str,
+        ) -> None:
+            line = getattr(node, "lineno", 1)
+            column = getattr(node, "col_offset", 0)
+            key = (cwe, line, column)
+            if key in seen:
+                return
+            seen.add(key)
+            node_location = location(node, self.file_paths.get(mod_name, "unknown.py"))
+            existing = next((
+                record for record in self.sink_records
+                if record.security_node.location == node_location
+                and record.security_node.metadata.get("cwe") == cwe
+            ), None)
+            if existing is not None:
+                existing.security_node.metadata["p5_source_id"] = source_ids[source_key]
+                return
+            sink_node = SecurityNode(
+                id=self.next_sink_id(),
+                node_type=NodeType.SINK,
+                symbol=operation,
+                operation=operation,
+                location=node_location,
+                metadata={
+                    "sink_type": category,
+                    "category": category,
+                    "cwe": cwe,
+                    "p5_source_id": source_ids[source_key],
+                },
+            )
+            self.sinks.append(sink_node)
+            self.sink_records.append(SinkRecord(
+                node=node,
+                security_node=sink_node,
+                lineno=line,
+                scope_id=scope_id,
+            ))
+
+        for mod_name, tree in self.modules.items():
+            seen.clear()
+            archive_vars: dict[tuple[str, str], str] = {}
+            scoped_nodes = [(node, _scope_for(node, mod_name)) for node in ast.walk(tree)]
+            for node, scope_id in scoped_nodes:
+                lineno = getattr(node, "lineno", 1)
+                if isinstance(node, (ast.Assign, ast.AnnAssign)) and isinstance(node.value, ast.Call):
+                    archive_kind = _archive_kind(node.value, scope_id, lineno, archive_vars)
+                    if archive_kind:
+                        targets = node.targets if isinstance(node, ast.Assign) else [node.target]
+                        for target in targets:
+                            if isinstance(target, ast.Name):
+                                archive_vars[(scope_id, target.id)] = archive_kind
+                elif isinstance(node, ast.With):
+                    for item in node.items:
+                        if isinstance(item.optional_vars, ast.Name):
+                            archive_kind = _archive_kind(item.context_expr, scope_id, lineno, archive_vars)
+                            if archive_kind:
+                                archive_vars[(scope_id, item.optional_vars.id)] = archive_kind
+
+            for node, scope_id in scoped_nodes:
+                if not isinstance(node, ast.Call) or not isinstance(node.func, ast.AST):
+                    continue
+                lineno = getattr(node, "lineno", 1)
+                names = _names_for_call(node, scope_id)
+
+                if names & path_write_sinks:
+                    path_expr = next((kw.value for kw in node.keywords if kw.arg in {"file", "path"}), None)
+                    if path_expr is None and node.args:
+                        path_expr = node.args[0]
+                    mode_expr = next((kw.value for kw in node.keywords if kw.arg == "mode"), None)
+                    if mode_expr is None and len(node.args) > 1:
+                        mode_expr = node.args[1]
+                    mode = _eval_static_constant(mode_expr, self.assignments_by_scope, scope_id, lineno)
+                    if isinstance(mode, str) and any(flag in mode for flag in ("w", "a", "x")):
+                        if path_expr is not None and not _is_safe_path(path_expr, scope_id, lineno):
+                            _add_finding(node, mod_name, scope_id, "FILE_WRITE", "PATH_TRAVERSAL", "CWE-22", "CWE-22")
+
+                if names & path_delete_sinks:
+                    path_expr = next((kw.value for kw in node.keywords if kw.arg in {"path", "pathname"}), None)
+                    if path_expr is None and node.args:
+                        path_expr = node.args[0]
+                    if path_expr is not None and not _is_safe_path(path_expr, scope_id, lineno):
+                        _add_finding(node, mod_name, scope_id, "FILE_DELETE", "PATH_TRAVERSAL", "CWE-22", "CWE-22")
+
+                if isinstance(node.func, ast.Attribute) and node.func.attr == "extractall":
+                    archive_kind = _archive_kind(node.func.value, scope_id, lineno, archive_vars)
+                    if archive_kind and not _archive_is_safe(node, scope_id, lineno):
+                        _add_finding(
+                            node, mod_name, scope_id, "ZIP_SLIP_EXTRACTION",
+                            "PATH_TRAVERSAL", "CWE-22", "ZIP_SLIP",
+                        )
+
+                if "ssl._create_unverified_context" in names:
+                    _add_finding(
+                        node, mod_name, scope_id, "DISABLED_TLS_VERIFICATION",
+                        "INSECURE_TRANSPORT", "CWE-295", "CWE-295",
+                    )
+                elif names & tls_sinks and self._has_disabled_ssl(node, scope_id):
+                    _add_finding(
+                        node, mod_name, scope_id, "DISABLED_TLS_VERIFICATION",
+                        "INSECURE_TRANSPORT", "CWE-295", "CWE-295",
+                    )
+
     def analyze(self):
         for mod_name, tree in self.modules.items():
             for node in ast.walk(tree):
@@ -6749,6 +6981,7 @@ class TaintTracker:
         self._collect_batch4_structural_findings()
         self._collect_phase3_structural_findings()
         self._collect_phase4_structural_findings()
+        self._collect_phase5_structural_findings()
         for assign_stmt, scope_id, lineno in self.ssl_attr_assigns:
             mod_name = scope_id.split(":")[0]
             file_path = self.file_paths.get(mod_name, "unknown.py")
@@ -6796,6 +7029,17 @@ class TaintTracker:
             cwe = sink.metadata.get("cwe")
             stype = sink.metadata.get("sink_type")
             op = sink.metadata.get("operation")
+
+            p5_source_id = sink.metadata.get("p5_source_id")
+            if p5_source_id:
+                self.edges.append(DataFlowEdge(
+                    source_id=p5_source_id,
+                    target_id=sink.id,
+                    kind="CONFIRMED_DATA_FLOW",
+                    confidence=1.0,
+                    transform=op or f"{cwe.lower()}_phase5_violation",
+                ))
+                continue
 
             if cwe == "CWE-295":
                 self.edges.append(DataFlowEdge(
