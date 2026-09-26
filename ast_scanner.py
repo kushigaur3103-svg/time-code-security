@@ -6384,6 +6384,197 @@ class TaintTracker:
                             "CROSS_SITE_SCRIPTING", "CWE-79",
                         )
 
+    def _collect_phase4_structural_findings(self) -> None:
+        """Collect Phase 4 deserialization, dynamic-code, and process sinks."""
+        function_scopes = {id(function): scope for scope, function in self.functions.items()}
+        deserialization_sinks = {"dill.load", "dill.loads", "shelve.open", "jsonpickle.decode"}
+        code_sinks = {"eval", "builtins.eval", "exec", "builtins.exec", "compile", "builtins.compile"}
+        added_process_sinks = {
+            "os.popen", "os.spawnlp", "os.spawnlpe", "os.spawnv", "os.spawnve",
+            "os.posix_spawn", "posix_spawn",
+        }
+        shell_process_sinks = {
+            "subprocess.run", "subprocess.call", "subprocess.check_call",
+            "subprocess.check_output", "subprocess.Popen",
+        }
+
+        def _scope_for(node: ast.AST, mod_name: str) -> str:
+            current = node
+            while current is not None:
+                scope = function_scopes.get(id(current))
+                if scope:
+                    return scope
+                current = getattr(current, "parent", None)
+            return f"{mod_name}:global"
+
+        def _call_names(call: ast.Call, scope_id: str) -> set[str]:
+            if not isinstance(call, ast.Call) or not isinstance(call.func, ast.AST):
+                return set()
+            name = dotted_name(call.func) or ""
+            canonical = self.resolve_canonical_name(call.func, scope_id) or ""
+            return {value for value in (name, canonical) if value}
+
+        def _assigned_value(name: str, scope_id: str, lineno: int):
+            current_scope = scope_id
+            mod_name = scope_id.split(":")[0]
+            while current_scope:
+                records = self.assignments_by_scope.get((current_scope, name), [])
+                prior = [record for record in records if record.lineno <= lineno]
+                if prior:
+                    return prior[-1]
+                if "." in current_scope and "function" in current_scope:
+                    current_scope = current_scope.rsplit(".", 1)[0]
+                elif ":function" in current_scope:
+                    current_scope = f"{mod_name}:global"
+                elif current_scope != f"{mod_name}:global":
+                    current_scope = f"{mod_name}:global"
+                else:
+                    break
+            return None
+
+        def _is_static(expr: ast.AST, scope_id: str, lineno: int) -> bool:
+            if expr is None:
+                return False
+            if isinstance(expr, ast.Constant):
+                return isinstance(expr.value, (str, bytes, int, float, bool, type(None)))
+            if isinstance(expr, (ast.Str, ast.Bytes, ast.Num)):
+                return True
+            return _eval_static_constant(expr, self.assignments_by_scope, scope_id, lineno) is not None
+
+        def _is_dynamic(expr: ast.AST, scope_id: str, lineno: int) -> bool:
+            return expr is not None and not _is_static(expr, scope_id, lineno)
+
+        def _is_fully_sanitized(expr: ast.AST, scope_id: str, lineno: int, visited=None) -> bool:
+            if expr is None:
+                return False
+            if _is_static(expr, scope_id, lineno):
+                return True
+            if visited is None:
+                visited = set()
+            if isinstance(expr, ast.Call):
+                if not isinstance(expr.func, ast.AST):
+                    return False
+                sanitizer_names = {
+                    dotted_name(expr.func) or "",
+                    self.resolve_canonical_name(expr.func, scope_id) or "",
+                }
+                return bool(sanitizer_names & SANITIZER_REGISTRY.get("CWE-78", set()))
+            if isinstance(expr, ast.Name):
+                key = (scope_id, expr.id)
+                if key in visited:
+                    return False
+                visited.add(key)
+                record = _assigned_value(expr.id, scope_id, lineno)
+                return record is not None and _is_fully_sanitized(
+                    record.value_node, record.scope_id, record.lineno, visited
+                )
+            if isinstance(expr, ast.BinOp) and isinstance(expr.op, ast.Add):
+                return _is_fully_sanitized(expr.left, scope_id, lineno, visited.copy()) and _is_fully_sanitized(
+                    expr.right, scope_id, lineno, visited.copy()
+                )
+            if isinstance(expr, ast.JoinedStr):
+                return all(
+                    isinstance(part, ast.Constant)
+                    or _is_fully_sanitized(part, scope_id, lineno, visited.copy())
+                    for part in expr.values
+                )
+            if isinstance(expr, ast.FormattedValue):
+                return _is_fully_sanitized(expr.value, scope_id, lineno, visited)
+            return False
+
+        def _argument(call: ast.Call, position: int, keyword_names: set[str] | None = None):
+            for keyword in getattr(call, "keywords", []):
+                if keyword.arg in (keyword_names or set()):
+                    return keyword.value
+            return call.args[position] if len(call.args) > position else None
+
+        seen: set[tuple[str, int, int]] = set()
+
+        def _add_finding(node: ast.Call, mod_name: str, scope_id: str, operation: str, category: str, cwe: str) -> None:
+            line = getattr(node, "lineno", 1)
+            column = getattr(node, "col_offset", 0)
+            key = (cwe, line, column)
+            if key in seen:
+                return
+            seen.add(key)
+            file_path = self.file_paths.get(mod_name, "unknown.py")
+            node_location = location(node, file_path)
+            source_ids = {
+                "CWE-502": "UNSAFE_DESERIALIZATION",
+                "CWE-94": "DYNAMIC_CODE_EXECUTION",
+                "CWE-78": "OS_COMMAND_EXECUTION",
+            }
+            existing_record = next((
+                record for record in self.sink_records
+                if record.security_node.location == node_location
+                and record.security_node.metadata.get("cwe") == cwe
+            ), None)
+            if existing_record is not None:
+                existing_record.security_node.metadata["p4_source_id"] = source_ids[cwe]
+                return
+            sink_node = SecurityNode(
+                id=self.next_sink_id(),
+                node_type=NodeType.SINK,
+                symbol=operation,
+                operation=operation,
+                location=node_location,
+                metadata={
+                    "sink_type": category,
+                    "category": category,
+                    "cwe": cwe,
+                    "p4_source_id": source_ids[cwe],
+                },
+            )
+            self.sinks.append(sink_node)
+            self.sink_records.append(SinkRecord(
+                node=node,
+                security_node=sink_node,
+                lineno=line,
+                scope_id=scope_id,
+            ))
+
+        for mod_name, tree in self.modules.items():
+            seen.clear()
+            for node in ast.walk(tree):
+                if not isinstance(node, ast.Call) or not isinstance(node.func, ast.AST):
+                    continue
+                scope_id = _scope_for(node, mod_name)
+                names = _call_names(node, scope_id)
+                lineno = getattr(node, "lineno", 1)
+
+                if "yaml.load" in names:
+                    loader = next((kw.value for kw in node.keywords if kw.arg == "Loader"), None)
+                    loader_name = ""
+                    if isinstance(loader, ast.AST):
+                        loader_name = self.resolve_canonical_name(loader, scope_id) or dotted_name(loader) or ""
+                    if loader_name.rsplit(".", 1)[-1] not in {"SafeLoader", "CSafeLoader"}:
+                        _add_finding(node, mod_name, scope_id, "DESERIALIZATION", "UNSAFE_DESERIALIZATION", "CWE-502")
+                elif names & deserialization_sinks:
+                    _add_finding(node, mod_name, scope_id, "DESERIALIZATION", "UNSAFE_DESERIALIZATION", "CWE-502")
+
+                if names & code_sinks:
+                    code_expr = _argument(node, 0, {"source"})
+                    if _is_dynamic(code_expr, scope_id, lineno):
+                        _add_finding(node, mod_name, scope_id, "DYNAMIC_CODE_EXECUTION", "CODE_INJECTION", "CWE-94")
+
+                if names & (added_process_sinks | shell_process_sinks):
+                    process_name = next((name for name in names if name in added_process_sinks), "")
+                    if process_name:
+                        executable_position = 1 if process_name in {
+                            "os.spawnlp", "os.spawnlpe", "os.spawnv", "os.spawnve",
+                        } else 0
+                        executable = _argument(node, executable_position, {"path", "file"})
+                        if _is_dynamic(executable, scope_id, lineno):
+                            _add_finding(node, mod_name, scope_id, "OS_COMMAND_EXECUTION", "COMMAND_INJECTION", "CWE-78")
+
+                    shell_kw = next((kw.value for kw in node.keywords if kw.arg == "shell"), None)
+                    if shell_kw is not None and _eval_static_constant(
+                        shell_kw, self.assignments_by_scope, scope_id, lineno
+                    ) is True:
+                        command = _argument(node, 0, {"args", "command", "cmd"})
+                        if _is_dynamic(command, scope_id, lineno) and not _is_fully_sanitized(command, scope_id, lineno):
+                            _add_finding(node, mod_name, scope_id, "OS_COMMAND_EXECUTION", "COMMAND_INJECTION", "CWE-78")
+
     def analyze(self):
         for mod_name, tree in self.modules.items():
             for node in ast.walk(tree):
@@ -6557,6 +6748,7 @@ class TaintTracker:
         self._collect_batch3b_structural_findings()
         self._collect_batch4_structural_findings()
         self._collect_phase3_structural_findings()
+        self._collect_phase4_structural_findings()
         for assign_stmt, scope_id, lineno in self.ssl_attr_assigns:
             mod_name = scope_id.split(":")[0]
             file_path = self.file_paths.get(mod_name, "unknown.py")
@@ -6633,6 +6825,17 @@ class TaintTracker:
                     kind="CONFIRMED_DATA_FLOW",
                     confidence=1.0,
                     transform=op or f"{cwe.lower()}_phase3_violation",
+                ))
+                continue
+
+            p4_source_id = sink.metadata.get("p4_source_id")
+            if p4_source_id:
+                self.edges.append(DataFlowEdge(
+                    source_id=p4_source_id,
+                    target_id=sink.id,
+                    kind="CONFIRMED_DATA_FLOW",
+                    confidence=1.0,
+                    transform=op or f"{cwe.lower()}_phase4_violation",
                 ))
                 continue
 
