@@ -7017,6 +7017,318 @@ class TaintTracker:
                 if query is not None and _is_query_dynamic(query, scope_id, getattr(node, "lineno", 1)):
                     _add_finding(node, mod_name, scope_id)
 
+    def _collect_phase7_structural_findings(self) -> None:
+        """Collect XXE and server-side template injection findings."""
+        function_scopes = {id(function): scope for scope, function in self.functions.items()}
+        xml_sinks = {
+            "lxml.etree.parse", "lxml.etree.fromstring",
+            "xml.etree.ElementTree.parse", "xml.etree.ElementTree.fromstring",
+            "xml.sax.make_parser",
+        }
+        template_sinks = {
+            "jinja2.Template", "jinja2.Environment.from_string",
+            "flask.render_template_string", "render_template_string",
+        }
+
+        def _scope_for(node: ast.AST, mod_name: str) -> str:
+            current = node
+            while current is not None:
+                scope = function_scopes.get(id(current))
+                if scope:
+                    return scope
+                current = getattr(current, "parent", None)
+            return f"{mod_name}:global"
+
+        def _call_names(call: ast.Call, scope_id: str) -> set[str]:
+            if not isinstance(call, ast.Call) or not isinstance(call.func, ast.AST):
+                return set()
+            name = dotted_name(call.func) or ""
+            canonical = self.resolve_canonical_name(call.func, scope_id) or ""
+            return {value for value in (name, canonical) if value}
+
+        def _assigned_value(name: str, scope_id: str, lineno: int):
+            current_scope = scope_id
+            mod_name = scope_id.split(":")[0]
+            while current_scope:
+                records = self.assignments_by_scope.get((current_scope, name), [])
+                prior = [record for record in records if record.lineno <= lineno]
+                if prior:
+                    return prior[-1]
+                if "." in current_scope and "function" in current_scope:
+                    current_scope = current_scope.rsplit(".", 1)[0]
+                elif ":function" in current_scope:
+                    current_scope = f"{mod_name}:global"
+                elif current_scope != f"{mod_name}:global":
+                    current_scope = f"{mod_name}:global"
+                else:
+                    break
+            return None
+
+        def _is_dynamic(expr: ast.AST, scope_id: str, lineno: int, visited=None) -> bool:
+            if expr is None:
+                return False
+            if visited is None:
+                visited = set()
+            if isinstance(expr, ast.Constant):
+                return False
+            if isinstance(expr, (ast.Str, ast.Bytes, ast.Num)):
+                return False
+            if isinstance(expr, ast.Name):
+                key = (scope_id, expr.id)
+                if key in visited:
+                    return False
+                visited.add(key)
+                record = _assigned_value(expr.id, scope_id, lineno)
+                if record is not None:
+                    return _is_dynamic(record.value_node, record.scope_id, record.lineno, visited)
+                return self.resolve_canonical_name(expr, scope_id) == expr.id
+            if isinstance(expr, ast.Attribute):
+                name = dotted_name(expr) or ""
+                canonical = self.resolve_canonical_name(expr, scope_id) or ""
+                if (
+                    name in SOURCE_REGISTRY
+                    or canonical in SOURCE_REGISTRY
+                    or name in {
+                        "request.data", "request.body", "request.query_string",
+                        "request.args", "request.form", "request.values",
+                        "request.GET", "request.POST", "request.query_params",
+                    }
+                ):
+                    return True
+                prior_fields = [
+                    record
+                    for (_, field_name), records in self.class_field_assignments.items()
+                    if field_name == expr.attr
+                    for record in records
+                    if record.lineno <= lineno
+                ]
+                if prior_fields:
+                    record = max(prior_fields, key=lambda item: item.lineno)
+                    return _is_dynamic(record.value_node, record.scope_id, record.lineno, visited)
+                return isinstance(expr.value, ast.Name) and expr.value.id in {"self", "cls"}
+            if isinstance(expr, ast.Call):
+                if self.is_source_call(expr, scope_id):
+                    return True
+                if not isinstance(expr.func, ast.AST):
+                    return True
+                if isinstance(expr.func, ast.Attribute) and expr.func.attr == "format":
+                    values = [expr.func.value, *expr.args, *(keyword.value for keyword in expr.keywords)]
+                    return any(_is_dynamic(value, scope_id, lineno, visited.copy()) for value in values)
+                if isinstance(expr.func, ast.Attribute) and expr.func.attr in {
+                    "read", "read_text", "read_bytes", "get_data", "get_json",
+                }:
+                    return True
+                values = [*expr.args, *(keyword.value for keyword in expr.keywords)]
+                return any(_is_dynamic(value, scope_id, lineno, visited.copy()) for value in values) or not values
+            if isinstance(expr, ast.Subscript):
+                return _is_dynamic(expr.value, scope_id, lineno, visited.copy())
+            if isinstance(expr, ast.JoinedStr):
+                return any(
+                    _is_dynamic(value.value, scope_id, lineno, visited.copy())
+                    for value in expr.values if isinstance(value, ast.FormattedValue)
+                )
+            if isinstance(expr, ast.BinOp):
+                if isinstance(expr.op, (ast.Add, ast.Mod)):
+                    return _is_dynamic(expr.left, scope_id, lineno, visited.copy()) or _is_dynamic(
+                        expr.right, scope_id, lineno, visited.copy()
+                    )
+            return False
+
+        def _query_arg(call: ast.Call, keywords: set[str]) -> ast.AST | None:
+            for keyword in call.keywords:
+                if keyword.arg in keywords:
+                    return keyword.value
+            return call.args[0] if call.args else None
+
+        def _bool_keyword(call: ast.Call, keyword_name: str, scope_id: str, lineno: int) -> bool | None:
+            keyword = next((kw for kw in call.keywords if kw.arg == keyword_name), None)
+            if keyword is None:
+                return None
+            value = _eval_static_constant(keyword.value, self.assignments_by_scope, scope_id, lineno)
+            return value if isinstance(value, bool) else None
+
+        def _is_defused(names: set[str]) -> bool:
+            return any(name.startswith("defusedxml.") for name in names)
+
+        def _parser_is_safe(expr: ast.AST, scope_id: str, lineno: int, visited=None) -> bool:
+            if expr is None:
+                return False
+            if visited is None:
+                visited = set()
+            if isinstance(expr, ast.Name):
+                key = (scope_id, expr.id)
+                if key in visited:
+                    return False
+                visited.add(key)
+                record = _assigned_value(expr.id, scope_id, lineno)
+                return record is not None and _parser_is_safe(
+                    record.value_node, record.scope_id, record.lineno, visited
+                )
+            if not isinstance(expr, ast.Call) or not isinstance(expr.func, ast.AST):
+                return False
+            names = _call_names(expr, scope_id)
+            if _is_defused(names):
+                return True
+            if not any(name.endswith("XMLParser") for name in names):
+                return False
+            return _bool_keyword(expr, "resolve_entities", scope_id, lineno) is False
+
+        def _remove_existing(node: ast.Call, cwes: set[str], mod_name: str) -> None:
+            node_location = location(node, self.file_paths.get(mod_name, "unknown.py"))
+            removed = [
+                record for record in self.sink_records
+                if record.security_node.location == node_location
+                and record.security_node.metadata.get("cwe") in cwes
+            ]
+            if not removed:
+                return
+            self.sink_records = [record for record in self.sink_records if record not in removed]
+            for record in removed:
+                if not any(other.security_node is record.security_node for other in self.sink_records):
+                    if record.security_node in self.sinks:
+                        self.sinks.remove(record.security_node)
+
+        seen: set[tuple[str, int, int]] = set()
+
+        def _add_finding(
+            node: ast.Call, mod_name: str, scope_id: str, cwe: str,
+            category: str, source_id: str, operation: str,
+        ) -> None:
+            line = getattr(node, "lineno", 1)
+            column = getattr(node, "col_offset", 0)
+            key = (cwe, line, column)
+            if key in seen:
+                return
+            seen.add(key)
+            node_location = location(node, self.file_paths.get(mod_name, "unknown.py"))
+            existing = next((
+                record for record in self.sink_records
+                if record.security_node.location == node_location
+                and record.security_node.metadata.get("cwe") == cwe
+            ), None)
+            if existing is not None:
+                existing.security_node.metadata["p7_source_id"] = source_id
+                return
+            sink_node = SecurityNode(
+                id=self.next_sink_id(),
+                node_type=NodeType.SINK,
+                symbol=operation,
+                operation=operation,
+                location=node_location,
+                metadata={
+                    "sink_type": category,
+                    "category": category,
+                    "cwe": cwe,
+                    "p7_source_id": source_id,
+                },
+            )
+            self.sinks.append(sink_node)
+            self.sink_records.append(SinkRecord(
+                node=node,
+                security_node=sink_node,
+                lineno=line,
+                scope_id=scope_id,
+            ))
+
+        for mod_name, tree in self.modules.items():
+            seen.clear()
+            sax_parser_vars: set[tuple[str, str]] = set()
+            environment_vars: set[tuple[str, str]] = set()
+            scoped_nodes = [(node, _scope_for(node, mod_name)) for node in ast.walk(tree)]
+
+            for node, scope_id in scoped_nodes:
+                if isinstance(node, (ast.Assign, ast.AnnAssign)) and isinstance(node.value, ast.Call):
+                    names = _call_names(node.value, scope_id)
+                    targets = node.targets if isinstance(node, ast.Assign) else [node.target]
+                    for target in targets:
+                        if isinstance(target, ast.Name):
+                            if "xml.sax.make_parser" in names:
+                                sax_parser_vars.add((scope_id, target.id))
+                            if any(name.endswith("Environment") for name in names):
+                                environment_vars.add((scope_id, target.id))
+
+            for node, scope_id in scoped_nodes:
+                if not isinstance(node, ast.Call) or not isinstance(node.func, ast.AST):
+                    continue
+                lineno = getattr(node, "lineno", 1)
+                names = _call_names(node, scope_id)
+                if _is_defused(names):
+                    _remove_existing(node, {"CWE-611"}, mod_name)
+                    continue
+
+                is_xml_parser = any(name.endswith("XMLParser") for name in names)
+                if is_xml_parser:
+                    if _bool_keyword(node, "resolve_entities", scope_id, lineno) is True:
+                        _add_finding(
+                            node, mod_name, scope_id, "CWE-611", "XML_EXTERNAL_ENTITY",
+                            "XXE_INJECTION_VULNERABILITY", "XML_PARSING",
+                        )
+                    continue
+
+                is_xml_sink = bool(names & xml_sinks) or any(
+                    name.startswith("lxml.etree.") and name.rsplit(".", 1)[-1] in {"parse", "fromstring"}
+                    for name in names
+                ) or any(
+                    name.startswith("xml.etree.ElementTree.") and name.rsplit(".", 1)[-1] in {"parse", "fromstring"}
+                    for name in names
+                )
+                is_sax_parse = (
+                    isinstance(node.func, ast.Attribute)
+                    and node.func.attr == "parse"
+                    and isinstance(node.func.value, ast.Name)
+                    and (scope_id, node.func.value.id) in sax_parser_vars
+                )
+                if is_xml_sink or is_sax_parse:
+                    input_expr = _query_arg(node, {"source", "file", "input", "text", "xml", "data"})
+                    parser_expr = next((kw.value for kw in node.keywords if kw.arg == "parser"), None)
+                    if parser_expr is None and len(node.args) > 1:
+                        parser_expr = node.args[1]
+                    explicit_true = False
+                    if parser_expr is not None and isinstance(parser_expr, ast.Call):
+                        explicit_true = _bool_keyword(parser_expr, "resolve_entities", scope_id, lineno) is True
+                    unsafe = explicit_true or (
+                        input_expr is not None
+                        and _is_dynamic(input_expr, scope_id, lineno)
+                        and not _parser_is_safe(parser_expr, scope_id, lineno)
+                    )
+                    if unsafe:
+                        _add_finding(
+                            node, mod_name, scope_id, "CWE-611", "XML_EXTERNAL_ENTITY",
+                            "XXE_INJECTION_VULNERABILITY", "XML_PARSING",
+                        )
+                    elif _parser_is_safe(parser_expr, scope_id, lineno) or isinstance(
+                        _eval_static_constant(input_expr, self.assignments_by_scope, scope_id, lineno),
+                        (str, bytes),
+                    ):
+                        _remove_existing(node, {"CWE-611"}, mod_name)
+                    continue
+
+                is_template_sink = bool(names & template_sinks) or any(
+                    name.endswith("Environment.from_string") for name in names
+                ) or (
+                    isinstance(node.func, ast.Attribute)
+                    and node.func.attr == "from_string"
+                    and isinstance(node.func.value, ast.Name)
+                    and (scope_id, node.func.value.id) in environment_vars
+                )
+                is_environment = any(name.endswith("Environment") for name in names)
+                if is_environment:
+                    if _bool_keyword(node, "autoescape", scope_id, lineno) is False:
+                        _add_finding(
+                            node, mod_name, scope_id, "CWE-1336", "SSTI",
+                            "SSTI_TEMPLATE_INJECTION", "TEMPLATE_EVALUATION",
+                        )
+                    continue
+                if is_template_sink:
+                    template_expr = _query_arg(node, {"source", "template", "string"})
+                    if template_expr is not None and _is_dynamic(template_expr, scope_id, lineno):
+                        _add_finding(
+                            node, mod_name, scope_id, "CWE-1336", "SSTI",
+                            "SSTI_TEMPLATE_INJECTION", "TEMPLATE_EVALUATION",
+                        )
+                    else:
+                        _remove_existing(node, {"CWE-1336", "CWE-79"}, mod_name)
+
     def analyze(self):
         for mod_name, tree in self.modules.items():
             for node in ast.walk(tree):
@@ -7193,6 +7505,7 @@ class TaintTracker:
         self._collect_phase4_structural_findings()
         self._collect_phase5_structural_findings()
         self._collect_phase6_structural_findings()
+        self._collect_phase7_structural_findings()
         for assign_stmt, scope_id, lineno in self.ssl_attr_assigns:
             mod_name = scope_id.split(":")[0]
             file_path = self.file_paths.get(mod_name, "unknown.py")
@@ -7240,6 +7553,17 @@ class TaintTracker:
             cwe = sink.metadata.get("cwe")
             stype = sink.metadata.get("sink_type")
             op = sink.metadata.get("operation")
+
+            p7_source_id = sink.metadata.get("p7_source_id")
+            if p7_source_id:
+                self.edges.append(DataFlowEdge(
+                    source_id=p7_source_id,
+                    target_id=sink.id,
+                    kind="CONFIRMED_DATA_FLOW",
+                    confidence=1.0,
+                    transform=op or f"{cwe.lower()}_phase7_violation",
+                ))
+                continue
 
             p6_source_id = sink.metadata.get("p6_source_id")
             if p6_source_id:
