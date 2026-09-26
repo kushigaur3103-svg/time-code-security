@@ -1,5 +1,6 @@
 from __future__ import annotations
 import ast
+import math
 import re
 from dataclasses import dataclass, field, asdict
 from enum import Enum
@@ -7613,6 +7614,279 @@ class TaintTracker:
                             "INSECURE_COOKIE_STORAGE",
                         )
 
+    def _collect_phase9_structural_findings(self) -> None:
+        """Collect concrete hardcoded credentials and catastrophic regex patterns."""
+        function_scopes = {id(function): scope for scope, function in self.functions.items()}
+        sensitive_names = {
+            "password", "passwd", "secret", "api_key", "apikey", "auth_token",
+            "access_token", "private_key", "client_secret",
+        }
+        regex_sinks = {
+            "re.compile", "re.match", "re.search", "re.findall", "re.finditer", "re.sub",
+        }
+        credential_placeholders = {
+            "changeme", "change_me", "change-this", "placeholder", "dummy",
+            "test", "example", "your_password_here", "your_api_key_here",
+            "insert_password_here", "replace_me", "replace_this", "your_secret_here",
+        }
+        concrete_credential_prefix = re.compile(
+            r"(?i)^(?:gh[pousr]_[a-z0-9]{12,}|sk_(?:live|test)_[a-z0-9]{8,}|"
+            r"akia[0-9a-z]{16}|eyj[a-z0-9_-]{16,})"
+        )
+
+        def _scope_for(node: ast.AST, mod_name: str) -> str:
+            current = node
+            while current is not None:
+                scope = function_scopes.get(id(current))
+                if scope:
+                    return scope
+                current = getattr(current, "parent", None)
+            return f"{mod_name}:global"
+
+        def _call_names(call: ast.Call, scope_id: str) -> set[str]:
+            if not isinstance(call, ast.Call) or not isinstance(call.func, ast.AST):
+                return set()
+            name = dotted_name(call.func) or ""
+            canonical = self.resolve_canonical_name(call.func, scope_id) or ""
+            return {value for value in (name, canonical) if value}
+
+        def _assigned_value(name: str, scope_id: str, lineno: int):
+            current_scope = scope_id
+            mod_name = scope_id.split(":")[0]
+            while current_scope:
+                records = self.assignments_by_scope.get((current_scope, name), [])
+                prior = [record for record in records if record.lineno <= lineno]
+                if prior:
+                    return prior[-1]
+                if "." in current_scope and "function" in current_scope:
+                    current_scope = current_scope.rsplit(".", 1)[0]
+                elif ":function" in current_scope:
+                    current_scope = f"{mod_name}:global"
+                elif current_scope != f"{mod_name}:global":
+                    current_scope = f"{mod_name}:global"
+                else:
+                    break
+            return None
+
+        def _target_name(target: ast.AST) -> str:
+            if isinstance(target, ast.Name):
+                return target.id.lower()
+            if isinstance(target, ast.Attribute):
+                return (dotted_name(target) or target.attr).lower()
+            if isinstance(target, ast.Subscript):
+                return _target_name(target.value)
+            return ""
+
+        def _sensitive_target(target: ast.AST) -> bool:
+            normalized = _target_name(target)
+            parts = set(re.split(r"[^a-z0-9]+", normalized))
+            return bool(parts & sensitive_names) or any(
+                marker in normalized for marker in (
+                    "password", "passwd", "secret", "api_key", "apikey",
+                    "auth_token", "access_token", "private_key", "client_secret",
+                )
+            )
+
+        def _credential_is_concrete(value: str) -> bool:
+            normalized = value.strip()
+            if not normalized or len(normalized) < 8:
+                return False
+            lowered = normalized.lower()
+            if lowered in credential_placeholders or any(
+                marker in lowered for marker in (
+                    "placeholder", "changeme", "change_me", "your_password",
+                    "your_api_key", "your_secret", "dummy", "example_value",
+                )
+            ):
+                return False
+            if concrete_credential_prefix.match(normalized):
+                return True
+            frequencies = {character: normalized.count(character) for character in set(normalized)}
+            entropy = -sum(
+                (count / len(normalized)) * math.log2(count / len(normalized))
+                for count in frequencies.values()
+            )
+            character_classes = sum((
+                any(character.islower() for character in normalized),
+                any(character.isupper() for character in normalized),
+                any(character.isdigit() for character in normalized),
+                any(not character.isalnum() for character in normalized),
+            ))
+            return entropy >= 3.0 and (
+                character_classes >= 2 or (len(normalized) >= 20 and entropy >= 3.3)
+            )
+
+        def _first_chars(tokens) -> set[int] | None:
+            for operation, argument in tokens:
+                if operation is re._constants.LITERAL:
+                    return {argument}
+                if operation is re._constants.IN:
+                    characters = set()
+                    for member_op, member_arg in argument:
+                        if member_op is re._constants.LITERAL:
+                            characters.add(member_arg)
+                        elif member_op is re._constants.RANGE:
+                            start, end = member_arg
+                            if end - start <= 512:
+                                characters.update(range(start, end + 1))
+                            else:
+                                return None
+                        else:
+                            return None
+                    return characters
+                if operation is re._constants.SUBPATTERN:
+                    nested = _first_chars(argument[-1])
+                    if nested is not None:
+                        return nested
+                if operation is re._constants.BRANCH:
+                    branches = [_first_chars(branch) for branch in argument[1]]
+                    if any(branch is None for branch in branches):
+                        return None
+                    return set().union(*branches)
+                if operation is re._constants.AT:
+                    continue
+                return None
+            return set()
+
+        def _has_catastrophic_backtracking(tokens, inside_repeat: bool = False) -> bool:
+            repeat_ops = {
+                re._constants.MAX_REPEAT,
+                re._constants.MIN_REPEAT,
+            }
+            if hasattr(re._constants, "POSSESSIVE_REPEAT"):
+                repeat_ops.add(re._constants.POSSESSIVE_REPEAT)
+            previous_repeat_chars = None
+            for operation, argument in tokens:
+                if operation in repeat_ops:
+                    repeated_body = argument[2]
+                    if inside_repeat or _has_catastrophic_backtracking(repeated_body, True):
+                        return True
+                    current_chars = _first_chars(repeated_body)
+                    if previous_repeat_chars is not None and (
+                        current_chars is None or previous_repeat_chars is None
+                        or previous_repeat_chars & current_chars
+                    ):
+                        return True
+                    previous_repeat_chars = current_chars
+                    continue
+                if operation is re._constants.SUBPATTERN:
+                    if _has_catastrophic_backtracking(argument[-1], inside_repeat):
+                        return True
+                elif operation is re._constants.BRANCH:
+                    branches = argument[1]
+                    branch_starts = [_first_chars(branch) for branch in branches]
+                    for index, first in enumerate(branch_starts):
+                        if first is None:
+                            continue
+                        if any(first & other for other in branch_starts[index + 1:] if other is not None):
+                            if inside_repeat:
+                                return True
+                    if any(_has_catastrophic_backtracking(branch, inside_repeat) for branch in branches):
+                        return True
+                previous_repeat_chars = None
+            return False
+
+        def _remove_existing(node: ast.AST, cwe: str, mod_name: str) -> None:
+            node_location = location(node, self.file_paths.get(mod_name, "unknown.py"))
+            removed = [
+                record for record in self.sink_records
+                if record.security_node.location == node_location
+                and record.security_node.metadata.get("cwe") == cwe
+            ]
+            if not removed:
+                return
+            self.sink_records = [record for record in self.sink_records if record not in removed]
+            for record in removed:
+                if not any(other.security_node is record.security_node for other in self.sink_records):
+                    if record.security_node in self.sinks:
+                        self.sinks.remove(record.security_node)
+
+        seen: set[tuple[str, int, int]] = set()
+
+        def _add_finding(
+            node: ast.AST, mod_name: str, scope_id: str, cwe: str,
+            category: str, operation: str, source_id: str,
+        ) -> None:
+            line = getattr(node, "lineno", 1)
+            column = getattr(node, "col_offset", 0)
+            key = (cwe, line, column)
+            if key in seen:
+                return
+            seen.add(key)
+            node_location = location(node, self.file_paths.get(mod_name, "unknown.py"))
+            existing = next((
+                record for record in self.sink_records
+                if record.security_node.location == node_location
+                and record.security_node.metadata.get("cwe") == cwe
+            ), None)
+            if existing is not None:
+                existing.security_node.metadata["p9_source_id"] = source_id
+                return
+            sink_node = SecurityNode(
+                id=self.next_sink_id(),
+                node_type=NodeType.SINK,
+                symbol=operation,
+                operation=operation,
+                location=node_location,
+                metadata={
+                    "sink_type": category,
+                    "category": category,
+                    "cwe": cwe,
+                    "p9_source_id": source_id,
+                },
+            )
+            self.sinks.append(sink_node)
+            self.sink_records.append(SinkRecord(
+                node=node,
+                security_node=sink_node,
+                lineno=line,
+                scope_id=scope_id,
+            ))
+
+        for mod_name, tree in self.modules.items():
+            seen.clear()
+            scoped_nodes = [(node, _scope_for(node, mod_name)) for node in ast.walk(tree)]
+            for node, scope_id in scoped_nodes:
+                if isinstance(node, (ast.Assign, ast.AnnAssign)):
+                    value_node = node.value
+                    targets = node.targets if isinstance(node, ast.Assign) else [node.target]
+                    sensitive = [target for target in targets if _sensitive_target(target)]
+                    if not sensitive:
+                        continue
+                    if isinstance(value_node, ast.Constant) and isinstance(value_node.value, str):
+                        if _credential_is_concrete(value_node.value):
+                            _add_finding(
+                                node, mod_name, scope_id, "CWE-798", "HARDCODED_CREDENTIALS",
+                                "HARDCODED_CREDENTIAL", "HARDCODED_CREDENTIAL_LEAK",
+                            )
+                        else:
+                            _remove_existing(node, "CWE-798", mod_name)
+
+            for node, scope_id in scoped_nodes:
+                if not isinstance(node, ast.Call) or not isinstance(node.func, ast.AST):
+                    continue
+                names = _call_names(node, scope_id)
+                if not names & regex_sinks:
+                    continue
+                pattern = next((kw.value for kw in node.keywords if kw.arg in {"pattern", "regex"}), None)
+                if pattern is None and node.args:
+                    pattern = node.args[0]
+                value = _eval_static_constant(pattern, self.assignments_by_scope, scope_id, getattr(node, "lineno", 1))
+                if not isinstance(value, str):
+                    continue
+                try:
+                    parsed = re._parser.parse(value, 0)
+                    vulnerable = _has_catastrophic_backtracking(parsed)
+                except (re.error, AttributeError, TypeError, ValueError):
+                    vulnerable = False
+                if vulnerable:
+                    _add_finding(
+                        node, mod_name, scope_id, "CWE-1333", "REGULAR_EXPRESSION_DOS",
+                        "REGEX_COMPILATION", "REDOS_REGEX_COMPLEXITY",
+                    )
+                else:
+                    _remove_existing(node, "CWE-1333", mod_name)
+
     def analyze(self):
         for mod_name, tree in self.modules.items():
             for node in ast.walk(tree):
@@ -7791,6 +8065,7 @@ class TaintTracker:
         self._collect_phase6_structural_findings()
         self._collect_phase7_structural_findings()
         self._collect_phase8_structural_findings()
+        self._collect_phase9_structural_findings()
         for assign_stmt, scope_id, lineno in self.ssl_attr_assigns:
             mod_name = scope_id.split(":")[0]
             file_path = self.file_paths.get(mod_name, "unknown.py")
@@ -7838,6 +8113,17 @@ class TaintTracker:
             cwe = sink.metadata.get("cwe")
             stype = sink.metadata.get("sink_type")
             op = sink.metadata.get("operation")
+
+            p9_source_id = sink.metadata.get("p9_source_id")
+            if p9_source_id:
+                self.edges.append(DataFlowEdge(
+                    source_id=p9_source_id,
+                    target_id=sink.id,
+                    kind="CONFIRMED_DATA_FLOW",
+                    confidence=1.0,
+                    transform=op or f"{cwe.lower()}_phase9_violation",
+                ))
+                continue
 
             p8_source_id = sink.metadata.get("p8_source_id")
             if p8_source_id:
