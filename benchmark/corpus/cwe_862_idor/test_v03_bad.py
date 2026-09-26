@@ -1,2 +1,2 @@
-record_id = input("id: ")
-record = db.session.query(Record).filter_by(id=record_id).first()
+invoice_id = input("id: ")
+invoice = db.session.query(Invoice).filter_by(id=invoice_id).first()

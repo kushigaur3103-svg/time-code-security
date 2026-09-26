@@ -4,15 +4,15 @@ TimeCodeSecurity (TCS) Master Automated Verification Suite.
 
 Executes end-to-end post-commit sanity and compliance checks in one shot:
 1. Ground-Truth Benchmark Suite:
-   - Evaluates all 528 test cases (264 bad, 264 good across 44 CWEs).
-   - Strictly asserts 528/528 PASS, 100.0% Precision, 100.0% Recall (0 FP, 0 FN).
+   - Evaluates all 552 test cases (276 bad, 276 good across 46 CWEs).
+   - Strictly asserts 552/552 PASS, 100.0% Precision, 100.0% Recall (0 FP, 0 FN).
 2. SARIF v2.1.0 Export & Schema Validation:
    - Scans representative benchmark corpus files across multiple vulnerability classes.
    - Generates an OASIS SARIF v2.1.0 JSON export file.
    - Validates official SARIF schema compliance, including driver metadata,
      107 driver rules from rules catalog, and valid ruleIndex cross-referencing.
 3. Desktop GUI Component & Rules Catalog Verification:
-   - Verifies all 44 benchmark CWEs are registered and present in data/rules_catalog.json.
+   - Verifies all 46 benchmark CWEs are registered and present in data/rules_catalog.json.
    - Instantiates interactive GUI components (rules catalog container, structural view,
      proof graph view, secret view) ensuring headless execution without runtime crash.
 """
@@ -201,19 +201,19 @@ def check_sarif_export() -> bool:
 
 
 def check_gui_components() -> bool:
-    """Check 3: Verifies 44 CWE rules catalog and GUI structural/proof-graph components."""
-    gui_cwes = getattr(tcs_gui, "ALL_44_CWES", tcs_gui.ALL_24_CWES)
+    """Check 3: Verifies 46 CWE rules catalog and GUI structural/proof-graph components."""
+    gui_cwes = getattr(tcs_gui, "ALL_46_CWES", tcs_gui.ALL_24_CWES)
     total_gui_cwes = len(gui_cwes)
     print_header(f"CHECK 3/3: GUI Component & Rules Catalog Verification ({total_gui_cwes} CWEs)")
     start_time = time.perf_counter()
 
-    # 1. Verify 44 CWEs registry
-    assert len(gui_cwes) == 44, f"Expected 44 CWEs in ALL_44_CWES, got {len(gui_cwes)}"
+    # 1. Verify 46 CWEs registry
+    assert len(gui_cwes) == 46, f"Expected 46 CWEs in ALL_46_CWES, got {len(gui_cwes)}"
     print(f"  GUI Registry Entries     : {len(gui_cwes)} CWEs")
 
     # 2. Verify rules catalog loading
     rules_cat = tcs_gui.load_rules_catalog()
-    assert len(rules_cat) >= 44, f"Rules catalog contains fewer than 44 CWEs: {len(rules_cat)}"
+    assert len(rules_cat) >= 46, f"Rules catalog contains fewer than 46 CWEs: {len(rules_cat)}"
     for cwe_id, cwe_name in gui_cwes:
         assert cwe_id in rules_cat, f"Benchmark CWE {cwe_id} missing from data/rules_catalog.json"
     print(f"  Catalog Rules Loaded     : {len(rules_cat)} CWEs (all {total_gui_cwes} benchmark CWEs present)")
