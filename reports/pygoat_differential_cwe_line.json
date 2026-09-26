@@ -1,0 +1,1081 @@
+{
+  "both": [
+    {
+      "file": "challenge\\views.py",
+      "cwe": "CWE-78",
+      "sg_line": 81,
+      "tcs_line": 81
+    },
+    {
+      "file": "dockerized_labs\\broken_auth_lab\\app.py",
+      "cwe": "CWE-614",
+      "sg_line": 49,
+      "tcs_line": 49
+    },
+    {
+      "file": "dockerized_labs\\broken_auth_lab\\app.py",
+      "cwe": "CWE-614",
+      "sg_line": 51,
+      "tcs_line": 51
+    },
+    {
+      "file": "dockerized_labs\\broken_auth_lab\\app.py",
+      "cwe": "CWE-668",
+      "sg_line": 123,
+      "tcs_line": 123
+    },
+    {
+      "file": "dockerized_labs\\broken_auth_lab\\app.py",
+      "cwe": "CWE-489",
+      "sg_line": 123,
+      "tcs_line": 123
+    },
+    {
+      "file": "dockerized_labs\\insec_des_lab\\main.py",
+      "cwe": "CWE-502",
+      "sg_line": 36,
+      "tcs_line": 36
+    },
+    {
+      "file": "dockerized_labs\\insec_des_lab\\main.py",
+      "cwe": "CWE-502",
+      "sg_line": 36,
+      "tcs_line": 36
+    },
+    {
+      "file": "dockerized_labs\\insec_des_lab\\main.py",
+      "cwe": "CWE-668",
+      "sg_line": 51,
+      "tcs_line": 51
+    },
+    {
+      "file": "introduction\\apis.py",
+      "cwe": "CWE-352",
+      "sg_line": 22,
+      "tcs_line": 23
+    },
+    {
+      "file": "introduction\\apis.py",
+      "cwe": "CWE-352",
+      "sg_line": 59,
+      "tcs_line": 61
+    },
+    {
+      "file": "introduction\\apis.py",
+      "cwe": "CWE-352",
+      "sg_line": 93,
+      "tcs_line": 94
+    },
+    {
+      "file": "introduction\\apis.py",
+      "cwe": "CWE-352",
+      "sg_line": 112,
+      "tcs_line": 113
+    },
+    {
+      "file": "introduction\\apis.py",
+      "cwe": "CWE-352",
+      "sg_line": 125,
+      "tcs_line": 126
+    },
+    {
+      "file": "introduction\\mitre.py",
+      "cwe": "CWE-327",
+      "sg_line": 161,
+      "tcs_line": 161
+    },
+    {
+      "file": "introduction\\mitre.py",
+      "cwe": "CWE-522",
+      "sg_line": 169,
+      "tcs_line": 169
+    },
+    {
+      "file": "introduction\\mitre.py",
+      "cwe": "CWE-614",
+      "sg_line": 171,
+      "tcs_line": 171
+    },
+    {
+      "file": "introduction\\mitre.py",
+      "cwe": "CWE-352",
+      "sg_line": 176,
+      "tcs_line": 178
+    },
+    {
+      "file": "introduction\\mitre.py",
+      "cwe": "CWE-352",
+      "sg_line": 214,
+      "tcs_line": 215
+    },
+    {
+      "file": "introduction\\mitre.py",
+      "cwe": "CWE-95",
+      "sg_line": 217,
+      "tcs_line": 218
+    },
+    {
+      "file": "introduction\\mitre.py",
+      "cwe": "CWE-95",
+      "sg_line": 218,
+      "tcs_line": 218
+    },
+    {
+      "file": "introduction\\mitre.py",
+      "cwe": "CWE-78",
+      "sg_line": 233,
+      "tcs_line": 233
+    },
+    {
+      "file": "introduction\\mitre.py",
+      "cwe": "CWE-352",
+      "sg_line": 237,
+      "tcs_line": 238
+    },
+    {
+      "file": "introduction\\playground\\A9\\api.py",
+      "cwe": "CWE-352",
+      "sg_line": 7,
+      "tcs_line": 8
+    },
+    {
+      "file": "introduction\\playground\\A9\\archive.py",
+      "cwe": "CWE-352",
+      "sg_line": 7,
+      "tcs_line": 8
+    },
+    {
+      "file": "introduction\\views.py",
+      "cwe": "CWE-89",
+      "sg_line": 162,
+      "tcs_line": 162
+    },
+    {
+      "file": "introduction\\views.py",
+      "cwe": "CWE-614",
+      "sg_line": 211,
+      "tcs_line": 211
+    },
+    {
+      "file": "introduction\\views.py",
+      "cwe": "CWE-502",
+      "sg_line": 214,
+      "tcs_line": 214
+    },
+    {
+      "file": "introduction\\views.py",
+      "cwe": "CWE-502",
+      "sg_line": 214,
+      "tcs_line": 214
+    },
+    {
+      "file": "introduction\\views.py",
+      "cwe": "CWE-352",
+      "sg_line": 239,
+      "tcs_line": 240
+    },
+    {
+      "file": "introduction\\views.py",
+      "cwe": "CWE-352",
+      "sg_line": 255,
+      "tcs_line": 256
+    },
+    {
+      "file": "introduction\\views.py",
+      "cwe": "CWE-79",
+      "sg_line": 290,
+      "tcs_line": 290
+    },
+    {
+      "file": "introduction\\views.py",
+      "cwe": "CWE-614",
+      "sg_line": 291,
+      "tcs_line": 291
+    },
+    {
+      "file": "introduction\\views.py",
+      "cwe": "CWE-79",
+      "sg_line": 304,
+      "tcs_line": 304
+    },
+    {
+      "file": "introduction\\views.py",
+      "cwe": "CWE-614",
+      "sg_line": 305,
+      "tcs_line": 305
+    },
+    {
+      "file": "introduction\\views.py",
+      "cwe": "CWE-79",
+      "sg_line": 318,
+      "tcs_line": 318
+    },
+    {
+      "file": "introduction\\views.py",
+      "cwe": "CWE-614",
+      "sg_line": 319,
+      "tcs_line": 319
+    },
+    {
+      "file": "introduction\\views.py",
+      "cwe": "CWE-352",
+      "sg_line": 335,
+      "tcs_line": 336
+    },
+    {
+      "file": "introduction\\views.py",
+      "cwe": "CWE-352",
+      "sg_line": 341,
+      "tcs_line": 342
+    },
+    {
+      "file": "introduction\\views.py",
+      "cwe": "CWE-352",
+      "sg_line": 414,
+      "tcs_line": 415
+    },
+    {
+      "file": "introduction\\views.py",
+      "cwe": "CWE-78",
+      "sg_line": 430,
+      "tcs_line": 430
+    },
+    {
+      "file": "introduction\\views.py",
+      "cwe": "CWE-78",
+      "sg_line": 431,
+      "tcs_line": 430
+    },
+    {
+      "file": "introduction\\views.py",
+      "cwe": "CWE-78",
+      "sg_line": 432,
+      "tcs_line": 430
+    },
+    {
+      "file": "introduction\\views.py",
+      "cwe": "CWE-352",
+      "sg_line": 452,
+      "tcs_line": 453
+    },
+    {
+      "file": "introduction\\views.py",
+      "cwe": "CWE-95",
+      "sg_line": 456,
+      "tcs_line": 460
+    },
+    {
+      "file": "introduction\\views.py",
+      "cwe": "CWE-95",
+      "sg_line": 460,
+      "tcs_line": 460
+    },
+    {
+      "file": "introduction\\views.py",
+      "cwe": "CWE-352",
+      "sg_line": 492,
+      "tcs_line": 493
+    },
+    {
+      "file": "introduction\\views.py",
+      "cwe": "CWE-352",
+      "sg_line": 550,
+      "tcs_line": 551
+    },
+    {
+      "file": "introduction\\views.py",
+      "cwe": "CWE-502",
+      "sg_line": 560,
+      "tcs_line": 560
+    },
+    {
+      "file": "introduction\\views.py",
+      "cwe": "CWE-352",
+      "sg_line": 573,
+      "tcs_line": 574
+    },
+    {
+      "file": "introduction\\views.py",
+      "cwe": "CWE-352",
+      "sg_line": 738,
+      "tcs_line": 739
+    },
+    {
+      "file": "introduction\\views.py",
+      "cwe": "CWE-352",
+      "sg_line": 746,
+      "tcs_line": 747
+    },
+    {
+      "file": "introduction\\views.py",
+      "cwe": "CWE-352",
+      "sg_line": 782,
+      "tcs_line": 783
+    },
+    {
+      "file": "introduction\\views.py",
+      "cwe": "CWE-352",
+      "sg_line": 846,
+      "tcs_line": 847
+    },
+    {
+      "file": "introduction\\views.py",
+      "cwe": "CWE-352",
+      "sg_line": 854,
+      "tcs_line": 855
+    },
+    {
+      "file": "introduction\\views.py",
+      "cwe": "CWE-89",
+      "sg_line": 878,
+      "tcs_line": 878
+    },
+    {
+      "file": "introduction\\views.py",
+      "cwe": "CWE-22",
+      "sg_line": 923,
+      "tcs_line": 927
+    },
+    {
+      "file": "introduction\\views.py",
+      "cwe": "CWE-918",
+      "sg_line": 961,
+      "tcs_line": 963
+    },
+    {
+      "file": "introduction\\views.py",
+      "cwe": "CWE-79",
+      "sg_line": 990,
+      "tcs_line": 990
+    },
+    {
+      "file": "introduction\\views.py",
+      "cwe": "CWE-327",
+      "sg_line": 1026,
+      "tcs_line": 1026
+    },
+    {
+      "file": "introduction\\views.py",
+      "cwe": "CWE-327",
+      "sg_line": 1027,
+      "tcs_line": 1026
+    },
+    {
+      "file": "introduction\\views.py",
+      "cwe": "CWE-614",
+      "sg_line": 1076,
+      "tcs_line": 1076
+    },
+    {
+      "file": "introduction\\views.py",
+      "cwe": "CWE-614",
+      "sg_line": 1081,
+      "tcs_line": 1081
+    },
+    {
+      "file": "introduction\\views.py",
+      "cwe": "CWE-614",
+      "sg_line": 1109,
+      "tcs_line": 1109
+    },
+    {
+      "file": "introduction\\views.py",
+      "cwe": "CWE-352",
+      "sg_line": 1177,
+      "tcs_line": 1179
+    },
+    {
+      "file": "introduction\\views.py",
+      "cwe": "CWE-614",
+      "sg_line": 1197,
+      "tcs_line": 1197
+    },
+    {
+      "file": "introduction\\views.py",
+      "cwe": "CWE-614",
+      "sg_line": 1204,
+      "tcs_line": 1204
+    }
+  ],
+  "missed_by_tcs": [],
+  "tcs_exclusive": [
+    {
+      "file": "challenge\\models.py",
+      "line": 29,
+      "cwe": "CWE-434",
+      "sink": "SNK-001"
+    },
+    {
+      "file": "challenge\\views.py",
+      "line": 50,
+      "cwe": "CWE-78",
+      "sink": "SNK-003"
+    },
+    {
+      "file": "challenge\\views.py",
+      "line": 17,
+      "cwe": "CWE-862",
+      "sink": "SNK-006"
+    },
+    {
+      "file": "challenge\\views.py",
+      "line": 33,
+      "cwe": "CWE-862",
+      "sink": "SNK-007"
+    },
+    {
+      "file": "challenge\\views.py",
+      "line": 73,
+      "cwe": "CWE-862",
+      "sink": "SNK-008"
+    },
+    {
+      "file": "challenge\\views.py",
+      "line": 40,
+      "cwe": "CWE-79",
+      "sink": "SNK-009"
+    },
+    {
+      "file": "dockerized_labs\\broken_auth_lab\\app.py",
+      "line": 86,
+      "cwe": "CWE-327",
+      "sink": "SNK-005"
+    },
+    {
+      "file": "dockerized_labs\\broken_auth_lab\\app.py",
+      "line": 8,
+      "cwe": "CWE-798",
+      "sink": "SNK-010"
+    },
+    {
+      "file": "dockerized_labs\\broken_auth_lab\\app.py",
+      "line": 49,
+      "cwe": "CWE-1004",
+      "sink": "SNK-011"
+    },
+    {
+      "file": "dockerized_labs\\broken_auth_lab\\app.py",
+      "line": 51,
+      "cwe": "CWE-1004",
+      "sink": "SNK-012"
+    },
+    {
+      "file": "dockerized_labs\\broken_auth_lab\\app.py",
+      "line": 36,
+      "cwe": "CWE-352",
+      "sink": "SNK-013"
+    },
+    {
+      "file": "dockerized_labs\\broken_auth_lab\\app.py",
+      "line": 59,
+      "cwe": "CWE-352",
+      "sink": "SNK-014"
+    },
+    {
+      "file": "dockerized_labs\\broken_auth_lab\\app.py",
+      "line": 79,
+      "cwe": "CWE-352",
+      "sink": "SNK-015"
+    },
+    {
+      "file": "dockerized_labs\\broken_auth_lab\\app.py",
+      "line": 86,
+      "cwe": "CWE-759",
+      "sink": "SNK-019"
+    },
+    {
+      "file": "dockerized_labs\\broken_auth_lab\\app.py",
+      "line": 86,
+      "cwe": "CWE-916",
+      "sink": "SNK-020"
+    },
+    {
+      "file": "dockerized_labs\\broken_auth_lab\\app.py",
+      "line": 49,
+      "cwe": "CWE-1275",
+      "sink": "SNK-022"
+    },
+    {
+      "file": "dockerized_labs\\broken_auth_lab\\app.py",
+      "line": 51,
+      "cwe": "CWE-1275",
+      "sink": "SNK-023"
+    },
+    {
+      "file": "dockerized_labs\\broken_auth_lab\\app.py",
+      "line": 86,
+      "cwe": "CWE-328",
+      "sink": "SNK-024"
+    },
+    {
+      "file": "dockerized_labs\\insec_des_lab\\main.py",
+      "line": 22,
+      "cwe": "CWE-352",
+      "sink": "SNK-002"
+    },
+    {
+      "file": "dockerized_labs\\insec_des_lab\\main.py",
+      "line": 31,
+      "cwe": "CWE-352",
+      "sink": "SNK-003"
+    },
+    {
+      "file": "dockerized_labs\\sensitive_data_exposure\\dataexposure\\views.py",
+      "line": 109,
+      "cwe": "CWE-79",
+      "sink": "SNK-004"
+    },
+    {
+      "file": "dockerized_labs\\sensitive_data_exposure\\sensitive_data_lab\\settings.py",
+      "line": 8,
+      "cwe": "CWE-798",
+      "sink": "SNK-001"
+    },
+    {
+      "file": "dockerized_labs\\sensitive_data_exposure\\sensitive_data_lab\\settings.py",
+      "line": 11,
+      "cwe": "CWE-489",
+      "sink": "SNK-002"
+    },
+    {
+      "file": "introduction\\apis.py",
+      "line": 69,
+      "cwe": "CWE-22",
+      "sink": "SNK-001"
+    },
+    {
+      "file": "introduction\\apis.py",
+      "line": 72,
+      "cwe": "CWE-22",
+      "sink": "SNK-002"
+    },
+    {
+      "file": "introduction\\apis.py",
+      "line": 133,
+      "cwe": "CWE-22",
+      "sink": "SNK-009"
+    },
+    {
+      "file": "introduction\\lab_code\\test.py",
+      "line": 23,
+      "cwe": "CWE-502",
+      "sink": "SNK-002"
+    },
+    {
+      "file": "introduction\\mitre.py",
+      "line": 171,
+      "cwe": "CWE-1004",
+      "sink": "SNK-004"
+    },
+    {
+      "file": "introduction\\mitre.py",
+      "line": 161,
+      "cwe": "CWE-759",
+      "sink": "SNK-009"
+    },
+    {
+      "file": "introduction\\mitre.py",
+      "line": 161,
+      "cwe": "CWE-916",
+      "sink": "SNK-010"
+    },
+    {
+      "file": "introduction\\mitre.py",
+      "line": 171,
+      "cwe": "CWE-1275",
+      "sink": "SNK-011"
+    },
+    {
+      "file": "introduction\\mitre.py",
+      "line": 161,
+      "cwe": "CWE-328",
+      "sink": "SNK-013"
+    },
+    {
+      "file": "introduction\\mitre.py",
+      "line": 219,
+      "cwe": "CWE-79",
+      "sink": "SNK-014"
+    },
+    {
+      "file": "introduction\\playground\\A6\\soln.py",
+      "line": 9,
+      "cwe": "CWE-918",
+      "sink": "SNK-001"
+    },
+    {
+      "file": "introduction\\playground\\A6\\utility.py",
+      "line": 9,
+      "cwe": "CWE-918",
+      "sink": "SNK-001"
+    },
+    {
+      "file": "introduction\\playground\\A9\\api.py",
+      "line": 17,
+      "cwe": "CWE-287",
+      "sink": "SNK-002"
+    },
+    {
+      "file": "introduction\\playground\\A9\\api.py",
+      "line": 17,
+      "cwe": "CWE-287",
+      "sink": "SNK-003"
+    },
+    {
+      "file": "introduction\\playground\\A9\\archive.py",
+      "line": 17,
+      "cwe": "CWE-287",
+      "sink": "SNK-005"
+    },
+    {
+      "file": "introduction\\playground\\A9\\archive.py",
+      "line": 17,
+      "cwe": "CWE-287",
+      "sink": "SNK-006"
+    },
+    {
+      "file": "introduction\\playground\\ssrf\\main.py",
+      "line": 8,
+      "cwe": "CWE-22",
+      "sink": "SNK-001"
+    },
+    {
+      "file": "introduction\\playground\\ssrf\\main.py",
+      "line": 9,
+      "cwe": "CWE-770",
+      "sink": "SNK-003"
+    },
+    {
+      "file": "introduction\\utility.py",
+      "line": 35,
+      "cwe": "CWE-22",
+      "sink": "SNK-001"
+    },
+    {
+      "file": "introduction\\utility.py",
+      "line": 59,
+      "cwe": "CWE-759",
+      "sink": "SNK-002"
+    },
+    {
+      "file": "introduction\\utility.py",
+      "line": 59,
+      "cwe": "CWE-916",
+      "sink": "SNK-003"
+    },
+    {
+      "file": "introduction\\utility.py",
+      "line": 46,
+      "cwe": "CWE-208",
+      "sink": "SNK-004"
+    },
+    {
+      "file": "introduction\\utility.py",
+      "line": 48,
+      "cwe": "CWE-208",
+      "sink": "SNK-005"
+    },
+    {
+      "file": "introduction\\views.py",
+      "line": 496,
+      "cwe": "CWE-338",
+      "sink": "SNK-027"
+    },
+    {
+      "file": "introduction\\views.py",
+      "line": 584,
+      "cwe": "CWE-22",
+      "sink": "SNK-034"
+    },
+    {
+      "file": "introduction\\views.py",
+      "line": 588,
+      "cwe": "CWE-95",
+      "sink": "SNK-035"
+    },
+    {
+      "file": "introduction\\views.py",
+      "line": 654,
+      "cwe": "CWE-117",
+      "sink": "SNK-038"
+    },
+    {
+      "file": "introduction\\views.py",
+      "line": 668,
+      "cwe": "CWE-117",
+      "sink": "SNK-039"
+    },
+    {
+      "file": "introduction\\views.py",
+      "line": 669,
+      "cwe": "CWE-117",
+      "sink": "SNK-040"
+    },
+    {
+      "file": "introduction\\views.py",
+      "line": 672,
+      "cwe": "CWE-117",
+      "sink": "SNK-041"
+    },
+    {
+      "file": "introduction\\views.py",
+      "line": 928,
+      "cwe": "CWE-400",
+      "sink": "SNK-054"
+    },
+    {
+      "file": "introduction\\views.py",
+      "line": 995,
+      "cwe": "CWE-22",
+      "sink": "SNK-059"
+    },
+    {
+      "file": "introduction\\views.py",
+      "line": 211,
+      "cwe": "CWE-1004",
+      "sink": "SNK-066"
+    },
+    {
+      "file": "introduction\\views.py",
+      "line": 305,
+      "cwe": "CWE-1004",
+      "sink": "SNK-067"
+    },
+    {
+      "file": "introduction\\views.py",
+      "line": 1109,
+      "cwe": "CWE-1004",
+      "sink": "SNK-068"
+    },
+    {
+      "file": "introduction\\views.py",
+      "line": 501,
+      "cwe": "CWE-1004",
+      "sink": "SNK-069"
+    },
+    {
+      "file": "introduction\\views.py",
+      "line": 507,
+      "cwe": "CWE-1004",
+      "sink": "SNK-070"
+    },
+    {
+      "file": "introduction\\views.py",
+      "line": 774,
+      "cwe": "CWE-1004",
+      "sink": "SNK-071"
+    },
+    {
+      "file": "introduction\\views.py",
+      "line": 1204,
+      "cwe": "CWE-1004",
+      "sink": "SNK-072"
+    },
+    {
+      "file": "introduction\\views.py",
+      "line": 291,
+      "cwe": "CWE-1004",
+      "sink": "SNK-073"
+    },
+    {
+      "file": "introduction\\views.py",
+      "line": 319,
+      "cwe": "CWE-1004",
+      "sink": "SNK-074"
+    },
+    {
+      "file": "introduction\\views.py",
+      "line": 363,
+      "cwe": "CWE-1004",
+      "sink": "SNK-075"
+    },
+    {
+      "file": "introduction\\views.py",
+      "line": 1076,
+      "cwe": "CWE-1004",
+      "sink": "SNK-076"
+    },
+    {
+      "file": "introduction\\views.py",
+      "line": 1081,
+      "cwe": "CWE-1004",
+      "sink": "SNK-077"
+    },
+    {
+      "file": "introduction\\views.py",
+      "line": 1197,
+      "cwe": "CWE-1004",
+      "sink": "SNK-078"
+    },
+    {
+      "file": "introduction\\views.py",
+      "line": 373,
+      "cwe": "CWE-1004",
+      "sink": "SNK-079"
+    },
+    {
+      "file": "introduction\\views.py",
+      "line": 1183,
+      "cwe": "CWE-862",
+      "sink": "SNK-098"
+    },
+    {
+      "file": "introduction\\views.py",
+      "line": 501,
+      "cwe": "CWE-614",
+      "sink": "SNK-099"
+    },
+    {
+      "file": "introduction\\views.py",
+      "line": 507,
+      "cwe": "CWE-614",
+      "sink": "SNK-100"
+    },
+    {
+      "file": "introduction\\views.py",
+      "line": 766,
+      "cwe": "CWE-287",
+      "sink": "SNK-101"
+    },
+    {
+      "file": "introduction\\views.py",
+      "line": 774,
+      "cwe": "CWE-614",
+      "sink": "SNK-102"
+    },
+    {
+      "file": "introduction\\views.py",
+      "line": 806,
+      "cwe": "CWE-287",
+      "sink": "SNK-103"
+    },
+    {
+      "file": "introduction\\views.py",
+      "line": 831,
+      "cwe": "CWE-287",
+      "sink": "SNK-104"
+    },
+    {
+      "file": "introduction\\views.py",
+      "line": 1130,
+      "cwe": "CWE-862",
+      "sink": "SNK-105"
+    },
+    {
+      "file": "introduction\\views.py",
+      "line": 363,
+      "cwe": "CWE-614",
+      "sink": "SNK-109"
+    },
+    {
+      "file": "introduction\\views.py",
+      "line": 833,
+      "cwe": "CWE-287",
+      "sink": "SNK-110"
+    },
+    {
+      "file": "introduction\\views.py",
+      "line": 833,
+      "cwe": "CWE-287",
+      "sink": "SNK-111"
+    },
+    {
+      "file": "introduction\\views.py",
+      "line": 1072,
+      "cwe": "CWE-287",
+      "sink": "SNK-112"
+    },
+    {
+      "file": "introduction\\views.py",
+      "line": 373,
+      "cwe": "CWE-614",
+      "sink": "SNK-116"
+    },
+    {
+      "file": "introduction\\views.py",
+      "line": 1194,
+      "cwe": "CWE-759",
+      "sink": "SNK-117"
+    },
+    {
+      "file": "introduction\\views.py",
+      "line": 1194,
+      "cwe": "CWE-916",
+      "sink": "SNK-118"
+    },
+    {
+      "file": "introduction\\views.py",
+      "line": 1026,
+      "cwe": "CWE-759",
+      "sink": "SNK-119"
+    },
+    {
+      "file": "introduction\\views.py",
+      "line": 1026,
+      "cwe": "CWE-916",
+      "sink": "SNK-120"
+    },
+    {
+      "file": "introduction\\views.py",
+      "line": 260,
+      "cwe": "CWE-776",
+      "sink": "SNK-121"
+    },
+    {
+      "file": "introduction\\views.py",
+      "line": 928,
+      "cwe": "CWE-770",
+      "sink": "SNK-122"
+    },
+    {
+      "file": "introduction\\views.py",
+      "line": 209,
+      "cwe": "CWE-208",
+      "sink": "SNK-123"
+    },
+    {
+      "file": "introduction\\views.py",
+      "line": 211,
+      "cwe": "CWE-1275",
+      "sink": "SNK-124"
+    },
+    {
+      "file": "introduction\\views.py",
+      "line": 305,
+      "cwe": "CWE-1275",
+      "sink": "SNK-125"
+    },
+    {
+      "file": "introduction\\views.py",
+      "line": 1109,
+      "cwe": "CWE-1275",
+      "sink": "SNK-126"
+    },
+    {
+      "file": "introduction\\views.py",
+      "line": 501,
+      "cwe": "CWE-1275",
+      "sink": "SNK-127"
+    },
+    {
+      "file": "introduction\\views.py",
+      "line": 507,
+      "cwe": "CWE-1275",
+      "sink": "SNK-128"
+    },
+    {
+      "file": "introduction\\views.py",
+      "line": 774,
+      "cwe": "CWE-1275",
+      "sink": "SNK-129"
+    },
+    {
+      "file": "introduction\\views.py",
+      "line": 1204,
+      "cwe": "CWE-1275",
+      "sink": "SNK-130"
+    },
+    {
+      "file": "introduction\\views.py",
+      "line": 291,
+      "cwe": "CWE-1275",
+      "sink": "SNK-131"
+    },
+    {
+      "file": "introduction\\views.py",
+      "line": 319,
+      "cwe": "CWE-1275",
+      "sink": "SNK-132"
+    },
+    {
+      "file": "introduction\\views.py",
+      "line": 363,
+      "cwe": "CWE-1275",
+      "sink": "SNK-133"
+    },
+    {
+      "file": "introduction\\views.py",
+      "line": 1076,
+      "cwe": "CWE-1275",
+      "sink": "SNK-134"
+    },
+    {
+      "file": "introduction\\views.py",
+      "line": 1081,
+      "cwe": "CWE-1275",
+      "sink": "SNK-135"
+    },
+    {
+      "file": "introduction\\views.py",
+      "line": 1197,
+      "cwe": "CWE-1275",
+      "sink": "SNK-136"
+    },
+    {
+      "file": "introduction\\views.py",
+      "line": 373,
+      "cwe": "CWE-1275",
+      "sink": "SNK-137"
+    },
+    {
+      "file": "introduction\\views.py",
+      "line": 1026,
+      "cwe": "CWE-328",
+      "sink": "SNK-138"
+    },
+    {
+      "file": "introduction\\views.py",
+      "line": 420,
+      "cwe": "CWE-1333",
+      "sink": "SNK-139"
+    },
+    {
+      "file": "pygoat\\settings.py",
+      "line": 25,
+      "cwe": "CWE-798",
+      "sink": "SNK-001"
+    },
+    {
+      "file": "pygoat\\settings.py",
+      "line": 30,
+      "cwe": "CWE-489",
+      "sink": "SNK-002"
+    },
+    {
+      "file": "uninstaller.py",
+      "line": 41,
+      "cwe": "CWE-78",
+      "sink": "SNK-001"
+    },
+    {
+      "file": "uninstaller.py",
+      "line": 47,
+      "cwe": "CWE-78",
+      "sink": "SNK-002"
+    },
+    {
+      "file": "uninstaller.py",
+      "line": 62,
+      "cwe": "CWE-78",
+      "sink": "SNK-003"
+    },
+    {
+      "file": "uninstaller.py",
+      "line": 87,
+      "cwe": "CWE-22",
+      "sink": "SNK-004"
+    },
+    {
+      "file": "uninstaller.py",
+      "line": 94,
+      "cwe": "CWE-22",
+      "sink": "SNK-005"
+    },
+    {
+      "file": "uninstaller.py",
+      "line": 126,
+      "cwe": "CWE-22",
+      "sink": "SNK-006"
+    }
+  ]
+}

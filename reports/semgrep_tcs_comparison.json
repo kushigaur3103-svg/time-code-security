@@ -1,0 +1,2033 @@
+{
+  "metrics": {
+    "tcs": {
+      "tp": 276,
+      "tn": 276,
+      "fp": 0,
+      "fn": 0,
+      "precision": 100.0,
+      "recall": 100.0
+    },
+    "semgrep": {
+      "tp": 86,
+      "tn": 249,
+      "fp": 27,
+      "fn": 190,
+      "precision": 76.10619469026548,
+      "recall": 31.15942028985507
+    }
+  },
+  "discrepancies": [
+    {
+      "test_id": "TCS-BENCH-CWE918-GOOD",
+      "cwe": "CWE-918",
+      "file": "benchmark/corpus/cwe_918_ssrf/good.py",
+      "expected": "SAFE",
+      "tcs_verdict": "SAFE",
+      "semgrep_verdict": "VULNERABLE",
+      "semgrep_rule_ids": [
+        "python.django.security.injection.ssrf.ssrf-injection-requests.ssrf-injection-requests",
+        "python.flask.security.injection.ssrf-requests.ssrf-requests"
+      ]
+    },
+    {
+      "test_id": "TCS-BENCH-CWE611-BAD",
+      "cwe": "CWE-611",
+      "file": "benchmark/corpus/cwe_611_xxe/bad.py",
+      "expected": "VULNERABLE",
+      "tcs_verdict": "VULNERABLE",
+      "semgrep_verdict": "SAFE",
+      "semgrep_rule_ids": []
+    },
+    {
+      "test_id": "TCS-BENCH-CWE601-BAD",
+      "cwe": "CWE-601",
+      "file": "benchmark/corpus/cwe_601_redirect/bad.py",
+      "expected": "VULNERABLE",
+      "tcs_verdict": "VULNERABLE",
+      "semgrep_verdict": "SAFE",
+      "semgrep_rule_ids": []
+    },
+    {
+      "test_id": "TCS-BENCH-CWE338-BAD",
+      "cwe": "CWE-338",
+      "file": "benchmark/corpus/cwe_338_random/bad.py",
+      "expected": "VULNERABLE",
+      "tcs_verdict": "VULNERABLE",
+      "semgrep_verdict": "SAFE",
+      "semgrep_rule_ids": []
+    },
+    {
+      "test_id": "TCS-BENCH-CWE400-BAD",
+      "cwe": "CWE-400",
+      "file": "benchmark/corpus/cwe_400_resource/bad.py",
+      "expected": "VULNERABLE",
+      "tcs_verdict": "VULNERABLE",
+      "semgrep_verdict": "SAFE",
+      "semgrep_rule_ids": []
+    },
+    {
+      "test_id": "TCS-BENCH-CWE79-GOOD",
+      "cwe": "CWE-79",
+      "file": "benchmark/corpus/cwe_79_xss/good.py",
+      "expected": "SAFE",
+      "tcs_verdict": "SAFE",
+      "semgrep_verdict": "VULNERABLE",
+      "semgrep_rule_ids": [
+        "python.flask.security.xss.audit.explicit-unescape-with-markup.explicit-unescape-with-markup",
+        "python.django.security.injection.raw-html-format.raw-html-format",
+        "python.flask.security.injection.raw-html-concat.raw-html-format"
+      ]
+    },
+    {
+      "test_id": "TCS-BENCH-CWE1336-GOOD",
+      "cwe": "CWE-1336",
+      "file": "benchmark/corpus/cwe_1336_ssti/good.py",
+      "expected": "SAFE",
+      "tcs_verdict": "SAFE",
+      "semgrep_verdict": "VULNERABLE",
+      "semgrep_rule_ids": [
+        "python.flask.security.xss.audit.direct-use-of-jinja2.direct-use-of-jinja2"
+      ]
+    },
+    {
+      "test_id": "TCS-BENCH-CWE89-V02-BAD",
+      "cwe": "CWE-89",
+      "file": "benchmark/corpus/cwe_89_sqli/test_v02_bad.py",
+      "expected": "VULNERABLE",
+      "tcs_verdict": "VULNERABLE",
+      "semgrep_verdict": "SAFE",
+      "semgrep_rule_ids": []
+    },
+    {
+      "test_id": "TCS-BENCH-CWE89-V03-BAD",
+      "cwe": "CWE-89",
+      "file": "benchmark/corpus/cwe_89_sqli/test_v03_bad.py",
+      "expected": "VULNERABLE",
+      "tcs_verdict": "VULNERABLE",
+      "semgrep_verdict": "SAFE",
+      "semgrep_rule_ids": []
+    },
+    {
+      "test_id": "TCS-BENCH-CWE89-V04-BAD",
+      "cwe": "CWE-89",
+      "file": "benchmark/corpus/cwe_89_sqli/test_v04_bad.py",
+      "expected": "VULNERABLE",
+      "tcs_verdict": "VULNERABLE",
+      "semgrep_verdict": "SAFE",
+      "semgrep_rule_ids": []
+    },
+    {
+      "test_id": "TCS-BENCH-CWE89-V05-BAD",
+      "cwe": "CWE-89",
+      "file": "benchmark/corpus/cwe_89_sqli/test_v05_bad.py",
+      "expected": "VULNERABLE",
+      "tcs_verdict": "VULNERABLE",
+      "semgrep_verdict": "SAFE",
+      "semgrep_rule_ids": []
+    },
+    {
+      "test_id": "TCS-BENCH-CWE89-V05-GOOD",
+      "cwe": "CWE-89",
+      "file": "benchmark/corpus/cwe_89_sqli/test_v05_good.py",
+      "expected": "SAFE",
+      "tcs_verdict": "SAFE",
+      "semgrep_verdict": "VULNERABLE",
+      "semgrep_rule_ids": [
+        "python.sqlalchemy.security.sqlalchemy-execute-raw-query.sqlalchemy-execute-raw-query"
+      ]
+    },
+    {
+      "test_id": "TCS-BENCH-CWE22-V01-BAD",
+      "cwe": "CWE-22",
+      "file": "benchmark/corpus/cwe_22_traversal/test_v01_bad.py",
+      "expected": "VULNERABLE",
+      "tcs_verdict": "VULNERABLE",
+      "semgrep_verdict": "SAFE",
+      "semgrep_rule_ids": []
+    },
+    {
+      "test_id": "TCS-BENCH-CWE22-V02-BAD",
+      "cwe": "CWE-22",
+      "file": "benchmark/corpus/cwe_22_traversal/test_v02_bad.py",
+      "expected": "VULNERABLE",
+      "tcs_verdict": "VULNERABLE",
+      "semgrep_verdict": "SAFE",
+      "semgrep_rule_ids": []
+    },
+    {
+      "test_id": "TCS-BENCH-CWE22-V03-BAD",
+      "cwe": "CWE-22",
+      "file": "benchmark/corpus/cwe_22_traversal/test_v03_bad.py",
+      "expected": "VULNERABLE",
+      "tcs_verdict": "VULNERABLE",
+      "semgrep_verdict": "SAFE",
+      "semgrep_rule_ids": []
+    },
+    {
+      "test_id": "TCS-BENCH-CWE22-V04-BAD",
+      "cwe": "CWE-22",
+      "file": "benchmark/corpus/cwe_22_traversal/test_v04_bad.py",
+      "expected": "VULNERABLE",
+      "tcs_verdict": "VULNERABLE",
+      "semgrep_verdict": "SAFE",
+      "semgrep_rule_ids": []
+    },
+    {
+      "test_id": "TCS-BENCH-CWE22-V05-BAD",
+      "cwe": "CWE-22",
+      "file": "benchmark/corpus/cwe_22_traversal/test_v05_bad.py",
+      "expected": "VULNERABLE",
+      "tcs_verdict": "VULNERABLE",
+      "semgrep_verdict": "SAFE",
+      "semgrep_rule_ids": []
+    },
+    {
+      "test_id": "TCS-BENCH-CWE79-V01-BAD",
+      "cwe": "CWE-79",
+      "file": "benchmark/corpus/cwe_79_xss/test_v01_bad.py",
+      "expected": "VULNERABLE",
+      "tcs_verdict": "VULNERABLE",
+      "semgrep_verdict": "SAFE",
+      "semgrep_rule_ids": []
+    },
+    {
+      "test_id": "TCS-BENCH-CWE79-V02-BAD",
+      "cwe": "CWE-79",
+      "file": "benchmark/corpus/cwe_79_xss/test_v02_bad.py",
+      "expected": "VULNERABLE",
+      "tcs_verdict": "VULNERABLE",
+      "semgrep_verdict": "SAFE",
+      "semgrep_rule_ids": []
+    },
+    {
+      "test_id": "TCS-BENCH-CWE79-V03-BAD",
+      "cwe": "CWE-79",
+      "file": "benchmark/corpus/cwe_79_xss/test_v03_bad.py",
+      "expected": "VULNERABLE",
+      "tcs_verdict": "VULNERABLE",
+      "semgrep_verdict": "SAFE",
+      "semgrep_rule_ids": []
+    },
+    {
+      "test_id": "TCS-BENCH-CWE79-V04-BAD",
+      "cwe": "CWE-79",
+      "file": "benchmark/corpus/cwe_79_xss/test_v04_bad.py",
+      "expected": "VULNERABLE",
+      "tcs_verdict": "VULNERABLE",
+      "semgrep_verdict": "SAFE",
+      "semgrep_rule_ids": []
+    },
+    {
+      "test_id": "TCS-BENCH-CWE79-V05-BAD",
+      "cwe": "CWE-79",
+      "file": "benchmark/corpus/cwe_79_xss/test_v05_bad.py",
+      "expected": "VULNERABLE",
+      "tcs_verdict": "VULNERABLE",
+      "semgrep_verdict": "SAFE",
+      "semgrep_rule_ids": []
+    },
+    {
+      "test_id": "TCS-BENCH-CWE601-V01-BAD",
+      "cwe": "CWE-601",
+      "file": "benchmark/corpus/cwe_601_redirect/test_v01_bad.py",
+      "expected": "VULNERABLE",
+      "tcs_verdict": "VULNERABLE",
+      "semgrep_verdict": "SAFE",
+      "semgrep_rule_ids": []
+    },
+    {
+      "test_id": "TCS-BENCH-CWE601-V02-BAD",
+      "cwe": "CWE-601",
+      "file": "benchmark/corpus/cwe_601_redirect/test_v02_bad.py",
+      "expected": "VULNERABLE",
+      "tcs_verdict": "VULNERABLE",
+      "semgrep_verdict": "SAFE",
+      "semgrep_rule_ids": []
+    },
+    {
+      "test_id": "TCS-BENCH-CWE601-V03-BAD",
+      "cwe": "CWE-601",
+      "file": "benchmark/corpus/cwe_601_redirect/test_v03_bad.py",
+      "expected": "VULNERABLE",
+      "tcs_verdict": "VULNERABLE",
+      "semgrep_verdict": "SAFE",
+      "semgrep_rule_ids": []
+    },
+    {
+      "test_id": "TCS-BENCH-CWE601-V04-BAD",
+      "cwe": "CWE-601",
+      "file": "benchmark/corpus/cwe_601_redirect/test_v04_bad.py",
+      "expected": "VULNERABLE",
+      "tcs_verdict": "VULNERABLE",
+      "semgrep_verdict": "SAFE",
+      "semgrep_rule_ids": []
+    },
+    {
+      "test_id": "TCS-BENCH-CWE601-V05-BAD",
+      "cwe": "CWE-601",
+      "file": "benchmark/corpus/cwe_601_redirect/test_v05_bad.py",
+      "expected": "VULNERABLE",
+      "tcs_verdict": "VULNERABLE",
+      "semgrep_verdict": "SAFE",
+      "semgrep_rule_ids": []
+    },
+    {
+      "test_id": "TCS-BENCH-CWE611-V01-BAD",
+      "cwe": "CWE-611",
+      "file": "benchmark/corpus/cwe_611_xxe/test_v01_bad.py",
+      "expected": "VULNERABLE",
+      "tcs_verdict": "VULNERABLE",
+      "semgrep_verdict": "SAFE",
+      "semgrep_rule_ids": []
+    },
+    {
+      "test_id": "TCS-BENCH-CWE611-V02-BAD",
+      "cwe": "CWE-611",
+      "file": "benchmark/corpus/cwe_611_xxe/test_v02_bad.py",
+      "expected": "VULNERABLE",
+      "tcs_verdict": "VULNERABLE",
+      "semgrep_verdict": "SAFE",
+      "semgrep_rule_ids": []
+    },
+    {
+      "test_id": "TCS-BENCH-CWE611-V03-BAD",
+      "cwe": "CWE-611",
+      "file": "benchmark/corpus/cwe_611_xxe/test_v03_bad.py",
+      "expected": "VULNERABLE",
+      "tcs_verdict": "VULNERABLE",
+      "semgrep_verdict": "SAFE",
+      "semgrep_rule_ids": []
+    },
+    {
+      "test_id": "TCS-BENCH-CWE611-V04-BAD",
+      "cwe": "CWE-611",
+      "file": "benchmark/corpus/cwe_611_xxe/test_v04_bad.py",
+      "expected": "VULNERABLE",
+      "tcs_verdict": "VULNERABLE",
+      "semgrep_verdict": "SAFE",
+      "semgrep_rule_ids": []
+    },
+    {
+      "test_id": "TCS-BENCH-CWE611-V05-BAD",
+      "cwe": "CWE-611",
+      "file": "benchmark/corpus/cwe_611_xxe/test_v05_bad.py",
+      "expected": "VULNERABLE",
+      "tcs_verdict": "VULNERABLE",
+      "semgrep_verdict": "SAFE",
+      "semgrep_rule_ids": []
+    },
+    {
+      "test_id": "TCS-BENCH-CWE918-V01-BAD",
+      "cwe": "CWE-918",
+      "file": "benchmark/corpus/cwe_918_ssrf/test_v01_bad.py",
+      "expected": "VULNERABLE",
+      "tcs_verdict": "VULNERABLE",
+      "semgrep_verdict": "SAFE",
+      "semgrep_rule_ids": []
+    },
+    {
+      "test_id": "TCS-BENCH-CWE918-V02-BAD",
+      "cwe": "CWE-918",
+      "file": "benchmark/corpus/cwe_918_ssrf/test_v02_bad.py",
+      "expected": "VULNERABLE",
+      "tcs_verdict": "VULNERABLE",
+      "semgrep_verdict": "SAFE",
+      "semgrep_rule_ids": []
+    },
+    {
+      "test_id": "TCS-BENCH-CWE918-V03-BAD",
+      "cwe": "CWE-918",
+      "file": "benchmark/corpus/cwe_918_ssrf/test_v03_bad.py",
+      "expected": "VULNERABLE",
+      "tcs_verdict": "VULNERABLE",
+      "semgrep_verdict": "SAFE",
+      "semgrep_rule_ids": []
+    },
+    {
+      "test_id": "TCS-BENCH-CWE918-V04-BAD",
+      "cwe": "CWE-918",
+      "file": "benchmark/corpus/cwe_918_ssrf/test_v04_bad.py",
+      "expected": "VULNERABLE",
+      "tcs_verdict": "VULNERABLE",
+      "semgrep_verdict": "SAFE",
+      "semgrep_rule_ids": []
+    },
+    {
+      "test_id": "TCS-BENCH-CWE918-V05-BAD",
+      "cwe": "CWE-918",
+      "file": "benchmark/corpus/cwe_918_ssrf/test_v05_bad.py",
+      "expected": "VULNERABLE",
+      "tcs_verdict": "VULNERABLE",
+      "semgrep_verdict": "SAFE",
+      "semgrep_rule_ids": []
+    },
+    {
+      "test_id": "TCS-BENCH-CWE327-V02-BAD",
+      "cwe": "CWE-327",
+      "file": "benchmark/corpus/cwe_327_crypto/test_v02_bad.py",
+      "expected": "VULNERABLE",
+      "tcs_verdict": "VULNERABLE",
+      "semgrep_verdict": "SAFE",
+      "semgrep_rule_ids": []
+    },
+    {
+      "test_id": "TCS-BENCH-CWE338-V01-BAD",
+      "cwe": "CWE-338",
+      "file": "benchmark/corpus/cwe_338_random/test_v01_bad.py",
+      "expected": "VULNERABLE",
+      "tcs_verdict": "VULNERABLE",
+      "semgrep_verdict": "SAFE",
+      "semgrep_rule_ids": []
+    },
+    {
+      "test_id": "TCS-BENCH-CWE338-V02-BAD",
+      "cwe": "CWE-338",
+      "file": "benchmark/corpus/cwe_338_random/test_v02_bad.py",
+      "expected": "VULNERABLE",
+      "tcs_verdict": "VULNERABLE",
+      "semgrep_verdict": "SAFE",
+      "semgrep_rule_ids": []
+    },
+    {
+      "test_id": "TCS-BENCH-CWE338-V03-BAD",
+      "cwe": "CWE-338",
+      "file": "benchmark/corpus/cwe_338_random/test_v03_bad.py",
+      "expected": "VULNERABLE",
+      "tcs_verdict": "VULNERABLE",
+      "semgrep_verdict": "SAFE",
+      "semgrep_rule_ids": []
+    },
+    {
+      "test_id": "TCS-BENCH-CWE338-V04-BAD",
+      "cwe": "CWE-338",
+      "file": "benchmark/corpus/cwe_338_random/test_v04_bad.py",
+      "expected": "VULNERABLE",
+      "tcs_verdict": "VULNERABLE",
+      "semgrep_verdict": "SAFE",
+      "semgrep_rule_ids": []
+    },
+    {
+      "test_id": "TCS-BENCH-CWE338-V05-BAD",
+      "cwe": "CWE-338",
+      "file": "benchmark/corpus/cwe_338_random/test_v05_bad.py",
+      "expected": "VULNERABLE",
+      "tcs_verdict": "VULNERABLE",
+      "semgrep_verdict": "SAFE",
+      "semgrep_rule_ids": []
+    },
+    {
+      "test_id": "TCS-BENCH-CWE295-V02-BAD",
+      "cwe": "CWE-295",
+      "file": "benchmark/corpus/cwe_295_cert/test_v02_bad.py",
+      "expected": "VULNERABLE",
+      "tcs_verdict": "VULNERABLE",
+      "semgrep_verdict": "SAFE",
+      "semgrep_rule_ids": []
+    },
+    {
+      "test_id": "TCS-BENCH-CWE295-V03-BAD",
+      "cwe": "CWE-295",
+      "file": "benchmark/corpus/cwe_295_cert/test_v03_bad.py",
+      "expected": "VULNERABLE",
+      "tcs_verdict": "VULNERABLE",
+      "semgrep_verdict": "SAFE",
+      "semgrep_rule_ids": []
+    },
+    {
+      "test_id": "TCS-BENCH-CWE295-V04-BAD",
+      "cwe": "CWE-295",
+      "file": "benchmark/corpus/cwe_295_cert/test_v04_bad.py",
+      "expected": "VULNERABLE",
+      "tcs_verdict": "VULNERABLE",
+      "semgrep_verdict": "SAFE",
+      "semgrep_rule_ids": []
+    },
+    {
+      "test_id": "TCS-BENCH-CWE400-V01-GOOD",
+      "cwe": "CWE-400",
+      "file": "benchmark/corpus/cwe_400_resource/test_v01_good.py",
+      "expected": "SAFE",
+      "tcs_verdict": "SAFE",
+      "semgrep_verdict": "VULNERABLE",
+      "semgrep_rule_ids": [
+        "python.lang.security.audit.network.bind.avoid-bind-to-all-interfaces"
+      ]
+    },
+    {
+      "test_id": "TCS-BENCH-CWE400-V02-GOOD",
+      "cwe": "CWE-400",
+      "file": "benchmark/corpus/cwe_400_resource/test_v02_good.py",
+      "expected": "SAFE",
+      "tcs_verdict": "SAFE",
+      "semgrep_verdict": "VULNERABLE",
+      "semgrep_rule_ids": [
+        "python.lang.security.audit.network.bind.avoid-bind-to-all-interfaces"
+      ]
+    },
+    {
+      "test_id": "TCS-BENCH-CWE400-V03-GOOD",
+      "cwe": "CWE-400",
+      "file": "benchmark/corpus/cwe_400_resource/test_v03_good.py",
+      "expected": "SAFE",
+      "tcs_verdict": "SAFE",
+      "semgrep_verdict": "VULNERABLE",
+      "semgrep_rule_ids": [
+        "python.lang.security.audit.network.bind.avoid-bind-to-all-interfaces"
+      ]
+    },
+    {
+      "test_id": "TCS-BENCH-CWE400-V04-GOOD",
+      "cwe": "CWE-400",
+      "file": "benchmark/corpus/cwe_400_resource/test_v04_good.py",
+      "expected": "SAFE",
+      "tcs_verdict": "SAFE",
+      "semgrep_verdict": "VULNERABLE",
+      "semgrep_rule_ids": [
+        "python.lang.security.audit.network.bind.avoid-bind-to-all-interfaces"
+      ]
+    },
+    {
+      "test_id": "TCS-BENCH-CWE400-V05-GOOD",
+      "cwe": "CWE-400",
+      "file": "benchmark/corpus/cwe_400_resource/test_v05_good.py",
+      "expected": "SAFE",
+      "tcs_verdict": "SAFE",
+      "semgrep_verdict": "VULNERABLE",
+      "semgrep_rule_ids": [
+        "python.lang.security.audit.network.bind.avoid-bind-to-all-interfaces"
+      ]
+    },
+    {
+      "test_id": "TCS-BENCH-CWE1336-V01-GOOD",
+      "cwe": "CWE-1336",
+      "file": "benchmark/corpus/cwe_1336_ssti/test_v01_good.py",
+      "expected": "SAFE",
+      "tcs_verdict": "SAFE",
+      "semgrep_verdict": "VULNERABLE",
+      "semgrep_rule_ids": [
+        "python.flask.security.xss.audit.direct-use-of-jinja2.direct-use-of-jinja2"
+      ]
+    },
+    {
+      "test_id": "TCS-BENCH-CWE1336-V02-GOOD",
+      "cwe": "CWE-1336",
+      "file": "benchmark/corpus/cwe_1336_ssti/test_v02_good.py",
+      "expected": "SAFE",
+      "tcs_verdict": "SAFE",
+      "semgrep_verdict": "VULNERABLE",
+      "semgrep_rule_ids": [
+        "python.flask.security.xss.audit.direct-use-of-jinja2.direct-use-of-jinja2"
+      ]
+    },
+    {
+      "test_id": "TCS-BENCH-CWE1336-V03-GOOD",
+      "cwe": "CWE-1336",
+      "file": "benchmark/corpus/cwe_1336_ssti/test_v03_good.py",
+      "expected": "SAFE",
+      "tcs_verdict": "SAFE",
+      "semgrep_verdict": "VULNERABLE",
+      "semgrep_rule_ids": [
+        "python.flask.security.xss.audit.direct-use-of-jinja2.direct-use-of-jinja2"
+      ]
+    },
+    {
+      "test_id": "TCS-BENCH-CWE1336-V04-BAD",
+      "cwe": "CWE-1336",
+      "file": "benchmark/corpus/cwe_1336_ssti/test_v04_bad.py",
+      "expected": "VULNERABLE",
+      "tcs_verdict": "VULNERABLE",
+      "semgrep_verdict": "SAFE",
+      "semgrep_rule_ids": []
+    },
+    {
+      "test_id": "TCS-BENCH-CWE1336-V05-BAD",
+      "cwe": "CWE-1336",
+      "file": "benchmark/corpus/cwe_1336_ssti/test_v05_bad.py",
+      "expected": "VULNERABLE",
+      "tcs_verdict": "VULNERABLE",
+      "semgrep_verdict": "SAFE",
+      "semgrep_rule_ids": []
+    },
+    {
+      "test_id": "TCS-BENCH-CWE377-V01-BAD",
+      "cwe": "CWE-377",
+      "file": "benchmark/corpus/cwe_377_tempfile/test_v01_bad.py",
+      "expected": "VULNERABLE",
+      "tcs_verdict": "VULNERABLE",
+      "semgrep_verdict": "SAFE",
+      "semgrep_rule_ids": []
+    },
+    {
+      "test_id": "TCS-BENCH-CWE377-V02-BAD",
+      "cwe": "CWE-377",
+      "file": "benchmark/corpus/cwe_377_tempfile/test_v02_bad.py",
+      "expected": "VULNERABLE",
+      "tcs_verdict": "VULNERABLE",
+      "semgrep_verdict": "SAFE",
+      "semgrep_rule_ids": []
+    },
+    {
+      "test_id": "TCS-BENCH-CWE377-V03-BAD",
+      "cwe": "CWE-377",
+      "file": "benchmark/corpus/cwe_377_tempfile/test_v03_bad.py",
+      "expected": "VULNERABLE",
+      "tcs_verdict": "VULNERABLE",
+      "semgrep_verdict": "SAFE",
+      "semgrep_rule_ids": []
+    },
+    {
+      "test_id": "TCS-BENCH-CWE377-V04-BAD",
+      "cwe": "CWE-377",
+      "file": "benchmark/corpus/cwe_377_tempfile/test_v04_bad.py",
+      "expected": "VULNERABLE",
+      "tcs_verdict": "VULNERABLE",
+      "semgrep_verdict": "SAFE",
+      "semgrep_rule_ids": []
+    },
+    {
+      "test_id": "TCS-BENCH-CWE377-V05-BAD",
+      "cwe": "CWE-377",
+      "file": "benchmark/corpus/cwe_377_tempfile/test_v05_bad.py",
+      "expected": "VULNERABLE",
+      "tcs_verdict": "VULNERABLE",
+      "semgrep_verdict": "SAFE",
+      "semgrep_rule_ids": []
+    },
+    {
+      "test_id": "TCS-BENCH-CWE377-V06-BAD",
+      "cwe": "CWE-377",
+      "file": "benchmark/corpus/cwe_377_tempfile/test_v06_bad.py",
+      "expected": "VULNERABLE",
+      "tcs_verdict": "VULNERABLE",
+      "semgrep_verdict": "SAFE",
+      "semgrep_rule_ids": []
+    },
+    {
+      "test_id": "TCS-BENCH-CWE732-V02-GOOD",
+      "cwe": "CWE-732",
+      "file": "benchmark/corpus/cwe_732_permissions/test_v02_good.py",
+      "expected": "SAFE",
+      "tcs_verdict": "SAFE",
+      "semgrep_verdict": "VULNERABLE",
+      "semgrep_rule_ids": [
+        "python.lang.security.audit.insecure-file-permissions.insecure-file-permissions"
+      ]
+    },
+    {
+      "test_id": "TCS-BENCH-CWE732-V04-BAD",
+      "cwe": "CWE-732",
+      "file": "benchmark/corpus/cwe_732_permissions/test_v04_bad.py",
+      "expected": "VULNERABLE",
+      "tcs_verdict": "VULNERABLE",
+      "semgrep_verdict": "SAFE",
+      "semgrep_rule_ids": []
+    },
+    {
+      "test_id": "TCS-BENCH-CWE732-V05-GOOD",
+      "cwe": "CWE-732",
+      "file": "benchmark/corpus/cwe_732_permissions/test_v05_good.py",
+      "expected": "SAFE",
+      "tcs_verdict": "SAFE",
+      "semgrep_verdict": "VULNERABLE",
+      "semgrep_rule_ids": [
+        "python.lang.security.audit.insecure-file-permissions.insecure-file-permissions"
+      ]
+    },
+    {
+      "test_id": "TCS-BENCH-CWE732-V06-BAD",
+      "cwe": "CWE-732",
+      "file": "benchmark/corpus/cwe_732_permissions/test_v06_bad.py",
+      "expected": "VULNERABLE",
+      "tcs_verdict": "VULNERABLE",
+      "semgrep_verdict": "SAFE",
+      "semgrep_rule_ids": []
+    },
+    {
+      "test_id": "TCS-BENCH-CWE326-V01-GOOD",
+      "cwe": "CWE-326",
+      "file": "benchmark/corpus/cwe_326_crypto_key/test_v01_good.py",
+      "expected": "SAFE",
+      "tcs_verdict": "SAFE",
+      "semgrep_verdict": "VULNERABLE",
+      "semgrep_rule_ids": [
+        "python.pycryptodome.security.insufficient-rsa-key-size.insufficient-rsa-key-size"
+      ]
+    },
+    {
+      "test_id": "TCS-BENCH-CWE326-V02-GOOD",
+      "cwe": "CWE-326",
+      "file": "benchmark/corpus/cwe_326_crypto_key/test_v02_good.py",
+      "expected": "SAFE",
+      "tcs_verdict": "SAFE",
+      "semgrep_verdict": "VULNERABLE",
+      "semgrep_rule_ids": [
+        "python.pycryptodome.security.insufficient-rsa-key-size.insufficient-rsa-key-size"
+      ]
+    },
+    {
+      "test_id": "TCS-BENCH-CWE326-V05-BAD",
+      "cwe": "CWE-326",
+      "file": "benchmark/corpus/cwe_326_crypto_key/test_v05_bad.py",
+      "expected": "VULNERABLE",
+      "tcs_verdict": "VULNERABLE",
+      "semgrep_verdict": "SAFE",
+      "semgrep_rule_ids": []
+    },
+    {
+      "test_id": "TCS-BENCH-CWE326-V05-GOOD",
+      "cwe": "CWE-326",
+      "file": "benchmark/corpus/cwe_326_crypto_key/test_v05_good.py",
+      "expected": "SAFE",
+      "tcs_verdict": "SAFE",
+      "semgrep_verdict": "VULNERABLE",
+      "semgrep_rule_ids": [
+        "python.pycryptodome.security.insufficient-rsa-key-size.insufficient-rsa-key-size"
+      ]
+    },
+    {
+      "test_id": "TCS-BENCH-CWE798-V01-BAD",
+      "cwe": "CWE-798",
+      "file": "benchmark/corpus/cwe_798_hardcoded/test_v01_bad.py",
+      "expected": "VULNERABLE",
+      "tcs_verdict": "VULNERABLE",
+      "semgrep_verdict": "SAFE",
+      "semgrep_rule_ids": []
+    },
+    {
+      "test_id": "TCS-BENCH-CWE798-V02-BAD",
+      "cwe": "CWE-798",
+      "file": "benchmark/corpus/cwe_798_hardcoded/test_v02_bad.py",
+      "expected": "VULNERABLE",
+      "tcs_verdict": "VULNERABLE",
+      "semgrep_verdict": "SAFE",
+      "semgrep_rule_ids": []
+    },
+    {
+      "test_id": "TCS-BENCH-CWE798-V03-BAD",
+      "cwe": "CWE-798",
+      "file": "benchmark/corpus/cwe_798_hardcoded/test_v03_bad.py",
+      "expected": "VULNERABLE",
+      "tcs_verdict": "VULNERABLE",
+      "semgrep_verdict": "SAFE",
+      "semgrep_rule_ids": []
+    },
+    {
+      "test_id": "TCS-BENCH-CWE798-V04-BAD",
+      "cwe": "CWE-798",
+      "file": "benchmark/corpus/cwe_798_hardcoded/test_v04_bad.py",
+      "expected": "VULNERABLE",
+      "tcs_verdict": "VULNERABLE",
+      "semgrep_verdict": "SAFE",
+      "semgrep_rule_ids": []
+    },
+    {
+      "test_id": "TCS-BENCH-CWE798-V05-BAD",
+      "cwe": "CWE-798",
+      "file": "benchmark/corpus/cwe_798_hardcoded/test_v05_bad.py",
+      "expected": "VULNERABLE",
+      "tcs_verdict": "VULNERABLE",
+      "semgrep_verdict": "SAFE",
+      "semgrep_rule_ids": []
+    },
+    {
+      "test_id": "TCS-BENCH-CWE798-V06-BAD",
+      "cwe": "CWE-798",
+      "file": "benchmark/corpus/cwe_798_hardcoded/test_v06_bad.py",
+      "expected": "VULNERABLE",
+      "tcs_verdict": "VULNERABLE",
+      "semgrep_verdict": "SAFE",
+      "semgrep_rule_ids": []
+    },
+    {
+      "test_id": "TCS-BENCH-CWE1004-V01-BAD",
+      "cwe": "CWE-1004",
+      "file": "benchmark/corpus/cwe_1004_cookies/test_v01_bad.py",
+      "expected": "VULNERABLE",
+      "tcs_verdict": "VULNERABLE",
+      "semgrep_verdict": "SAFE",
+      "semgrep_rule_ids": []
+    },
+    {
+      "test_id": "TCS-BENCH-CWE1004-V02-BAD",
+      "cwe": "CWE-1004",
+      "file": "benchmark/corpus/cwe_1004_cookies/test_v02_bad.py",
+      "expected": "VULNERABLE",
+      "tcs_verdict": "VULNERABLE",
+      "semgrep_verdict": "SAFE",
+      "semgrep_rule_ids": []
+    },
+    {
+      "test_id": "TCS-BENCH-CWE1004-V03-BAD",
+      "cwe": "CWE-1004",
+      "file": "benchmark/corpus/cwe_1004_cookies/test_v03_bad.py",
+      "expected": "VULNERABLE",
+      "tcs_verdict": "VULNERABLE",
+      "semgrep_verdict": "SAFE",
+      "semgrep_rule_ids": []
+    },
+    {
+      "test_id": "TCS-BENCH-CWE1004-V04-BAD",
+      "cwe": "CWE-1004",
+      "file": "benchmark/corpus/cwe_1004_cookies/test_v04_bad.py",
+      "expected": "VULNERABLE",
+      "tcs_verdict": "VULNERABLE",
+      "semgrep_verdict": "SAFE",
+      "semgrep_rule_ids": []
+    },
+    {
+      "test_id": "TCS-BENCH-CWE1004-V05-BAD",
+      "cwe": "CWE-1004",
+      "file": "benchmark/corpus/cwe_1004_cookies/test_v05_bad.py",
+      "expected": "VULNERABLE",
+      "tcs_verdict": "VULNERABLE",
+      "semgrep_verdict": "SAFE",
+      "semgrep_rule_ids": []
+    },
+    {
+      "test_id": "TCS-BENCH-CWE1004-V06-BAD",
+      "cwe": "CWE-1004",
+      "file": "benchmark/corpus/cwe_1004_cookies/test_v06_bad.py",
+      "expected": "VULNERABLE",
+      "tcs_verdict": "VULNERABLE",
+      "semgrep_verdict": "SAFE",
+      "semgrep_rule_ids": []
+    },
+    {
+      "test_id": "TCS-BENCH-CWE209-V01-BAD",
+      "cwe": "CWE-209",
+      "file": "benchmark/corpus/cwe_209_error_exposure/test_v01_bad.py",
+      "expected": "VULNERABLE",
+      "tcs_verdict": "VULNERABLE",
+      "semgrep_verdict": "SAFE",
+      "semgrep_rule_ids": []
+    },
+    {
+      "test_id": "TCS-BENCH-CWE209-V02-BAD",
+      "cwe": "CWE-209",
+      "file": "benchmark/corpus/cwe_209_error_exposure/test_v02_bad.py",
+      "expected": "VULNERABLE",
+      "tcs_verdict": "VULNERABLE",
+      "semgrep_verdict": "SAFE",
+      "semgrep_rule_ids": []
+    },
+    {
+      "test_id": "TCS-BENCH-CWE209-V03-BAD",
+      "cwe": "CWE-209",
+      "file": "benchmark/corpus/cwe_209_error_exposure/test_v03_bad.py",
+      "expected": "VULNERABLE",
+      "tcs_verdict": "VULNERABLE",
+      "semgrep_verdict": "SAFE",
+      "semgrep_rule_ids": []
+    },
+    {
+      "test_id": "TCS-BENCH-CWE209-V04-BAD",
+      "cwe": "CWE-209",
+      "file": "benchmark/corpus/cwe_209_error_exposure/test_v04_bad.py",
+      "expected": "VULNERABLE",
+      "tcs_verdict": "VULNERABLE",
+      "semgrep_verdict": "SAFE",
+      "semgrep_rule_ids": []
+    },
+    {
+      "test_id": "TCS-BENCH-CWE209-V05-BAD",
+      "cwe": "CWE-209",
+      "file": "benchmark/corpus/cwe_209_error_exposure/test_v05_bad.py",
+      "expected": "VULNERABLE",
+      "tcs_verdict": "VULNERABLE",
+      "semgrep_verdict": "SAFE",
+      "semgrep_rule_ids": []
+    },
+    {
+      "test_id": "TCS-BENCH-CWE209-V06-BAD",
+      "cwe": "CWE-209",
+      "file": "benchmark/corpus/cwe_209_error_exposure/test_v06_bad.py",
+      "expected": "VULNERABLE",
+      "tcs_verdict": "VULNERABLE",
+      "semgrep_verdict": "SAFE",
+      "semgrep_rule_ids": []
+    },
+    {
+      "test_id": "TCS-BENCH-CWE117-V01-BAD",
+      "cwe": "CWE-117",
+      "file": "benchmark/corpus/cwe_117_logi/test_v01_bad.py",
+      "expected": "VULNERABLE",
+      "tcs_verdict": "VULNERABLE",
+      "semgrep_verdict": "SAFE",
+      "semgrep_rule_ids": []
+    },
+    {
+      "test_id": "TCS-BENCH-CWE117-V02-BAD",
+      "cwe": "CWE-117",
+      "file": "benchmark/corpus/cwe_117_logi/test_v02_bad.py",
+      "expected": "VULNERABLE",
+      "tcs_verdict": "VULNERABLE",
+      "semgrep_verdict": "SAFE",
+      "semgrep_rule_ids": []
+    },
+    {
+      "test_id": "TCS-BENCH-CWE117-V03-BAD",
+      "cwe": "CWE-117",
+      "file": "benchmark/corpus/cwe_117_logi/test_v03_bad.py",
+      "expected": "VULNERABLE",
+      "tcs_verdict": "VULNERABLE",
+      "semgrep_verdict": "SAFE",
+      "semgrep_rule_ids": []
+    },
+    {
+      "test_id": "TCS-BENCH-CWE117-V04-BAD",
+      "cwe": "CWE-117",
+      "file": "benchmark/corpus/cwe_117_logi/test_v04_bad.py",
+      "expected": "VULNERABLE",
+      "tcs_verdict": "VULNERABLE",
+      "semgrep_verdict": "SAFE",
+      "semgrep_rule_ids": []
+    },
+    {
+      "test_id": "TCS-BENCH-CWE117-V05-BAD",
+      "cwe": "CWE-117",
+      "file": "benchmark/corpus/cwe_117_logi/test_v05_bad.py",
+      "expected": "VULNERABLE",
+      "tcs_verdict": "VULNERABLE",
+      "semgrep_verdict": "SAFE",
+      "semgrep_rule_ids": []
+    },
+    {
+      "test_id": "TCS-BENCH-CWE117-V06-BAD",
+      "cwe": "CWE-117",
+      "file": "benchmark/corpus/cwe_117_logi/test_v06_bad.py",
+      "expected": "VULNERABLE",
+      "tcs_verdict": "VULNERABLE",
+      "semgrep_verdict": "SAFE",
+      "semgrep_rule_ids": []
+    },
+    {
+      "test_id": "TCS-BENCH-CWE94-V01-GOOD",
+      "cwe": "CWE-94",
+      "file": "benchmark/corpus/cwe_94_codei_load/test_v01_good.py",
+      "expected": "SAFE",
+      "tcs_verdict": "SAFE",
+      "semgrep_verdict": "VULNERABLE",
+      "semgrep_rule_ids": [
+        "python.lang.security.audit.non-literal-import.non-literal-import"
+      ]
+    },
+    {
+      "test_id": "TCS-BENCH-CWE94-V02-GOOD",
+      "cwe": "CWE-94",
+      "file": "benchmark/corpus/cwe_94_codei_load/test_v02_good.py",
+      "expected": "SAFE",
+      "tcs_verdict": "SAFE",
+      "semgrep_verdict": "VULNERABLE",
+      "semgrep_rule_ids": [
+        "python.lang.security.audit.non-literal-import.non-literal-import"
+      ]
+    },
+    {
+      "test_id": "TCS-BENCH-CWE94-V04-GOOD",
+      "cwe": "CWE-94",
+      "file": "benchmark/corpus/cwe_94_codei_load/test_v04_good.py",
+      "expected": "SAFE",
+      "tcs_verdict": "SAFE",
+      "semgrep_verdict": "VULNERABLE",
+      "semgrep_rule_ids": [
+        "python.lang.security.audit.non-literal-import.non-literal-import"
+      ]
+    },
+    {
+      "test_id": "TCS-BENCH-CWE94-V05-GOOD",
+      "cwe": "CWE-94",
+      "file": "benchmark/corpus/cwe_94_codei_load/test_v05_good.py",
+      "expected": "SAFE",
+      "tcs_verdict": "SAFE",
+      "semgrep_verdict": "VULNERABLE",
+      "semgrep_rule_ids": [
+        "python.lang.security.audit.non-literal-import.non-literal-import"
+      ]
+    },
+    {
+      "test_id": "TCS-BENCH-CWE94-V06-BAD",
+      "cwe": "CWE-94",
+      "file": "benchmark/corpus/cwe_94_codei_load/test_v06_bad.py",
+      "expected": "VULNERABLE",
+      "tcs_verdict": "VULNERABLE",
+      "semgrep_verdict": "SAFE",
+      "semgrep_rule_ids": []
+    },
+    {
+      "test_id": "TCS-BENCH-CWE94-V06-GOOD",
+      "cwe": "CWE-94",
+      "file": "benchmark/corpus/cwe_94_codei_load/test_v06_good.py",
+      "expected": "SAFE",
+      "tcs_verdict": "SAFE",
+      "semgrep_verdict": "VULNERABLE",
+      "semgrep_rule_ids": [
+        "python.lang.security.audit.non-literal-import.non-literal-import"
+      ]
+    },
+    {
+      "test_id": "TCS-BENCH-CWE643-V01-BAD",
+      "cwe": "CWE-643",
+      "file": "benchmark/corpus/cwe_643_xpath/test_v01_bad.py",
+      "expected": "VULNERABLE",
+      "tcs_verdict": "VULNERABLE",
+      "semgrep_verdict": "SAFE",
+      "semgrep_rule_ids": []
+    },
+    {
+      "test_id": "TCS-BENCH-CWE643-V02-BAD",
+      "cwe": "CWE-643",
+      "file": "benchmark/corpus/cwe_643_xpath/test_v02_bad.py",
+      "expected": "VULNERABLE",
+      "tcs_verdict": "VULNERABLE",
+      "semgrep_verdict": "SAFE",
+      "semgrep_rule_ids": []
+    },
+    {
+      "test_id": "TCS-BENCH-CWE643-V03-BAD",
+      "cwe": "CWE-643",
+      "file": "benchmark/corpus/cwe_643_xpath/test_v03_bad.py",
+      "expected": "VULNERABLE",
+      "tcs_verdict": "VULNERABLE",
+      "semgrep_verdict": "SAFE",
+      "semgrep_rule_ids": []
+    },
+    {
+      "test_id": "TCS-BENCH-CWE643-V04-BAD",
+      "cwe": "CWE-643",
+      "file": "benchmark/corpus/cwe_643_xpath/test_v04_bad.py",
+      "expected": "VULNERABLE",
+      "tcs_verdict": "VULNERABLE",
+      "semgrep_verdict": "SAFE",
+      "semgrep_rule_ids": []
+    },
+    {
+      "test_id": "TCS-BENCH-CWE643-V05-BAD",
+      "cwe": "CWE-643",
+      "file": "benchmark/corpus/cwe_643_xpath/test_v05_bad.py",
+      "expected": "VULNERABLE",
+      "tcs_verdict": "VULNERABLE",
+      "semgrep_verdict": "SAFE",
+      "semgrep_rule_ids": []
+    },
+    {
+      "test_id": "TCS-BENCH-CWE643-V06-BAD",
+      "cwe": "CWE-643",
+      "file": "benchmark/corpus/cwe_643_xpath/test_v06_bad.py",
+      "expected": "VULNERABLE",
+      "tcs_verdict": "VULNERABLE",
+      "semgrep_verdict": "SAFE",
+      "semgrep_rule_ids": []
+    },
+    {
+      "test_id": "TCS-BENCH-CWE943-V01-BAD",
+      "cwe": "CWE-943",
+      "file": "benchmark/corpus/cwe_943_nosql/test_v01_bad.py",
+      "expected": "VULNERABLE",
+      "tcs_verdict": "VULNERABLE",
+      "semgrep_verdict": "SAFE",
+      "semgrep_rule_ids": []
+    },
+    {
+      "test_id": "TCS-BENCH-CWE943-V02-BAD",
+      "cwe": "CWE-943",
+      "file": "benchmark/corpus/cwe_943_nosql/test_v02_bad.py",
+      "expected": "VULNERABLE",
+      "tcs_verdict": "VULNERABLE",
+      "semgrep_verdict": "SAFE",
+      "semgrep_rule_ids": []
+    },
+    {
+      "test_id": "TCS-BENCH-CWE943-V03-BAD",
+      "cwe": "CWE-943",
+      "file": "benchmark/corpus/cwe_943_nosql/test_v03_bad.py",
+      "expected": "VULNERABLE",
+      "tcs_verdict": "VULNERABLE",
+      "semgrep_verdict": "SAFE",
+      "semgrep_rule_ids": []
+    },
+    {
+      "test_id": "TCS-BENCH-CWE943-V04-BAD",
+      "cwe": "CWE-943",
+      "file": "benchmark/corpus/cwe_943_nosql/test_v04_bad.py",
+      "expected": "VULNERABLE",
+      "tcs_verdict": "VULNERABLE",
+      "semgrep_verdict": "SAFE",
+      "semgrep_rule_ids": []
+    },
+    {
+      "test_id": "TCS-BENCH-CWE943-V05-BAD",
+      "cwe": "CWE-943",
+      "file": "benchmark/corpus/cwe_943_nosql/test_v05_bad.py",
+      "expected": "VULNERABLE",
+      "tcs_verdict": "VULNERABLE",
+      "semgrep_verdict": "SAFE",
+      "semgrep_rule_ids": []
+    },
+    {
+      "test_id": "TCS-BENCH-CWE943-V06-BAD",
+      "cwe": "CWE-943",
+      "file": "benchmark/corpus/cwe_943_nosql/test_v06_bad.py",
+      "expected": "VULNERABLE",
+      "tcs_verdict": "VULNERABLE",
+      "semgrep_verdict": "SAFE",
+      "semgrep_rule_ids": []
+    },
+    {
+      "test_id": "TCS-BENCH-CWE614-V01-BAD",
+      "cwe": "CWE-614",
+      "file": "benchmark/corpus/cwe_614_cookie_secure/test_v01_bad.py",
+      "expected": "VULNERABLE",
+      "tcs_verdict": "VULNERABLE",
+      "semgrep_verdict": "SAFE",
+      "semgrep_rule_ids": []
+    },
+    {
+      "test_id": "TCS-BENCH-CWE614-V02-BAD",
+      "cwe": "CWE-614",
+      "file": "benchmark/corpus/cwe_614_cookie_secure/test_v02_bad.py",
+      "expected": "VULNERABLE",
+      "tcs_verdict": "VULNERABLE",
+      "semgrep_verdict": "SAFE",
+      "semgrep_rule_ids": []
+    },
+    {
+      "test_id": "TCS-BENCH-CWE614-V03-BAD",
+      "cwe": "CWE-614",
+      "file": "benchmark/corpus/cwe_614_cookie_secure/test_v03_bad.py",
+      "expected": "VULNERABLE",
+      "tcs_verdict": "VULNERABLE",
+      "semgrep_verdict": "SAFE",
+      "semgrep_rule_ids": []
+    },
+    {
+      "test_id": "TCS-BENCH-CWE614-V04-BAD",
+      "cwe": "CWE-614",
+      "file": "benchmark/corpus/cwe_614_cookie_secure/test_v04_bad.py",
+      "expected": "VULNERABLE",
+      "tcs_verdict": "VULNERABLE",
+      "semgrep_verdict": "SAFE",
+      "semgrep_rule_ids": []
+    },
+    {
+      "test_id": "TCS-BENCH-CWE614-V05-BAD",
+      "cwe": "CWE-614",
+      "file": "benchmark/corpus/cwe_614_cookie_secure/test_v05_bad.py",
+      "expected": "VULNERABLE",
+      "tcs_verdict": "VULNERABLE",
+      "semgrep_verdict": "SAFE",
+      "semgrep_rule_ids": []
+    },
+    {
+      "test_id": "TCS-BENCH-CWE614-V06-BAD",
+      "cwe": "CWE-614",
+      "file": "benchmark/corpus/cwe_614_cookie_secure/test_v06_bad.py",
+      "expected": "VULNERABLE",
+      "tcs_verdict": "VULNERABLE",
+      "semgrep_verdict": "SAFE",
+      "semgrep_rule_ids": []
+    },
+    {
+      "test_id": "TCS-BENCH-CWE916-V01-BAD",
+      "cwe": "CWE-916",
+      "file": "benchmark/corpus/cwe_916_weak_hash/test_v01_bad.py",
+      "expected": "VULNERABLE",
+      "tcs_verdict": "VULNERABLE",
+      "semgrep_verdict": "SAFE",
+      "semgrep_rule_ids": []
+    },
+    {
+      "test_id": "TCS-BENCH-CWE916-V02-BAD",
+      "cwe": "CWE-916",
+      "file": "benchmark/corpus/cwe_916_weak_hash/test_v02_bad.py",
+      "expected": "VULNERABLE",
+      "tcs_verdict": "VULNERABLE",
+      "semgrep_verdict": "SAFE",
+      "semgrep_rule_ids": []
+    },
+    {
+      "test_id": "TCS-BENCH-CWE916-V03-BAD",
+      "cwe": "CWE-916",
+      "file": "benchmark/corpus/cwe_916_weak_hash/test_v03_bad.py",
+      "expected": "VULNERABLE",
+      "tcs_verdict": "VULNERABLE",
+      "semgrep_verdict": "SAFE",
+      "semgrep_rule_ids": []
+    },
+    {
+      "test_id": "TCS-BENCH-CWE916-V04-BAD",
+      "cwe": "CWE-916",
+      "file": "benchmark/corpus/cwe_916_weak_hash/test_v04_bad.py",
+      "expected": "VULNERABLE",
+      "tcs_verdict": "VULNERABLE",
+      "semgrep_verdict": "SAFE",
+      "semgrep_rule_ids": []
+    },
+    {
+      "test_id": "TCS-BENCH-CWE916-V06-BAD",
+      "cwe": "CWE-916",
+      "file": "benchmark/corpus/cwe_916_weak_hash/test_v06_bad.py",
+      "expected": "VULNERABLE",
+      "tcs_verdict": "VULNERABLE",
+      "semgrep_verdict": "SAFE",
+      "semgrep_rule_ids": []
+    },
+    {
+      "test_id": "TCS-BENCH-CWE759-V01-BAD",
+      "cwe": "CWE-759",
+      "file": "benchmark/corpus/cwe_759_unsalted_hash/test_v01_bad.py",
+      "expected": "VULNERABLE",
+      "tcs_verdict": "VULNERABLE",
+      "semgrep_verdict": "SAFE",
+      "semgrep_rule_ids": []
+    },
+    {
+      "test_id": "TCS-BENCH-CWE759-V04-BAD",
+      "cwe": "CWE-759",
+      "file": "benchmark/corpus/cwe_759_unsalted_hash/test_v04_bad.py",
+      "expected": "VULNERABLE",
+      "tcs_verdict": "VULNERABLE",
+      "semgrep_verdict": "SAFE",
+      "semgrep_rule_ids": []
+    },
+    {
+      "test_id": "TCS-BENCH-CWE759-V06-BAD",
+      "cwe": "CWE-759",
+      "file": "benchmark/corpus/cwe_759_unsalted_hash/test_v06_bad.py",
+      "expected": "VULNERABLE",
+      "tcs_verdict": "VULNERABLE",
+      "semgrep_verdict": "SAFE",
+      "semgrep_rule_ids": []
+    },
+    {
+      "test_id": "TCS-BENCH-CWE434-V01-BAD",
+      "cwe": "CWE-434",
+      "file": "benchmark/corpus/cwe_434_upload/test_v01_bad.py",
+      "expected": "VULNERABLE",
+      "tcs_verdict": "VULNERABLE",
+      "semgrep_verdict": "SAFE",
+      "semgrep_rule_ids": []
+    },
+    {
+      "test_id": "TCS-BENCH-CWE434-V02-BAD",
+      "cwe": "CWE-434",
+      "file": "benchmark/corpus/cwe_434_upload/test_v02_bad.py",
+      "expected": "VULNERABLE",
+      "tcs_verdict": "VULNERABLE",
+      "semgrep_verdict": "SAFE",
+      "semgrep_rule_ids": []
+    },
+    {
+      "test_id": "TCS-BENCH-CWE434-V03-BAD",
+      "cwe": "CWE-434",
+      "file": "benchmark/corpus/cwe_434_upload/test_v03_bad.py",
+      "expected": "VULNERABLE",
+      "tcs_verdict": "VULNERABLE",
+      "semgrep_verdict": "SAFE",
+      "semgrep_rule_ids": []
+    },
+    {
+      "test_id": "TCS-BENCH-CWE434-V04-BAD",
+      "cwe": "CWE-434",
+      "file": "benchmark/corpus/cwe_434_upload/test_v04_bad.py",
+      "expected": "VULNERABLE",
+      "tcs_verdict": "VULNERABLE",
+      "semgrep_verdict": "SAFE",
+      "semgrep_rule_ids": []
+    },
+    {
+      "test_id": "TCS-BENCH-CWE434-V05-BAD",
+      "cwe": "CWE-434",
+      "file": "benchmark/corpus/cwe_434_upload/test_v05_bad.py",
+      "expected": "VULNERABLE",
+      "tcs_verdict": "VULNERABLE",
+      "semgrep_verdict": "SAFE",
+      "semgrep_rule_ids": []
+    },
+    {
+      "test_id": "TCS-BENCH-CWE434-V06-BAD",
+      "cwe": "CWE-434",
+      "file": "benchmark/corpus/cwe_434_upload/test_v06_bad.py",
+      "expected": "VULNERABLE",
+      "tcs_verdict": "VULNERABLE",
+      "semgrep_verdict": "SAFE",
+      "semgrep_rule_ids": []
+    },
+    {
+      "test_id": "TCS-BENCH-CWE352-V01-BAD",
+      "cwe": "CWE-352",
+      "file": "benchmark/corpus/cwe_352_csrf/test_v01_bad.py",
+      "expected": "VULNERABLE",
+      "tcs_verdict": "VULNERABLE",
+      "semgrep_verdict": "SAFE",
+      "semgrep_rule_ids": []
+    },
+    {
+      "test_id": "TCS-BENCH-CWE352-V03-BAD",
+      "cwe": "CWE-352",
+      "file": "benchmark/corpus/cwe_352_csrf/test_v03_bad.py",
+      "expected": "VULNERABLE",
+      "tcs_verdict": "VULNERABLE",
+      "semgrep_verdict": "SAFE",
+      "semgrep_rule_ids": []
+    },
+    {
+      "test_id": "TCS-BENCH-CWE352-V04-BAD",
+      "cwe": "CWE-352",
+      "file": "benchmark/corpus/cwe_352_csrf/test_v04_bad.py",
+      "expected": "VULNERABLE",
+      "tcs_verdict": "VULNERABLE",
+      "semgrep_verdict": "SAFE",
+      "semgrep_rule_ids": []
+    },
+    {
+      "test_id": "TCS-BENCH-CWE352-V05-BAD",
+      "cwe": "CWE-352",
+      "file": "benchmark/corpus/cwe_352_csrf/test_v05_bad.py",
+      "expected": "VULNERABLE",
+      "tcs_verdict": "VULNERABLE",
+      "semgrep_verdict": "SAFE",
+      "semgrep_rule_ids": []
+    },
+    {
+      "test_id": "TCS-BENCH-CWE352-V06-BAD",
+      "cwe": "CWE-352",
+      "file": "benchmark/corpus/cwe_352_csrf/test_v06_bad.py",
+      "expected": "VULNERABLE",
+      "tcs_verdict": "VULNERABLE",
+      "semgrep_verdict": "SAFE",
+      "semgrep_rule_ids": []
+    },
+    {
+      "test_id": "TCS-BENCH-CWE287-V01-BAD",
+      "cwe": "CWE-287",
+      "file": "benchmark/corpus/cwe_287_auth/test_v01_bad.py",
+      "expected": "VULNERABLE",
+      "tcs_verdict": "VULNERABLE",
+      "semgrep_verdict": "SAFE",
+      "semgrep_rule_ids": []
+    },
+    {
+      "test_id": "TCS-BENCH-CWE287-V02-BAD",
+      "cwe": "CWE-287",
+      "file": "benchmark/corpus/cwe_287_auth/test_v02_bad.py",
+      "expected": "VULNERABLE",
+      "tcs_verdict": "VULNERABLE",
+      "semgrep_verdict": "SAFE",
+      "semgrep_rule_ids": []
+    },
+    {
+      "test_id": "TCS-BENCH-CWE287-V03-BAD",
+      "cwe": "CWE-287",
+      "file": "benchmark/corpus/cwe_287_auth/test_v03_bad.py",
+      "expected": "VULNERABLE",
+      "tcs_verdict": "VULNERABLE",
+      "semgrep_verdict": "SAFE",
+      "semgrep_rule_ids": []
+    },
+    {
+      "test_id": "TCS-BENCH-CWE287-V04-BAD",
+      "cwe": "CWE-287",
+      "file": "benchmark/corpus/cwe_287_auth/test_v04_bad.py",
+      "expected": "VULNERABLE",
+      "tcs_verdict": "VULNERABLE",
+      "semgrep_verdict": "SAFE",
+      "semgrep_rule_ids": []
+    },
+    {
+      "test_id": "TCS-BENCH-CWE287-V05-BAD",
+      "cwe": "CWE-287",
+      "file": "benchmark/corpus/cwe_287_auth/test_v05_bad.py",
+      "expected": "VULNERABLE",
+      "tcs_verdict": "VULNERABLE",
+      "semgrep_verdict": "SAFE",
+      "semgrep_rule_ids": []
+    },
+    {
+      "test_id": "TCS-BENCH-CWE287-V06-BAD",
+      "cwe": "CWE-287",
+      "file": "benchmark/corpus/cwe_287_auth/test_v06_bad.py",
+      "expected": "VULNERABLE",
+      "tcs_verdict": "VULNERABLE",
+      "semgrep_verdict": "SAFE",
+      "semgrep_rule_ids": []
+    },
+    {
+      "test_id": "TCS-BENCH-CWE862-V01-BAD",
+      "cwe": "CWE-862",
+      "file": "benchmark/corpus/cwe_862_idor/test_v01_bad.py",
+      "expected": "VULNERABLE",
+      "tcs_verdict": "VULNERABLE",
+      "semgrep_verdict": "SAFE",
+      "semgrep_rule_ids": []
+    },
+    {
+      "test_id": "TCS-BENCH-CWE862-V02-BAD",
+      "cwe": "CWE-862",
+      "file": "benchmark/corpus/cwe_862_idor/test_v02_bad.py",
+      "expected": "VULNERABLE",
+      "tcs_verdict": "VULNERABLE",
+      "semgrep_verdict": "SAFE",
+      "semgrep_rule_ids": []
+    },
+    {
+      "test_id": "TCS-BENCH-CWE862-V03-BAD",
+      "cwe": "CWE-862",
+      "file": "benchmark/corpus/cwe_862_idor/test_v03_bad.py",
+      "expected": "VULNERABLE",
+      "tcs_verdict": "VULNERABLE",
+      "semgrep_verdict": "SAFE",
+      "semgrep_rule_ids": []
+    },
+    {
+      "test_id": "TCS-BENCH-CWE862-V04-BAD",
+      "cwe": "CWE-862",
+      "file": "benchmark/corpus/cwe_862_idor/test_v04_bad.py",
+      "expected": "VULNERABLE",
+      "tcs_verdict": "VULNERABLE",
+      "semgrep_verdict": "SAFE",
+      "semgrep_rule_ids": []
+    },
+    {
+      "test_id": "TCS-BENCH-CWE862-V05-BAD",
+      "cwe": "CWE-862",
+      "file": "benchmark/corpus/cwe_862_idor/test_v05_bad.py",
+      "expected": "VULNERABLE",
+      "tcs_verdict": "VULNERABLE",
+      "semgrep_verdict": "SAFE",
+      "semgrep_rule_ids": []
+    },
+    {
+      "test_id": "TCS-BENCH-CWE862-V06-BAD",
+      "cwe": "CWE-862",
+      "file": "benchmark/corpus/cwe_862_idor/test_v06_bad.py",
+      "expected": "VULNERABLE",
+      "tcs_verdict": "VULNERABLE",
+      "semgrep_verdict": "SAFE",
+      "semgrep_rule_ids": []
+    },
+    {
+      "test_id": "TCS-BENCH-CWE312-V01-BAD",
+      "cwe": "CWE-312",
+      "file": "benchmark/corpus/cwe_312_cleartext_store/test_v01_bad.py",
+      "expected": "VULNERABLE",
+      "tcs_verdict": "VULNERABLE",
+      "semgrep_verdict": "SAFE",
+      "semgrep_rule_ids": []
+    },
+    {
+      "test_id": "TCS-BENCH-CWE312-V02-BAD",
+      "cwe": "CWE-312",
+      "file": "benchmark/corpus/cwe_312_cleartext_store/test_v02_bad.py",
+      "expected": "VULNERABLE",
+      "tcs_verdict": "VULNERABLE",
+      "semgrep_verdict": "SAFE",
+      "semgrep_rule_ids": []
+    },
+    {
+      "test_id": "TCS-BENCH-CWE312-V03-BAD",
+      "cwe": "CWE-312",
+      "file": "benchmark/corpus/cwe_312_cleartext_store/test_v03_bad.py",
+      "expected": "VULNERABLE",
+      "tcs_verdict": "VULNERABLE",
+      "semgrep_verdict": "SAFE",
+      "semgrep_rule_ids": []
+    },
+    {
+      "test_id": "TCS-BENCH-CWE312-V04-BAD",
+      "cwe": "CWE-312",
+      "file": "benchmark/corpus/cwe_312_cleartext_store/test_v04_bad.py",
+      "expected": "VULNERABLE",
+      "tcs_verdict": "VULNERABLE",
+      "semgrep_verdict": "SAFE",
+      "semgrep_rule_ids": []
+    },
+    {
+      "test_id": "TCS-BENCH-CWE312-V05-BAD",
+      "cwe": "CWE-312",
+      "file": "benchmark/corpus/cwe_312_cleartext_store/test_v05_bad.py",
+      "expected": "VULNERABLE",
+      "tcs_verdict": "VULNERABLE",
+      "semgrep_verdict": "SAFE",
+      "semgrep_rule_ids": []
+    },
+    {
+      "test_id": "TCS-BENCH-CWE312-V06-BAD",
+      "cwe": "CWE-312",
+      "file": "benchmark/corpus/cwe_312_cleartext_store/test_v06_bad.py",
+      "expected": "VULNERABLE",
+      "tcs_verdict": "VULNERABLE",
+      "semgrep_verdict": "SAFE",
+      "semgrep_rule_ids": []
+    },
+    {
+      "test_id": "TCS-BENCH-CWE319-V06-BAD",
+      "cwe": "CWE-319",
+      "file": "benchmark/corpus/cwe_319_cleartext_transmit/test_v06_bad.py",
+      "expected": "VULNERABLE",
+      "tcs_verdict": "VULNERABLE",
+      "semgrep_verdict": "SAFE",
+      "semgrep_rule_ids": []
+    },
+    {
+      "test_id": "TCS-BENCH-CWE489-V01-GOOD",
+      "cwe": "CWE-489",
+      "file": "benchmark/corpus/cwe_489_debug/test_v01_good.py",
+      "expected": "SAFE",
+      "tcs_verdict": "SAFE",
+      "semgrep_verdict": "VULNERABLE",
+      "semgrep_rule_ids": [
+        "python.flask.security.audit.app-run-security-config.avoid_using_app_run_directly"
+      ]
+    },
+    {
+      "test_id": "TCS-BENCH-CWE489-V02-BAD",
+      "cwe": "CWE-489",
+      "file": "benchmark/corpus/cwe_489_debug/test_v02_bad.py",
+      "expected": "VULNERABLE",
+      "tcs_verdict": "VULNERABLE",
+      "semgrep_verdict": "SAFE",
+      "semgrep_rule_ids": []
+    },
+    {
+      "test_id": "TCS-BENCH-CWE489-V03-GOOD",
+      "cwe": "CWE-489",
+      "file": "benchmark/corpus/cwe_489_debug/test_v03_good.py",
+      "expected": "SAFE",
+      "tcs_verdict": "SAFE",
+      "semgrep_verdict": "VULNERABLE",
+      "semgrep_rule_ids": [
+        "python.flask.security.audit.app-run-security-config.avoid_using_app_run_directly"
+      ]
+    },
+    {
+      "test_id": "TCS-BENCH-CWE489-V04-BAD",
+      "cwe": "CWE-489",
+      "file": "benchmark/corpus/cwe_489_debug/test_v04_bad.py",
+      "expected": "VULNERABLE",
+      "tcs_verdict": "VULNERABLE",
+      "semgrep_verdict": "SAFE",
+      "semgrep_rule_ids": []
+    },
+    {
+      "test_id": "TCS-BENCH-CWE489-V04-GOOD",
+      "cwe": "CWE-489",
+      "file": "benchmark/corpus/cwe_489_debug/test_v04_good.py",
+      "expected": "SAFE",
+      "tcs_verdict": "SAFE",
+      "semgrep_verdict": "VULNERABLE",
+      "semgrep_rule_ids": [
+        "python.flask.security.audit.app-run-param-config.avoid_app_run_with_bad_host",
+        "python.flask.security.audit.app-run-security-config.avoid_using_app_run_directly"
+      ]
+    },
+    {
+      "test_id": "TCS-BENCH-CWE489-V06-BAD",
+      "cwe": "CWE-489",
+      "file": "benchmark/corpus/cwe_489_debug/test_v06_bad.py",
+      "expected": "VULNERABLE",
+      "tcs_verdict": "VULNERABLE",
+      "semgrep_verdict": "SAFE",
+      "semgrep_rule_ids": []
+    },
+    {
+      "test_id": "TCS-BENCH-CWE489-V06-GOOD",
+      "cwe": "CWE-489",
+      "file": "benchmark/corpus/cwe_489_debug/test_v06_good.py",
+      "expected": "SAFE",
+      "tcs_verdict": "SAFE",
+      "semgrep_verdict": "VULNERABLE",
+      "semgrep_rule_ids": [
+        "python.flask.security.audit.hardcoded-config.avoid_hardcoded_config_DEBUG"
+      ]
+    },
+    {
+      "test_id": "TCS-BENCH-CWE90-V01-BAD",
+      "cwe": "CWE-90",
+      "file": "benchmark/corpus/cwe_90_ldap/test_v01_bad.py",
+      "expected": "VULNERABLE",
+      "tcs_verdict": "VULNERABLE",
+      "semgrep_verdict": "SAFE",
+      "semgrep_rule_ids": []
+    },
+    {
+      "test_id": "TCS-BENCH-CWE90-V02-BAD",
+      "cwe": "CWE-90",
+      "file": "benchmark/corpus/cwe_90_ldap/test_v02_bad.py",
+      "expected": "VULNERABLE",
+      "tcs_verdict": "VULNERABLE",
+      "semgrep_verdict": "SAFE",
+      "semgrep_rule_ids": []
+    },
+    {
+      "test_id": "TCS-BENCH-CWE90-V03-BAD",
+      "cwe": "CWE-90",
+      "file": "benchmark/corpus/cwe_90_ldap/test_v03_bad.py",
+      "expected": "VULNERABLE",
+      "tcs_verdict": "VULNERABLE",
+      "semgrep_verdict": "SAFE",
+      "semgrep_rule_ids": []
+    },
+    {
+      "test_id": "TCS-BENCH-CWE90-V04-BAD",
+      "cwe": "CWE-90",
+      "file": "benchmark/corpus/cwe_90_ldap/test_v04_bad.py",
+      "expected": "VULNERABLE",
+      "tcs_verdict": "VULNERABLE",
+      "semgrep_verdict": "SAFE",
+      "semgrep_rule_ids": []
+    },
+    {
+      "test_id": "TCS-BENCH-CWE90-V05-BAD",
+      "cwe": "CWE-90",
+      "file": "benchmark/corpus/cwe_90_ldap/test_v05_bad.py",
+      "expected": "VULNERABLE",
+      "tcs_verdict": "VULNERABLE",
+      "semgrep_verdict": "SAFE",
+      "semgrep_rule_ids": []
+    },
+    {
+      "test_id": "TCS-BENCH-CWE90-V06-BAD",
+      "cwe": "CWE-90",
+      "file": "benchmark/corpus/cwe_90_ldap/test_v06_bad.py",
+      "expected": "VULNERABLE",
+      "tcs_verdict": "VULNERABLE",
+      "semgrep_verdict": "SAFE",
+      "semgrep_rule_ids": []
+    },
+    {
+      "test_id": "TCS-BENCH-CWE776-V01-BAD",
+      "cwe": "CWE-776",
+      "file": "benchmark/corpus/cwe_776_xml_bomb/test_v01_bad.py",
+      "expected": "VULNERABLE",
+      "tcs_verdict": "VULNERABLE",
+      "semgrep_verdict": "SAFE",
+      "semgrep_rule_ids": []
+    },
+    {
+      "test_id": "TCS-BENCH-CWE776-V02-BAD",
+      "cwe": "CWE-776",
+      "file": "benchmark/corpus/cwe_776_xml_bomb/test_v02_bad.py",
+      "expected": "VULNERABLE",
+      "tcs_verdict": "VULNERABLE",
+      "semgrep_verdict": "SAFE",
+      "semgrep_rule_ids": []
+    },
+    {
+      "test_id": "TCS-BENCH-CWE776-V04-BAD",
+      "cwe": "CWE-776",
+      "file": "benchmark/corpus/cwe_776_xml_bomb/test_v04_bad.py",
+      "expected": "VULNERABLE",
+      "tcs_verdict": "VULNERABLE",
+      "semgrep_verdict": "SAFE",
+      "semgrep_rule_ids": []
+    },
+    {
+      "test_id": "TCS-BENCH-CWE776-V05-BAD",
+      "cwe": "CWE-776",
+      "file": "benchmark/corpus/cwe_776_xml_bomb/test_v05_bad.py",
+      "expected": "VULNERABLE",
+      "tcs_verdict": "VULNERABLE",
+      "semgrep_verdict": "SAFE",
+      "semgrep_rule_ids": []
+    },
+    {
+      "test_id": "TCS-BENCH-CWE776-V06-BAD",
+      "cwe": "CWE-776",
+      "file": "benchmark/corpus/cwe_776_xml_bomb/test_v06_bad.py",
+      "expected": "VULNERABLE",
+      "tcs_verdict": "VULNERABLE",
+      "semgrep_verdict": "SAFE",
+      "semgrep_rule_ids": []
+    },
+    {
+      "test_id": "TCS-BENCH-CWE200-V01-BAD",
+      "cwe": "CWE-200",
+      "file": "benchmark/corpus/cwe_200_info_exposure/test_v01_bad.py",
+      "expected": "VULNERABLE",
+      "tcs_verdict": "VULNERABLE",
+      "semgrep_verdict": "SAFE",
+      "semgrep_rule_ids": []
+    },
+    {
+      "test_id": "TCS-BENCH-CWE200-V02-BAD",
+      "cwe": "CWE-200",
+      "file": "benchmark/corpus/cwe_200_info_exposure/test_v02_bad.py",
+      "expected": "VULNERABLE",
+      "tcs_verdict": "VULNERABLE",
+      "semgrep_verdict": "SAFE",
+      "semgrep_rule_ids": []
+    },
+    {
+      "test_id": "TCS-BENCH-CWE200-V03-BAD",
+      "cwe": "CWE-200",
+      "file": "benchmark/corpus/cwe_200_info_exposure/test_v03_bad.py",
+      "expected": "VULNERABLE",
+      "tcs_verdict": "VULNERABLE",
+      "semgrep_verdict": "SAFE",
+      "semgrep_rule_ids": []
+    },
+    {
+      "test_id": "TCS-BENCH-CWE200-V04-BAD",
+      "cwe": "CWE-200",
+      "file": "benchmark/corpus/cwe_200_info_exposure/test_v04_bad.py",
+      "expected": "VULNERABLE",
+      "tcs_verdict": "VULNERABLE",
+      "semgrep_verdict": "SAFE",
+      "semgrep_rule_ids": []
+    },
+    {
+      "test_id": "TCS-BENCH-CWE200-V05-BAD",
+      "cwe": "CWE-200",
+      "file": "benchmark/corpus/cwe_200_info_exposure/test_v05_bad.py",
+      "expected": "VULNERABLE",
+      "tcs_verdict": "VULNERABLE",
+      "semgrep_verdict": "SAFE",
+      "semgrep_rule_ids": []
+    },
+    {
+      "test_id": "TCS-BENCH-CWE200-V06-BAD",
+      "cwe": "CWE-200",
+      "file": "benchmark/corpus/cwe_200_info_exposure/test_v06_bad.py",
+      "expected": "VULNERABLE",
+      "tcs_verdict": "VULNERABLE",
+      "semgrep_verdict": "SAFE",
+      "semgrep_rule_ids": []
+    },
+    {
+      "test_id": "TCS-BENCH-CWE384-V01-BAD",
+      "cwe": "CWE-384",
+      "file": "benchmark/corpus/cwe_384_session_fixation/test_v01_bad.py",
+      "expected": "VULNERABLE",
+      "tcs_verdict": "VULNERABLE",
+      "semgrep_verdict": "SAFE",
+      "semgrep_rule_ids": []
+    },
+    {
+      "test_id": "TCS-BENCH-CWE384-V02-BAD",
+      "cwe": "CWE-384",
+      "file": "benchmark/corpus/cwe_384_session_fixation/test_v02_bad.py",
+      "expected": "VULNERABLE",
+      "tcs_verdict": "VULNERABLE",
+      "semgrep_verdict": "SAFE",
+      "semgrep_rule_ids": []
+    },
+    {
+      "test_id": "TCS-BENCH-CWE384-V03-BAD",
+      "cwe": "CWE-384",
+      "file": "benchmark/corpus/cwe_384_session_fixation/test_v03_bad.py",
+      "expected": "VULNERABLE",
+      "tcs_verdict": "VULNERABLE",
+      "semgrep_verdict": "SAFE",
+      "semgrep_rule_ids": []
+    },
+    {
+      "test_id": "TCS-BENCH-CWE384-V04-BAD",
+      "cwe": "CWE-384",
+      "file": "benchmark/corpus/cwe_384_session_fixation/test_v04_bad.py",
+      "expected": "VULNERABLE",
+      "tcs_verdict": "VULNERABLE",
+      "semgrep_verdict": "SAFE",
+      "semgrep_rule_ids": []
+    },
+    {
+      "test_id": "TCS-BENCH-CWE384-V05-BAD",
+      "cwe": "CWE-384",
+      "file": "benchmark/corpus/cwe_384_session_fixation/test_v05_bad.py",
+      "expected": "VULNERABLE",
+      "tcs_verdict": "VULNERABLE",
+      "semgrep_verdict": "SAFE",
+      "semgrep_rule_ids": []
+    },
+    {
+      "test_id": "TCS-BENCH-CWE384-V06-BAD",
+      "cwe": "CWE-384",
+      "file": "benchmark/corpus/cwe_384_session_fixation/test_v06_bad.py",
+      "expected": "VULNERABLE",
+      "tcs_verdict": "VULNERABLE",
+      "semgrep_verdict": "SAFE",
+      "semgrep_rule_ids": []
+    },
+    {
+      "test_id": "TCS-BENCH-CWE770-V01-BAD",
+      "cwe": "CWE-770",
+      "file": "benchmark/corpus/cwe_770_unbounded_read/test_v01_bad.py",
+      "expected": "VULNERABLE",
+      "tcs_verdict": "VULNERABLE",
+      "semgrep_verdict": "SAFE",
+      "semgrep_rule_ids": []
+    },
+    {
+      "test_id": "TCS-BENCH-CWE770-V02-BAD",
+      "cwe": "CWE-770",
+      "file": "benchmark/corpus/cwe_770_unbounded_read/test_v02_bad.py",
+      "expected": "VULNERABLE",
+      "tcs_verdict": "VULNERABLE",
+      "semgrep_verdict": "SAFE",
+      "semgrep_rule_ids": []
+    },
+    {
+      "test_id": "TCS-BENCH-CWE770-V03-BAD",
+      "cwe": "CWE-770",
+      "file": "benchmark/corpus/cwe_770_unbounded_read/test_v03_bad.py",
+      "expected": "VULNERABLE",
+      "tcs_verdict": "VULNERABLE",
+      "semgrep_verdict": "SAFE",
+      "semgrep_rule_ids": []
+    },
+    {
+      "test_id": "TCS-BENCH-CWE770-V04-BAD",
+      "cwe": "CWE-770",
+      "file": "benchmark/corpus/cwe_770_unbounded_read/test_v04_bad.py",
+      "expected": "VULNERABLE",
+      "tcs_verdict": "VULNERABLE",
+      "semgrep_verdict": "SAFE",
+      "semgrep_rule_ids": []
+    },
+    {
+      "test_id": "TCS-BENCH-CWE770-V05-BAD",
+      "cwe": "CWE-770",
+      "file": "benchmark/corpus/cwe_770_unbounded_read/test_v05_bad.py",
+      "expected": "VULNERABLE",
+      "tcs_verdict": "VULNERABLE",
+      "semgrep_verdict": "SAFE",
+      "semgrep_rule_ids": []
+    },
+    {
+      "test_id": "TCS-BENCH-CWE770-V06-BAD",
+      "cwe": "CWE-770",
+      "file": "benchmark/corpus/cwe_770_unbounded_read/test_v06_bad.py",
+      "expected": "VULNERABLE",
+      "tcs_verdict": "VULNERABLE",
+      "semgrep_verdict": "SAFE",
+      "semgrep_rule_ids": []
+    },
+    {
+      "test_id": "TCS-BENCH-CWE605-V05-BAD",
+      "cwe": "CWE-605",
+      "file": "benchmark/corpus/cwe_605_socket_binding/test_v05_bad.py",
+      "expected": "VULNERABLE",
+      "tcs_verdict": "VULNERABLE",
+      "semgrep_verdict": "SAFE",
+      "semgrep_rule_ids": []
+    },
+    {
+      "test_id": "TCS-BENCH-CWE269-V01-BAD",
+      "cwe": "CWE-269",
+      "file": "benchmark/corpus/cwe_269_privilege/test_v01_bad.py",
+      "expected": "VULNERABLE",
+      "tcs_verdict": "VULNERABLE",
+      "semgrep_verdict": "SAFE",
+      "semgrep_rule_ids": []
+    },
+    {
+      "test_id": "TCS-BENCH-CWE269-V02-BAD",
+      "cwe": "CWE-269",
+      "file": "benchmark/corpus/cwe_269_privilege/test_v02_bad.py",
+      "expected": "VULNERABLE",
+      "tcs_verdict": "VULNERABLE",
+      "semgrep_verdict": "SAFE",
+      "semgrep_rule_ids": []
+    },
+    {
+      "test_id": "TCS-BENCH-CWE269-V03-BAD",
+      "cwe": "CWE-269",
+      "file": "benchmark/corpus/cwe_269_privilege/test_v03_bad.py",
+      "expected": "VULNERABLE",
+      "tcs_verdict": "VULNERABLE",
+      "semgrep_verdict": "SAFE",
+      "semgrep_rule_ids": []
+    },
+    {
+      "test_id": "TCS-BENCH-CWE269-V04-BAD",
+      "cwe": "CWE-269",
+      "file": "benchmark/corpus/cwe_269_privilege/test_v04_bad.py",
+      "expected": "VULNERABLE",
+      "tcs_verdict": "VULNERABLE",
+      "semgrep_verdict": "SAFE",
+      "semgrep_rule_ids": []
+    },
+    {
+      "test_id": "TCS-BENCH-CWE269-V05-BAD",
+      "cwe": "CWE-269",
+      "file": "benchmark/corpus/cwe_269_privilege/test_v05_bad.py",
+      "expected": "VULNERABLE",
+      "tcs_verdict": "VULNERABLE",
+      "semgrep_verdict": "SAFE",
+      "semgrep_rule_ids": []
+    },
+    {
+      "test_id": "TCS-BENCH-CWE269-V06-BAD",
+      "cwe": "CWE-269",
+      "file": "benchmark/corpus/cwe_269_privilege/test_v06_bad.py",
+      "expected": "VULNERABLE",
+      "tcs_verdict": "VULNERABLE",
+      "semgrep_verdict": "SAFE",
+      "semgrep_rule_ids": []
+    },
+    {
+      "test_id": "TCS-BENCH-CWE652-V01-BAD",
+      "cwe": "CWE-652",
+      "file": "benchmark/corpus/cwe_652_xquery/test_v01_bad.py",
+      "expected": "VULNERABLE",
+      "tcs_verdict": "VULNERABLE",
+      "semgrep_verdict": "SAFE",
+      "semgrep_rule_ids": []
+    },
+    {
+      "test_id": "TCS-BENCH-CWE652-V02-BAD",
+      "cwe": "CWE-652",
+      "file": "benchmark/corpus/cwe_652_xquery/test_v02_bad.py",
+      "expected": "VULNERABLE",
+      "tcs_verdict": "VULNERABLE",
+      "semgrep_verdict": "SAFE",
+      "semgrep_rule_ids": []
+    },
+    {
+      "test_id": "TCS-BENCH-CWE652-V03-BAD",
+      "cwe": "CWE-652",
+      "file": "benchmark/corpus/cwe_652_xquery/test_v03_bad.py",
+      "expected": "VULNERABLE",
+      "tcs_verdict": "VULNERABLE",
+      "semgrep_verdict": "SAFE",
+      "semgrep_rule_ids": []
+    },
+    {
+      "test_id": "TCS-BENCH-CWE652-V04-BAD",
+      "cwe": "CWE-652",
+      "file": "benchmark/corpus/cwe_652_xquery/test_v04_bad.py",
+      "expected": "VULNERABLE",
+      "tcs_verdict": "VULNERABLE",
+      "semgrep_verdict": "SAFE",
+      "semgrep_rule_ids": []
+    },
+    {
+      "test_id": "TCS-BENCH-CWE652-V05-BAD",
+      "cwe": "CWE-652",
+      "file": "benchmark/corpus/cwe_652_xquery/test_v05_bad.py",
+      "expected": "VULNERABLE",
+      "tcs_verdict": "VULNERABLE",
+      "semgrep_verdict": "SAFE",
+      "semgrep_rule_ids": []
+    },
+    {
+      "test_id": "TCS-BENCH-CWE652-V06-BAD",
+      "cwe": "CWE-652",
+      "file": "benchmark/corpus/cwe_652_xquery/test_v06_bad.py",
+      "expected": "VULNERABLE",
+      "tcs_verdict": "VULNERABLE",
+      "semgrep_verdict": "SAFE",
+      "semgrep_rule_ids": []
+    },
+    {
+      "test_id": "TCS-BENCH-CWE522-V03-BAD",
+      "cwe": "CWE-522",
+      "file": "benchmark/corpus/cwe_522_basic_auth/test_v03_bad.py",
+      "expected": "VULNERABLE",
+      "tcs_verdict": "VULNERABLE",
+      "semgrep_verdict": "SAFE",
+      "semgrep_rule_ids": []
+    },
+    {
+      "test_id": "TCS-BENCH-CWE522-V05-GOOD",
+      "cwe": "CWE-522",
+      "file": "benchmark/corpus/cwe_522_basic_auth/test_v05_good.py",
+      "expected": "SAFE",
+      "tcs_verdict": "SAFE",
+      "semgrep_verdict": "VULNERABLE",
+      "semgrep_rule_ids": [
+        "python.lang.security.audit.dynamic-urllib-use-detected.dynamic-urllib-use-detected"
+      ]
+    },
+    {
+      "test_id": "TCS-BENCH-CWE1275-V01-BAD",
+      "cwe": "CWE-1275",
+      "file": "benchmark/corpus/cwe_1275_samesite/test_v01_bad.py",
+      "expected": "VULNERABLE",
+      "tcs_verdict": "VULNERABLE",
+      "semgrep_verdict": "SAFE",
+      "semgrep_rule_ids": []
+    },
+    {
+      "test_id": "TCS-BENCH-CWE1275-V02-BAD",
+      "cwe": "CWE-1275",
+      "file": "benchmark/corpus/cwe_1275_samesite/test_v02_bad.py",
+      "expected": "VULNERABLE",
+      "tcs_verdict": "VULNERABLE",
+      "semgrep_verdict": "SAFE",
+      "semgrep_rule_ids": []
+    },
+    {
+      "test_id": "TCS-BENCH-CWE1275-V03-BAD",
+      "cwe": "CWE-1275",
+      "file": "benchmark/corpus/cwe_1275_samesite/test_v03_bad.py",
+      "expected": "VULNERABLE",
+      "tcs_verdict": "VULNERABLE",
+      "semgrep_verdict": "SAFE",
+      "semgrep_rule_ids": []
+    },
+    {
+      "test_id": "TCS-BENCH-CWE1275-V05-BAD",
+      "cwe": "CWE-1275",
+      "file": "benchmark/corpus/cwe_1275_samesite/test_v05_bad.py",
+      "expected": "VULNERABLE",
+      "tcs_verdict": "VULNERABLE",
+      "semgrep_verdict": "SAFE",
+      "semgrep_rule_ids": []
+    },
+    {
+      "test_id": "TCS-BENCH-CWE208-V01-BAD",
+      "cwe": "CWE-208",
+      "file": "benchmark/corpus/cwe_208_timing_attack/test_v01_bad.py",
+      "expected": "VULNERABLE",
+      "tcs_verdict": "VULNERABLE",
+      "semgrep_verdict": "SAFE",
+      "semgrep_rule_ids": []
+    },
+    {
+      "test_id": "TCS-BENCH-CWE208-V02-BAD",
+      "cwe": "CWE-208",
+      "file": "benchmark/corpus/cwe_208_timing_attack/test_v02_bad.py",
+      "expected": "VULNERABLE",
+      "tcs_verdict": "VULNERABLE",
+      "semgrep_verdict": "SAFE",
+      "semgrep_rule_ids": []
+    },
+    {
+      "test_id": "TCS-BENCH-CWE208-V03-BAD",
+      "cwe": "CWE-208",
+      "file": "benchmark/corpus/cwe_208_timing_attack/test_v03_bad.py",
+      "expected": "VULNERABLE",
+      "tcs_verdict": "VULNERABLE",
+      "semgrep_verdict": "SAFE",
+      "semgrep_rule_ids": []
+    },
+    {
+      "test_id": "TCS-BENCH-CWE208-V04-BAD",
+      "cwe": "CWE-208",
+      "file": "benchmark/corpus/cwe_208_timing_attack/test_v04_bad.py",
+      "expected": "VULNERABLE",
+      "tcs_verdict": "VULNERABLE",
+      "semgrep_verdict": "SAFE",
+      "semgrep_rule_ids": []
+    },
+    {
+      "test_id": "TCS-BENCH-CWE208-V05-BAD",
+      "cwe": "CWE-208",
+      "file": "benchmark/corpus/cwe_208_timing_attack/test_v05_bad.py",
+      "expected": "VULNERABLE",
+      "tcs_verdict": "VULNERABLE",
+      "semgrep_verdict": "SAFE",
+      "semgrep_rule_ids": []
+    },
+    {
+      "test_id": "TCS-BENCH-CWE208-V06-BAD",
+      "cwe": "CWE-208",
+      "file": "benchmark/corpus/cwe_208_timing_attack/test_v06_bad.py",
+      "expected": "VULNERABLE",
+      "tcs_verdict": "VULNERABLE",
+      "semgrep_verdict": "SAFE",
+      "semgrep_rule_ids": []
+    }
+  ]
+}

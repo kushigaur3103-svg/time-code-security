@@ -123,6 +123,10 @@ class SecurityNode:
     location: CodeLocation
     metadata: dict = field(default_factory=dict)
 
+    @property
+    def lineno(self) -> int:
+        return self.location.line_start
+
 class ProofNodeType(str, Enum):
     SOURCE = "SOURCE"
     ASSIGNMENT = "ASSIGNMENT"
@@ -667,6 +671,8 @@ SINK_REGISTRY = {
     "django.shortcuts.redirect": {"operation": "OPEN_REDIRECT", "category": "URL_REDIRECTION", "cwe": "CWE-601"},
 
     # CWE-327 / CWE-328: Broken Cryptographic Hashes & Ciphers
+    "hashlib.md5": {"operation": "WEAK_HASH", "category": "WEAK_CRYPTOGRAPHY", "cwe": "CWE-327"},
+    "md5": {"operation": "WEAK_HASH", "category": "WEAK_CRYPTOGRAPHY", "cwe": "CWE-327"},
     "Crypto.Cipher.DES": {"operation": "WEAK_CIPHER", "category": "WEAK_CRYPTOGRAPHY", "cwe": "CWE-327"},
     "Crypto.Cipher.DES.new": {"operation": "WEAK_CIPHER", "category": "WEAK_CRYPTOGRAPHY", "cwe": "CWE-327"},
     "DES.new": {"operation": "WEAK_CIPHER", "category": "WEAK_CRYPTOGRAPHY", "cwe": "CWE-327"},
@@ -755,6 +761,7 @@ STRUCTURAL_SYNTHETIC_SOURCES = {
     "CWE-652": "XQUERY_INJECTION",
     "CWE-522": "CLEARTEXT_AUTH_TRANSPORT",
     "CWE-937": "DEPRECATED_INSECURE_PROTOCOL",
+    "CWE-668": "INSECURE_INTERFACE_BINDING",
     "CWE-1275": "cwe-1275_structural_violation",
     "CWE-208": "cwe-208_structural_violation",
 }
@@ -5770,6 +5777,23 @@ class TaintTracker:
                             if r_name in ("f", "file", "stream", "self.f", "s", "sock") or "stream" in r_name or fn_name == "recv":
                                 cwe_meta = {"operation": "UNBOUNDED_RESOURCE_ALLOCATION", "category": "RESOURCE_EXHAUSTION", "cwe": "CWE-770"}
 
+                    # CWE-668: Framework server bound to a public interface.
+                    elif name in {
+                        "app.run", "Flask.run", "flask.Flask.run",
+                        "uvicorn.run", "hypercorn.run", "werkzeug.serving.run_simple",
+                    }:
+                        host_node = next((kw.value for kw in node.keywords if kw.arg == "host"), None)
+                        if host_node is not None:
+                            host_value = _eval_static_constant(
+                                host_node, self.assignments_by_scope, scope_id, lineno
+                            )
+                            if host_value in {"0.0.0.0", "::"}:
+                                cwe_meta = {
+                                    "operation": "INSECURE_INTERFACE_BINDING",
+                                    "category": "EXPOSURE_TO_WRONG_SPHERE",
+                                    "cwe": "CWE-668",
+                                }
+
                     # ─── CWE-605: Insecure Socket Binding ───
                     elif (name.endswith(".bind") or name == "bind" or "start_server" in name) and not has_makefile:
                         insecure_bind = False
@@ -6389,6 +6413,7 @@ class TaintTracker:
         """Collect Phase 4 deserialization, dynamic-code, and process sinks."""
         function_scopes = {id(function): scope for scope, function in self.functions.items()}
         deserialization_sinks = {"dill.load", "dill.loads", "shelve.open", "jsonpickle.decode"}
+        pickle_sinks = {"pickle.loads", "pickle.load", "_pickle.loads", "_pickle.load"}
         code_sinks = {"eval", "builtins.eval", "exec", "builtins.exec", "compile", "builtins.compile"}
         added_process_sinks = {
             "os.popen", "os.spawnlp", "os.spawnlpe", "os.spawnv", "os.spawnve",
@@ -6440,6 +6465,8 @@ class TaintTracker:
                 return isinstance(expr.value, (str, bytes, int, float, bool, type(None)))
             if isinstance(expr, (ast.Str, ast.Bytes, ast.Num)):
                 return True
+            if isinstance(expr, (ast.List, ast.Tuple)):
+                return all(_is_static(element, scope_id, lineno) for element in expr.elts)
             return _eval_static_constant(expr, self.assignments_by_scope, scope_id, lineno) is not None
 
         def _is_dynamic(expr: ast.AST, scope_id: str, lineno: int) -> bool:
@@ -6489,6 +6516,39 @@ class TaintTracker:
                     return keyword.value
             return call.args[position] if len(call.args) > position else None
 
+        def _dynamic_executable(expr: ast.AST, scope_id: str, lineno: int, visited=None) -> bool:
+            if expr is None:
+                return False
+            if visited is None:
+                visited = set()
+            if isinstance(expr, (ast.List, ast.Tuple)):
+                return bool(expr.elts) and _is_dynamic(expr.elts[0], scope_id, lineno)
+            if isinstance(expr, ast.Name):
+                key = (scope_id, expr.id)
+                if key in visited:
+                    return False
+                visited.add(key)
+                record = _assigned_value(expr.id, scope_id, lineno)
+                if record is not None:
+                    return _dynamic_executable(record.value_node, record.scope_id, record.lineno, visited)
+                return _is_dynamic(expr, scope_id, lineno)
+            if isinstance(expr, ast.Subscript) and isinstance(expr.value, ast.Name):
+                record = _assigned_value(expr.value.id, scope_id, lineno)
+                if record is not None and isinstance(record.value_node, ast.Dict):
+                    key_value = _eval_static_constant(
+                        expr.slice, self.assignments_by_scope, scope_id, lineno
+                    )
+                    for key_node, value_node in zip(record.value_node.keys, record.value_node.values):
+                        if _eval_static_constant(
+                            key_node, self.assignments_by_scope, record.scope_id, record.lineno
+                        ) == key_value:
+                            return _dynamic_executable(
+                                value_node, record.scope_id, record.lineno, visited
+                            )
+            if isinstance(expr, ast.Call) and isinstance(expr.func, ast.Attribute) and expr.func.attr == "split":
+                return _is_dynamic(expr.func.value, scope_id, lineno)
+            return _is_dynamic(expr, scope_id, lineno)
+
         seen: set[tuple[str, int, int]] = set()
 
         def _add_finding(node: ast.Call, mod_name: str, scope_id: str, operation: str, category: str, cwe: str) -> None:
@@ -6503,7 +6563,9 @@ class TaintTracker:
             source_ids = {
                 "CWE-502": "UNSAFE_DESERIALIZATION",
                 "CWE-94": "DYNAMIC_CODE_EXECUTION",
+                "CWE-95": "DYNAMIC_CODE_EXECUTION",
                 "CWE-78": "OS_COMMAND_EXECUTION",
+                "CWE-522": "HARDCODED_JWT_SECRET",
             }
             existing_record = next((
                 record for record in self.sink_records
@@ -6543,7 +6605,14 @@ class TaintTracker:
                 names = _call_names(node, scope_id)
                 lineno = getattr(node, "lineno", 1)
 
-                if "yaml.load" in names:
+                if names & pickle_sinks:
+                    payload = _argument(node, 0, {"data", "file", "stream"})
+                    if _is_dynamic(payload, scope_id, lineno):
+                        _add_finding(
+                            node, mod_name, scope_id, "DESERIALIZATION",
+                            "UNSAFE_DESERIALIZATION", "CWE-502",
+                        )
+                elif "yaml.load" in names:
                     loader = next((kw.value for kw in node.keywords if kw.arg == "Loader"), None)
                     loader_name = ""
                     if isinstance(loader, ast.AST):
@@ -6553,10 +6622,23 @@ class TaintTracker:
                 elif names & deserialization_sinks:
                     _add_finding(node, mod_name, scope_id, "DESERIALIZATION", "UNSAFE_DESERIALIZATION", "CWE-502")
 
+                if "jwt.encode" in names:
+                    key_expr = next((kw.value for kw in node.keywords if kw.arg == "key"), None)
+                    if key_expr is None and len(node.args) > 1:
+                        key_expr = node.args[1]
+                    key_value = _eval_static_constant(
+                        key_expr, self.assignments_by_scope, scope_id, lineno
+                    ) if key_expr is not None else None
+                    if isinstance(key_value, str) and key_value.strip():
+                        _add_finding(
+                            node, mod_name, scope_id, "HARDCODED_JWT_SECRET",
+                            "INSECURE_CREDENTIAL_TRANSPORT", "CWE-522",
+                        )
+
                 if names & code_sinks:
                     code_expr = _argument(node, 0, {"source"})
                     if _is_dynamic(code_expr, scope_id, lineno):
-                        _add_finding(node, mod_name, scope_id, "DYNAMIC_CODE_EXECUTION", "CODE_INJECTION", "CWE-94")
+                        _add_finding(node, mod_name, scope_id, "DYNAMIC_CODE_EXECUTION", "CODE_EXECUTION", "CWE-95")
 
                 if names & (added_process_sinks | shell_process_sinks):
                     process_name = next((name for name in names if name in added_process_sinks), "")
@@ -6568,12 +6650,17 @@ class TaintTracker:
                         if _is_dynamic(executable, scope_id, lineno):
                             _add_finding(node, mod_name, scope_id, "OS_COMMAND_EXECUTION", "COMMAND_INJECTION", "CWE-78")
 
-                    shell_kw = next((kw.value for kw in node.keywords if kw.arg == "shell"), None)
-                    if shell_kw is not None and _eval_static_constant(
-                        shell_kw, self.assignments_by_scope, scope_id, lineno
-                    ) is True:
+                    if names & shell_process_sinks:
                         command = _argument(node, 0, {"args", "command", "cmd"})
-                        if _is_dynamic(command, scope_id, lineno) and not _is_fully_sanitized(command, scope_id, lineno):
+                        shell_kw = next((kw.value for kw in node.keywords if kw.arg == "shell"), None)
+                        shell_enabled = _eval_static_constant(
+                            shell_kw, self.assignments_by_scope, scope_id, lineno
+                        ) is True
+                        dynamic_command = (
+                            _is_dynamic(command, scope_id, lineno)
+                            if shell_enabled else _dynamic_executable(command, scope_id, lineno)
+                        )
+                        if dynamic_command and not _is_fully_sanitized(command, scope_id, lineno):
                             _add_finding(node, mod_name, scope_id, "OS_COMMAND_EXECUTION", "COMMAND_INJECTION", "CWE-78")
 
     def _collect_phase5_structural_findings(self) -> None:
@@ -7887,6 +7974,339 @@ class TaintTracker:
                 else:
                     _remove_existing(node, "CWE-1333", mod_name)
 
+    def _collect_response_write_findings(self) -> None:
+        """Detect dynamic content written to known HTTP response objects."""
+        function_scopes = {id(function): scope for scope, function in self.functions.items()}
+        response_factories = {
+            "HttpResponse", "django.http.HttpResponse", "HttpResponseBadRequest",
+            "django.http.HttpResponseBadRequest", "JsonResponse", "django.http.JsonResponse",
+            "flask.Response", "Response", "flask.make_response", "make_response",
+        }
+        response_names = {"response", "resp", "http_response", "django_response", "flask_response"}
+
+        def _scope_for(node: ast.AST, mod_name: str) -> str:
+            current = node
+            while current is not None:
+                scope = function_scopes.get(id(current))
+                if scope:
+                    return scope
+                current = getattr(current, "parent", None)
+            return f"{mod_name}:global"
+
+        def _assigned_value(name: str, scope_id: str, lineno: int):
+            current_scope = scope_id
+            mod_name = scope_id.split(":")[0]
+            while current_scope:
+                records = self.assignments_by_scope.get((current_scope, name), [])
+                prior = [record for record in records if record.lineno <= lineno]
+                if prior:
+                    return prior[-1]
+                if "." in current_scope and "function" in current_scope:
+                    current_scope = current_scope.rsplit(".", 1)[0]
+                elif ":function" in current_scope:
+                    current_scope = f"{mod_name}:global"
+                elif current_scope != f"{mod_name}:global":
+                    current_scope = f"{mod_name}:global"
+                else:
+                    break
+            return None
+
+        def _call_names(call: ast.Call, scope_id: str) -> set[str]:
+            if not isinstance(call.func, ast.AST):
+                return set()
+            return {
+                name for name in (
+                    dotted_name(call.func),
+                    self.resolve_canonical_name(call.func, scope_id),
+                ) if name
+            }
+
+        def _is_dynamic(expr: ast.AST, scope_id: str, lineno: int, visited=None) -> bool:
+            if expr is None or isinstance(expr, ast.Constant):
+                return False
+            if isinstance(expr, (ast.Str, ast.Bytes, ast.Num)):
+                return False
+            if visited is None:
+                visited = set()
+            if isinstance(expr, ast.Name):
+                key = (scope_id, expr.id)
+                if key in visited:
+                    return False
+                visited.add(key)
+                record = _assigned_value(expr.id, scope_id, lineno)
+                if record is not None:
+                    return _is_dynamic(record.value_node, record.scope_id, record.lineno, visited)
+                return True
+            if isinstance(expr, ast.Call):
+                if self.is_source_call(expr, scope_id):
+                    return True
+                return any(
+                    _is_dynamic(value, scope_id, lineno, visited.copy())
+                    for value in [*expr.args, *(keyword.value for keyword in expr.keywords)]
+                )
+            if isinstance(expr, ast.Attribute):
+                name = dotted_name(expr) or ""
+                return name.startswith(("request.", "flask.request."))
+            if isinstance(expr, ast.Subscript):
+                return _is_dynamic(expr.value, scope_id, lineno, visited.copy())
+            if isinstance(expr, ast.JoinedStr):
+                return any(
+                    _is_dynamic(value.value, scope_id, lineno, visited.copy())
+                    for value in expr.values if isinstance(value, ast.FormattedValue)
+                )
+            if isinstance(expr, ast.BinOp):
+                return _is_dynamic(expr.left, scope_id, lineno, visited.copy()) or _is_dynamic(
+                    expr.right, scope_id, lineno, visited.copy()
+                )
+            return False
+
+        def _is_response_receiver(receiver: ast.AST, scope_id: str, lineno: int, visited=None) -> bool:
+            if isinstance(receiver, ast.Call):
+                return bool(_call_names(receiver, scope_id) & response_factories)
+            if isinstance(receiver, ast.Name):
+                if visited is None:
+                    visited = set()
+                if receiver.id in visited:
+                    return False
+                visited.add(receiver.id)
+                record = _assigned_value(receiver.id, scope_id, lineno)
+                if record is not None:
+                    value = record.value_node
+                    if isinstance(value, ast.Call):
+                        return bool(_call_names(value, record.scope_id) & response_factories)
+                    if isinstance(value, ast.Name):
+                        return _is_response_receiver(value, record.scope_id, record.lineno, visited)
+                    return False
+                return receiver.id.lower() in response_names or receiver.id.lower().endswith("_response")
+            if isinstance(receiver, ast.Attribute):
+                if receiver.attr.lower() in response_names or receiver.attr.lower().endswith("_response"):
+                    record = self.class_field_assignments.get((scope_id, receiver.attr), [])
+                    if record:
+                        latest = max((item for item in record if item.lineno <= lineno), key=lambda item: item.lineno, default=None)
+                        return latest is not None and isinstance(latest.value_node, ast.Call) and bool(
+                            _call_names(latest.value_node, latest.scope_id) & response_factories
+                        )
+                    return True
+            return False
+
+        seen: set[tuple[int, int]] = set()
+        for mod_name, tree in self.modules.items():
+            for node in ast.walk(tree):
+                if not isinstance(node, ast.Call) or not isinstance(node.func, ast.Attribute) or node.func.attr != "write":
+                    continue
+                scope_id = _scope_for(node, mod_name)
+                lineno = getattr(node, "lineno", 1)
+                receiver = node.func.value
+                if not _is_response_receiver(receiver, scope_id, lineno):
+                    continue
+                argument = node.args[0] if node.args else next(
+                    (keyword.value for keyword in node.keywords if keyword.arg in {"content", "data", "value"}),
+                    None,
+                )
+                if argument is None or not _is_dynamic(argument, scope_id, lineno):
+                    continue
+                key = (lineno, getattr(node, "col_offset", 0))
+                if key in seen:
+                    continue
+                seen.add(key)
+                node_location = location(node, self.file_paths.get(mod_name, "unknown.py"))
+                existing = next((
+                    record for record in self.sink_records
+                    if record.security_node.location == node_location
+                    and record.security_node.metadata.get("cwe") == "CWE-93"
+                ), None)
+                if existing is not None:
+                    existing.security_node.metadata["p10_source_id"] = "HTTP_RESPONSE_INJECTION"
+                    continue
+                sink_node = SecurityNode(
+                    id=self.next_sink_id(),
+                    node_type=NodeType.SINK,
+                    symbol="HTTP_RESPONSE_WRITE",
+                    operation="HTTP_RESPONSE_WRITE",
+                    location=node_location,
+                    metadata={
+                        "sink_type": "CRLF_INJECTION",
+                        "category": "RESPONSE_INJECTION",
+                        "cwe": "CWE-93",
+                        "p10_source_id": "HTTP_RESPONSE_INJECTION",
+                        "lineno": lineno,
+                    },
+                )
+                self.sinks.append(sink_node)
+                self.sink_records.append(SinkRecord(
+                    node=node,
+                    security_node=sink_node,
+                    lineno=lineno,
+                    scope_id=scope_id,
+                ))
+
+    def _collect_template_response_xss_findings(self) -> None:
+        """Collect tainted HTTP response bodies and dynamic stored template content."""
+        function_scopes = {id(function): scope for scope, function in self.functions.items()}
+        response_sinks = {
+            "HttpResponse", "django.http.HttpResponse",
+            "HttpResponseBadRequest", "django.http.HttpResponseBadRequest",
+            "JsonResponse", "django.http.JsonResponse",
+        }
+
+        def _scope_for(node: ast.AST, mod_name: str) -> str:
+            current = node
+            while current is not None:
+                scope = function_scopes.get(id(current))
+                if scope:
+                    return scope
+                current = getattr(current, "parent", None)
+            return f"{mod_name}:global"
+
+        def _assigned_value(name: str, scope_id: str, lineno: int):
+            current_scope = scope_id
+            mod_name = scope_id.split(":")[0]
+            while current_scope:
+                records = self.assignments_by_scope.get((current_scope, name), [])
+                prior = [record for record in records if record.lineno < lineno]
+                if prior:
+                    return prior[-1]
+                if "." in current_scope and "function" in current_scope:
+                    current_scope = current_scope.rsplit(".", 1)[0]
+                elif ":function" in current_scope:
+                    current_scope = f"{mod_name}:global"
+                elif current_scope != f"{mod_name}:global":
+                    current_scope = f"{mod_name}:global"
+                else:
+                    break
+            return None
+
+        def _names_for_call(call: ast.Call, scope_id: str) -> set[str]:
+            return {
+                name for name in (
+                    dotted_name(call.func) if isinstance(call.func, ast.AST) else None,
+                    self.resolve_canonical_name(call.func, scope_id) if isinstance(call.func, ast.AST) else None,
+                ) if name
+            }
+
+        def _template_path_literals(expr: ast.AST, scope_id: str, lineno: int, visited=None) -> list[str]:
+            if expr is None:
+                return []
+            if visited is None:
+                visited = set()
+            if isinstance(expr, ast.Constant) and isinstance(expr.value, str):
+                return [expr.value]
+            if isinstance(expr, ast.JoinedStr):
+                return [part.value for part in expr.values if isinstance(part, ast.Constant) and isinstance(part.value, str)]
+            if isinstance(expr, ast.Name):
+                if expr.id in visited:
+                    return []
+                visited.add(expr.id)
+                record = _assigned_value(expr.id, scope_id, lineno)
+                return _template_path_literals(record.value_node, record.scope_id, record.lineno, visited) if record else []
+            if isinstance(expr, ast.Call):
+                values = []
+                for argument in [*expr.args, *(keyword.value for keyword in expr.keywords)]:
+                    values.extend(_template_path_literals(argument, scope_id, lineno, visited.copy()))
+                return values
+            return []
+
+        seen: set[tuple[str, int, int]] = set()
+
+        def _add_finding(node: ast.AST, mod_name: str, scope_id: str, operation: str) -> None:
+            line = getattr(node, "lineno", 1)
+            column = getattr(node, "col_offset", 0)
+            key = (mod_name, line, column)
+            if key in seen:
+                return
+            seen.add(key)
+            file_path = self.file_paths.get(mod_name, "unknown.py")
+            node_location = location(node, file_path)
+            existing = next((
+                record for record in self.sink_records
+                if record.security_node.location == node_location
+                and record.security_node.metadata.get("cwe") == "CWE-79"
+            ), None)
+            if existing is not None:
+                existing.security_node.metadata["p11_source_id"] = "DYNAMIC_HTML_RESPONSE"
+                return
+            sink_node = SecurityNode(
+                id=self.next_sink_id(),
+                node_type=NodeType.SINK,
+                symbol=operation,
+                operation=operation,
+                location=node_location,
+                metadata={
+                    "sink_type": "XSS",
+                    "category": "CROSS_SITE_SCRIPTING",
+                    "cwe": "CWE-79",
+                    "p11_source_id": "DYNAMIC_HTML_RESPONSE",
+                    "lineno": line,
+                },
+            )
+            self.sinks.append(sink_node)
+            self.sink_records.append(SinkRecord(
+                node=node,
+                security_node=sink_node,
+                lineno=line,
+                scope_id=scope_id,
+            ))
+
+        for mod_name, tree in self.modules.items():
+            for node in ast.walk(tree):
+                if not isinstance(node, ast.Call) or not isinstance(node.func, ast.AST):
+                    continue
+                scope_id = _scope_for(node, mod_name)
+                lineno = getattr(node, "lineno", 1)
+
+                if _names_for_call(node, scope_id) & response_sinks:
+                    content = next((kw.value for kw in node.keywords if kw.arg in {"content", "content_type", "contentType"}), None)
+                    if content is None and node.args:
+                        content = node.args[0]
+                    if content is not None:
+                        temporary_sink = SecurityNode(
+                            id="", node_type=NodeType.SINK, symbol="HTML_RESPONSE",
+                            operation="HTML_RESPONSE", location=location(node, self.file_paths.get(mod_name, "unknown.py")),
+                            metadata={"sink_type": "XSS", "cwe": "CWE-79"},
+                        )
+                        taint = self.resolve_expression(content, temporary_sink, scope_id, lineno)
+                        if taint.state != TaintState.CLEAN:
+                            _add_finding(node, mod_name, scope_id, "HTTP_RESPONSE_HTML")
+
+                if isinstance(node.func, ast.Attribute) and node.func.attr == "write" and node.args:
+                    receiver = node.func.value
+                    if not isinstance(receiver, ast.Name):
+                        continue
+                    handle = _assigned_value(receiver.id, scope_id, lineno)
+                    if handle is None or not isinstance(handle.value_node, ast.Call):
+                        continue
+                    open_names = _names_for_call(handle.value_node, handle.scope_id)
+                    if not (open_names & {"open", "builtins.open"}):
+                        continue
+                    path_expr = handle.value_node.args[0] if handle.value_node.args else next(
+                        (kw.value for kw in handle.value_node.keywords if kw.arg in {"file", "path"}), None
+                    )
+                    path_literals = "".join(_template_path_literals(path_expr, handle.scope_id, handle.lineno)).lower()
+                    if "templates/" not in path_literals or ".html" not in path_literals:
+                        continue
+                    content = node.args[0]
+                    if not isinstance(content, ast.Name):
+                        continue
+                    content_record = _assigned_value(content.id, scope_id, lineno)
+                    if content_record is None:
+                        continue
+                    template_markers = [
+                        part.value for part in ast.walk(content_record.value_node)
+                        if isinstance(part, ast.Constant) and isinstance(part.value, str)
+                    ]
+                    if not any("{%" in value or "{{" in value for value in template_markers):
+                        continue
+                    temporary_sink = SecurityNode(
+                        id="", node_type=NodeType.SINK, symbol="STORED_HTML_TEMPLATE",
+                        operation="STORED_HTML_TEMPLATE", location=location(content_record.value_node, self.file_paths.get(mod_name, "unknown.py")),
+                        metadata={"sink_type": "XSS", "cwe": "CWE-79"},
+                    )
+                    taint = self.resolve_expression(
+                        content_record.value_node, temporary_sink, content_record.scope_id, content_record.lineno
+                    )
+                    if taint.state != TaintState.CLEAN:
+                        _add_finding(content_record.value_node, mod_name, content_record.scope_id, "STORED_HTML_TEMPLATE_WRITE")
+
     def analyze(self):
         for mod_name, tree in self.modules.items():
             for node in ast.walk(tree):
@@ -8066,6 +8486,8 @@ class TaintTracker:
         self._collect_phase7_structural_findings()
         self._collect_phase8_structural_findings()
         self._collect_phase9_structural_findings()
+        self._collect_response_write_findings()
+        self._collect_template_response_xss_findings()
         for assign_stmt, scope_id, lineno in self.ssl_attr_assigns:
             mod_name = scope_id.split(":")[0]
             file_path = self.file_paths.get(mod_name, "unknown.py")
@@ -8113,6 +8535,28 @@ class TaintTracker:
             cwe = sink.metadata.get("cwe")
             stype = sink.metadata.get("sink_type")
             op = sink.metadata.get("operation")
+
+            p11_source_id = sink.metadata.get("p11_source_id")
+            if p11_source_id:
+                self.edges.append(DataFlowEdge(
+                    source_id=p11_source_id,
+                    target_id=sink.id,
+                    kind="CONFIRMED_DATA_FLOW",
+                    confidence=1.0,
+                    transform=op or "dynamic_html_response",
+                ))
+                continue
+
+            p10_source_id = sink.metadata.get("p10_source_id")
+            if p10_source_id:
+                self.edges.append(DataFlowEdge(
+                    source_id=p10_source_id,
+                    target_id=sink.id,
+                    kind="CONFIRMED_DATA_FLOW",
+                    confidence=1.0,
+                    transform=op or "HTTP_RESPONSE_WRITE",
+                ))
+                continue
 
             p9_source_id = sink.metadata.get("p9_source_id")
             if p9_source_id:

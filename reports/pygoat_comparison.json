@@ -1,0 +1,130 @@
+{
+  "summary": {
+    "py_files": 80,
+    "semgrep_total": 135,
+    "tcs_total": 161
+  },
+  "missed_by_tcs": [],
+  "missed_by_semgrep": [
+    {
+      "file": "challenge\\models.py",
+      "line": 0,
+      "cwe": "CWE-434",
+      "sink": "unknown_sink"
+    },
+    {
+      "file": "dockerized_labs\\sensitive_data_exposure\\sensitive_data_lab\\settings.py",
+      "line": 0,
+      "cwe": "CWE-798",
+      "sink": "unknown_sink"
+    },
+    {
+      "file": "dockerized_labs\\sensitive_data_exposure\\sensitive_data_lab\\settings.py",
+      "line": 0,
+      "cwe": "CWE-489",
+      "sink": "unknown_sink"
+    },
+    {
+      "file": "introduction\\lab_code\\test.py",
+      "line": 0,
+      "cwe": "CWE-502",
+      "sink": "unknown_sink"
+    },
+    {
+      "file": "introduction\\playground\\A6\\soln.py",
+      "line": 0,
+      "cwe": "CWE-918",
+      "sink": "unknown_sink"
+    },
+    {
+      "file": "introduction\\playground\\A6\\utility.py",
+      "line": 0,
+      "cwe": "CWE-918",
+      "sink": "unknown_sink"
+    },
+    {
+      "file": "introduction\\playground\\ssrf\\main.py",
+      "line": 0,
+      "cwe": "CWE-22",
+      "sink": "unknown_sink"
+    },
+    {
+      "file": "introduction\\playground\\ssrf\\main.py",
+      "line": 0,
+      "cwe": "CWE-770",
+      "sink": "unknown_sink"
+    },
+    {
+      "file": "introduction\\utility.py",
+      "line": 0,
+      "cwe": "CWE-22",
+      "sink": "unknown_sink"
+    },
+    {
+      "file": "introduction\\utility.py",
+      "line": 0,
+      "cwe": "CWE-759",
+      "sink": "unknown_sink"
+    },
+    {
+      "file": "introduction\\utility.py",
+      "line": 0,
+      "cwe": "CWE-916",
+      "sink": "unknown_sink"
+    },
+    {
+      "file": "introduction\\utility.py",
+      "line": 0,
+      "cwe": "CWE-208",
+      "sink": "unknown_sink"
+    },
+    {
+      "file": "introduction\\utility.py",
+      "line": 0,
+      "cwe": "CWE-208",
+      "sink": "unknown_sink"
+    },
+    {
+      "file": "pygoat\\settings.py",
+      "line": 0,
+      "cwe": "CWE-798",
+      "sink": "unknown_sink"
+    },
+    {
+      "file": "pygoat\\settings.py",
+      "line": 0,
+      "cwe": "CWE-489",
+      "sink": "unknown_sink"
+    },
+    {
+      "file": "uninstaller.py",
+      "line": 0,
+      "cwe": "CWE-78",
+      "sink": "unknown_sink"
+    },
+    {
+      "file": "uninstaller.py",
+      "line": 0,
+      "cwe": "CWE-78",
+      "sink": "unknown_sink"
+    },
+    {
+      "file": "uninstaller.py",
+      "line": 0,
+      "cwe": "CWE-22",
+      "sink": "unknown_sink"
+    },
+    {
+      "file": "uninstaller.py",
+      "line": 0,
+      "cwe": "CWE-22",
+      "sink": "unknown_sink"
+    },
+    {
+      "file": "uninstaller.py",
+      "line": 0,
+      "cwe": "CWE-22",
+      "sink": "unknown_sink"
+    }
+  ]
+}
