@@ -6807,6 +6807,216 @@ class TaintTracker:
                         "INSECURE_TRANSPORT", "CWE-295", "CWE-295",
                     )
 
+    def _collect_phase6_structural_findings(self) -> None:
+        """Collect SQL injection findings from dynamically constructed query text."""
+        function_scopes = {id(function): scope for scope, function in self.functions.items()}
+        execute_methods = {
+            "cursor.execute", "cursor.executemany",
+            "connection.execute", "engine.execute", "session.execute",
+            "db.session.execute", "sqlite3.Cursor.execute",
+        }
+        query_wrappers = {
+            "text", "sqlalchemy.text", "RawSQL",
+            "django.db.models.expressions.RawSQL",
+        }
+        source_markers = set(SOURCE_REGISTRY)
+
+        def _scope_for(node: ast.AST, mod_name: str) -> str:
+            current = node
+            while current is not None:
+                scope = function_scopes.get(id(current))
+                if scope:
+                    return scope
+                current = getattr(current, "parent", None)
+            return f"{mod_name}:global"
+
+        def _call_names(call: ast.Call, scope_id: str) -> set[str]:
+            if not isinstance(call, ast.Call) or not isinstance(call.func, ast.AST):
+                return set()
+            name = dotted_name(call.func) or ""
+            canonical = self.resolve_canonical_name(call.func, scope_id) or ""
+            return {value for value in (name, canonical) if value}
+
+        def _assigned_value(name: str, scope_id: str, lineno: int):
+            current_scope = scope_id
+            mod_name = scope_id.split(":")[0]
+            while current_scope:
+                records = self.assignments_by_scope.get((current_scope, name), [])
+                prior = [record for record in records if record.lineno <= lineno]
+                if prior:
+                    return prior[-1]
+                if "." in current_scope and "function" in current_scope:
+                    current_scope = current_scope.rsplit(".", 1)[0]
+                elif ":function" in current_scope:
+                    current_scope = f"{mod_name}:global"
+                elif current_scope != f"{mod_name}:global":
+                    current_scope = f"{mod_name}:global"
+                else:
+                    break
+            return None
+
+        def _is_function_parameter(name: str, scope_id: str) -> bool:
+            current_scope = scope_id
+            while current_scope:
+                function = self.functions.get(current_scope)
+                if function:
+                    all_args = [
+                        *function.args.posonlyargs,
+                        *function.args.args,
+                        *function.args.kwonlyargs,
+                    ]
+                    if function.args.vararg:
+                        all_args.append(function.args.vararg)
+                    if function.args.kwarg:
+                        all_args.append(function.args.kwarg)
+                    return any(argument.arg == name for argument in all_args)
+                if "." in current_scope and "function" in current_scope:
+                    current_scope = current_scope.rsplit(".", 1)[0]
+                else:
+                    break
+            return False
+
+        def _is_source_expression(expr: ast.AST, scope_id: str) -> bool:
+            if isinstance(expr, ast.Call):
+                return self.is_source_call(expr, scope_id)
+            if isinstance(expr, ast.Attribute):
+                source_name = dotted_name(expr) or ""
+                canonical = self.resolve_canonical_name(expr, scope_id) or ""
+                return bool({source_name, canonical} & source_markers)
+            return False
+
+        def _is_query_dynamic(expr: ast.AST, scope_id: str, lineno: int, visited=None) -> bool:
+            if expr is None:
+                return False
+            if visited is None:
+                visited = set()
+            if isinstance(expr, ast.Constant):
+                return False
+            if isinstance(expr, (ast.Str, ast.Bytes, ast.Num)):
+                return False
+            if isinstance(expr, ast.Name):
+                key = (scope_id, expr.id)
+                if key in visited:
+                    return False
+                visited.add(key)
+                record = _assigned_value(expr.id, scope_id, lineno)
+                if record is not None:
+                    return _is_query_dynamic(
+                        record.value_node, record.scope_id, record.lineno, visited
+                    )
+                return _is_function_parameter(expr.id, scope_id) or self.resolve_canonical_name(
+                    expr, scope_id
+                ) == expr.id
+            if _is_source_expression(expr, scope_id):
+                return True
+            if isinstance(expr, ast.JoinedStr):
+                return any(
+                    _is_query_dynamic(part.value, scope_id, lineno, visited.copy())
+                    for part in expr.values
+                    if isinstance(part, ast.FormattedValue)
+                )
+            if isinstance(expr, ast.BinOp) and isinstance(expr.op, (ast.Mod, ast.Add)):
+                return _is_query_dynamic(expr.left, scope_id, lineno, visited.copy()) or _is_query_dynamic(
+                    expr.right, scope_id, lineno, visited.copy()
+                )
+            if isinstance(expr, ast.Call):
+                if not isinstance(expr.func, ast.AST):
+                    return False
+                names = _call_names(expr, scope_id)
+                is_format = isinstance(expr.func, ast.Attribute) and expr.func.attr == "format"
+                if is_format:
+                    format_values = [*expr.args, *(keyword.value for keyword in expr.keywords)]
+                    return any(
+                        _is_query_dynamic(value, scope_id, lineno, visited.copy())
+                        for value in format_values
+                    )
+                if names & query_wrappers:
+                    nested_query = next((
+                        keyword.value for keyword in expr.keywords
+                        if keyword.arg in {"statement", "sql", "query"}
+                    ), expr.args[0] if expr.args else None)
+                    return _is_query_dynamic(nested_query, scope_id, lineno, visited)
+                return False
+            if isinstance(expr, (ast.Tuple, ast.List, ast.Set)):
+                return any(
+                    _is_query_dynamic(element, scope_id, lineno, visited.copy())
+                    for element in expr.elts
+                )
+            if isinstance(expr, ast.Dict):
+                return any(
+                    _is_query_dynamic(value, scope_id, lineno, visited.copy())
+                    for value in expr.values
+                )
+            return False
+
+        def _query_argument(call: ast.Call) -> ast.AST | None:
+            for keyword in call.keywords:
+                if keyword.arg in {"statement", "sql", "query"}:
+                    return keyword.value
+            return call.args[0] if call.args else None
+
+        seen: set[tuple[int, int]] = set()
+
+        def _add_finding(node: ast.Call, mod_name: str, scope_id: str) -> None:
+            line = getattr(node, "lineno", 1)
+            column = getattr(node, "col_offset", 0)
+            key = (line, column)
+            if key in seen:
+                return
+            seen.add(key)
+            node_location = location(node, self.file_paths.get(mod_name, "unknown.py"))
+            existing = next((
+                record for record in self.sink_records
+                if record.security_node.location == node_location
+                and record.security_node.metadata.get("cwe") == "CWE-89"
+            ), None)
+            if existing is not None:
+                existing.security_node.metadata["p6_source_id"] = "SQL_INJECTION_VULNERABILITY"
+                return
+            sink_node = SecurityNode(
+                id=self.next_sink_id(),
+                node_type=NodeType.SINK,
+                symbol="SQL_EXECUTION",
+                operation="SQL_EXECUTION",
+                location=node_location,
+                metadata={
+                    "sink_type": "SQL_INJECTION",
+                    "category": "SQL_INJECTION",
+                    "cwe": "CWE-89",
+                    "p6_source_id": "SQL_INJECTION_VULNERABILITY",
+                },
+            )
+            self.sinks.append(sink_node)
+            self.sink_records.append(SinkRecord(
+                node=node,
+                security_node=sink_node,
+                lineno=line,
+                scope_id=scope_id,
+            ))
+
+        for mod_name, tree in self.modules.items():
+            seen.clear()
+            scoped_nodes = [(node, _scope_for(node, mod_name)) for node in ast.walk(tree)]
+            for node, scope_id in scoped_nodes:
+                if not isinstance(node, ast.Call) or not isinstance(node.func, ast.AST):
+                    continue
+                names = _call_names(node, scope_id)
+                callee = dotted_name(node.func) or ""
+                is_execute = any(
+                    name in execute_methods or any(name.endswith(f".{method}") for method in execute_methods)
+                    for name in names
+                )
+                is_sqlite_chain = any(
+                    "sqlite3.connect" in name and ".cursor().execute" in name
+                    for name in names
+                )
+                is_wrapper = bool(names & query_wrappers)
+                if not (is_execute or is_sqlite_chain or is_wrapper):
+                    continue
+                query = _query_argument(node)
+                if query is not None and _is_query_dynamic(query, scope_id, getattr(node, "lineno", 1)):
+                    _add_finding(node, mod_name, scope_id)
+
     def analyze(self):
         for mod_name, tree in self.modules.items():
             for node in ast.walk(tree):
@@ -6982,6 +7192,7 @@ class TaintTracker:
         self._collect_phase3_structural_findings()
         self._collect_phase4_structural_findings()
         self._collect_phase5_structural_findings()
+        self._collect_phase6_structural_findings()
         for assign_stmt, scope_id, lineno in self.ssl_attr_assigns:
             mod_name = scope_id.split(":")[0]
             file_path = self.file_paths.get(mod_name, "unknown.py")
@@ -7029,6 +7240,17 @@ class TaintTracker:
             cwe = sink.metadata.get("cwe")
             stype = sink.metadata.get("sink_type")
             op = sink.metadata.get("operation")
+
+            p6_source_id = sink.metadata.get("p6_source_id")
+            if p6_source_id:
+                self.edges.append(DataFlowEdge(
+                    source_id=p6_source_id,
+                    target_id=sink.id,
+                    kind="CONFIRMED_DATA_FLOW",
+                    confidence=1.0,
+                    transform=op or "sql_injection_vulnerability",
+                ))
+                continue
 
             p5_source_id = sink.metadata.get("p5_source_id")
             if p5_source_id:
