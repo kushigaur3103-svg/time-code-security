@@ -7329,6 +7329,290 @@ class TaintTracker:
                     else:
                         _remove_existing(node, {"CWE-1336", "CWE-79"}, mod_name)
 
+    def _collect_phase8_structural_findings(self) -> None:
+        """Collect open redirect, weak hash, and insecure cookie findings."""
+        function_scopes = {id(function): scope for scope, function in self.functions.items()}
+        redirect_sinks = {"redirect", "flask.redirect", "django.shortcuts.redirect"}
+        weak_hash_sinks = {
+            "hashlib.md5", "hashlib.sha1", "Crypto.Hash.MD5", "Crypto.Hash.SHA1",
+        }
+        redirect_validators = {
+            "is_safe_redirect_url", "validate_redirect_url",
+            "url_has_allowed_host_and_scheme", "is_relative_url",
+        }
+
+        def _scope_for(node: ast.AST, mod_name: str) -> str:
+            current = node
+            while current is not None:
+                scope = function_scopes.get(id(current))
+                if scope:
+                    return scope
+                current = getattr(current, "parent", None)
+            return f"{mod_name}:global"
+
+        def _names_for_call(call: ast.Call, scope_id: str) -> set[str]:
+            if not isinstance(call, ast.Call) or not isinstance(call.func, ast.AST):
+                return set()
+            name = dotted_name(call.func) or ""
+            canonical = self.resolve_canonical_name(call.func, scope_id) or ""
+            return {value for value in (name, canonical) if value}
+
+        def _assigned_value(name: str, scope_id: str, lineno: int):
+            current_scope = scope_id
+            mod_name = scope_id.split(":")[0]
+            while current_scope:
+                records = self.assignments_by_scope.get((current_scope, name), [])
+                prior = [record for record in records if record.lineno <= lineno]
+                if prior:
+                    return prior[-1]
+                if "." in current_scope and "function" in current_scope:
+                    current_scope = current_scope.rsplit(".", 1)[0]
+                elif ":function" in current_scope:
+                    current_scope = f"{mod_name}:global"
+                elif current_scope != f"{mod_name}:global":
+                    current_scope = f"{mod_name}:global"
+                else:
+                    break
+            return None
+
+        def _static_value(expr: ast.AST, scope_id: str, lineno: int):
+            return _eval_static_constant(expr, self.assignments_by_scope, scope_id, lineno)
+
+        def _is_dynamic(expr: ast.AST, scope_id: str, lineno: int, visited=None) -> bool:
+            if expr is None:
+                return False
+            if visited is None:
+                visited = set()
+            if isinstance(expr, ast.Constant):
+                return False
+            if isinstance(expr, (ast.Str, ast.Num, ast.Bytes)):
+                return False
+            if isinstance(expr, ast.Name):
+                key = (scope_id, expr.id)
+                if key in visited:
+                    return False
+                visited.add(key)
+                record = _assigned_value(expr.id, scope_id, lineno)
+                if record is not None:
+                    return _is_dynamic(record.value_node, record.scope_id, record.lineno, visited)
+                return self.resolve_canonical_name(expr, scope_id) == expr.id
+            if isinstance(expr, ast.Call):
+                return self.is_source_call(expr, scope_id) or any(
+                    _is_dynamic(value, scope_id, lineno, visited.copy())
+                    for value in [*expr.args, *(keyword.value for keyword in expr.keywords)]
+                ) or not expr.args and not expr.keywords
+            if isinstance(expr, ast.Attribute):
+                name = dotted_name(expr) or ""
+                return name.startswith(("request.", "flask.request.", "self.", "cls."))
+            if isinstance(expr, ast.Subscript):
+                if isinstance(expr.value, ast.Name):
+                    record = _assigned_value(expr.value.id, scope_id, lineno)
+                    if record is not None:
+                        return _is_dynamic(record.value_node, record.scope_id, record.lineno, visited.copy())
+                return _is_dynamic(expr.value, scope_id, lineno, visited.copy())
+            if isinstance(expr, ast.Dict):
+                return any(
+                    _is_dynamic(value, scope_id, lineno, visited.copy())
+                    for value in expr.values
+                )
+            if isinstance(expr, (ast.List, ast.Tuple, ast.Set)):
+                return any(
+                    _is_dynamic(value, scope_id, lineno, visited.copy())
+                    for value in expr.elts
+                )
+            if isinstance(expr, ast.JoinedStr):
+                return any(
+                    _is_dynamic(value.value, scope_id, lineno, visited.copy())
+                    for value in expr.values if isinstance(value, ast.FormattedValue)
+                )
+            if isinstance(expr, ast.BinOp):
+                return _is_dynamic(expr.left, scope_id, lineno, visited.copy()) or _is_dynamic(
+                    expr.right, scope_id, lineno, visited.copy()
+                )
+            return False
+
+        def _relative_guarded(call: ast.Call, target: ast.AST) -> bool:
+            if not isinstance(target, ast.Name):
+                return False
+            current = getattr(call, "parent", None)
+            while current is not None:
+                if isinstance(current, ast.If):
+                    for condition in ast.walk(current.test):
+                        if not isinstance(condition, ast.Call) or not isinstance(condition.func, ast.Attribute):
+                            continue
+                        if condition.func.attr != "startswith" or not condition.args:
+                            continue
+                        prefix = _static_value(condition.args[0], _scope_for(call, mod_name), getattr(call, "lineno", 1))
+                        if prefix != "/":
+                            continue
+                        receiver = condition.func.value
+                        if isinstance(receiver, ast.Name) and receiver.id == target.id:
+                            return True
+                current = getattr(current, "parent", None)
+            return False
+
+        def _redirect_is_safe(call: ast.Call, target: ast.AST, scope_id: str, lineno: int, visited=None) -> bool:
+            if target is None:
+                return False
+            if visited is None:
+                visited = set()
+            static_value = _static_value(target, scope_id, lineno)
+            if isinstance(static_value, str):
+                return True
+            if isinstance(target, ast.Name):
+                existing_sink = next((
+                    record.security_node for record in self.sink_records
+                    if record.security_node.location == location(
+                        call, self.file_paths.get(scope_id.split(":")[0], "unknown.py")
+                    )
+                    and record.security_node.metadata.get("cwe") == "CWE-601"
+                ), None)
+                if _relative_guarded(call, target) or self.is_var_contained(
+                    target.id, scope_id, lineno, existing_sink
+                ):
+                    return True
+                key = (scope_id, target.id)
+                if key in visited:
+                    return False
+                visited.add(key)
+                record = _assigned_value(target.id, scope_id, lineno)
+                if record is not None:
+                    return _redirect_is_safe(call, record.value_node, record.scope_id, record.lineno, visited)
+                return _relative_guarded(call, target)
+            if isinstance(target, ast.Call):
+                names = _names_for_call(target, scope_id)
+                if any(
+                    name in redirect_validators
+                    or name.rsplit(".", 1)[-1] in redirect_validators
+                    for name in names
+                ):
+                    return True
+            if isinstance(target, ast.Subscript) and isinstance(target.value, ast.Name):
+                record = _assigned_value(target.value.id, scope_id, lineno)
+                if record is not None:
+                    return _redirect_is_safe(call, record.value_node, record.scope_id, record.lineno, visited)
+            return False
+
+        def _remove_existing(node: ast.Call, cwes: set[str], mod_name: str) -> None:
+            node_location = location(node, self.file_paths.get(mod_name, "unknown.py"))
+            removed = [
+                record for record in self.sink_records
+                if record.security_node.location == node_location
+                and record.security_node.metadata.get("cwe") in cwes
+            ]
+            if not removed:
+                return
+            self.sink_records = [record for record in self.sink_records if record not in removed]
+            for record in removed:
+                if not any(other.security_node is record.security_node for other in self.sink_records):
+                    if record.security_node in self.sinks:
+                        self.sinks.remove(record.security_node)
+
+        seen: set[tuple[str, int, int]] = set()
+
+        def _add_finding(
+            node: ast.Call, mod_name: str, scope_id: str, cwe: str,
+            category: str, operation: str, source_id: str,
+        ) -> None:
+            line = getattr(node, "lineno", 1)
+            column = getattr(node, "col_offset", 0)
+            key = (cwe, line, column)
+            if key in seen:
+                return
+            seen.add(key)
+            node_location = location(node, self.file_paths.get(mod_name, "unknown.py"))
+            existing = next((
+                record for record in self.sink_records
+                if record.security_node.location == node_location
+                and record.security_node.metadata.get("cwe") == cwe
+            ), None)
+            if existing is not None:
+                existing.security_node.metadata["p8_source_id"] = source_id
+                return
+            sink_node = SecurityNode(
+                id=self.next_sink_id(),
+                node_type=NodeType.SINK,
+                symbol=operation,
+                operation=operation,
+                location=node_location,
+                metadata={
+                    "sink_type": category,
+                    "category": category,
+                    "cwe": cwe,
+                    "p8_source_id": source_id,
+                },
+            )
+            self.sinks.append(sink_node)
+            self.sink_records.append(SinkRecord(
+                node=node,
+                security_node=sink_node,
+                lineno=line,
+                scope_id=scope_id,
+            ))
+
+        for mod_name, tree in self.modules.items():
+            seen.clear()
+            for node in ast.walk(tree):
+                if not isinstance(node, ast.Call) or not isinstance(node.func, ast.AST):
+                    continue
+                scope_id = _scope_for(node, mod_name)
+                lineno = getattr(node, "lineno", 1)
+                names = _names_for_call(node, scope_id)
+
+                if any(name in redirect_sinks or name.endswith(".redirect") for name in names):
+                    target = next((kw.value for kw in node.keywords if kw.arg in {"location", "url", "to"}), None)
+                    if target is None and node.args:
+                        target = node.args[0]
+                    if target is not None and _is_dynamic(target, scope_id, lineno):
+                        if not _redirect_is_safe(node, target, scope_id, lineno):
+                            _add_finding(
+                                node, mod_name, scope_id, "CWE-601", "URL_REDIRECTION",
+                                "OPEN_REDIRECT", "OPEN_REDIRECT_VULNERABILITY",
+                            )
+                    elif target is not None:
+                        _remove_existing(node, {"CWE-601"}, mod_name)
+
+                if names & weak_hash_sinks:
+                    usedforsecurity = next((kw.value for kw in node.keywords if kw.arg == "usedforsecurity"), None)
+                    if usedforsecurity is not None and _static_value(usedforsecurity, scope_id, lineno) is False:
+                        _remove_existing(node, {"CWE-328"}, mod_name)
+                    else:
+                        _add_finding(
+                            node, mod_name, scope_id, "CWE-328", "WEAK_CRYPTOGRAPHY",
+                            "WEAK_HASH", "WEAK_HASH_ALGORITHM",
+                        )
+
+                is_set_cookie = any(
+                    name == "set_cookie" or name.endswith(".set_cookie") for name in names
+                )
+                if is_set_cookie:
+                    options = {}
+                    for keyword in node.keywords:
+                        if keyword.arg is None:
+                            options.update(_eval_dict_constants(
+                                keyword.value, self.assignments_by_scope, scope_id, lineno
+                            ))
+                        elif keyword.arg is not None:
+                            options[keyword.arg] = _static_value(keyword.value, scope_id, lineno)
+                    vulnerable_cwes = []
+                    if options.get("httponly") is not True:
+                        vulnerable_cwes.append("CWE-1004")
+                    if options.get("secure") is not True:
+                        vulnerable_cwes.append("CWE-614")
+                    if options.get("samesite") is None or (
+                        isinstance(options.get("samesite"), str)
+                        and options["samesite"].strip().lower() == "none"
+                    ):
+                        if any(keyword.arg == "samesite" for keyword in node.keywords):
+                            vulnerable_cwes.append("CWE-1004")
+                    for cwe in set(vulnerable_cwes):
+                        category = "INSECURE_COOKIE_CONFIGURATION"
+                        operation = "INSECURE_COOKIE_FLAGS" if cwe == "CWE-1004" else "INSECURE_COOKIE_SECURE_FLAG"
+                        _add_finding(
+                            node, mod_name, scope_id, cwe, category, operation,
+                            "INSECURE_COOKIE_STORAGE",
+                        )
+
     def analyze(self):
         for mod_name, tree in self.modules.items():
             for node in ast.walk(tree):
@@ -7506,6 +7790,7 @@ class TaintTracker:
         self._collect_phase5_structural_findings()
         self._collect_phase6_structural_findings()
         self._collect_phase7_structural_findings()
+        self._collect_phase8_structural_findings()
         for assign_stmt, scope_id, lineno in self.ssl_attr_assigns:
             mod_name = scope_id.split(":")[0]
             file_path = self.file_paths.get(mod_name, "unknown.py")
@@ -7553,6 +7838,17 @@ class TaintTracker:
             cwe = sink.metadata.get("cwe")
             stype = sink.metadata.get("sink_type")
             op = sink.metadata.get("operation")
+
+            p8_source_id = sink.metadata.get("p8_source_id")
+            if p8_source_id:
+                self.edges.append(DataFlowEdge(
+                    source_id=p8_source_id,
+                    target_id=sink.id,
+                    kind="CONFIRMED_DATA_FLOW",
+                    confidence=1.0,
+                    transform=op or f"{cwe.lower()}_phase8_violation",
+                ))
+                continue
 
             p7_source_id = sink.metadata.get("p7_source_id")
             if p7_source_id:
