@@ -631,6 +631,7 @@ SINK_REGISTRY = {
     "Markup": {"operation": "XSS_HTML_RESPONSE", "category": "CROSS_SITE_SCRIPTING", "cwe": "CWE-79"},
     "django.utils.safestring.mark_safe": {"operation": "XSS_HTML_RESPONSE", "category": "CROSS_SITE_SCRIPTING", "cwe": "CWE-79"},
     "mark_safe": {"operation": "XSS_HTML_RESPONSE", "category": "CROSS_SITE_SCRIPTING", "cwe": "CWE-79"},
+    "Response": {"operation": "XSS_HTML_RESPONSE", "category": "CROSS_SITE_SCRIPTING", "cwe": "CWE-79"},
 
     # CWE-89: SQL Injection
     "raw": {"operation": "SQL_EXECUTION", "category": "SQL_INJECTION", "cwe": "CWE-89"},
@@ -668,6 +669,15 @@ SINK_REGISTRY = {
     "Crypto.Cipher.DES": {"operation": "WEAK_CIPHER", "category": "WEAK_CRYPTOGRAPHY", "cwe": "CWE-327"},
     "Crypto.Cipher.DES.new": {"operation": "WEAK_CIPHER", "category": "WEAK_CRYPTOGRAPHY", "cwe": "CWE-327"},
     "DES.new": {"operation": "WEAK_CIPHER", "category": "WEAK_CRYPTOGRAPHY", "cwe": "CWE-327"},
+    # Phase 3: 3DES / TripleDES are deprecated by NIST SP 800-131A rev.2 alongside single DES.
+    "Crypto.Cipher.DES3": {"operation": "WEAK_CIPHER", "category": "WEAK_CRYPTOGRAPHY", "cwe": "CWE-327"},
+    "Crypto.Cipher.DES3.new": {"operation": "WEAK_CIPHER", "category": "WEAK_CRYPTOGRAPHY", "cwe": "CWE-327"},
+    "DES3.new": {"operation": "WEAK_CIPHER", "category": "WEAK_CRYPTOGRAPHY", "cwe": "CWE-327"},
+    "DES3": {"operation": "WEAK_CIPHER", "category": "WEAK_CRYPTOGRAPHY", "cwe": "CWE-327"},
+    "TripleDES": {"operation": "WEAK_CIPHER", "category": "WEAK_CRYPTOGRAPHY", "cwe": "CWE-327"},
+    "TripleDES.new": {"operation": "WEAK_CIPHER", "category": "WEAK_CRYPTOGRAPHY", "cwe": "CWE-327"},
+    "algorithms.TripleDES": {"operation": "WEAK_CIPHER", "category": "WEAK_CRYPTOGRAPHY", "cwe": "CWE-327"},
+    "cryptography.hazmat.primitives.ciphers.algorithms.TripleDES": {"operation": "WEAK_CIPHER", "category": "WEAK_CRYPTOGRAPHY", "cwe": "CWE-327"},
 
     # CWE-338: Insecure Randomness
     "random.random": {"operation": "INSECURE_RANDOM", "category": "INSECURE_RANDOMNESS", "cwe": "CWE-338"},
@@ -782,6 +792,33 @@ CWE3A_USER_SOURCE_CALLS = {"input", "request.args.get", "request.form.get", "req
 CWE3A_DEBUG_VAR_RE = re.compile(r"(?i)^debug(_mode)?$")
 CWE3A_USER_NAME_RE = re.compile(r"(?i)^(user|username|email)$")
 CWE3A_STATE_CHANGING_METHODS = {"POST", "PUT", "PATCH", "DELETE"}
+
+# ─── Phase 3 hardening rule constants ───
+# CWE-327: electronic codebook mode leaks plaintext structure regardless of cipher strength.
+P3_ECB_MARKER_ATTRS = {"MODE_ECB", "ECB"}
+P3_ECB_CONSTANT_MODES = {"ECB", "MODE_ECB"}
+# Sink names whose callee is already reported as a weak cipher; ECB detection must not double-report them.
+P3_ECB_SKIP_IF_WEAK_CIPHER = {"DES", "DES.new", "DES3", "DES3.new", "TripleDES", "TripleDES.new", "ARC4"}
+# CWE-73: schemes that reach local or non-HTTP resources through a network-style resource sink.
+P3_UNTRUSTED_SCHEMES = ("file://", "ftp://", "gopher://")
+P3_RESOURCE_SINK_NAMES = {
+    "urlopen", "urllib.request.urlopen", "urlretrieve", "urllib.request.urlretrieve",
+    "Request", "urllib.request.Request",
+    "requests.get", "requests.post", "requests.put", "requests.delete", "requests.head", "requests.request",
+    "httpx.get", "httpx.post", "httpx.put", "httpx.delete", "httpx.request",
+    "aiohttp.ClientSession.get", "aiohttp.ClientSession.post",
+}
+# CWE-79: SVG is executed by the browser when reflected with an SVG content type.
+P3_SVG_RESPONSE_SINKS = {
+    "Response", "flask.Response", "make_response", "flask.make_response",
+    "HttpResponse", "django.http.HttpResponse", "HttpResponseBadRequest",
+}
+P3_SVG_CONTENT_TYPES = ("image/svg+xml", "image/svg")
+P3_STRUCTURAL_SOURCE_IDS = {
+    "INSECURE_CIPHER_MODE": "WEAK_CIPHER_MODE_CONFIGURATION",
+    "PROTOCOL_RESOURCE_ACCESS": "UNTRUSTED_URL_SCHEME",
+    "SVG_XSS_RESPONSE": "DYNAMIC_SVG_RESPONSE",
+}
 
 def _eval_dict_constants(dict_node, assignments_by_scope, scope_id="", lineno=0):
     """Evaluates a dictionary node or dictionary Name reference to a dict of {str: val}."""
@@ -6064,6 +6101,289 @@ class TaintTracker:
                                         scope_id=scope_id,
                                     ))
 
+    def _collect_phase3_structural_findings(self) -> None:
+        """Activate the Phase 3 crypto-mode, protocol, and SVG sink registries."""
+        function_scopes = {id(function): scope for scope, function in self.functions.items()}
+
+        def _scope_for(node: ast.AST, mod_name: str) -> str:
+            current = node
+            while current is not None:
+                scope = function_scopes.get(id(current))
+                if scope:
+                    return scope
+                current = getattr(current, "parent", None)
+            return f"{mod_name}:global"
+
+        def _names_for_call(call: ast.Call, scope_id: str) -> set[str]:
+            name = dotted_name(call.func) or ""
+            canonical = self.resolve_canonical_name(call.func, scope_id) or ""
+            return {value for value in (name, canonical) if value}
+
+        def _matches_registry(names: set[str], registry: set[str]) -> bool:
+            return any(name in registry or name.rsplit(".", 1)[-1] in registry for name in names)
+
+        def _assigned_value(name: str, scope_id: str, lineno: int):
+            current_scope = scope_id
+            mod_name = scope_id.split(":")[0]
+            while current_scope:
+                records = self.assignments_by_scope.get((current_scope, name), [])
+                prior = [record for record in records if record.lineno <= lineno]
+                if prior:
+                    return prior[-1]
+                if "." in current_scope and "function" in current_scope:
+                    current_scope = current_scope.rsplit(".", 1)[0]
+                elif ":function" in current_scope:
+                    current_scope = f"{mod_name}:global"
+                elif current_scope != f"{mod_name}:global":
+                    current_scope = f"{mod_name}:global"
+                else:
+                    break
+            return None
+
+        def _mode_is_ecb(expr: ast.AST, scope_id: str, lineno: int) -> bool:
+            if expr is None:
+                return False
+            value = _eval_static_constant(expr, self.assignments_by_scope, scope_id, lineno)
+            if isinstance(value, str) and value in P3_ECB_CONSTANT_MODES:
+                return True
+            symbol_node = expr.func if isinstance(expr, ast.Call) else expr
+            symbol = self.resolve_canonical_name(symbol_node, scope_id) or dotted_name(symbol_node) or ""
+            if symbol.rsplit(".", 1)[-1] in P3_ECB_MARKER_ATTRS:
+                return True
+            return isinstance(expr, ast.Name) and expr.id in P3_ECB_MARKER_ATTRS
+
+        def _url_scheme(expr: ast.AST, scope_id: str, lineno: int, visited=None) -> str | None:
+            if expr is None:
+                return None
+            if visited is None:
+                visited = set()
+            value = _eval_static_constant(expr, self.assignments_by_scope, scope_id, lineno)
+            if isinstance(value, str):
+                lowered = value.lower()
+                return next((scheme for scheme in P3_UNTRUSTED_SCHEMES if lowered.startswith(scheme)), None)
+            if isinstance(expr, ast.Name):
+                key = (scope_id, expr.id)
+                if key in visited:
+                    return None
+                visited.add(key)
+                record = _assigned_value(expr.id, scope_id, lineno)
+                if record is not None:
+                    return _url_scheme(record.value_node, record.scope_id, record.lineno, visited)
+            elif isinstance(expr, ast.BinOp) and isinstance(expr.op, ast.Add):
+                left_value = _eval_static_constant(expr.left, self.assignments_by_scope, scope_id, lineno)
+                if isinstance(left_value, str):
+                    lowered = left_value.lower()
+                    scheme = next((item for item in P3_UNTRUSTED_SCHEMES if lowered.startswith(item)), None)
+                    if scheme:
+                        return scheme
+                return _url_scheme(expr.left, scope_id, lineno, visited)
+            elif isinstance(expr, ast.JoinedStr):
+                for part in expr.values:
+                    if isinstance(part, ast.Constant) and isinstance(part.value, str):
+                        lowered = part.value.lower()
+                        scheme = next((item for item in P3_UNTRUSTED_SCHEMES if lowered.startswith(item)), None)
+                        if scheme:
+                            return scheme
+                    if not isinstance(part, ast.Constant):
+                        break
+            elif isinstance(expr, ast.Call) and isinstance(expr.func, ast.Attribute) and expr.func.attr == "format":
+                return _url_scheme(expr.func.value, scope_id, lineno, visited)
+            return None
+
+        def _is_svg_content_type(expr: ast.AST, scope_id: str, lineno: int) -> bool:
+            value = _eval_static_constant(expr, self.assignments_by_scope, scope_id, lineno)
+            if not isinstance(value, str):
+                return False
+            normalized = value.split(";", 1)[0].strip().lower()
+            return normalized in P3_SVG_CONTENT_TYPES
+
+        def _headers_are_svg(expr: ast.AST, scope_id: str, lineno: int) -> bool:
+            headers = _eval_dict_constants(expr, self.assignments_by_scope, scope_id, lineno)
+            return any(
+                key.lower() == "content-type" and isinstance(value, str)
+                and value.split(";", 1)[0].strip().lower() in P3_SVG_CONTENT_TYPES
+                for key, value in headers.items()
+            )
+
+        def _response_payload(call: ast.Call) -> ast.AST | None:
+            for keyword in getattr(call, "keywords", []):
+                if keyword.arg in ("response", "content", "body", "data"):
+                    return keyword.value
+            return call.args[0] if call.args else None
+
+        def _response_content_is_svg(call: ast.Call, scope_id: str, lineno: int) -> bool:
+            for keyword in getattr(call, "keywords", []):
+                if keyword.arg in ("content_type", "contentType", "mimetype", "media_type"):
+                    if _is_svg_content_type(keyword.value, scope_id, lineno):
+                        return True
+                elif keyword.arg == "headers" or keyword.arg is None:
+                    if _headers_are_svg(keyword.value, scope_id, lineno):
+                        return True
+            return any(
+                _is_svg_content_type(argument, scope_id, lineno)
+                or _headers_are_svg(argument, scope_id, lineno)
+                for argument in call.args[1:]
+            )
+
+        seen: set[tuple[str, int, int]] = set()
+
+        def _add_finding(node: ast.AST, mod_name: str, scope_id: str, operation: str, category: str, cwe: str) -> None:
+            line = getattr(node, "lineno", 1)
+            column = getattr(node, "col_offset", 0)
+            key = (cwe, line, column)
+            if key in seen:
+                return
+            seen.add(key)
+            file_path = self.file_paths.get(mod_name, "unknown.py")
+            node_location = location(node, file_path)
+            source_id = P3_STRUCTURAL_SOURCE_IDS.get(operation)
+            for record in self.sink_records:
+                existing = record.security_node
+                if existing.location == node_location and existing.metadata.get("cwe") == cwe:
+                    existing.metadata["p3_source_id"] = source_id
+                    return
+            sink_node = SecurityNode(
+                id=self.next_sink_id(),
+                node_type=NodeType.SINK,
+                symbol=operation,
+                operation=operation,
+                location=node_location,
+                metadata={
+                    "sink_type": category,
+                    "category": category,
+                    "cwe": cwe,
+                    "p3_source_id": source_id,
+                },
+            )
+            self.sinks.append(sink_node)
+            self.sink_records.append(SinkRecord(
+                node=node,
+                security_node=sink_node,
+                lineno=line,
+                scope_id=scope_id,
+            ))
+
+        for mod_name, tree in self.modules.items():
+            seen.clear()
+            dynamic_response_vars: dict[tuple[str, str], list[int]] = {}
+            scoped_nodes = [(node, _scope_for(node, mod_name)) for node in ast.walk(tree)]
+
+            for node, scope_id in scoped_nodes:
+                if not isinstance(node, (ast.Assign, ast.AnnAssign)) or not isinstance(node.value, ast.Call):
+                    continue
+                response_call = node.value
+                if not _matches_registry(_names_for_call(response_call, scope_id), P3_SVG_RESPONSE_SINKS):
+                    continue
+                payload = _response_payload(response_call)
+                if payload is None:
+                    continue
+                payload_static = _eval_static_constant(payload, self.assignments_by_scope, scope_id, node.lineno)
+                if payload_static is not None:
+                    continue
+                temporary_sink = SecurityNode(
+                    id="", node_type=NodeType.SINK, symbol="SVG response",
+                    operation="SVG_XSS_RESPONSE", location=location(response_call, self.file_paths.get(mod_name, "unknown.py")),
+                    metadata={"sink_type": "CROSS_SITE_SCRIPTING", "cwe": "CWE-79"},
+                )
+                payload_taint = self.resolve_expression(payload, temporary_sink, scope_id, node.lineno)
+                if payload_taint.state == TaintState.CLEAN:
+                    continue
+                targets = node.targets if isinstance(node, ast.Assign) else [node.target]
+                for target in targets:
+                    if isinstance(target, ast.Name):
+                        dynamic_response_vars.setdefault((scope_id, target.id), []).append(node.lineno)
+
+            for node, scope_id in scoped_nodes:
+                lineno = getattr(node, "lineno", 1)
+                if isinstance(node, ast.Call):
+                    names = _names_for_call(node, scope_id)
+                    is_crypto_call = any(
+                        name.startswith("Crypto.Cipher.")
+                        or name.startswith("cryptography.hazmat.primitives.ciphers.")
+                        or (name in SINK_REGISTRY and SINK_REGISTRY[name].get("cwe") == "CWE-327")
+                        for name in names
+                    )
+                    if is_crypto_call:
+                        mode_nodes = [keyword.value for keyword in node.keywords if keyword.arg == "mode"]
+                        if not mode_nodes and len(node.args) > 1:
+                            mode_nodes.append(node.args[1])
+                        if any(_mode_is_ecb(value, scope_id, lineno) for value in mode_nodes):
+                            _add_finding(
+                                node, mod_name, scope_id, "INSECURE_CIPHER_MODE",
+                                "WEAK_CRYPTOGRAPHY", "CWE-327",
+                            )
+
+                    if _matches_registry(names, P3_RESOURCE_SINK_NAMES):
+                        url_expr = next(
+                            (keyword.value for keyword in node.keywords if keyword.arg in ("url", "uri")),
+                            node.args[0] if node.args else None,
+                        )
+                        if _url_scheme(url_expr, scope_id, lineno):
+                            _add_finding(
+                                node, mod_name, scope_id, "PROTOCOL_RESOURCE_ACCESS",
+                                "UNAUTHORIZED_RESOURCE_ACCESS", "CWE-73",
+                            )
+
+                    if _matches_registry(names, P3_SVG_RESPONSE_SINKS):
+                        payload = _response_payload(node)
+                        if payload is not None and _response_content_is_svg(node, scope_id, lineno):
+                            payload_static = _eval_static_constant(payload, self.assignments_by_scope, scope_id, lineno)
+                            if payload_static is None:
+                                temporary_sink = SecurityNode(
+                                    id="", node_type=NodeType.SINK, symbol="SVG response",
+                                    operation="SVG_XSS_RESPONSE", location=location(node, self.file_paths.get(mod_name, "unknown.py")),
+                                    metadata={"sink_type": "CROSS_SITE_SCRIPTING", "cwe": "CWE-79"},
+                                )
+                                payload_taint = self.resolve_expression(payload, temporary_sink, scope_id, lineno)
+                                if payload_taint.state != TaintState.CLEAN:
+                                    _add_finding(
+                                        node, mod_name, scope_id, "SVG_XSS_RESPONSE",
+                                        "CROSS_SITE_SCRIPTING", "CWE-79",
+                                    )
+
+                    if isinstance(node.func, ast.Attribute) and node.func.attr == "update":
+                        receiver = node.func.value
+                        if (
+                            isinstance(receiver, ast.Attribute)
+                            and receiver.attr == "headers"
+                            and isinstance(receiver.value, ast.Name)
+                            and any(_headers_are_svg(arg, scope_id, lineno) for arg in node.args)
+                            and any(line < lineno for line in dynamic_response_vars.get((scope_id, receiver.value.id), []))
+                        ):
+                            _add_finding(
+                                node, mod_name, scope_id, "SVG_XSS_RESPONSE",
+                                "CROSS_SITE_SCRIPTING", "CWE-79",
+                            )
+
+                elif isinstance(node, (ast.Assign, ast.AnnAssign)):
+                    targets = node.targets if isinstance(node, ast.Assign) else [node.target]
+                    header_variable = None
+                    for target in targets:
+                        if not isinstance(target, ast.Subscript):
+                            continue
+                        key_value = _eval_static_constant(target.slice, self.assignments_by_scope, scope_id, lineno)
+                        if not isinstance(key_value, str) or key_value.lower() != "content-type":
+                            continue
+                        if isinstance(target.value, ast.Name):
+                            header_variable = target.value.id
+                        elif (
+                            isinstance(target.value, ast.Attribute)
+                            and target.value.attr == "headers"
+                            and isinstance(target.value.value, ast.Name)
+                        ):
+                            header_variable = target.value.value.id
+                        if header_variable:
+                            break
+                    if (
+                        header_variable
+                        and _is_svg_content_type(node.value, scope_id, lineno)
+                        and any(line < lineno for line in dynamic_response_vars.get((scope_id, header_variable), []))
+                    ):
+                        _add_finding(
+                            node, mod_name, scope_id, "SVG_XSS_RESPONSE",
+                            "CROSS_SITE_SCRIPTING", "CWE-79",
+                        )
+
     def analyze(self):
         for mod_name, tree in self.modules.items():
             for node in ast.walk(tree):
@@ -6236,6 +6556,7 @@ class TaintTracker:
         self._collect_batch3a_structural_findings()
         self._collect_batch3b_structural_findings()
         self._collect_batch4_structural_findings()
+        self._collect_phase3_structural_findings()
         for assign_stmt, scope_id, lineno in self.ssl_attr_assigns:
             mod_name = scope_id.split(":")[0]
             file_path = self.file_paths.get(mod_name, "unknown.py")
@@ -6301,6 +6622,17 @@ class TaintTracker:
                     kind="CONFIRMED_DATA_FLOW" if self.audit_all else "POTENTIAL_DATA_FLOW",
                     confidence=1.0 if self.audit_all else 0.85,
                     transform="insecure_random_generator"
+                ))
+                continue
+
+            p3_source_id = sink.metadata.get("p3_source_id")
+            if p3_source_id:
+                self.edges.append(DataFlowEdge(
+                    source_id=p3_source_id,
+                    target_id=sink.id,
+                    kind="CONFIRMED_DATA_FLOW",
+                    confidence=1.0,
+                    transform=op or f"{cwe.lower()}_phase3_violation",
                 ))
                 continue
 
