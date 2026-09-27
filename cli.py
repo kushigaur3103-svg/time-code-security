@@ -12,6 +12,7 @@ import time
 
 from ast_scanner import TaintTracker
 from html_auditor import audit_templates, is_template_path
+from iac_auditor import audit_iac_files, is_iac_path
 from rule_engine import get_rule
 
 
@@ -55,43 +56,53 @@ def _collect_files(scan_path):
     return files
 
 
-def _collect_template_files(scan_path):
-    """Collect server-side templates (HTML/Jinja/Django) keyed like _collect_files."""
+def _collect_auxiliary_files(scan_path):
+    """Collect non-Python artefacts in one walk: (templates, IaC documents).
+
+    Keys match _collect_files so findings share a single path namespace.
+    """
     cwd = Path.cwd().resolve()
     if not scan_path.exists():
         raise FileNotFoundError(f"Path does not exist: {scan_path}")
+
     if scan_path.is_file():
-        paths = [scan_path] if is_template_path(scan_path.name) else []
+        paths = [scan_path]
     elif scan_path.is_dir():
         paths = sorted(
             path for path in scan_path.rglob("*")
-            if path.is_file()
-            and is_template_path(path.name)
-            and not any(part in IGNORED_DIRS for part in path.parts)
+            if path.is_file() and not any(part in IGNORED_DIRS for part in path.parts)
         )
     else:
-        return {}
+        return {}, {}
 
     templates = {}
+    iac = {}
     for path in paths:
+        relative = str(path).replace("\\", "/")
+        if is_template_path(relative):
+            bucket = templates
+        elif is_iac_path(relative):
+            bucket = iac
+        else:
+            continue
         try:
-            templates[_file_key(path, cwd)] = path.read_text(encoding="utf-8", errors="replace")
+            bucket[_file_key(path, cwd)] = path.read_text(encoding="utf-8", errors="replace")
         except OSError as exc:
             raise OSError(f"Unable to read {path}: {exc}") from exc
-    return templates
+    return templates, iac
 
 
-def _merge_findings(findings, extra):
-    """Merge template findings into AST findings with a deterministic ordering."""
-    combined = list(findings) + list(extra)
+def _merge_findings(*finding_groups):
+    """Merge auditor findings with AST findings in a deterministic order."""
     seen = set()
     unique = []
-    for item in combined:
-        identity = (item["file"], item["line"], item["cwe"], item.get("category"))
-        if identity in seen:
-            continue
-        seen.add(identity)
-        unique.append(item)
+    for group in finding_groups:
+        for item in group:
+            identity = (item["file"], item["line"], item["cwe"], item.get("category"))
+            if identity in seen:
+                continue
+            seen.add(identity)
+            unique.append(item)
     return sorted(unique, key=lambda entry: (entry["file"], entry["line"], entry["cwe"]))
 
 
@@ -207,11 +218,11 @@ def _print_summary(file_count, duration_ms, findings):
 
 def _scan(args):
     try:
-        templates = _collect_template_files(args.path)
+        templates, iac = _collect_auxiliary_files(args.path)
         try:
             files = _collect_files(args.path)
         except ValueError:
-            if not templates:
+            if not templates and not iac:
                 raise
             files = {}
         started = time.perf_counter()
@@ -219,11 +230,11 @@ def _scan(args):
             tracker = TaintTracker(files=files)
             _, _, edges = tracker.analyze()
             ast_findings = _findings_for(tracker, edges)
-            scanned_files = len(tracker.modules) + len(templates)
+            scanned_files = len(tracker.modules) + len(templates) + len(iac)
         else:
             ast_findings = []
-            scanned_files = len(templates)
-        findings = _merge_findings(ast_findings, audit_templates(templates))
+            scanned_files = len(templates) + len(iac)
+        findings = _merge_findings(ast_findings, audit_templates(templates), audit_iac_files(iac))
         duration_ms = (time.perf_counter() - started) * 1000
     except (OSError, ValueError) as exc:
         print(f"Error: {exc}", file=sys.stderr)
@@ -391,11 +402,11 @@ def _print_compare_scoreboard(tool, tcs_ms, competitor_ms, matched, tcs_only, co
 
 def _compare(args):
     try:
-        templates = _collect_template_files(args.path)
+        templates, iac = _collect_auxiliary_files(args.path)
         try:
             files = _collect_files(args.path)
         except ValueError:
-            if not templates:
+            if not templates and not iac:
                 raise
             files = {}
         started = time.perf_counter()
@@ -405,7 +416,7 @@ def _compare(args):
             ast_findings = _findings_for(tracker, edges)
         else:
             ast_findings = []
-        tcs_findings = _merge_findings(ast_findings, audit_templates(templates))
+        tcs_findings = _merge_findings(ast_findings, audit_templates(templates), audit_iac_files(iac))
         tcs_ms = (time.perf_counter() - started) * 1000
     except (OSError, ValueError) as exc:
         print(f"Error: {exc}", file=sys.stderr)
