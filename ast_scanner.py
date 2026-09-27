@@ -2433,6 +2433,35 @@ class TaintTracker:
 
     def _collect_calls_in_expr(self, expr: ast.AST, scope_id: str, lineno: int):
         for subnode in ast.walk(expr):
+            # Rule CWE-915: Mass Assignment Detection
+            if isinstance(subnode, ast.Call):
+                for kw in subnode.keywords:
+                    if kw.arg is None:
+                        kw_repr = ast.unparse(kw.value) if hasattr(ast, "unparse") else ""
+                        if any(src in kw_repr for src in ("request.POST", "request.data", "request.GET")):
+                            sink_node = self.get_or_create_sink(subnode, file_path, scope_id, force_cwe="CWE-915")
+                            self.sink_records.append(SinkRecord(node=subnode, security_node=sink_node, lineno=call_lineno, scope_id=scope_id))
+
+            # Rule CWE-321: Hardcoded Secrets Detection
+            if isinstance(subnode, ast.Assign):
+                for t in subnode.targets:
+                    t_name = getattr(t, "id", "")
+                    if t_name.upper() in {"SECRET_KEY", "JWT_SECRET", "PRIVATE_KEY", "API_SECRET"}:
+                        if isinstance(subnode.value, ast.Constant) and isinstance(subnode.value.value, str):
+                            if len(subnode.value.value) >= 8:
+                                s_node = self.get_or_create_sink(subnode, file_path, scope_id, force_cwe="CWE-321")
+                                self.sink_records.append(SinkRecord(node=subnode, security_node=s_node, lineno=call_lineno, scope_id=scope_id))
+
+            # Rule CWE-93: CRLF / HTTP Header Injection
+            if isinstance(subnode, ast.Assign):
+                for t in subnode.targets:
+                    if isinstance(t, ast.Subscript) and isinstance(t.value, ast.Name):
+                        if "response" in t.value.id.lower() or "header" in t.value.id.lower():
+                            val_repr = ast.unparse(subnode.value) if hasattr(ast, "unparse") else ""
+                            if any(src in val_repr for src in ("request.", "GET", "POST", "data")):
+                                s_node = self.get_or_create_sink(subnode, file_path, scope_id, force_cwe="CWE-93")
+                                self.sink_records.append(SinkRecord(node=subnode, security_node=s_node, lineno=call_lineno, scope_id=scope_id))
+
             if isinstance(subnode, ast.Call):
                 self.raw_calls.append((subnode, scope_id, getattr(subnode, "lineno", lineno)))
 
