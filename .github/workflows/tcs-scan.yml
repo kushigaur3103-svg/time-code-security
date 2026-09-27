@@ -1,0 +1,24 @@
+name: TimeCodeSecurity Scanner
+
+on:
+  push:
+    branches:
+      - main
+  pull_request:
+
+permissions:
+  contents: read
+  security-events: write
+
+jobs:
+  tcs-scan:
+    name: Scan repository with TimeCodeSecurity
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
+
+      - name: Run TimeCodeSecurity composite action
+        uses: ./
+        with:
+          path: .
