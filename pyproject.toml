@@ -3,48 +3,23 @@ requires = ["setuptools>=77"]
 build-backend = "setuptools.build_meta"
 
 [project]
-name = "time-code-security"
-version = "2.0.0"
-description = "Deterministic AST Security Scanner, Proof Graph Engine & Automated Remediation Framework"
+name = "timecodesecurity"
+version = "1.0.0"
+description = "High-precision AST-based SAST scanner for Python"
 readme = "README.md"
-requires-python = ">=3.9"
+requires-python = ">=3.10"
 license = "MIT"
-dependencies = [
-    "fastapi",
-    "uvicorn[standard]",
-    "gunicorn>=21.2.0",
-    "requests",
-    "jinja2",
-    "python-dotenv",
-    "pyyaml>=6.0",
-    "passlib[bcrypt]",
-    "bcrypt==3.2.2",
-    "PyJWT",
-    "fpdf",
-    "SQLAlchemy",
-    "psycopg2-binary",
-    "google-generativeai",
-    "openai",
-    "cohere",
-    "celery",
-    "redis",
-    "pydantic",
-    "packaging",
-    "python-multipart",
-    "tree-sitter",
-    "tree-sitter-python",
-    "tomli; python_version < '3.11'",
-]
+dependencies = []
 
 [project.scripts]
-tcs = "tcs_cli:main"
-tcs-gui = "tcs_gui:launch_gui"
+tcs = "cli:main"
 
 [tool.setuptools]
 py-modules = [
     "app",
     "ast_scanner",
     "ci_reporter",
+    "cli",
     "config_loader",
     "delivery_models",
     "delivery_repository",
@@ -54,6 +29,7 @@ py-modules = [
     "event_taxonomy",
     "in_app_adapter",
     "manifest_parser",
+    "master_rules_bank",
     "notification_models",
     "notification_policy",
     "notification_repository",
