@@ -11,6 +11,7 @@ import subprocess
 import time
 
 from ast_scanner import TaintTracker
+from html_auditor import audit_templates, is_template_path
 from rule_engine import get_rule
 
 
@@ -52,6 +53,46 @@ def _collect_files(scan_path):
         except OSError as exc:
             raise OSError(f"Unable to read {path}: {exc}") from exc
     return files
+
+
+def _collect_template_files(scan_path):
+    """Collect server-side templates (HTML/Jinja/Django) keyed like _collect_files."""
+    cwd = Path.cwd().resolve()
+    if not scan_path.exists():
+        raise FileNotFoundError(f"Path does not exist: {scan_path}")
+    if scan_path.is_file():
+        paths = [scan_path] if is_template_path(scan_path.name) else []
+    elif scan_path.is_dir():
+        paths = sorted(
+            path for path in scan_path.rglob("*")
+            if path.is_file()
+            and is_template_path(path.name)
+            and not any(part in IGNORED_DIRS for part in path.parts)
+        )
+    else:
+        return {}
+
+    templates = {}
+    for path in paths:
+        try:
+            templates[_file_key(path, cwd)] = path.read_text(encoding="utf-8", errors="replace")
+        except OSError as exc:
+            raise OSError(f"Unable to read {path}: {exc}") from exc
+    return templates
+
+
+def _merge_findings(findings, extra):
+    """Merge template findings into AST findings with a deterministic ordering."""
+    combined = list(findings) + list(extra)
+    seen = set()
+    unique = []
+    for item in combined:
+        identity = (item["file"], item["line"], item["cwe"], item.get("category"))
+        if identity in seen:
+            continue
+        seen.add(identity)
+        unique.append(item)
+    return sorted(unique, key=lambda entry: (entry["file"], entry["line"], entry["cwe"]))
 
 
 def _findings_for(tracker, edges):
@@ -166,11 +207,23 @@ def _print_summary(file_count, duration_ms, findings):
 
 def _scan(args):
     try:
-        files = _collect_files(args.path)
+        templates = _collect_template_files(args.path)
+        try:
+            files = _collect_files(args.path)
+        except ValueError:
+            if not templates:
+                raise
+            files = {}
         started = time.perf_counter()
-        tracker = TaintTracker(files=files)
-        _, _, edges = tracker.analyze()
-        findings = _findings_for(tracker, edges)
+        if files:
+            tracker = TaintTracker(files=files)
+            _, _, edges = tracker.analyze()
+            ast_findings = _findings_for(tracker, edges)
+            scanned_files = len(tracker.modules) + len(templates)
+        else:
+            ast_findings = []
+            scanned_files = len(templates)
+        findings = _merge_findings(ast_findings, audit_templates(templates))
         duration_ms = (time.perf_counter() - started) * 1000
     except (OSError, ValueError) as exc:
         print(f"Error: {exc}", file=sys.stderr)
@@ -178,13 +231,13 @@ def _scan(args):
 
     if args.format == "json":
         print(json.dumps({
-            "scanned_files": len(tracker.modules),
+            "scanned_files": scanned_files,
             "duration_ms": round(duration_ms, 2),
             "findings": findings,
         }, indent=2))
     else:
         print(_ascii_table(findings))
-        _print_summary(len(tracker.modules), duration_ms, findings)
+        _print_summary(scanned_files, duration_ms, findings)
 
     if args.sarif:
         try:
@@ -338,11 +391,21 @@ def _print_compare_scoreboard(tool, tcs_ms, competitor_ms, matched, tcs_only, co
 
 def _compare(args):
     try:
-        files = _collect_files(args.path)
+        templates = _collect_template_files(args.path)
+        try:
+            files = _collect_files(args.path)
+        except ValueError:
+            if not templates:
+                raise
+            files = {}
         started = time.perf_counter()
-        tracker = TaintTracker(files=files)
-        _, _, edges = tracker.analyze()
-        tcs_findings = _findings_for(tracker, edges)
+        if files:
+            tracker = TaintTracker(files=files)
+            _, _, edges = tracker.analyze()
+            ast_findings = _findings_for(tracker, edges)
+        else:
+            ast_findings = []
+        tcs_findings = _merge_findings(ast_findings, audit_templates(templates))
         tcs_ms = (time.perf_counter() - started) * 1000
     except (OSError, ValueError) as exc:
         print(f"Error: {exc}", file=sys.stderr)

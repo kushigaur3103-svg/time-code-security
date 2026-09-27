@@ -21,6 +21,13 @@ ENTERPRISE_SINKS_BANK = {
     "marshal.loads": {"cwe": "CWE-502", "severity": "CRITICAL"},
     "torch.load": {"cwe": "CWE-502", "severity": "CRITICAL"},
     "logging.config.listen": {"cwe": "CWE-502", "severity": "CRITICAL"},
+    # Pickle/dill serialization produces payloads that are unsafe to deserialize;
+    # flagged as the attack surface that enables CWE-502 on the receiving side.
+    "pickle.dumps": {"cwe": "CWE-502", "severity": "HIGH"},
+    "_pickle.dumps": {"cwe": "CWE-502", "severity": "HIGH"},
+    "dill.loads": {"cwe": "CWE-502", "severity": "CRITICAL"},
+    "dill.load": {"cwe": "CWE-502", "severity": "CRITICAL"},
+    "dill.dumps": {"cwe": "CWE-502", "severity": "HIGH"},
 
     # CWE-22: Path Traversal & Archive Slip
     "shutil.rmtree": {"cwe": "CWE-22", "severity": "HIGH"},
