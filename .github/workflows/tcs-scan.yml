@@ -2,8 +2,7 @@ name: TimeCodeSecurity Scanner
 
 on:
   push:
-    branches:
-      - main
+    branches: [ main ]
   pull_request:
 
 permissions:
@@ -14,11 +13,14 @@ jobs:
   tcs-scan:
     name: Scan repository with TimeCodeSecurity
     runs-on: ubuntu-latest
+
     steps:
-      - name: Checkout repository
+      - name: Checkout code
         uses: actions/checkout@v4
 
-      - name: Run TimeCodeSecurity composite action
+      - name: Run TimeCodeSecurity
         uses: ./
         with:
-          path: .
+          path: '.'
+          fail-on-critical: 'false'
+          sarif-file: 'tcs-results.sarif'
