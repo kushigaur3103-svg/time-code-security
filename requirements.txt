@@ -19,3 +19,4 @@ cohere
 celery
 redis
 pydantic
+psycopg[binary]
