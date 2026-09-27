@@ -26,3 +26,9 @@ benchmark_report.txt
 
 data/cwe_blueprint_batch2.json
 tcs_demo_project/
+
+external/flask_test/
+
+external/pygoat/
+
+external/pygoat/
