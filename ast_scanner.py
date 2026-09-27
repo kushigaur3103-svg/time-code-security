@@ -1776,14 +1776,28 @@ class TaintTracker:
                     return True
         return False
 
-    def _is_html_construction_expr(self, expr: Optional[ast.AST], scope_id: str = "") -> bool:
+    _HTML_TAGS_RE = re.compile(
+        r'<\s*/?\s*(?:html|body|head|div|span|h[1-6]|p|table|tr|td|th|ul|ol|li|a|b|i|strong|em|script|iframe|img|form|input|button|header|footer|nav|section|article)\b',
+        re.IGNORECASE
+    )
+
+    def _is_html_construction_expr(
+        self,
+        expr: Optional[ast.AST],
+        scope_id: str = "",
+        depth: int = 0,
+        visited_nodes: set | None = None
+    ) -> bool:
         """Return True if *expr* constructs an HTML fragment (e.g. f'<h1>{name}</h1>')."""
-        if expr is None:
+        if expr is None or depth > 10:
             return False
-        html_tags_re = re.compile(
-            r'<\s*/?\s*(?:html|body|head|div|span|h[1-6]|p|table|tr|td|th|ul|ol|li|a|b|i|strong|em|script|iframe|img|form|input|button|header|footer|nav|section|article)\b',
-            re.IGNORECASE
-        )
+        if visited_nodes is None:
+            visited_nodes = set()
+        node_id = id(expr)
+        if node_id in visited_nodes:
+            return False
+        visited_nodes.add(node_id)
+
         if isinstance(expr, ast.JoinedStr):
             const_strs = []
             for part in expr.values:
@@ -1791,7 +1805,7 @@ class TaintTracker:
                     val = part.value if isinstance(part, ast.Constant) else part.s
                     if isinstance(val, str):
                         const_strs.append(val)
-                        if html_tags_re.search(val):
+                        if self._HTML_TAGS_RE.search(val):
                             return True
             combined_consts = "".join(const_strs)
             if ("<" in combined_consts and ">" in combined_consts) or ("</" in combined_consts):
@@ -1800,20 +1814,20 @@ class TaintTracker:
         elif isinstance(expr, ast.BinOp) and isinstance(expr.op, ast.Mod):
             if isinstance(expr.left, (ast.Constant, ast.Str)):
                 val = expr.left.value if isinstance(expr.left, ast.Constant) else expr.left.s
-                if isinstance(val, str) and (html_tags_re.search(val) or ("<" in val and ">" in val)):
+                if isinstance(val, str) and (self._HTML_TAGS_RE.search(val) or ("<" in val and ">" in val)):
                     return True
         elif isinstance(expr, ast.Call):
             if isinstance(expr.func, ast.Attribute) and expr.func.attr == "format":
                 if isinstance(expr.func.value, (ast.Constant, ast.Str)):
                     val = expr.func.value.value if isinstance(expr.func.value, ast.Constant) else expr.func.value.s
-                    if isinstance(val, str) and (html_tags_re.search(val) or ("<" in val and ">" in val)):
+                    if isinstance(val, str) and (self._HTML_TAGS_RE.search(val) or ("<" in val and ">" in val)):
                         return True
         elif isinstance(expr, ast.Name) and scope_id:
             curr = scope_id
             while curr:
                 recs = self.assignments_by_scope.get((curr, expr.id), [])
                 for r in recs:
-                    if self._is_html_construction_expr(r.value_node, curr):
+                    if self._is_html_construction_expr(r.value_node, curr, depth + 1, visited_nodes):
                         return True
                 if "." in curr:
                     curr = curr.rsplit(".", 1)[0]
