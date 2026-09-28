@@ -165,7 +165,37 @@ def _ascii_table(findings):
     return "\n".join(lines)
 
 
-def _sarif_document(findings):
+def _sarif_uri(path, cwd):
+    """Normalize a filesystem path into a valid SARIF artifactLocation URI."""
+    resolved = Path(str(path).replace("\\", "/")).resolve()
+    try:
+        return resolved.relative_to(cwd).as_posix()
+    except ValueError:
+        return resolved.as_uri()
+
+
+def _sarif_code_flows(flow_trace, cwd):
+    """Wrap a cross-file trace in SARIF codeFlows/threadFlows for GHAS and VS Code viewers."""
+    locations = []
+    for step, hop in enumerate(flow_trace, 1):
+        locations.append({
+            "location": {
+                "message": {"text": f"{hop['role']} : {hop['label']}"},
+                "physicalLocation": {
+                    "artifactLocation": {"uri": _sarif_uri(hop["file"], cwd)},
+                    "region": {"startLine": max(1, hop["line"]), "startColumn": 1},
+                },
+            },
+            "executionOrder": step,
+            "importance": "essential",
+        })
+    return [{
+        "message": {"text": "Cross-file taint execution path"},
+        "threadFlows": [{"locations": locations}],
+    }]
+
+
+def _sarif_document(findings, cwd):
     rules = []
     rule_indexes = {}
     for finding in findings:
@@ -186,18 +216,22 @@ def _sarif_document(findings):
     level_by_severity = {"CRITICAL": "error", "HIGH": "error", "MEDIUM": "warning", "LOW": "note", "UNKNOWN": "note"}
     results = []
     for finding in findings:
-        results.append({
+        result = {
             "ruleId": finding["cwe"],
             "ruleIndex": rule_indexes[finding["cwe"]],
             "level": level_by_severity.get(finding["severity"], "warning"),
             "message": {"text": finding["message"]},
             "locations": [{
                 "physicalLocation": {
-                    "artifactLocation": {"uri": finding["file"]},
+                    "artifactLocation": {"uri": _sarif_uri(finding["file"], cwd)},
                     "region": {"startLine": max(1, finding["line"]), "startColumn": 1},
                 }
             }],
-        })
+        }
+        flow_trace = finding.get("flow_trace")
+        if flow_trace:
+            result["codeFlows"] = _sarif_code_flows(flow_trace, cwd)
+        results.append(result)
 
     return {
         "$schema": SARIF_SCHEMA,
@@ -375,7 +409,7 @@ def _scan(args):
         try:
             output_path = Path(args.sarif)
             output_path.parent.mkdir(parents=True, exist_ok=True)
-            output_path.write_text(json.dumps(_sarif_document(findings), indent=2) + "\n", encoding="utf-8")
+            output_path.write_text(json.dumps(_sarif_document(findings, Path.cwd().resolve()), indent=2) + "\n", encoding="utf-8")
         except OSError as exc:
             print(f"Error writing SARIF file: {exc}", file=sys.stderr)
             return 2
