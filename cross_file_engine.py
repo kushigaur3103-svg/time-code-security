@@ -377,6 +377,9 @@ class CrossFileTaintEngine:
             resolved_method = self._resolve_method_contract(value.func, caller_mod, receivers)
             if resolved_method is not None:
                 return resolved_method
+            resolved_module = self._resolve_module_attribute_contract(value.func, caller_mod)
+            if resolved_module is not None:
+                return resolved_module
             call_name = value.func.attr
         else:
             return None
@@ -416,10 +419,97 @@ class CrossFileTaintEngine:
             return None
 
         class_name, class_mod = class_ref
-        summary = self.contracts.get((class_mod, f"{class_name}.{func.attr}"))
-        if summary is None:
+        return self._resolve_inherited_method((class_name, class_mod), func.attr)
+
+    def _resolve_inherited_method(
+        self,
+        class_ref: tuple[str, str],
+        attr: str,
+    ) -> Optional[tuple[str, FunctionSummary]]:
+        """Find `attr`'s contract on the class or, failing that, on its base classes.
+
+        Contracts are keyed by the declaring class, so a call through a subclass instance
+        never spells out the qualified name the base was indexed under. The search is
+        breadth-first from the concrete class, which makes an override on the subclass win
+        over an unsafe inherited fallback, and a visited set bounds the walk on cyclic or
+        repeated inheritance.
+        """
+        pending = [class_ref]
+        seen: Set[tuple[str, str]] = set()
+        while pending:
+            name, mod = pending.pop(0)
+            if (name, mod) in seen:
+                continue
+            seen.add((name, mod))
+
+            summary = self.contracts.get((mod, f"{name}.{attr}"))
+            if summary is not None:
+                return mod, summary
+
+            for parent in self._base_classes(name, mod):
+                if parent not in seen:
+                    pending.append(parent)
+        return None
+
+    def _base_classes(self, class_name: str, class_mod: str) -> List[tuple[str, str]]:
+        """Resolve the base classes of `class_name` to (class, module) pairs, in source order."""
+        node = self._class_node(class_mod, class_name)
+        if node is None:
+            return []
+
+        parents: List[tuple[str, str]] = []
+        for base in node.bases:
+            # Only a bare or dotted name identifies an inheritable class; call and subscript
+            # bases (Generic[T], metaclass kwargs) carry no statically named class.
+            if isinstance(base, ast.Name):
+                parent = self._class_of_name(base.id, class_mod)
+            elif isinstance(base, ast.Attribute):
+                parent = self._class_of_name(base.attr, class_mod)
+            else:
+                parent = None
+            if parent is not None:
+                parents.append(parent)
+        return parents
+
+    def _class_node(self, mod_name: str, class_name: str) -> Optional[ast.ClassDef]:
+        """Top-level ClassDef node for a module, as indexed by GlobalSymbolIndex."""
+        tree = self.indexer._ast_cache.get(mod_name)
+        if tree is None:
             return None
-        return class_mod, summary
+        for stmt in tree.body:
+            if isinstance(stmt, ast.ClassDef) and stmt.name == class_name:
+                return stmt
+        return None
+
+    def _resolve_module_attribute_contract(
+        self,
+        func: ast.Attribute,
+        caller_mod: str,
+    ) -> Optional[tuple[str, FunctionSummary]]:
+        """Resolve `alias.func(...)` where the alias names an imported module.
+
+        `import service as db_svc` binds a namespace rather than a symbol, so the function
+        behind `db_svc.execute_query` is invisible to symbol resolution, which only knows
+        explicitly imported names. Recovering the module from the import table and looking the
+        attribute up in its contracts keeps the aliased call as precise as the direct one.
+        """
+        if not isinstance(func.value, ast.Name):
+            return None
+        target_mod = self._imported_module_of(func.value.id, caller_mod)
+        if target_mod is None:
+            return None
+        summary = self.contracts.get((target_mod, func.attr))
+        return None if summary is None else (target_mod, summary)
+
+    def _imported_module_of(self, name: str, caller_mod: str) -> Optional[str]:
+        """Module a bare Name refers to when it was bound by `import x[.y] [as name]`."""
+        mod_idx = self.indexer.modules.get(caller_mod)
+        if mod_idx is None:
+            return None
+        binding = mod_idx.imports.get(name)
+        if binding is None or binding.imported_name:
+            return None
+        return self.indexer._match_registered_module(binding.source_module)
 
     def _class_of_name(self, name: str, caller_mod: str) -> Optional[tuple[str, str]]:
         """(class name, defining module) when `name` resolves to an indexed class."""

@@ -52,49 +52,118 @@ class CrossFileCase:
     expected_suppressed: frozenset = frozenset()
 
 
-CASES: Tuple[CrossFileCase, ...] = (
-    CrossFileCase(
-        test_id="case_01_multihop_sqli",
-        is_vulnerable=True,
-        # views01.py -> service01.load_profile -> repo01.fetch_row -> cursor.execute
-        expected_findings=frozenset({("CWE-89", "views01.py", 6)}),
-    ),
-    CrossFileCase(
-        test_id="case_02_kwargs_command",
-        is_vulnerable=True,
-        # keyword argument bound to the sink-reaching parameter
-        expected_findings=frozenset({("CWE-78", "api02.py", 6)}),
-    ),
-    CrossFileCase(
-        test_id="case_03_oop_instance_sqli",
-        is_vulnerable=True,
-        # receiver resolved to UserService.search through a local construction
-        expected_findings=frozenset({("CWE-89", "views03.py", 7)}),
-    ),
-    CrossFileCase(
-        test_id="case_04_aliased_import_sqli",
-        is_vulnerable=True,
-        # `import exec_query as run_q`: the alias must bind to the aliased contract
-        expected_findings=frozenset({("CWE-89", "caller04.py", 6)}),
-    ),
-    CrossFileCase(
-        test_id="case_05_sanitizer_middle_layer",
-        is_vulnerable=False,
-        # build_safe escapes its argument, so the caller's os.system is not injectable.
-        # The single-file scanner reports views05.py:9; the pipeline must drop it.
-        expected_suppressed=frozenset({("views05.py", 9)}),
-    ),
-    CrossFileCase(
-        test_id="case_06_untainted_constant",
-        is_vulnerable=False,
-    ),
-    CrossFileCase(
-        test_id="case_07_safe_name_collision",
-        is_vulnerable=False,
-        # fetch_count is also defined by the star-imported danger07 with a sink; the
-        # explicit import must win, otherwise this reports a CWE-89 false positive.
-    ),
-)
+CASE_GROUND_TRUTH: Dict[str, CrossFileCase] = {
+    case.test_id: case
+    for case in (
+        CrossFileCase(
+            test_id="case_01_multihop_sqli",
+            is_vulnerable=True,
+            # views01.py -> service01.load_profile -> repo01.fetch_row -> cursor.execute
+            expected_findings=frozenset({("CWE-89", "views01.py", 6)}),
+        ),
+        CrossFileCase(
+            test_id="case_02_kwargs_command",
+            is_vulnerable=True,
+            # keyword argument bound to the sink-reaching parameter
+            expected_findings=frozenset({("CWE-78", "api02.py", 6)}),
+        ),
+        CrossFileCase(
+            test_id="case_03_oop_instance_sqli",
+            is_vulnerable=True,
+            # receiver resolved to UserService.search through a local construction
+            expected_findings=frozenset({("CWE-89", "views03.py", 7)}),
+        ),
+        CrossFileCase(
+            test_id="case_04_aliased_import_sqli",
+            is_vulnerable=True,
+            # `import exec_query as run_q`: the alias must bind to the aliased contract
+            expected_findings=frozenset({("CWE-89", "caller04.py", 6)}),
+        ),
+        CrossFileCase(
+            test_id="case_05_sanitizer_middle_layer",
+            is_vulnerable=False,
+            # build_safe escapes its argument, so the caller's os.system is not injectable.
+            # The single-file scanner reports views05.py:9; the pipeline must drop it.
+            expected_suppressed=frozenset({("views05.py", 9)}),
+        ),
+        CrossFileCase(
+            test_id="case_06_untainted_constant",
+            is_vulnerable=False,
+        ),
+        CrossFileCase(
+            test_id="case_07_safe_name_collision",
+            is_vulnerable=False,
+            # fetch_count is also defined by the star-imported danger07 with a sink; the
+            # explicit import must win, otherwise this reports a CWE-89 false positive.
+        ),
+        CrossFileCase(
+            test_id="case_08_cross_file_inheritance_bad",
+            is_vulnerable=True,
+            # UserService declares no methods, so the call must bind to BaseRepo.fetch_rows.
+            expected_findings=frozenset({("CWE-89", "controller.py", 7)}),
+        ),
+        CrossFileCase(
+            test_id="case_09_abstract_interface_override_good",
+            is_vulnerable=False,
+            # SafeHandler overrides the unsafe BaseHandler fallback with DB-API parameter
+            # binding, so neither the override nor the inherited fallback is injectable.
+        ),
+        CrossFileCase(
+            test_id="case_10_circular_import_bad",
+            is_vulnerable=True,
+            # mod_a <-> mod_b import each other; the cycle must not stop the leak being found.
+            expected_findings=frozenset({("CWE-78", "mod_a.py", 8)}),
+        ),
+        CrossFileCase(
+            test_id="case_11_circular_import_benign_good",
+            is_vulnerable=False,
+            # Same cycle, but the sink receives a module constant while the request-derived
+            # value stays unused, so the call is not injectable.
+        ),
+        CrossFileCase(
+            test_id="case_12_aliased_module_namespace_bad",
+            is_vulnerable=True,
+            # `import service as db_svc` binds a namespace, so db_svc.execute_query must be
+            # resolved through the alias to the service module's contract.
+            expected_findings=frozenset({("CWE-89", "controller.py", 6)}),
+        ),
+        CrossFileCase(
+            test_id="case_13_shadowed_sink_name_good",
+            is_vulnerable=False,
+            # local_lib.execute matches a sink name but its contract holds no sink, so the
+            # resolved call must not be reported.
+        ),
+        CrossFileCase(
+            test_id="case_14_deep_4hop_transitive_bad",
+            is_vulnerable=True,
+            # controller -> gateway -> service -> repo: the sink contract must lift three hops.
+            expected_findings=frozenset({("CWE-89", "controller.py", 6)}),
+        ),
+    )
+}
+
+
+def discover_cases(fixture_root: Optional[Path] = None) -> Tuple[CrossFileCase, ...]:
+    """Every fixture directory under the root, alphabetically, paired with its label.
+
+    Discovery is automatic so a new mini-project folder is executed without editing the
+    runner, but a directory with no label (or a label with no directory) is a hard error:
+    silently skipping a case, or quietly running a stale one, would inflate the metrics.
+
+    The root is read at call time rather than as a default argument, so callers pointing the
+    suite at another tree get the same directories they set.
+    """
+    root = fixture_root or FIXTURE_ROOT
+    found = sorted(path.name for path in root.iterdir() if path.is_dir())
+    unlabelled = [name for name in found if name not in CASE_GROUND_TRUTH]
+    orphaned = [name for name in CASE_GROUND_TRUTH if name not in found]
+    if unlabelled or orphaned:
+        raise ValueError(
+            "Fixture tree and ground truth are out of sync. "
+            f"Unlabelled directories: {unlabelled or 'none'}. "
+            f"Labels without a directory: {orphaned or 'none'}."
+        )
+    return tuple(CASE_GROUND_TRUTH[name] for name in found)
 
 
 @dataclass
@@ -195,7 +264,7 @@ class CrossFileBenchmarkRunner:
         results: List[CaseResult] = []
         matrix = ConfusionMatrix()
         started = time.perf_counter()
-        for case in CASES:
+        for case in discover_cases():
             result = self.run_case(case)
             results.append(result)
             attr = {"TP": "tp", "FP": "fp", "TN": "tn", "FN": "fn"}[result.classification]

@@ -16,8 +16,9 @@ Executes end-to-end post-commit sanity and compliance checks in one shot:
    - Instantiates interactive GUI components (rules catalog container, structural view,
      proof graph view, secret view) ensuring headless execution without runtime crash.
 4. Cross-File Ground-Truth Benchmark:
-   - Runs the inter-procedural engine plus sanitizer suppression over 7 labelled
-     mini-project fixtures (4 vulnerable, 3 safe) in benchmark/fixtures/cross_file/.
+   - Runs the inter-procedural engine plus sanitizer suppression over every labelled
+     mini-project fixture discovered under benchmark/fixtures/cross_file/ (currently 14:
+     8 vulnerable, 6 safe), including inheritance, module aliasing and import cycles.
    - Requires the harness entry point to exit 0: 100.0% Precision, 100.0% Recall, exact
      ground-truth set equality and the sanitizer suppression contract on every case.
 """
@@ -38,6 +39,7 @@ if str(REPO_ROOT) not in sys.path:
 
 from benchmark.runner import BenchmarkRunner, BenchmarkReport
 from benchmark.manifest import get_benchmark_cases
+from benchmark.cross_runner import discover_cases
 from benchmark.cross_runner import main as cross_file_benchmark_main
 from tcs_cli import execute_tcs_scan
 from sarif_exporter import export_sarif
@@ -353,15 +355,20 @@ def check_cross_file_benchmark() -> bool:
 
     exit_code = cross_file_benchmark_main([])
     elapsed = time.perf_counter() - start_time
+    case_count = len(discover_cases())
 
-    print(f"  Harness Exit Code    : {exit_code} (expected 0)")
-    print(f"  Cross-File Duration  : {elapsed:.2f}s")
+    print(f"  Fixtures Discovered    : {case_count}")
+    print(f"  Harness Exit Code      : {exit_code} (expected 0)")
+    print(f"  Cross-File Duration    : {elapsed:.2f}s")
     assert exit_code == 0, (
         f"benchmark.cross_runner exited {exit_code}: cross-file precision/recall, "
         "ground-truth set equality or the sanitizer suppression contract failed"
     )
 
-    print("  -> [PASS] Cross-file suite: 4 TP / 3 TN, 0 FP / 0 FN, 100.0% precision and recall")
+    print(
+        f"  -> [PASS] Cross-file suite: {case_count} fixtures at 100.0% precision "
+        "and recall (0 FP, 0 FN, suppression contract honoured)"
+    )
     return True
 
 

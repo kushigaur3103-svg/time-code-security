@@ -162,7 +162,12 @@ class FunctionSummarizer:
 
                     cwe = KNOWN_SINKS.get(call_name)
                     if cwe:
-                        for arg in sub.args:
+                        for position, arg in enumerate(sub.args):
+                            # DB-API semantics: execute(operation, parameters) interpolates
+                            # only the operation slot into the statement, so taint that reaches
+                            # the parameters slot is bound by the driver and not injectable.
+                            if cwe == "CWE-89" and position > 0:
+                                continue
                             arg_params = self._resolve_referenced_params(arg, alias_map)
                             for p_idx in arg_params:
                                 edge = ParamSinkEdge(
