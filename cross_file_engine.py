@@ -24,6 +24,15 @@ TAINT_SOURCE_PATTERNS = {
 }
 
 
+def _ordered_nodes(root: ast.AST):
+    """Yield nodes in source (pre-order) sequence so assignment state is chronological."""
+    stack = [root]
+    while stack:
+        node = stack.pop()
+        yield node
+        stack.extend(reversed(list(ast.iter_child_nodes(node))))
+
+
 @dataclass(slots=True)
 class CrossFileFinding:
     cwe: str
@@ -61,6 +70,59 @@ class CrossFileTaintEngine:
             self._analyze_module_calls(mod_name, mod_idx.file_path, tree)
 
         return self.findings
+
+    def sanitized_sink_locations(self) -> Set[tuple[str, int]]:
+        """Call sites whose locally-assigned arguments were all neutralized by a
+        cross-file sanitizer contract.
+
+        Single-file scanners cannot see the callee contract, so they report these sites
+        as injectable. The returned keys are (resolved file path, call lineno).
+        """
+        suppressed: Set[tuple[str, int]] = set()
+        if not any(summary.is_sanitizer for summary in self.contracts.values()):
+            return suppressed
+        for mod_name, mod_idx in self.indexer.modules.items():
+            tree = self.indexer._ast_cache.get(mod_name)
+            if not tree:
+                continue
+            file_key = str(Path(mod_idx.file_path).resolve())
+            for node in ast.walk(tree):
+                if isinstance(node, (ast.FunctionDef, ast.AsyncFunctionDef)):
+                    suppressed.update(self._sanitized_sites(mod_name, file_key, node))
+        return suppressed
+
+    def _sanitized_sites(
+        self,
+        mod_name: str,
+        file_key: str,
+        func_node: ast.AST,
+    ) -> Set[tuple[str, int]]:
+        sites: Set[tuple[str, int]] = set()
+        assigned: Set[str] = set()
+        sanitized: Set[str] = set()
+
+        for node in _ordered_nodes(func_node):
+            if isinstance(node, ast.Assign):
+                summary = self._resolve_call_summary(mod_name, node.value)
+                neutralized = bool(summary and summary.is_sanitizer)
+                for target in node.targets:
+                    if isinstance(target, ast.Name):
+                        assigned.add(target.id)
+                        if neutralized:
+                            sanitized.add(target.id)
+                        else:
+                            sanitized.discard(target.id)
+
+            elif isinstance(node, ast.Call):
+                relevant = {
+                    n.id
+                    for n in ast.walk(node)
+                    if isinstance(n, ast.Name) and isinstance(n.ctx, ast.Load) and n.id in assigned
+                }
+                if relevant and relevant <= sanitized:
+                    sites.add((file_key, node.lineno))
+
+        return sites
 
     def _analyze_module_calls(self, mod_name: str, file_path: Path, tree: ast.AST) -> None:
         for stmt in tree.body:

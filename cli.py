@@ -248,13 +248,13 @@ class CrossFinding(dict):
         self.description = message
 
 def _run_cross_scan(target_path):
-    """Executes CrossFileTaintEngine cleanly."""
+    """Executes CrossFileTaintEngine cleanly. Returns (findings, engine-or-None)."""
     try:
         from cross_file_engine import CrossFileTaintEngine
         engine = CrossFileTaintEngine(target_path)
         raw_findings = engine.run()
     except Exception:
-        return []
+        return [], None
 
     results = []
     for cf in raw_findings:
@@ -266,7 +266,38 @@ def _run_cross_scan(target_path):
             message=msg,
             severity="HIGH"
         ))
-    return results
+    return results, engine
+
+
+def _suppress_cross_file_sanitized(findings, engine):
+    """Drop single-file findings whose tainted arguments a cross-file sanitizer neutralized.
+
+    The AST scanner has no visibility into callee contracts, so `cmd = format_command(x)`
+    followed by `os.system(cmd)` is reported as injectable even when the helper escapes its
+    argument. Cross-file findings are left untouched: that engine already honours contracts.
+    """
+    if engine is None:
+        return findings
+    try:
+        sanitized_sites = {
+            (_normalize_compare_path(file_path), lineno)
+            for file_path, lineno in engine.sanitized_sink_locations()
+        }
+    except Exception:
+        return findings
+    if not sanitized_sites:
+        return findings
+
+    kept = []
+    for finding in findings:
+        if finding.get("category") == "cross_file":
+            kept.append(finding)
+            continue
+        identity = (_normalize_compare_path(finding["file"]), finding["line"])
+        if identity in sanitized_sites:
+            continue
+        kept.append(finding)
+    return kept
 
 def _scan(args):
     try:
@@ -287,7 +318,9 @@ def _scan(args):
             ast_findings = []
             scanned_files = len(templates) + len(iac)
         findings = _merge_findings(ast_findings, audit_templates(templates), audit_iac_files(iac))
-        findings.extend(_run_cross_scan(args.path))
+        cross_findings, cross_engine = _run_cross_scan(args.path)
+        findings = _suppress_cross_file_sanitized(findings, cross_engine)
+        findings.extend(cross_findings)
         duration_ms = (time.perf_counter() - started) * 1000
     except (OSError, ValueError) as exc:
         print(f"Error: {exc}", file=sys.stderr)
