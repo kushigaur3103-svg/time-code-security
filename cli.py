@@ -144,7 +144,10 @@ def _ascii_table(findings):
         (str(index), item["file"], str(item["line"]), item["cwe"], item["severity"], item["category"].replace("_", " "))
         for index, item in enumerate(findings, 1)
     ]
-    widths = [min(max_widths[index], max(len(headers[index]), *(len(row[index]) for row in rows))) for index in range(len(headers))]
+    widths = [
+        min(max_widths[index], max([len(headers[index])] + [len(row[index]) for row in rows]))
+        for index in range(len(headers))
+    ]
 
     def fit(value, width, keep_end=False):
         if len(value) <= width:
@@ -362,7 +365,7 @@ def _scan(args):
             "findings": findings,
         }, indent=2))
     else:
-        print(_ascii_table(findings))
+        print(_ascii_table(findings) if findings else "[+] No vulnerabilities found. Clean scan!")
         _print_summary(scanned_files, duration_ms, findings)
         traces = _cross_trace_report(findings, Path.cwd().resolve())
         if traces:
