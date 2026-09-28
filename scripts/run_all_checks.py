@@ -17,8 +17,9 @@ Executes end-to-end post-commit sanity and compliance checks in one shot:
      proof graph view, secret view) ensuring headless execution without runtime crash.
 4. Cross-File Ground-Truth Benchmark:
    - Runs the inter-procedural engine plus sanitizer suppression over every labelled
-     mini-project fixture discovered under benchmark/fixtures/cross_file/ (currently 14:
-     8 vulnerable, 6 safe), including inheritance, module aliasing and import cycles.
+     mini-project fixture discovered under benchmark/fixtures/cross_file/ (currently 20:
+     12 vulnerable, 8 safe), covering inheritance, module aliasing, import cycles,
+     return-taint, decorators and sink fan-out.
    - Requires the harness entry point to exit 0: 100.0% Precision, 100.0% Recall, exact
      ground-truth set equality and the sanitizer suppression contract on every case.
 """

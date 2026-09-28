@@ -139,6 +139,50 @@ CASE_GROUND_TRUTH: Dict[str, CrossFileCase] = {
             # controller -> gateway -> service -> repo: the sink contract must lift three hops.
             expected_findings=frozenset({("CWE-89", "controller.py", 6)}),
         ),
+        CrossFileCase(
+            test_id="case_15_intermediate_return_taint_bad",
+            is_vulnerable=True,
+            # fetcher.get_untrusted_id returns its argument untouched, so the value that
+            # reaches repo.query_db is tainted even though no source appears in service.py.
+            expected_findings=frozenset({("CWE-89", "service.py", 7)}),
+        ),
+        CrossFileCase(
+            test_id="case_16_intermediate_return_sanitized_good",
+            is_vulnerable=False,
+            # Same chain, but fetcher casts to int before returning, so its contract is a
+            # sanitizer: service.py:7 must be dropped instead of reported.
+            expected_suppressed=frozenset({("service.py", 7)}),
+        ),
+        CrossFileCase(
+            test_id="case_17_cross_file_decorator_sanitizer_good",
+            is_vulnerable=False,
+            # detail_view forwards its parameter into repo.query_db, so its lifted contract
+            # looks injectable; @validated rebuilds that slot through int() before the body
+            # runs, which makes the call site at views.py:12 a false positive if the
+            # decorator is ignored.
+        ),
+        CrossFileCase(
+            test_id="case_18_cross_file_decorator_passthrough_bad",
+            is_vulnerable=True,
+            # @log_call forwards *args/**kwargs untouched, so decorating the sink function
+            # must not hide the leak.
+            expected_findings=frozenset({("CWE-78", "views.py", 13)}),
+        ),
+        CrossFileCase(
+            test_id="case_19_multi_sink_fanout_bad",
+            is_vulnerable=True,
+            # One input fans out into two different modules with two different CWEs.
+            expected_findings=frozenset({
+                ("CWE-89", "controller.py", 7),
+                ("CWE-78", "controller.py", 8),
+            }),
+        ),
+        CrossFileCase(
+            test_id="case_20_mixed_positional_kwargs_bad",
+            is_vulnerable=True,
+            # positional -> keyword -> positional through three modules before the sink.
+            expected_findings=frozenset({("CWE-89", "controller.py", 6)}),
+        ),
     )
 }
 

@@ -13,7 +13,7 @@ from pathlib import Path
 from typing import Dict, List, Optional, Set
 
 from symbol_indexer import GlobalSymbolIndex, SymbolDefinition
-from function_summarizer import FunctionSummarizer, FunctionSummary, ParamSinkEdge
+from function_summarizer import KNOWN_SANITIZERS, FunctionSummarizer, FunctionSummary, ParamSinkEdge
 
 
 # Common web entrypoint sources
@@ -51,6 +51,23 @@ def _contracted_functions(tree: ast.AST):
             for item in stmt.body:
                 if isinstance(item, (ast.FunctionDef, ast.AsyncFunctionDef)):
                     yield item, f"{stmt.name}.{item.name}"
+
+
+def _name_uses(expr: ast.expr) -> Set[str]:
+    """Names an expression reads, excluding the callee identifiers of the calls inside it.
+
+    `int(record_id)` reads one value, `record_id`; without this the sanitizer's own name
+    would count as a second input and block an argument that is provably cleaned.
+    """
+    excluded = set()
+    for node in ast.walk(expr):
+        if isinstance(node, ast.Call) and isinstance(node.func, (ast.Name, ast.Attribute)):
+            excluded.update(id(child) for child in ast.walk(node.func))
+    return {
+        node.id
+        for node in ast.walk(expr)
+        if isinstance(node, ast.Name) and id(node) not in excluded
+    }
 
 
 @dataclass(slots=True)
@@ -91,6 +108,8 @@ class CrossFileTaintEngine:
         # Forwarding call sites between the caller and the ultimate sink, outermost first:
         # (mod, qualname, param_idx, sink, lineno) -> [(file, lineno, callee label), ...].
         self.sink_route: dict[tuple[str, str, int, str, int], List[tuple[str, int, str]]] = {}
+        # Cached per-callee decorator analysis: (mod, qualname) -> sanitised parameter indices.
+        self._decorator_slots: dict[tuple[str, str], Set[int]] = {}
 
     def run(self) -> list[CrossFileFinding]:
         # 1. Build Index & Contracts
@@ -152,6 +171,9 @@ class CrossFileTaintEngine:
             callee_mod, callee_summary = resolved
             if not callee_summary.param_sinks:
                 continue
+            # A slot the callee's decorator sanitises carries no sink obligation, so it must
+            # not lift either; otherwise the same leak would reappear one layer further out.
+            neutralized = self._decorator_sanitized_params(callee_mod, callee_summary)
 
             for arg_idx, arg in sorted(
                 self._bind_call_args(
@@ -160,6 +182,8 @@ class CrossFileTaintEngine:
                     self._receiver_offset(caller_mod, call, callee_summary),
                 ).items()
             ):
+                if arg_idx in neutralized:
+                    continue
                 if not isinstance(arg, ast.Name):
                     continue
                 caller_param_idx = param_index.get(arg.id)
@@ -511,6 +535,118 @@ class CrossFileTaintEngine:
             return None
         return self.indexer._match_registered_module(binding.source_module)
 
+    def _decorator_sanitized_params(self, callee_mod: str, summary: FunctionSummary) -> Set[int]:
+        """Parameter indices that a validating decorator neutralises before the body runs.
+
+        ``@validated def view(record_id)`` whose wrapper calls ``func(int(record_id))`` can
+        never observe a raw value in that slot, so a tainted argument there is not injectable
+        and the call site must not be reported. Only one shape is trusted, because it is the
+        only one that is provable: the decorator declares a nested wrapper, that wrapper takes
+        the decorated function's parameters positionally without ``*args``/``**kwargs``, and
+        its call to the wrapped function passes, per position, either the parameter untouched
+        or a known sanitizer applied to exactly that parameter. A passthrough decorator
+        therefore stays transparent, which is what keeps a timed or logged sink reportable.
+        """
+        key = (callee_mod, summary.qualname)
+        cached = self._decorator_slots.get(key)
+        if cached is not None:
+            return cached
+
+        node = self._function_node(callee_mod, summary.qualname)
+        sanitized: Set[int] = set()
+        if node is not None and summary.params:
+            for decorator in node.decorator_list:
+                definition = self._decorator_definition(callee_mod, decorator)
+                if definition is not None:
+                    sanitized |= self._wrapper_sanitized_slots(definition, summary.params)
+        self._decorator_slots[key] = sanitized
+        return sanitized
+
+    def _decorator_definition(self, caller_mod: str, expr: ast.expr) -> Optional[ast.FunctionDef]:
+        """FunctionDef of the decorator itself, resolving its name through the import table."""
+        name = expr.id if isinstance(expr, ast.Name) else (
+            expr.attr if isinstance(expr, ast.Attribute) else None
+        )
+        if name is None:
+            return None
+        symbol_def = self.indexer.resolve_symbol(caller_mod, name)
+        if symbol_def is None or symbol_def.kind not in ("function", "async_function"):
+            return None
+        decorator_mod = self.indexer.file_to_module.get(Path(symbol_def.file_path).resolve())
+        if decorator_mod is None:
+            return None
+        return self._function_node(decorator_mod, symbol_def.name)
+
+    @staticmethod
+    def _wrapper_sanitized_slots(
+        decorator: ast.FunctionDef,
+        decorated_params: List[str],
+    ) -> Set[int]:
+        """Slots the decorator's wrapper rebuilds through a sanitizer before calling through."""
+        wrapper = next(
+            (
+                stmt
+                for stmt in decorator.body
+                if isinstance(stmt, (ast.FunctionDef, ast.AsyncFunctionDef))
+            ),
+            None,
+        )
+        if (
+            wrapper is None
+            or wrapper.args.vararg
+            or wrapper.args.kwarg
+            or wrapper.args.kwonlyargs
+        ):
+            return set()
+
+        wrapper_params = [arg.arg for arg in wrapper.args.args]
+        if len(wrapper_params) != len(decorated_params):
+            return set()
+
+        wrapped_names = {arg.arg for arg in decorator.args.args}
+        forwarded = next(
+            (
+                node
+                for node in ast.walk(wrapper)
+                if isinstance(node, ast.Call)
+                and isinstance(node.func, ast.Name)
+                and node.func.id in wrapped_names
+            ),
+            None,
+        )
+        if forwarded is None or forwarded.keywords or len(forwarded.args) != len(decorated_params):
+            return set()
+
+        slots: Set[int] = set()
+        for index, argument in enumerate(forwarded.args):
+            source = wrapper_params[index]
+            if _name_uses(argument) - {source}:
+                continue
+            if isinstance(argument, ast.Call):
+                callee = argument.func
+                callee_name = callee.id if isinstance(callee, ast.Name) else (
+                    callee.attr if isinstance(callee, ast.Attribute) else None
+                )
+                if callee_name in KNOWN_SANITIZERS:
+                    slots.add(index)
+        return slots
+
+    def _function_node(self, mod_name: str, qualname: str) -> Optional[ast.FunctionDef]:
+        """FunctionDef node for a module and qualified name, as indexed by GlobalSymbolIndex."""
+        tree = self.indexer._ast_cache.get(mod_name)
+        if tree is None:
+            return None
+        head, _, tail = qualname.partition(".")
+        for stmt in tree.body:
+            if not tail:
+                if isinstance(stmt, (ast.FunctionDef, ast.AsyncFunctionDef)) and stmt.name == head:
+                    return stmt
+            elif isinstance(stmt, ast.ClassDef) and stmt.name == head:
+                for item in stmt.body:
+                    if isinstance(item, (ast.FunctionDef, ast.AsyncFunctionDef)) and item.name == tail:
+                        return item
+        return None
+
     def _class_of_name(self, name: str, caller_mod: str) -> Optional[tuple[str, str]]:
         """(class name, defining module) when `name` resolves to an indexed class."""
         symbol_def = self.indexer.resolve_symbol(caller_mod, name)
@@ -609,9 +745,12 @@ class CrossFileTaintEngine:
         callee_mod, summary = resolved
 
         # Check if caller passed tainted arguments into callee's sink parameters
+        neutralized = self._decorator_sanitized_params(callee_mod, summary)
         for arg_idx, arg in sorted(
             self._bind_call_args(call, summary.params, self._receiver_offset(caller_mod, call, summary)).items()
         ):
+            if arg_idx in neutralized:
+                continue
             arg_repr = ast.unparse(arg) if hasattr(ast, "unparse") else ""
             is_tainted_arg = any(t in arg_repr for t in tainted_vars) or any(src in arg_repr for src in TAINT_SOURCE_PATTERNS)
 
