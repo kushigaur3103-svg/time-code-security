@@ -45,6 +45,15 @@ def _contracted_functions(tree: ast.AST):
 
 
 @dataclass(slots=True)
+class TraceHop:
+    """One labelled node in an exploit path: role is SOURCE, ROUTE or SINK."""
+    role: str
+    file_path: str
+    lineno: int
+    label: str
+
+
+@dataclass(slots=True)
 class CrossFileFinding:
     cwe: str
     caller_file: str
@@ -55,6 +64,7 @@ class CrossFileFinding:
     callee_sink_name: str
     callee_sink_lineno: int
     tainted_param: str
+    flow_trace: List[TraceHop] = field(default_factory=list)
 
 
 class CrossFileTaintEngine:
@@ -69,6 +79,9 @@ class CrossFileTaintEngine:
         # ParamSinkEdge carries no file field, so transitively lifted edges record the
         # module that actually owns the sink here: (mod, qualname, param_idx, sink, lineno) -> path.
         self.sink_origins: dict[tuple[str, str, int, str, int], str] = {}
+        # Forwarding call sites between the caller and the ultimate sink, outermost first:
+        # (mod, qualname, param_idx, sink, lineno) -> [(file, lineno, callee label), ...].
+        self.sink_route: dict[tuple[str, str, int, str, int], List[tuple[str, int, str]]] = {}
 
     def run(self) -> list[CrossFileFinding]:
         # 1. Build Index & Contracts
@@ -153,10 +166,15 @@ class CrossFileTaintEngine:
                     ))
                     origin_key = (callee_mod, callee_summary.qualname,
                                   edge.param_idx, edge.sink_name, edge.lineno)
-                    self.sink_origins[(
-                        caller_mod, summary.qualname, caller_param_idx,
-                        edge.sink_name, edge.lineno,
-                    )] = self.sink_origins.get(origin_key, callee_summary.file_path)
+                    lifted_key = (caller_mod, summary.qualname, caller_param_idx,
+                                  edge.sink_name, edge.lineno)
+                    self.sink_origins[lifted_key] = self.sink_origins.get(
+                        origin_key, callee_summary.file_path
+                    )
+                    self.sink_route[lifted_key] = [
+                        (summary.file_path, call.lineno,
+                         f"{caller_mod}.{summary.qualname}")
+                    ] + self.sink_route.get(origin_key, [])
                     added = True
 
         return added
@@ -385,24 +403,66 @@ class CrossFileTaintEngine:
             if is_tainted_arg:
                 # Check target sinks
                 for sink in summary.param_sinks:
-                    if sink.param_idx == arg_idx:
-                        self.findings.append(
-                            CrossFileFinding(
-                                cwe=sink.sink_cwe,
-                                caller_file=caller_file,
-                                caller_lineno=getattr(call, "lineno", 0),
-                                caller_func=f"{caller_mod}.{caller_func_name}",
-                                callee_file=self.sink_origins.get(
-                                    (callee_mod, summary.qualname, sink.param_idx,
-                                     sink.sink_name, sink.lineno),
-                                    summary.file_path,
-                                ),
-                                callee_func=f"{callee_mod}.{summary.qualname}",
-                                callee_sink_name=sink.sink_name,
-                                callee_sink_lineno=sink.lineno,
-                                tainted_param=sink.param_name,
-                            )
+                    if sink.param_idx != arg_idx:
+                        continue
+
+                    trace_key = (callee_mod, summary.qualname, sink.param_idx,
+                                 sink.sink_name, sink.lineno)
+                    sink_file = self.sink_origins.get(trace_key, summary.file_path)
+                    call_line = getattr(call, "lineno", 0)
+                    flow_trace = [
+                        TraceHop("SOURCE", caller_file, call_line,
+                                 f"{caller_mod}.{caller_func_name}")
+                    ]
+                    flow_trace.extend(
+                        TraceHop("ROUTE", route_file, route_line, route_func)
+                        for route_file, route_line, route_func
+                        in self.sink_route.get(trace_key, [])
+                    )
+                    flow_trace.append(
+                        TraceHop("SINK", sink_file, sink.lineno,
+                                 self._sink_descriptor(sink_file, sink.lineno, sink.sink_name))
+                    )
+
+                    self.findings.append(
+                        CrossFileFinding(
+                            cwe=sink.sink_cwe,
+                            caller_file=caller_file,
+                            caller_lineno=call_line,
+                            caller_func=f"{caller_mod}.{caller_func_name}",
+                            callee_file=sink_file,
+                            callee_func=f"{callee_mod}.{summary.qualname}",
+                            callee_sink_name=sink.sink_name,
+                            callee_sink_lineno=sink.lineno,
+                            tainted_param=sink.param_name,
+                            flow_trace=flow_trace,
                         )
+                    )
+
+    def _sink_descriptor(self, file_path: str, lineno: int, fallback: str) -> str:
+        """Recover how the sink was written (e.g. 'cursor.execute') from its source line."""
+        mod_name = self.indexer.file_to_module.get(Path(file_path).resolve())
+        tree = self.indexer._ast_cache.get(mod_name) if mod_name else None
+        if tree is None or not hasattr(ast, "unparse"):
+            return fallback
+
+        candidates = [
+            node
+            for node in ast.walk(tree)
+            if isinstance(node, ast.Call) and getattr(node, "lineno", 0) == lineno
+        ]
+        if not candidates:
+            return fallback
+        for node in candidates:
+            if isinstance(node.func, ast.Attribute):
+                tail = node.func.attr
+            elif isinstance(node.func, ast.Name):
+                tail = node.func.id
+            else:
+                tail = None
+            if tail == fallback:
+                return ast.unparse(node.func)
+        return ast.unparse(candidates[0].func)
 
 
 if __name__ == "__main__":

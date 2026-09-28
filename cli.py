@@ -216,10 +216,33 @@ def _print_summary(file_count, duration_ms, findings):
     print("Findings by severity: " + ", ".join(f"{severity.title()}: {counts[severity]}" for severity in SEVERITIES))
 
 
+def _cross_trace_report(findings, cwd):
+    """Render the multi-hop attack path for every cross-file finding, or '' if none."""
+    traced = [
+        (index, finding)
+        for index, finding in enumerate(findings, 1)
+        if finding.get("category") == "cross_file" and finding.get("flow_trace")
+    ]
+    if not traced:
+        return ""
+
+    rule = "-" * 80
+    lines = ["", rule, "        TIMECODESECURITY (TCS) - CROSS-FILE EXPLOIT CHAINS", rule]
+    for index, finding in traced:
+        rule_meta = get_rule(finding["cwe"])
+        label = (rule_meta.category if rule_meta else finding.get("category", "")).replace("_", " ").upper()
+        lines.append(f"[TRACE] Finding #{index}: {finding['cwe']} ({label})")
+        for step, hop in enumerate(finding["flow_trace"], 1):
+            location = _file_key(Path(hop["file"]), cwd)
+            lines.append(f"  {step}. {hop['role'].ljust(7)}: {location}:{hop['line']} ({hop['label']})")
+        lines.append(rule)
+    return "\n".join(lines)
+
+
 
 class CrossFinding(dict):
     """Hybrid finding: acts as dict and object simultaneously."""
-    def __init__(self, cwe, file_path, lineno, message, severity="HIGH"):
+    def __init__(self, cwe, file_path, lineno, message, severity="HIGH", flow_trace=None):
         super().__init__(
             cwe=cwe,
             rule_id=cwe,
@@ -233,8 +256,10 @@ class CrossFinding(dict):
             desc=message,
             description=message,
             category="cross_file",
+            flow_trace=flow_trace or [],
         )
         self.category = "cross_file"
+        self.flow_trace = flow_trace or []
         self.cwe = cwe
         self.rule_id = cwe
         self.severity = "HIGH"
@@ -264,7 +289,11 @@ def _run_cross_scan(target_path):
             file_path=cf.caller_file,
             lineno=cf.caller_lineno,
             message=msg,
-            severity="HIGH"
+            severity="HIGH",
+            flow_trace=[
+                {"role": hop.role, "file": hop.file_path, "line": hop.lineno, "label": hop.label}
+                for hop in getattr(cf, "flow_trace", None) or []
+            ],
         ))
     return results, engine
 
@@ -335,6 +364,9 @@ def _scan(args):
     else:
         print(_ascii_table(findings))
         _print_summary(scanned_files, duration_ms, findings)
+        traces = _cross_trace_report(findings, Path.cwd().resolve())
+        if traces:
+            print(traces)
 
     if args.sarif:
         try:
