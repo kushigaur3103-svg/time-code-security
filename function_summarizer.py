@@ -40,6 +40,16 @@ KNOWN_SANITIZERS = {
 }
 
 
+def _has_static_decorator(node: ast.FunctionDef | ast.AsyncFunctionDef) -> bool:
+    """True for a @staticmethod, whose first parameter is a real argument, not a receiver."""
+    for decorator in node.decorator_list:
+        if isinstance(decorator, ast.Name) and decorator.id == "staticmethod":
+            return True
+        if isinstance(decorator, ast.Attribute) and decorator.attr == "staticmethod":
+            return True
+    return False
+
+
 @dataclass(slots=True)
 class ParamSinkEdge:
     param_idx: int
@@ -58,6 +68,10 @@ class FunctionSummary:
     tainted_returns: set[int] = field(default_factory=set)  # indices of params that reach 'return'
     param_sinks: list[ParamSinkEdge] = field(default_factory=list)  # params that hit an internal sink
     is_sanitizer: bool = False
+    # True when the signature opens with self/cls, i.e. params excludes a bound receiver.
+    # Callers that invoke the method unbound (Class.method(instance, ...)) must skip one
+    # positional argument so parameter indices stay aligned with params.
+    takes_receiver: bool = False
 
 
 class FunctionSummarizer:
@@ -81,7 +95,10 @@ class FunctionSummarizer:
                     for item in stmt.body:
                         if isinstance(item, (ast.FunctionDef, ast.AsyncFunctionDef)):
                             qual = f"{stmt.name}.{item.name}"
-                            summary = self._summarize_function(item, mod_name, str(mod_idx.file_path), qualname=qual)
+                            summary = self._summarize_function(
+                                item, mod_name, str(mod_idx.file_path),
+                                qualname=qual, is_method=True,
+                            )
                             self.summaries[(mod_name, qual)] = summary
 
         return self.summaries
@@ -92,9 +109,16 @@ class FunctionSummarizer:
         mod_name: str,
         file_path: str,
         qualname: Optional[str] = None,
+        is_method: bool = False,
     ) -> FunctionSummary:
         name = qualname or node.name
-        params = [a.arg for a in node.args.args if a.arg not in ("self", "cls")]
+        takes_receiver = bool(
+            is_method
+            and not _has_static_decorator(node)
+            and node.args.args
+            and node.args.args[0].arg in ("self", "cls")
+        )
+        params = [a.arg for a in (node.args.args[1:] if takes_receiver else node.args.args)]
         param_to_idx = {p: i for i, p in enumerate(params)}
 
         summary = FunctionSummary(
@@ -102,6 +126,7 @@ class FunctionSummarizer:
             file_path=file_path,
             lineno=node.lineno,
             params=params,
+            takes_receiver=takes_receiver,
         )
 
         # Sanitizer heuristic

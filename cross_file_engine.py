@@ -24,12 +24,21 @@ TAINT_SOURCE_PATTERNS = {
 }
 
 
-def _ordered_nodes(root: ast.AST):
-    """Yield nodes in source (pre-order) sequence so assignment state is chronological."""
+_SCOPES = (ast.FunctionDef, ast.AsyncFunctionDef, ast.Lambda, ast.ClassDef)
+
+
+def _ordered_nodes(root: ast.AST, skip_scopes: bool = False):
+    """Yield nodes in source (pre-order) sequence so assignment state is chronological.
+
+    With skip_scopes, nested function/class bodies are not descended into, keeping the
+    traversal to the root node's own lexical scope.
+    """
     stack = [root]
     while stack:
         node = stack.pop()
         yield node
+        if skip_scopes and node is not root and isinstance(node, _SCOPES):
+            continue
         stack.extend(reversed(list(ast.iter_child_nodes(node))))
 
 
@@ -134,16 +143,23 @@ class CrossFileTaintEngine:
             for edge in summary.param_sinks
         }
         added = False
+        receivers = self._instance_bindings(caller_mod, summary.qualname, func_node)
 
         for call in (n for n in ast.walk(func_node) if isinstance(n, ast.Call)):
-            resolved = self._resolve_call_contract(caller_mod, call)
+            resolved = self._resolve_call_contract(caller_mod, call, receivers)
             if resolved is None:
                 continue
             callee_mod, callee_summary = resolved
             if not callee_summary.param_sinks:
                 continue
 
-            for arg_idx, arg in sorted(self._bind_call_args(call, callee_summary.params).items()):
+            for arg_idx, arg in sorted(
+                self._bind_call_args(
+                    call,
+                    callee_summary.params,
+                    self._receiver_offset(caller_mod, call, callee_summary),
+                ).items()
+            ):
                 if not isinstance(arg, ast.Name):
                     continue
                 caller_param_idx = param_index.get(arg.id)
@@ -194,9 +210,14 @@ class CrossFileTaintEngine:
             if not tree:
                 continue
             file_key = str(Path(mod_idx.file_path).resolve())
+            qualnames = {id(node): name for node, name in _contracted_functions(tree)}
             for node in ast.walk(tree):
                 if isinstance(node, (ast.FunctionDef, ast.AsyncFunctionDef)):
-                    suppressed.update(self._sanitized_sites(mod_name, file_key, node))
+                    suppressed.update(
+                        self._sanitized_sites(
+                            mod_name, file_key, node, qualnames.get(id(node), node.name)
+                        )
+                    )
         return suppressed
 
     def _sanitized_sites(
@@ -204,14 +225,16 @@ class CrossFileTaintEngine:
         mod_name: str,
         file_key: str,
         func_node: ast.AST,
+        caller_func: str,
     ) -> Set[tuple[str, int]]:
         sites: Set[tuple[str, int]] = set()
         assigned: Set[str] = set()
         sanitized: Set[str] = set()
+        receivers = self._instance_bindings(mod_name, caller_func, func_node)
 
         for node in _ordered_nodes(func_node):
             if isinstance(node, ast.Assign):
-                summary = self._resolve_call_summary(mod_name, node.value)
+                summary = self._resolve_call_summary(mod_name, node.value, receivers)
                 neutralized = bool(summary and summary.is_sanitizer)
                 for target in node.targets:
                     if isinstance(target, ast.Name):
@@ -257,6 +280,7 @@ class CrossFileTaintEngine:
                 tainted_vars.add(arg.arg)
 
         # Track local assignments from sources
+        receivers = self._instance_bindings(caller_mod, caller_func_name, func_node)
         for stmt in func_node.body:
             if isinstance(stmt, ast.Assign):
                 rhs_repr = ast.unparse(stmt.value) if hasattr(ast, "unparse") else ""
@@ -264,13 +288,14 @@ class CrossFileTaintEngine:
 
                 # Contract-aware propagation: a resolved callee summary is authoritative
                 # for whether its return value carries the taint of an argument.
-                summary = self._resolve_call_summary(caller_mod, stmt.value)
+                summary = self._resolve_call_summary(caller_mod, stmt.value, receivers)
                 if summary is not None:
                     if summary.is_sanitizer:
                         is_derived = False
                     else:
                         is_derived = self._returns_tainted_arg(
-                            stmt.value, summary.params, summary.tainted_returns, tainted_vars
+                            stmt.value, summary.params, summary.tainted_returns, tainted_vars,
+                            self._receiver_offset(caller_mod, stmt.value, summary),
                         )
                 else:
                     is_derived = any(t_var in rhs_repr for t_var in tainted_vars)
@@ -288,19 +313,29 @@ class CrossFileTaintEngine:
                     caller_func_name,
                     call_node,
                     tainted_vars,
+                    receivers,
                 )
 
     def _bind_call_args(
         self,
         call: ast.Call,
         param_names: List[str],
+        arg_offset: int = 0,
     ) -> Dict[int, ast.AST]:
-        """Maps parameter index -> argument AST expression for both args and kwargs."""
+        """Maps parameter index -> argument AST expression for both args and kwargs.
+
+        ``param_names`` comes from FunctionSummary.params, which drops the implicit
+        ``self``/``cls`` receiver, so binding a normal method call needs no offset.
+        ``arg_offset`` skips the leading positional argument of an unbound call; binding
+        against SymbolDefinition.params (which keeps ``self``) would shift every
+        parameter position by one instead.
+        """
         bound: Dict[int, ast.AST] = {}
         # Positional
         for idx, arg in enumerate(call.args):
-            if idx < len(param_names):
-                bound[idx] = arg
+            param_idx = idx - arg_offset
+            if 0 <= param_idx < len(param_names):
+                bound[param_idx] = arg
         # Keywords
         param_to_idx = {name: idx for idx, name in enumerate(param_names)}
         for kw in call.keywords:
@@ -308,10 +343,29 @@ class CrossFileTaintEngine:
                 bound[param_to_idx[kw.arg]] = kw.value
         return bound
 
+    def _receiver_offset(self, caller_mod: str, call: ast.Call, summary: FunctionSummary) -> int:
+        """1 when the callee is a method invoked unbound as `Class.method(receiver, ...)`.
+
+        Contract parameter indices exclude the bound receiver, so the leading positional
+        argument of an unbound call is the instance and must be skipped.
+        """
+        if not summary.takes_receiver or not isinstance(call.func, ast.Attribute):
+            return 0
+        receiver = call.func.value
+        if not isinstance(receiver, ast.Name):
+            return 0
+        class_ref = self._class_of_name(receiver.id, caller_mod)
+        if class_ref is None:
+            return 0
+        callee_class = summary.qualname.split(".", 1)[0]
+        callee_mod = self.indexer.file_to_module.get(Path(summary.file_path).resolve())
+        return 1 if class_ref == (callee_class, callee_mod) else 0
+
     def _resolve_call_contract(
         self,
         caller_mod: str,
         value: ast.expr,
+        receivers: Optional[Dict[str, tuple[str, str]]] = None,
     ) -> Optional[tuple[str, FunctionSummary]]:
         """Return (callee module, contract) for a direct call expression, or None."""
         if not isinstance(value, ast.Call):
@@ -320,6 +374,9 @@ class CrossFileTaintEngine:
         if isinstance(value.func, ast.Name):
             call_name = value.func.id
         elif isinstance(value.func, ast.Attribute):
+            resolved_method = self._resolve_method_contract(value.func, caller_mod, receivers)
+            if resolved_method is not None:
+                return resolved_method
             call_name = value.func.attr
         else:
             return None
@@ -337,13 +394,94 @@ class CrossFileTaintEngine:
             return None
         return callee_mod, summary
 
+    def _resolve_method_contract(
+        self,
+        func: ast.Attribute,
+        caller_mod: str,
+        receivers: Optional[Dict[str, tuple[str, str]]],
+    ) -> Optional[tuple[str, FunctionSummary]]:
+        """Resolve `receiver.method(...)` against the owning class's contract.
+
+        FunctionSummarizer indexes methods under the qualified name 'Class.method', which a
+        call site never spells out, so the receiver's class must be recovered from the local
+        bindings, an inline construction, or the named class itself (unbound call). Returns
+        None when the receiver type is unknown, letting the caller fall back to bare names.
+        """
+        class_ref: Optional[tuple[str, str]] = None
+        if isinstance(func.value, ast.Name):
+            class_ref = (receivers or {}).get(func.value.id) or self._class_of_name(func.value.id, caller_mod)
+        elif isinstance(func.value, ast.Call):
+            class_ref = self._instantiated_class(func.value, caller_mod)
+        if class_ref is None:
+            return None
+
+        class_name, class_mod = class_ref
+        summary = self.contracts.get((class_mod, f"{class_name}.{func.attr}"))
+        if summary is None:
+            return None
+        return class_mod, summary
+
+    def _class_of_name(self, name: str, caller_mod: str) -> Optional[tuple[str, str]]:
+        """(class name, defining module) when `name` resolves to an indexed class."""
+        symbol_def = self.indexer.resolve_symbol(caller_mod, name)
+        if symbol_def is None or symbol_def.kind != "class":
+            return None
+        class_mod = self.indexer.file_to_module.get(Path(symbol_def.file_path).resolve())
+        if class_mod is None:
+            return None
+        return symbol_def.name, class_mod
+
+    def _instantiated_class(
+        self,
+        call: ast.Call,
+        caller_mod: str,
+    ) -> Optional[tuple[str, str]]:
+        """Class of a freshly built object: `ClassName(...).method()`."""
+        ctor = call.func
+        if not isinstance(ctor, ast.Name):
+            return None
+        return self._class_of_name(ctor.id, caller_mod)
+
+    def _instance_bindings(
+        self,
+        caller_mod: str,
+        caller_func: str,
+        func_node: ast.AST,
+    ) -> Dict[str, tuple[str, str]]:
+        """Map receiver identifiers to (class name, defining module) inside one function.
+
+        Collects `var = ClassName(...)` bindings in source order (a later rebinding wins) and,
+        for methods, the implicit `self`/`cls` receiver derived from the qualified caller name.
+        """
+        bindings: Dict[str, tuple[str, str]] = {}
+        if "." in caller_func:
+            owning_class = (caller_func.split(".", 1)[0], caller_mod)
+            bindings["self"] = owning_class
+            bindings["cls"] = owning_class
+
+        for node in _ordered_nodes(func_node, skip_scopes=True):
+            if not isinstance(node, ast.Assign) or not isinstance(node.value, ast.Call):
+                continue
+            ctor = node.value.func
+            if not isinstance(ctor, ast.Name):
+                continue
+            class_ref = self._class_of_name(ctor.id, caller_mod)
+            if class_ref is None:
+                continue
+            for target in node.targets:
+                if isinstance(target, ast.Name):
+                    bindings[target.id] = class_ref
+
+        return bindings
+
     def _resolve_call_summary(
         self,
         caller_mod: str,
         value: ast.expr,
+        receivers: Optional[Dict[str, tuple[str, str]]] = None,
     ) -> Optional[FunctionSummary]:
         """Return the contract for a direct call expression, or None if unresolved."""
-        resolved = self._resolve_call_contract(caller_mod, value)
+        resolved = self._resolve_call_contract(caller_mod, value, receivers)
         return resolved[1] if resolved else None
 
     def _returns_tainted_arg(
@@ -352,9 +490,10 @@ class CrossFileTaintEngine:
         param_names: List[str],
         tainted_returns: Set[int],
         tainted_vars: Set[str],
+        arg_offset: int = 0,
     ) -> bool:
         """True when an argument in a taint-propagating parameter position is tainted."""
-        bound = self._bind_call_args(value, param_names)
+        bound = self._bind_call_args(value, param_names, arg_offset)
         for param_idx in sorted(tainted_returns):
             arg = bound.get(param_idx)
             if arg is None:
@@ -371,32 +510,18 @@ class CrossFileTaintEngine:
         caller_func_name: str,
         call: ast.Call,
         tainted_vars: set[str],
+        receivers: Dict[str, tuple[str, str]],
     ) -> None:
-        call_name = ""
-        if isinstance(call.func, ast.Name):
-            call_name = call.func.id
-        elif isinstance(call.func, ast.Attribute):
-            call_name = call.func.attr
-
-        if not call_name:
+        # Resolve callee symbol and contract (module-level call or class instance method)
+        resolved = self._resolve_call_contract(caller_mod, call, receivers)
+        if not resolved:
             return
-
-        # Resolve callee symbol
-        symbol_def = self.indexer.resolve_symbol(caller_mod, call_name)
-        if not symbol_def:
-            return
-
-        # Lookup contract
-        callee_mod = self.indexer.file_to_module.get(Path(symbol_def.file_path).resolve())
-        if not callee_mod:
-            return
-
-        summary = self.contracts.get((callee_mod, symbol_def.name))
-        if not summary:
-            return
+        callee_mod, summary = resolved
 
         # Check if caller passed tainted arguments into callee's sink parameters
-        for arg_idx, arg in sorted(self._bind_call_args(call, summary.params).items()):
+        for arg_idx, arg in sorted(
+            self._bind_call_args(call, summary.params, self._receiver_offset(caller_mod, call, summary)).items()
+        ):
             arg_repr = ast.unparse(arg) if hasattr(ast, "unparse") else ""
             is_tainted_arg = any(t in arg_repr for t in tainted_vars) or any(src in arg_repr for src in TAINT_SOURCE_PATTERNS)
 
