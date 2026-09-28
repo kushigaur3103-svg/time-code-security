@@ -158,6 +158,95 @@ class RuleRegistry:
 # CWE-89 (SQL Injection) Pilot Rule Implementation
 # ==============================================================================
 
+# `execute` is also an ordinary method name in first-party code, so matching it by name
+# alone reports any helper that happens to be called `execute`. A call only enters the SQL
+# family when its receiver names a database role/driver, or when an argument literally
+# reads as a statement.
+_EXECUTE_FAMILY = frozenset({
+    "execute", "executemany", "executescript", "execute_values", "execute_batch",
+})
+
+_DB_RECEIVER_TOKENS = frozenset({
+    "cursor", "cursors", "crsr", "cur", "conn", "conns", "con", "cnx", "connection",
+    "connections", "connect", "engine", "engines", "session", "sessions", "sess",
+    "db", "dbs", "dbh", "dbapi", "database", "sqlite", "sqlite3", "psycopg", "psycopg2",
+    "psycopg3", "mysql", "mysqldb", "pymysql", "oracle", "oracledb", "sqlalchemy",
+    "asyncpg", "aiosqlite", "pymssql", "pyodbc", "django", "peewee", "tortoise",
+})
+
+_SQL_STATEMENT_PREFIXES = (
+    "select", "insert", "update", "delete", "with", "replace", "merge",
+    "create", "drop", "alter", "truncate", "begin", "commit", "rollback", "set",
+)
+
+
+def _receiver_tokens(node: ast.AST, candidate: str) -> Set[str]:
+    """Identifier tokens naming the receiver of a call, plus the spelling's own lead parts.
+
+    The dotted parts of the matched name are included because a canonicalised spelling such
+    as `sqlite3.Cursor.execute` carries driver evidence the AST receiver alone cannot show.
+    Tokens split on `.` and `_`, so `test_conn` yields {test, conn} and matches while
+    `local_lib` yields {local, lib} and does not.
+    """
+    tokens: Set[str] = set()
+    for piece in candidate.split(".")[:-1]:
+        tokens.update(token for token in piece.lower().split("_") if token)
+
+    current = node.func.value if isinstance(node, ast.Call) and isinstance(node.func, ast.Attribute) else None
+    for _ in range(12):
+        if current is None:
+            break
+        if isinstance(current, ast.Name):
+            spelling, current = current.id, None
+        elif isinstance(current, ast.Attribute):
+            spelling, current = current.attr, current.value
+        elif isinstance(current, ast.Call):
+            spelling, current = "", current.func
+        elif isinstance(current, ast.Subscript):
+            spelling, current = "", current.value
+        else:
+            break
+        tokens.update(token for token in spelling.lower().split("_") if token)
+
+    return tokens
+
+
+def _has_sql_shaped_argument(node: ast.AST) -> bool:
+    """True when an argument of the call contains literal text that reads as a statement."""
+    if not isinstance(node, ast.Call):
+        return False
+    values = [*node.args, *(keyword.value for keyword in node.keywords)]
+    for value in values:
+        for part in ast.walk(value):
+            if isinstance(part, ast.JoinedStr):
+                chunks = [
+                    chunk.value for chunk in part.values
+                    if isinstance(chunk, ast.Constant) and isinstance(chunk.value, str)
+                ]
+            elif isinstance(part, ast.Constant) and isinstance(part.value, str):
+                chunks = [part.value]
+            else:
+                continue
+            for chunk in chunks:
+                head = chunk.strip().split(" ", 1)[0].lower().rstrip("(")
+                if head in _SQL_STATEMENT_PREFIXES:
+                    return True
+    return False
+
+
+def _is_database_execute_call(node: ast.AST, candidate: str) -> bool:
+    """Whether an execute-family match is a database call, not a same-named helper."""
+    if isinstance(node, ast.Call) and isinstance(node.func, ast.Attribute):
+        method = node.func.attr.lower()
+    else:
+        method = candidate.rsplit(".", 1)[-1].lower()
+    if method not in _EXECUTE_FAMILY:
+        return True
+    if _receiver_tokens(node, candidate) & _DB_RECEIVER_TOKENS:
+        return True
+    return _has_sql_shaped_argument(node)
+
+
 def _cwe89_sink_matcher(node: ast.AST, name: str, canon_name: Optional[str] = None) -> bool:
     """Matches method calls for SQL execution (execute, raw, extra, RawSQL)."""
     target_names = {"execute", "raw", "extra", "RawSQL"}
@@ -166,10 +255,12 @@ def _cwe89_sink_matcher(node: ast.AST, name: str, canon_name: Optional[str] = No
     for candidate in (name, canon_name):
         if candidate:
             if candidate in target_names or any(candidate.endswith(f".{t}") for t in target_names):
-                return True
+                if _is_database_execute_call(node, candidate):
+                    return True
     if isinstance(node, ast.Call):
         if isinstance(node.func, ast.Attribute) and node.func.attr in target_names:
-            return True
+            if _is_database_execute_call(node, name or node.func.attr):
+                return True
         if isinstance(node.func, ast.Name) and node.func.id in target_names:
             return True
         if isinstance(node.func, ast.Attribute) and node.func.attr == "execute":
