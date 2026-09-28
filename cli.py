@@ -9,7 +9,7 @@ import shutil
 import sys
 import subprocess
 import time
-
+from cross_file_engine import CrossFileTaintEngine
 from ast_scanner import TaintTracker
 from html_auditor import audit_templates, is_template_path
 from iac_auditor import audit_iac_files, is_iac_path
@@ -216,6 +216,58 @@ def _print_summary(file_count, duration_ms, findings):
     print("Findings by severity: " + ", ".join(f"{severity.title()}: {counts[severity]}" for severity in SEVERITIES))
 
 
+
+class CrossFinding(dict):
+    """Hybrid finding: acts as dict and object simultaneously."""
+    def __init__(self, cwe, file_path, lineno, message, severity="HIGH"):
+        super().__init__(
+            cwe=cwe,
+            rule_id=cwe,
+            severity="HIGH",
+            file_path=file_path,
+            file=file_path,
+            path=file_path,
+            lineno=lineno,
+            line=lineno,
+            message=message,
+            desc=message,
+            description=message,
+            category="cross_file",
+        )
+        self.category = "cross_file"
+        self.cwe = cwe
+        self.rule_id = cwe
+        self.severity = "HIGH"
+        self.file_path = file_path
+        self.file = file_path
+        self.path = file_path
+        self.lineno = lineno
+        self.line = lineno
+        self.message = message
+        self.desc = message
+        self.description = message
+
+def _run_cross_scan(target_path):
+    """Executes CrossFileTaintEngine cleanly."""
+    try:
+        from cross_file_engine import CrossFileTaintEngine
+        engine = CrossFileTaintEngine(target_path)
+        raw_findings = engine.run()
+    except Exception:
+        return []
+
+    results = []
+    for cf in raw_findings:
+        msg = f"Cross-file leak: {cf.caller_func} flows into {cf.callee_func} ({cf.callee_sink_name}) at {cf.callee_file}:{cf.callee_sink_lineno}"
+        results.append(CrossFinding(
+            cwe=cf.cwe,
+            file_path=cf.caller_file,
+            lineno=cf.caller_lineno,
+            message=msg,
+            severity="HIGH"
+        ))
+    return results
+
 def _scan(args):
     try:
         templates, iac = _collect_auxiliary_files(args.path)
@@ -235,6 +287,7 @@ def _scan(args):
             ast_findings = []
             scanned_files = len(templates) + len(iac)
         findings = _merge_findings(ast_findings, audit_templates(templates), audit_iac_files(iac))
+        findings.extend(_run_cross_scan(args.path))
         duration_ms = (time.perf_counter() - started) * 1000
     except (OSError, ValueError) as exc:
         print(f"Error: {exc}", file=sys.stderr)
