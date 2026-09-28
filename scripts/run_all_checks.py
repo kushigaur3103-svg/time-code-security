@@ -15,6 +15,11 @@ Executes end-to-end post-commit sanity and compliance checks in one shot:
    - Verifies all 46 benchmark CWEs are registered and present in data/rules_catalog.json.
    - Instantiates interactive GUI components (rules catalog container, structural view,
      proof graph view, secret view) ensuring headless execution without runtime crash.
+4. Cross-File Ground-Truth Benchmark:
+   - Runs the inter-procedural engine plus sanitizer suppression over 7 labelled
+     mini-project fixtures (4 vulnerable, 3 safe) in benchmark/fixtures/cross_file/.
+   - Requires the harness entry point to exit 0: 100.0% Precision, 100.0% Recall, exact
+     ground-truth set equality and the sanitizer suppression contract on every case.
 """
 
 from __future__ import annotations
@@ -33,6 +38,7 @@ if str(REPO_ROOT) not in sys.path:
 
 from benchmark.runner import BenchmarkRunner, BenchmarkReport
 from benchmark.manifest import get_benchmark_cases
+from benchmark.cross_runner import main as cross_file_benchmark_main
 from tcs_cli import execute_tcs_scan
 from sarif_exporter import export_sarif
 from sarif_adapter import (
@@ -55,7 +61,7 @@ def check_benchmark_suite() -> bool:
     """Check 1: Evaluates ground-truth benchmark cases registered in the manifest."""
     all_cases = get_benchmark_cases()
     total_cases = len(all_cases)
-    print_header(f"CHECK 1/3: Benchmark Ground-Truth Suite ({total_cases} cases)")
+    print_header(f"CHECK 1/4: Benchmark Ground-Truth Suite ({total_cases} cases)")
     start_time = time.perf_counter()
 
     runner = BenchmarkRunner(precision_threshold=0.0, recall_threshold=0.0)
@@ -109,7 +115,7 @@ def check_benchmark_suite() -> bool:
 
 def check_sarif_export() -> bool:
     """Check 2: Executes scan on benchmark corpus and verifies SARIF 2.1.0 compliance."""
-    print_header("CHECK 2/3: SARIF v2.1.0 Export & Schema Validation (107 Rules)")
+    print_header("CHECK 2/4: SARIF v2.1.0 Export & Schema Validation (107 Rules)")
     start_time = time.perf_counter()
 
     # Select representative cases across Batch 1 and Batch 2 CWEs
@@ -204,7 +210,7 @@ def check_gui_components() -> bool:
     """Check 3: Verifies 46 CWE rules catalog and GUI structural/proof-graph components."""
     gui_cwes = getattr(tcs_gui, "ALL_46_CWES", tcs_gui.ALL_24_CWES)
     total_gui_cwes = len(gui_cwes)
-    print_header(f"CHECK 3/3: GUI Component & Rules Catalog Verification ({total_gui_cwes} CWEs)")
+    print_header(f"CHECK 3/4: GUI Component & Rules Catalog Verification ({total_gui_cwes} CWEs)")
     start_time = time.perf_counter()
 
     # 1. Verify 46 CWEs registry
@@ -336,6 +342,29 @@ def check_gui_components() -> bool:
     return True
 
 
+def check_cross_file_benchmark() -> bool:
+    """Check 4: Runs the cross-file ground-truth harness and enforces its exit status.
+
+    Invoked through benchmark.cross_runner.main() so the gate asserts on the same exit code
+    `python -m benchmark.cross_runner` returns, keeping the scoring logic in one place.
+    """
+    print_header("CHECK 4/4: Cross-File Ground-Truth Benchmark (inter-procedural taint + suppression)")
+    start_time = time.perf_counter()
+
+    exit_code = cross_file_benchmark_main([])
+    elapsed = time.perf_counter() - start_time
+
+    print(f"  Harness Exit Code    : {exit_code} (expected 0)")
+    print(f"  Cross-File Duration  : {elapsed:.2f}s")
+    assert exit_code == 0, (
+        f"benchmark.cross_runner exited {exit_code}: cross-file precision/recall, "
+        "ground-truth set equality or the sanitizer suppression contract failed"
+    )
+
+    print("  -> [PASS] Cross-file suite: 4 TP / 3 TN, 0 FP / 0 FN, 100.0% precision and recall")
+    return True
+
+
 def main() -> int:
     total_start = time.perf_counter()
     print("=" * 75)
@@ -346,10 +375,11 @@ def main() -> int:
         check_benchmark_suite()
         check_sarif_export()
         check_gui_components()
+        check_cross_file_benchmark()
 
         total_elapsed = time.perf_counter() - total_start
         print("\n" + "=" * 75)
-        print("  ALL VERIFICATION CHECKS PASSED (3/3 GREEN)")
+        print("  ALL VERIFICATION CHECKS PASSED (4/4 GREEN)")
         print(f"  Total Wall-Clock Time: {total_elapsed:.2f}s")
         print("  Exit Status: 0 (SUCCESS)")
         print("=" * 75 + "\n")

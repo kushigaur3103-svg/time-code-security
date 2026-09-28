@@ -18,7 +18,7 @@ import sys
 import time
 from dataclasses import dataclass, field
 from pathlib import Path
-from typing import Dict, List, Set, Tuple
+from typing import Dict, List, Optional, Set, Tuple
 
 REPO_ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 if REPO_ROOT not in sys.path:
@@ -304,7 +304,9 @@ class CrossFileBenchmarkRunner:
         return [border, line(headers), border, *(line(row) for row in rows), border]
 
 
-def main() -> int:
+def main(argv: Optional[List[str]] = None) -> int:
+    """Entry point. argv defaults to the process arguments, so `python -m benchmark.cross_runner`
+    is unchanged while callers such as scripts/run_all_checks.py can invoke it in-process."""
     try:
         sys.stdout.reconfigure(encoding="utf-8")
     except Exception:
@@ -312,7 +314,7 @@ def main() -> int:
 
     parser = argparse.ArgumentParser(description="TCS Cross-File Ground-Truth Benchmark Harness")
     parser.add_argument("--verbose", "-v", action="store_true", help="Print per-case finding sets")
-    args = parser.parse_args()
+    args = parser.parse_args(argv)
 
     if not FIXTURE_ROOT.is_dir():
         print(f"Fixture root missing: {FIXTURE_ROOT}", file=sys.stderr)
