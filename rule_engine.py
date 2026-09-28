@@ -248,8 +248,8 @@ def _is_database_execute_call(node: ast.AST, candidate: str) -> bool:
 
 
 def _cwe89_sink_matcher(node: ast.AST, name: str, canon_name: Optional[str] = None) -> bool:
-    """Matches method calls for SQL execution (execute, raw, extra, RawSQL)."""
-    target_names = {"execute", "raw", "extra", "RawSQL"}
+    """Matches method calls for SQL execution (execute, executemany, raw, extra, RawSQL)."""
+    target_names = {"execute", "executemany", "raw", "extra", "RawSQL"}
     if "CWE-89" in DECLARATIVE_RULES_BY_CWE:
         target_names = target_names | {str(s) for s in DECLARATIVE_RULES_BY_CWE["CWE-89"].get("sinks", []) if s}
     for candidate in (name, canon_name):
@@ -272,6 +272,21 @@ def _cwe89_sink_matcher(node: ast.AST, name: str, canon_name: Optional[str] = No
     return False
 
 
+def _operation_slot(node: ast.Call) -> Optional[ast.expr]:
+    """The statement slot of an execute-family call, positional first or by driver keyword."""
+    if node.args:
+        return node.args[0]
+    for keyword in node.keywords:
+        if keyword.arg in ("operation", "sql", "statement", "query"):
+            return keyword.value
+    return None
+
+
+def _is_static_statement(expr: Optional[ast.expr]) -> bool:
+    """A plain string literal: there is nothing left for an argument to interpolate into."""
+    return isinstance(expr, ast.Constant) and isinstance(expr.value, str)
+
+
 def _cwe89_safety_filter(node: ast.Call, sink_name: str) -> bool:
     """
     Exempts parameterized queries: calls to .execute with > 1 argument or keyword bindings,
@@ -281,6 +296,14 @@ def _cwe89_safety_filter(node: ast.Call, sink_name: str) -> bool:
         if sink_name.endswith(".execute") or sink_name == "execute":
             if len(node.args) > 1 or getattr(node, "keywords", []):
                 return True
+        # DB-API slot semantics for the bulk family: executemany(operation, seq_of_parameters)
+        # binds everything past the operation slot through the driver, so the call is only
+        # injectable through slot 0. A static statement there means no argument can contribute
+        # SQL text, which is why the plain `.execute` exemption on argument count is not reused.
+        if sink_name.rsplit(".", 1)[-1] in (_EXECUTE_FAMILY - {"execute"}):
+            if len(node.args) > 1 or getattr(node, "keywords", []):
+                if _is_static_statement(_operation_slot(node)):
+                    return True
         if sink_name.endswith(".raw") or sink_name == "raw":
             if len(node.args) > 1 or any(kw.arg == "params" for kw in getattr(node, "keywords", [])):
                 return True

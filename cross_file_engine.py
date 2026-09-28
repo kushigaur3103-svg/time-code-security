@@ -179,7 +179,7 @@ class CrossFileTaintEngine:
                 self._bind_call_args(
                     call,
                     callee_summary.params,
-                    self._receiver_offset(caller_mod, call, callee_summary),
+                    self._receiver_offset(caller_mod, call, callee_summary, receivers),
                 ).items()
             ):
                 if arg_idx in neutralized:
@@ -319,7 +319,7 @@ class CrossFileTaintEngine:
                     else:
                         is_derived = self._returns_tainted_arg(
                             stmt.value, summary.params, summary.tainted_returns, tainted_vars,
-                            self._receiver_offset(caller_mod, stmt.value, summary),
+                            self._receiver_offset(caller_mod, stmt.value, summary, receivers),
                         )
                 else:
                     is_derived = any(t_var in rhs_repr for t_var in tainted_vars)
@@ -367,7 +367,13 @@ class CrossFileTaintEngine:
                 bound[param_to_idx[kw.arg]] = kw.value
         return bound
 
-    def _receiver_offset(self, caller_mod: str, call: ast.Call, summary: FunctionSummary) -> int:
+    def _receiver_offset(
+        self,
+        caller_mod: str,
+        call: ast.Call,
+        summary: FunctionSummary,
+        receivers: Optional[Dict[str, tuple[str, str]]] = None,
+    ) -> int:
         """1 when the callee is a method invoked unbound as `Class.method(receiver, ...)`.
 
         Contract parameter indices exclude the bound receiver, so the leading positional
@@ -378,12 +384,19 @@ class CrossFileTaintEngine:
         receiver = call.func.value
         if not isinstance(receiver, ast.Name):
             return 0
+        # A name already bound to an instance marks a bound call site; only a spelling that
+        # resolves to a class symbol can hand the receiver over as an explicit first argument.
+        if receivers and receiver.id in receivers:
+            return 0
         class_ref = self._class_of_name(receiver.id, caller_mod)
         if class_ref is None:
             return 0
-        callee_class = summary.qualname.split(".", 1)[0]
-        callee_mod = self.indexer.file_to_module.get(Path(summary.file_path).resolve())
-        return 1 if class_ref == (callee_class, callee_mod) else 0
+        # The contract may be declared on a base class, so comparing the receiver spelling with
+        # the declaring class name loses every inherited unbound call. Re-resolving the
+        # attribute on the receiver class and requiring the very same contract object proves
+        # the call goes through that class, whether the method is owned or inherited.
+        resolved = self._resolve_inherited_method(class_ref, call.func.attr)
+        return 1 if resolved is not None and resolved[1] is summary else 0
 
     def _resolve_call_contract(
         self,
@@ -747,7 +760,7 @@ class CrossFileTaintEngine:
         # Check if caller passed tainted arguments into callee's sink parameters
         neutralized = self._decorator_sanitized_params(callee_mod, summary)
         for arg_idx, arg in sorted(
-            self._bind_call_args(call, summary.params, self._receiver_offset(caller_mod, call, summary)).items()
+            self._bind_call_args(call, summary.params, self._receiver_offset(caller_mod, call, summary, receivers)).items()
         ):
             if arg_idx in neutralized:
                 continue
