@@ -9,6 +9,7 @@ import shutil
 import sys
 import subprocess
 import time
+import traceback
 from cross_file_engine import CrossFileTaintEngine
 from ast_scanner import TaintTracker
 from html_auditor import audit_templates, is_template_path
@@ -310,13 +311,19 @@ class CrossFinding(dict):
         self.description = message
 
 def _run_cross_scan(target_path):
-    """Executes CrossFileTaintEngine cleanly. Returns (findings, engine-or-None)."""
+    """Executes CrossFileTaintEngine. Returns (findings, engine).
+
+    An engine failure is fatal rather than empty: swallowing the exception made a broken
+    cross-file analysis indistinguishable from a clean scan, silently dropping both the
+    cross-file findings and the sanitizer suppression that depends on the engine.
+    """
     try:
-        from cross_file_engine import CrossFileTaintEngine
         engine = CrossFileTaintEngine(target_path)
         raw_findings = engine.run()
-    except Exception:
-        return [], None
+    except Exception as exc:
+        print(f"[FATAL] CrossFileTaintEngine crashed: {exc}", file=sys.stderr)
+        traceback.print_exc()
+        raise SystemExit(1)
 
     results = []
     for cf in raw_findings:
@@ -341,16 +348,19 @@ def _suppress_cross_file_sanitized(findings, engine):
     The AST scanner has no visibility into callee contracts, so `cmd = format_command(x)`
     followed by `os.system(cmd)` is reported as injectable even when the helper escapes its
     argument. Cross-file findings are left untouched: that engine already honours contracts.
+
+    A failure here is fatal, not ignored: returning the findings unchanged would silently
+    re-introduce every sanitizer false positive and still report a successful scan.
     """
-    if engine is None:
-        return findings
     try:
         sanitized_sites = {
             (_normalize_compare_path(file_path), lineno)
             for file_path, lineno in engine.sanitized_sink_locations()
         }
-    except Exception:
-        return findings
+    except Exception as exc:
+        print(f"[FATAL] CrossFileTaintEngine sanitizer analysis crashed: {exc}", file=sys.stderr)
+        traceback.print_exc()
+        raise SystemExit(1)
     if not sanitized_sites:
         return findings
 
