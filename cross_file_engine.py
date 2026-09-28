@@ -130,7 +130,7 @@ class CrossFileTaintEngine:
             if not callee_summary.param_sinks:
                 continue
 
-            for arg_idx, arg in enumerate(call.args):
+            for arg_idx, arg in sorted(self._bind_call_args(call, callee_summary.params).items()):
                 if not isinstance(arg, ast.Name):
                     continue
                 caller_param_idx = param_index.get(arg.id)
@@ -252,7 +252,7 @@ class CrossFileTaintEngine:
                         is_derived = False
                     else:
                         is_derived = self._returns_tainted_arg(
-                            stmt.value, summary.tainted_returns, tainted_vars
+                            stmt.value, summary.params, summary.tainted_returns, tainted_vars
                         )
                 else:
                     is_derived = any(t_var in rhs_repr for t_var in tainted_vars)
@@ -271,6 +271,24 @@ class CrossFileTaintEngine:
                     call_node,
                     tainted_vars,
                 )
+
+    def _bind_call_args(
+        self,
+        call: ast.Call,
+        param_names: List[str],
+    ) -> Dict[int, ast.AST]:
+        """Maps parameter index -> argument AST expression for both args and kwargs."""
+        bound: Dict[int, ast.AST] = {}
+        # Positional
+        for idx, arg in enumerate(call.args):
+            if idx < len(param_names):
+                bound[idx] = arg
+        # Keywords
+        param_to_idx = {name: idx for idx, name in enumerate(param_names)}
+        for kw in call.keywords:
+            if kw.arg and kw.arg in param_to_idx:
+                bound[param_to_idx[kw.arg]] = kw.value
+        return bound
 
     def _resolve_call_contract(
         self,
@@ -310,17 +328,20 @@ class CrossFileTaintEngine:
         resolved = self._resolve_call_contract(caller_mod, value)
         return resolved[1] if resolved else None
 
-    @staticmethod
     def _returns_tainted_arg(
+        self,
         value: ast.Call,
+        param_names: List[str],
         tainted_returns: Set[int],
         tainted_vars: Set[str],
     ) -> bool:
         """True when an argument in a taint-propagating parameter position is tainted."""
-        for param_idx in tainted_returns:
-            if param_idx >= len(value.args):
+        bound = self._bind_call_args(value, param_names)
+        for param_idx in sorted(tainted_returns):
+            arg = bound.get(param_idx)
+            if arg is None:
                 continue
-            arg_names = {n.id for n in ast.walk(value.args[param_idx]) if isinstance(n, ast.Name)}
+            arg_names = {n.id for n in ast.walk(arg) if isinstance(n, ast.Name)}
             if arg_names & tainted_vars:
                 return True
         return False
@@ -357,7 +378,7 @@ class CrossFileTaintEngine:
             return
 
         # Check if caller passed tainted arguments into callee's sink parameters
-        for arg_idx, arg in enumerate(call.args):
+        for arg_idx, arg in sorted(self._bind_call_args(call, summary.params).items()):
             arg_repr = ast.unparse(arg) if hasattr(ast, "unparse") else ""
             is_tainted_arg = any(t in arg_repr for t in tainted_vars) or any(src in arg_repr for src in TAINT_SOURCE_PATTERNS)
 
