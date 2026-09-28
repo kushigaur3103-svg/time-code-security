@@ -13,7 +13,7 @@ from pathlib import Path
 from typing import Dict, List, Optional, Set
 
 from symbol_indexer import GlobalSymbolIndex, SymbolDefinition
-from function_summarizer import FunctionSummarizer, FunctionSummary
+from function_summarizer import FunctionSummarizer, FunctionSummary, ParamSinkEdge
 
 
 # Common web entrypoint sources
@@ -31,6 +31,17 @@ def _ordered_nodes(root: ast.AST):
         node = stack.pop()
         yield node
         stack.extend(reversed(list(ast.iter_child_nodes(node))))
+
+
+def _contracted_functions(tree: ast.AST):
+    """Yield (node, qualname) pairs using the same keys FunctionSummarizer indexes by."""
+    for stmt in tree.body:
+        if isinstance(stmt, (ast.FunctionDef, ast.AsyncFunctionDef)):
+            yield stmt, stmt.name
+        elif isinstance(stmt, ast.ClassDef):
+            for item in stmt.body:
+                if isinstance(item, (ast.FunctionDef, ast.AsyncFunctionDef)):
+                    yield item, f"{stmt.name}.{item.name}"
 
 
 @dataclass(slots=True)
@@ -55,12 +66,16 @@ class CrossFileTaintEngine:
         self.summarizer: Optional[FunctionSummarizer] = None
         self.contracts: dict[tuple[str, str], FunctionSummary] = {}
         self.findings: list[CrossFileFinding] = []
+        # ParamSinkEdge carries no file field, so transitively lifted edges record the
+        # module that actually owns the sink here: (mod, qualname, param_idx, sink, lineno) -> path.
+        self.sink_origins: dict[tuple[str, str, int, str, int], str] = {}
 
     def run(self) -> list[CrossFileFinding]:
         # 1. Build Index & Contracts
         self.indexer.build()
         self.summarizer = FunctionSummarizer(self.indexer)
         self.contracts = self.summarizer.build_all_summaries()
+        self._propagate_transitive_sink_contracts()
 
         # 2. Analyze Callers across all modules
         for mod_name, mod_idx in self.indexer.modules.items():
@@ -70,6 +85,81 @@ class CrossFileTaintEngine:
             self._analyze_module_calls(mod_name, mod_idx.file_path, tree)
 
         return self.findings
+
+    def _propagate_transitive_sink_contracts(self) -> None:
+        """Fixed-point lift of callee sink contracts into pass-through callers.
+
+        A function that forwards one of its own parameters straight into a callee argument
+        inherits that callee's sink obligations, so a 3-layer chain (controller -> service
+        -> repo) becomes visible from the outermost call site. Only direct parameter
+        forwarding propagates, which keeps the lift alias-free and terminating.
+        """
+        while True:
+            changed = False
+            for mod_name, mod_idx in self.indexer.modules.items():
+                tree = self.indexer._ast_cache.get(mod_name)
+                if not tree:
+                    continue
+                for func_node, qualname in _contracted_functions(tree):
+                    summary = self.contracts.get((mod_name, qualname))
+                    if summary is None or not summary.params:
+                        continue
+                    if self._lift_callee_sinks(mod_name, summary, func_node):
+                        changed = True
+            if not changed:
+                return
+
+    def _lift_callee_sinks(
+        self,
+        caller_mod: str,
+        summary: FunctionSummary,
+        func_node: ast.AST,
+    ) -> bool:
+        param_index = {name: idx for idx, name in enumerate(summary.params)}
+        known = {
+            (edge.param_idx, edge.sink_cwe, edge.sink_name, edge.lineno)
+            for edge in summary.param_sinks
+        }
+        added = False
+
+        for call in (n for n in ast.walk(func_node) if isinstance(n, ast.Call)):
+            resolved = self._resolve_call_contract(caller_mod, call)
+            if resolved is None:
+                continue
+            callee_mod, callee_summary = resolved
+            if not callee_summary.param_sinks:
+                continue
+
+            for arg_idx, arg in enumerate(call.args):
+                if not isinstance(arg, ast.Name):
+                    continue
+                caller_param_idx = param_index.get(arg.id)
+                if caller_param_idx is None:
+                    continue
+
+                for edge in callee_summary.param_sinks:
+                    if edge.param_idx != arg_idx:
+                        continue
+                    key = (caller_param_idx, edge.sink_cwe, edge.sink_name, edge.lineno)
+                    if key in known:
+                        continue
+                    known.add(key)
+                    summary.param_sinks.append(ParamSinkEdge(
+                        param_idx=caller_param_idx,
+                        param_name=summary.params[caller_param_idx],
+                        sink_cwe=edge.sink_cwe,
+                        sink_name=edge.sink_name,
+                        lineno=edge.lineno,
+                    ))
+                    origin_key = (callee_mod, callee_summary.qualname,
+                                  edge.param_idx, edge.sink_name, edge.lineno)
+                    self.sink_origins[(
+                        caller_mod, summary.qualname, caller_param_idx,
+                        edge.sink_name, edge.lineno,
+                    )] = self.sink_origins.get(origin_key, callee_summary.file_path)
+                    added = True
+
+        return added
 
     def sanitized_sink_locations(self) -> Set[tuple[str, int]]:
         """Call sites whose locally-assigned arguments were all neutralized by a
@@ -182,12 +272,12 @@ class CrossFileTaintEngine:
                     tainted_vars,
                 )
 
-    def _resolve_call_summary(
+    def _resolve_call_contract(
         self,
         caller_mod: str,
         value: ast.expr,
-    ) -> Optional[FunctionSummary]:
-        """Return the contract for a direct call expression, or None if unresolved."""
+    ) -> Optional[tuple[str, FunctionSummary]]:
+        """Return (callee module, contract) for a direct call expression, or None."""
         if not isinstance(value, ast.Call):
             return None
 
@@ -206,7 +296,19 @@ class CrossFileTaintEngine:
         if not callee_mod:
             return None
 
-        return self.contracts.get((callee_mod, symbol_def.name))
+        summary = self.contracts.get((callee_mod, symbol_def.name))
+        if summary is None:
+            return None
+        return callee_mod, summary
+
+    def _resolve_call_summary(
+        self,
+        caller_mod: str,
+        value: ast.expr,
+    ) -> Optional[FunctionSummary]:
+        """Return the contract for a direct call expression, or None if unresolved."""
+        resolved = self._resolve_call_contract(caller_mod, value)
+        return resolved[1] if resolved else None
 
     @staticmethod
     def _returns_tainted_arg(
@@ -269,7 +371,11 @@ class CrossFileTaintEngine:
                                 caller_file=caller_file,
                                 caller_lineno=getattr(call, "lineno", 0),
                                 caller_func=f"{caller_mod}.{caller_func_name}",
-                                callee_file=summary.file_path,
+                                callee_file=self.sink_origins.get(
+                                    (callee_mod, summary.qualname, sink.param_idx,
+                                     sink.sink_name, sink.lineno),
+                                    summary.file_path,
+                                ),
                                 callee_func=f"{callee_mod}.{summary.qualname}",
                                 callee_sink_name=sink.sink_name,
                                 callee_sink_lineno=sink.lineno,
