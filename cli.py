@@ -63,11 +63,18 @@ def _collect_files(scan_path):
         raise ValueError(f"No Python files found: {scan_path}")
 
     files = {}
+    skipped = 0
     for path in paths:
         try:
             files[_file_key(path, cwd)] = path.read_text(encoding="utf-8", errors="replace")
-        except OSError as exc:
-            raise OSError(f"Unable to read {path}: {exc}") from exc
+        except (OSError, ValueError, UnicodeDecodeError) as exc:
+            # A single unreadable file must not abort the scan of the whole tree.
+            skipped += 1
+            print(f"Warning: skipping unreadable file {path}: {type(exc).__name__}: {exc}",
+                  file=sys.stderr)
+    if skipped:
+        print(f"Warning: skipped {skipped} of {len(paths)} Python files; "
+              f"{len(files)} scanned.", file=sys.stderr)
     return files
 
 
@@ -499,6 +506,8 @@ def _scan(args):
         started = time.perf_counter()
         if files:
             tracker = TaintTracker(files=files)
+            for fpath, reason in sorted(tracker.skipped_files.items()):
+                print(f"Warning: skipping unparseable file {fpath}: {reason}", file=sys.stderr)
             _, _, edges = tracker.analyze()
             ast_findings = _findings_for(tracker, edges)
         else:

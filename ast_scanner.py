@@ -943,7 +943,9 @@ def _eval_static_constant(node, assignments_by_scope, scope_id="", lineno=0, vis
         visited.add(var_key)
         mod_name = scope_id.split(":")[0] if scope_id else ""
         curr = scope_id
-        while curr:
+        _walk_seen = set()
+        while curr and curr not in _walk_seen:
+            _walk_seen.add(curr)
             recs = assignments_by_scope.get((curr, node.id), [])
             if lineno:
                 recs = [r for r in recs if r.lineno <= lineno]
@@ -1061,6 +1063,7 @@ class TaintTracker:
         self.audit_all = audit_all
         self.modules: dict[str, ast.AST] = {}
         self.file_paths: dict[str, str] = {}
+        self.skipped_files: dict[str, str] = {}
         for fpath, code in self.files.items():
             mod_name = fpath.replace("\\\\", "/").replace(".py", "").replace("/", ".")
             if mod_name.endswith(".__init__"): mod_name = mod_name[:-9]
@@ -1071,8 +1074,10 @@ class TaintTracker:
                         child.parent = p
                 self.modules[mod_name] = tree
                 self.file_paths[mod_name] = fpath
-            except SyntaxError:
-                pass
+            except (SyntaxError, ValueError, UnicodeDecodeError) as exc:
+                # One malformed file must not remove every other module from the scan:
+                # ast.parse raises ValueError on embedded NUL bytes, which is not a SyntaxError.
+                self.skipped_files[fpath] = f"{type(exc).__name__}: {exc}"[:200]
         self.dead_node_ids: set = self._compute_dead_node_ids()
         self.imports = {m: {} for m in self.modules}
         self.sources: list[SecurityNode] = []
@@ -1170,7 +1175,9 @@ class TaintTracker:
         if isinstance(curr, ast.Name) and scope_id:
             current_scope = scope_id
             mod_name = scope_id.split(":")[0] if scope_id else ""
-            while current_scope:
+            _walk_seen = set()
+            while current_scope and current_scope not in _walk_seen:
+                _walk_seen.add(current_scope)
                 recs = self.assignments_by_scope.get((current_scope, curr.id), [])
                 if recs:
                     latest = recs[-1]
@@ -1238,7 +1245,9 @@ class TaintTracker:
             if var_key in visited:
                 return None
             visited.add(var_key)
-            while curr:
+            _walk_seen = set()
+            while curr and curr not in _walk_seen:
+                _walk_seen.add(curr)
                 recs = self.assignments_by_scope.get((curr, node.id), [])
                 if recs:
                     latest = [r for r in recs if not r.is_conditional]
@@ -1262,7 +1271,9 @@ class TaintTracker:
             return val
         if isinstance(node, ast.Name) and scope_id:
             enc_scope = scope_id
-            while enc_scope:
+            _walk_seen = set()
+            while enc_scope and enc_scope not in _walk_seen:
+                _walk_seen.add(enc_scope)
                 f_node = self.functions.get(enc_scope)
                 if f_node and any(a.arg == node.id for a in f_node.args.args):
                     param_names = [a.arg for a in f_node.args.args]
@@ -1306,7 +1317,9 @@ class TaintTracker:
                 visited.add(var_key)
                 current_scope = scope_id
                 found_record = None
-                while current_scope:
+                _walk_seen = set()
+                while current_scope and current_scope not in _walk_seen:
+                    _walk_seen.add(current_scope)
                     recs = self.assignments_by_scope.get((current_scope, node.id), [])
                     if recs:
                         uncond = [r for r in recs if not r.is_conditional]
@@ -1330,7 +1343,9 @@ class TaintTracker:
 
                 # Higher-order function parameter lookup (if node.id is a parameter of enclosing function)
                 enc_scope = scope_id
-                while enc_scope:
+                _walk_seen = set()
+                while enc_scope and enc_scope not in _walk_seen:
+                    _walk_seen.add(enc_scope)
                     f_node = self.functions.get(enc_scope)
                     if f_node and any(a.arg == node.id for a in f_node.args.args):
                         param_names = [a.arg for a in f_node.args.args]
@@ -1405,7 +1420,9 @@ class TaintTracker:
                         if func_cand in self.functions:
                             return f"{mod_name}.{key_str}"
                         curr = scope_id
-                        while curr:
+                        _walk_seen = set()
+                        while curr and curr not in _walk_seen:
+                            _walk_seen.add(curr)
                             recs = self.assignments_by_scope.get((curr, key_str), [])
                             if recs:
                                 uncond = [r for r in recs if not r.is_conditional]
@@ -1445,7 +1462,9 @@ class TaintTracker:
                     if func_cand in self.functions:
                         return f"{mod_name}.{key_str}"
                     curr = scope_id
-                    while curr:
+                    _walk_seen = set()
+                    while curr and curr not in _walk_seen:
+                        _walk_seen.add(curr)
                         recs = self.assignments_by_scope.get((curr, key_str), [])
                         if recs:
                             uncond = [r for r in recs if not r.is_conditional]
@@ -1479,7 +1498,9 @@ class TaintTracker:
                 comp_key = f"{base_var}[{key}]"
                 current_scope = scope_id
                 found_record = None
-                while current_scope:
+                _walk_seen = set()
+                while current_scope and current_scope not in _walk_seen:
+                    _walk_seen.add(current_scope)
                     recs = self.assignments_by_scope.get((current_scope, comp_key), [])
                     if recs:
                         uncond = [r for r in recs if not r.is_conditional]
@@ -1506,7 +1527,9 @@ class TaintTracker:
             if base_var:
                 current_scope = scope_id
                 found_record = None
-                while current_scope:
+                _walk_seen = set()
+                while current_scope and current_scope not in _walk_seen:
+                    _walk_seen.add(current_scope)
                     recs = self.assignments_by_scope.get((current_scope, base_var), [])
                     if recs:
                         uncond = [r for r in recs if not r.is_conditional]
@@ -1593,7 +1616,9 @@ class TaintTracker:
 
         mod_name = scope_id.split(":")[0] if scope_id else ""
         curr_scope = scope_id
-        while curr_scope:
+        _walk_seen = set()
+        while curr_scope and curr_scope not in _walk_seen:
+            _walk_seen.add(curr_scope)
             f_node = self.functions.get(curr_scope)
             if f_node:
                 all_args = [a.arg for a in f_node.args.args]
@@ -1642,7 +1667,9 @@ class TaintTracker:
                     return True
                 if isinstance(kw.value, ast.Name):
                     curr_scope = scope_id
-                    while curr_scope:
+                    _walk_seen = set()
+                    while curr_scope and curr_scope not in _walk_seen:
+                        _walk_seen.add(curr_scope)
                         recs = self.assignments_by_scope.get((curr_scope, kw.value.id), [])
                         for r in recs:
                             if isinstance(r.value_node, ast.Constant) and r.value_node.value is False:
@@ -1659,7 +1686,9 @@ class TaintTracker:
                                 if isinstance(r.value_node, ast.Constant) and r.value_node.value is False:
                                     return True
                     curr_scope = scope_id
-                    while curr_scope:
+                    _walk_seen = set()
+                    while curr_scope and curr_scope not in _walk_seen:
+                        _walk_seen.add(curr_scope)
                         recs = self.assignments_by_scope.get((curr_scope, attr_name), [])
                         for r in recs:
                             if isinstance(r.value_node, ast.Constant) and r.value_node.value is False:
@@ -1678,7 +1707,9 @@ class TaintTracker:
                                 return True
                 elif isinstance(kw.value, ast.Name):
                     curr_scope = scope_id
-                    while curr_scope:
+                    _walk_seen = set()
+                    while curr_scope and curr_scope not in _walk_seen:
+                        _walk_seen.add(curr_scope)
                         recs = self.assignments_by_scope.get((curr_scope, kw.value.id), [])
                         for r in recs:
                             if isinstance(r.value_node, ast.Dict):
@@ -1922,7 +1953,9 @@ class TaintTracker:
                         return True
         elif isinstance(expr, ast.Name) and scope_id:
             curr = scope_id
-            while curr:
+            _walk_seen = set()
+            while curr and curr not in _walk_seen:
+                _walk_seen.add(curr)
                 recs = self.assignments_by_scope.get((curr, expr.id), [])
                 for r in recs:
                     if self._is_html_construction_expr(r.value_node, curr, depth + 1, visited_nodes):
@@ -1955,7 +1988,9 @@ class TaintTracker:
         # 4. Check if receiver is a variable assigned from network / request input
         if isinstance(receiver, ast.Name) and scope_id:
             curr = scope_id
-            while curr:
+            _walk_seen = set()
+            while curr and curr not in _walk_seen:
+                _walk_seen.add(curr)
                 recs = self.assignments_by_scope.get((curr, receiver.id), [])
                 for r in recs:
                     if r.lineno <= lineno:
@@ -2019,7 +2054,9 @@ class TaintTracker:
         """Most recent (preferably unconditional) assignment of `name` in the scope chain."""
         current = scope_id
         mod_name = scope_id.split(":")[0] if scope_id else ""
-        while current:
+        _walk_seen = set()
+        while current and current not in _walk_seen:
+            _walk_seen.add(current)
             recs = self.assignments_by_scope.get((current, name), [])
             if before_lineno:
                 recs = [r for r in recs if r.lineno <= before_lineno]
@@ -2456,7 +2493,9 @@ class TaintTracker:
         if len(parts) > 1:
             method_attr = ".".join(parts[1:])
             curr = current_scope
-            while curr:
+            _walk_seen = set()
+            while curr and curr not in _walk_seen:
+                _walk_seen.add(curr)
                 recs = self.assignments_by_scope.get((curr, base_name), [])
                 if recs:
                     latest = recs[-1]
@@ -2513,7 +2552,9 @@ class TaintTracker:
 
     def _get_enclosing_class_scope(self, scope_id: str) -> Optional[str]:
         curr = scope_id
-        while curr:
+        _walk_seen = set()
+        while curr and curr not in _walk_seen:
+            _walk_seen.add(curr)
             if curr in self.classes:
                 return curr
             if "." in curr:
@@ -2530,7 +2571,9 @@ class TaintTracker:
     def _resolve_instance_class_scope(self, var_name: str, scope_id: str) -> Optional[str]:
         curr = scope_id
         mod_name = scope_id.split(":")[0] if scope_id else ""
-        while curr:
+        _walk_seen = set()
+        while curr and curr not in _walk_seen:
+            _walk_seen.add(curr)
             recs = self.assignments_by_scope.get((curr, var_name), [])
             if recs:
                 latest = recs[-1]
@@ -2611,6 +2654,9 @@ class TaintTracker:
         return TaintValue(state=TaintState.UNKNOWN, source_id=first_tainted.source_id, confidence=0.50, path=combined_path, last_operation=f"path_dependent:{node_id}", proof_nodes=merged_nodes, proof_edges=merged_edges)
 
     def _collect_calls_in_expr(self, expr: ast.AST, scope_id: str, lineno: int):
+        mod_name = scope_id.split(":")[0] if scope_id else ""
+        file_path = self.file_paths.get(mod_name, "unknown.py")
+        call_lineno = lineno
         for subnode in ast.walk(expr):
             # Rule CWE-915: Mass Assignment Detection
             if isinstance(subnode, ast.Call):
@@ -2920,7 +2966,9 @@ class TaintTracker:
                     def _expand_root_url_vars(t_name: str) -> list[str]:
                         expanded = [t_name]
                         curr_sc = scope_id
-                        while curr_sc:
+                        _walk_seen = set()
+                        while curr_sc and curr_sc not in _walk_seen:
+                            _walk_seen.add(curr_sc)
                             recs = self.assignments_by_scope.get((curr_sc, t_name), [])
                             for r in recs:
                                 if r.lineno < stmt.lineno:
@@ -3097,7 +3145,9 @@ class TaintTracker:
         muts = self.list_mutations.get((scope_id, var_name))
         if not muts:
             curr = scope_id
-            while curr:
+            _walk_seen = set()
+            while curr and curr not in _walk_seen:
+                _walk_seen.add(curr)
                 muts = self.list_mutations.get((curr, var_name))
                 if muts:
                     break
@@ -3180,7 +3230,9 @@ class TaintTracker:
         if isinstance(expr_node, ast.Name):
             curr = scope_id
             mod_name = scope_id.split(":")[0]
-            while curr:
+            _walk_seen = set()
+            while curr and curr not in _walk_seen:
+                _walk_seen.add(curr)
                 recs = self.assignments_by_scope.get((curr, expr_node.id), [])
                 if recs:
                     latest = recs[-1]
@@ -3212,7 +3264,9 @@ class TaintTracker:
         if isinstance(expr_node, ast.Name):
             curr = scope_id
             mod_name = scope_id.split(":")[0]
-            while curr:
+            _walk_seen = set()
+            while curr and curr not in _walk_seen:
+                _walk_seen.add(curr)
                 recs = self.assignments_by_scope.get((curr, expr_node.id), [])
                 if recs:
                     latest = recs[-1]
@@ -3255,7 +3309,9 @@ class TaintTracker:
             if var_key in visited: return False
             visited.add(var_key)
             curr = scope_id
-            while curr:
+            _walk_seen = set()
+            while curr and curr not in _walk_seen:
+                _walk_seen.add(curr)
                 recs = self.assignments_by_scope.get((curr, expr_node.id), [])
                 if recs:
                     latest = recs[-1]
@@ -3302,7 +3358,9 @@ class TaintTracker:
             if var_key in visited: return False
             visited.add(var_key)
             curr = scope_id
-            while curr:
+            _walk_seen = set()
+            while curr and curr not in _walk_seen:
+                _walk_seen.add(curr)
                 recs = self.assignments_by_scope.get((curr, expr_node.id), [])
                 if recs:
                     latest = recs[-1]
@@ -3557,7 +3615,9 @@ class TaintTracker:
             records_before = []
             is_param_in_context = False
 
-            while current_scope:
+            _walk_seen = set()
+            while current_scope and current_scope not in _walk_seen:
+                _walk_seen.add(current_scope)
                 records = self.assignments_by_scope.get((current_scope, node.id), [])
                 records_before = [r for r in records if r.lineno < current_lineno]
                 if records_before: break
@@ -3603,7 +3663,9 @@ class TaintTracker:
                 enc_scope = scope_id
                 target_func_node = None
                 target_scope = None
-                while enc_scope:
+                _walk_seen = set()
+                while enc_scope and enc_scope not in _walk_seen:
+                    _walk_seen.add(enc_scope)
                     f_node = self.functions.get(enc_scope)
                     if f_node and any(a.arg == node.id for a in f_node.args.args):
                         target_func_node = f_node
@@ -3909,7 +3971,9 @@ class TaintTracker:
                         comp_key = f"{base_var}[{key}]"
                         current_scope = scope_id
                         found_record = None
-                        while current_scope:
+                        _walk_seen = set()
+                        while current_scope and current_scope not in _walk_seen:
+                            _walk_seen.add(current_scope)
                             recs = self.assignments_by_scope.get((current_scope, comp_key), [])
                             recs_before = [r for r in recs if r.lineno < current_lineno]
                             if recs_before:
@@ -3961,7 +4025,9 @@ class TaintTracker:
                     if base_var and key is not None:
                         current_scope = scope_id
                         found_base_record = None
-                        while current_scope:
+                        _walk_seen = set()
+                        while current_scope and current_scope not in _walk_seen:
+                            _walk_seen.add(current_scope)
                             recs = self.assignments_by_scope.get((current_scope, base_var), [])
                             recs_before = [r for r in recs if r.lineno < current_lineno]
                             if recs_before:
@@ -4393,7 +4459,9 @@ class TaintTracker:
             if comp_key is not None:
                 current_scope = scope_id
                 found_record = None
-                while current_scope:
+                _walk_seen = set()
+                while current_scope and current_scope not in _walk_seen:
+                    _walk_seen.add(current_scope)
                     recs = self.assignments_by_scope.get((current_scope, comp_key), [])
                     recs_before = [r for r in recs if r.lineno < current_lineno]
                     if recs_before:
@@ -4445,7 +4513,9 @@ class TaintTracker:
             if base_var and key is not None:
                 current_scope = scope_id
                 found_base_record = None
-                while current_scope:
+                _walk_seen = set()
+                while current_scope and current_scope not in _walk_seen:
+                    _walk_seen.add(current_scope)
                     recs = self.assignments_by_scope.get((current_scope, base_var), [])
                     recs_before = [r for r in recs if r.lineno < current_lineno]
                     if recs_before:
@@ -5214,7 +5284,9 @@ class TaintTracker:
                 comp_key = f"{base_var}[{key}]"
                 current_scope = scope_id
                 found_record = None
-                while current_scope:
+                _walk_seen = set()
+                while current_scope and current_scope not in _walk_seen:
+                    _walk_seen.add(current_scope)
                     recs = self.assignments_by_scope.get((current_scope, comp_key), [])
                     recs_before = [r for r in recs if r.lineno < current_lineno]
                     if recs_before:
@@ -5240,7 +5312,9 @@ class TaintTracker:
             if base_var and key is not None:
                 current_scope = scope_id
                 found_base_record = None
-                while current_scope:
+                _walk_seen = set()
+                while current_scope and current_scope not in _walk_seen:
+                    _walk_seen.add(current_scope)
                     recs = self.assignments_by_scope.get((current_scope, base_var), [])
                     recs_before = [r for r in recs if r.lineno < current_lineno]
                     if recs_before:
@@ -5323,7 +5397,9 @@ class TaintTracker:
 
             current_scope = scope_id
             records_before = []
-            while current_scope:
+            _walk_seen = set()
+            while current_scope and current_scope not in _walk_seen:
+                _walk_seen.add(current_scope)
                 recs = self.assignments_by_scope.get((current_scope, node.id), [])
                 records_before = [r for r in recs if r.lineno < current_lineno]
                 if records_before:
@@ -5370,7 +5446,9 @@ class TaintTracker:
             enc_scope = scope_id
             target_func_node = None
             target_scope = None
-            while enc_scope:
+            _walk_seen = set()
+            while enc_scope and enc_scope not in _walk_seen:
+                _walk_seen.add(enc_scope)
                 f_node = self.functions.get(enc_scope)
                 if f_node and any(a.arg == node.id for a in f_node.args.args):
                     target_func_node = f_node
@@ -6478,7 +6556,9 @@ class TaintTracker:
         def _assigned_value(name: str, scope_id: str, lineno: int):
             current_scope = scope_id
             mod_name = scope_id.split(":")[0]
-            while current_scope:
+            _walk_seen = set()
+            while current_scope and current_scope not in _walk_seen:
+                _walk_seen.add(current_scope)
                 records = self.assignments_by_scope.get((current_scope, name), [])
                 prior = [record for record in records if record.lineno <= lineno]
                 if prior:
@@ -6771,7 +6851,9 @@ class TaintTracker:
         def _assigned_value(name: str, scope_id: str, lineno: int):
             current_scope = scope_id
             mod_name = scope_id.split(":")[0]
-            while current_scope:
+            _walk_seen = set()
+            while current_scope and current_scope not in _walk_seen:
+                _walk_seen.add(current_scope)
                 records = self.assignments_by_scope.get((current_scope, name), [])
                 prior = [record for record in records if record.lineno <= lineno]
                 if prior:
@@ -7032,7 +7114,9 @@ class TaintTracker:
         def _assigned_value(name: str, scope_id: str, lineno: int):
             current_scope = scope_id
             mod_name = scope_id.split(":")[0]
-            while current_scope:
+            _walk_seen = set()
+            while current_scope and current_scope not in _walk_seen:
+                _walk_seen.add(current_scope)
                 records = self.assignments_by_scope.get((current_scope, name), [])
                 prior = [record for record in records if record.lineno <= lineno]
                 if prior:
@@ -7256,7 +7340,9 @@ class TaintTracker:
         def _assigned_value(name: str, scope_id: str, lineno: int):
             current_scope = scope_id
             mod_name = scope_id.split(":")[0]
-            while current_scope:
+            _walk_seen = set()
+            while current_scope and current_scope not in _walk_seen:
+                _walk_seen.add(current_scope)
                 records = self.assignments_by_scope.get((current_scope, name), [])
                 prior = [record for record in records if record.lineno <= lineno]
                 if prior:
@@ -7273,7 +7359,9 @@ class TaintTracker:
 
         def _is_function_parameter(name: str, scope_id: str) -> bool:
             current_scope = scope_id
-            while current_scope:
+            _walk_seen = set()
+            while current_scope and current_scope not in _walk_seen:
+                _walk_seen.add(current_scope)
                 function = self.functions.get(current_scope)
                 if function:
                     all_args = [
@@ -7465,7 +7553,9 @@ class TaintTracker:
         def _assigned_value(name: str, scope_id: str, lineno: int):
             current_scope = scope_id
             mod_name = scope_id.split(":")[0]
-            while current_scope:
+            _walk_seen = set()
+            while current_scope and current_scope not in _walk_seen:
+                _walk_seen.add(current_scope)
                 records = self.assignments_by_scope.get((current_scope, name), [])
                 prior = [record for record in records if record.lineno <= lineno]
                 if prior:
@@ -7776,7 +7866,9 @@ class TaintTracker:
         def _assigned_value(name: str, scope_id: str, lineno: int):
             current_scope = scope_id
             mod_name = scope_id.split(":")[0]
-            while current_scope:
+            _walk_seen = set()
+            while current_scope and current_scope not in _walk_seen:
+                _walk_seen.add(current_scope)
                 records = self.assignments_by_scope.get((current_scope, name), [])
                 prior = [record for record in records if record.lineno <= lineno]
                 if prior:
@@ -8068,7 +8160,9 @@ class TaintTracker:
         def _assigned_value(name: str, scope_id: str, lineno: int):
             current_scope = scope_id
             mod_name = scope_id.split(":")[0]
-            while current_scope:
+            _walk_seen = set()
+            while current_scope and current_scope not in _walk_seen:
+                _walk_seen.add(current_scope)
                 records = self.assignments_by_scope.get((current_scope, name), [])
                 prior = [record for record in records if record.lineno <= lineno]
                 if prior:
@@ -8324,7 +8418,9 @@ class TaintTracker:
         def _assigned_value(name: str, scope_id: str, lineno: int):
             current_scope = scope_id
             mod_name = scope_id.split(":")[0]
-            while current_scope:
+            _walk_seen = set()
+            while current_scope and current_scope not in _walk_seen:
+                _walk_seen.add(current_scope)
                 records = self.assignments_by_scope.get((current_scope, name), [])
                 prior = [record for record in records if record.lineno <= lineno]
                 if prior:
@@ -8499,7 +8595,9 @@ class TaintTracker:
         def _assigned_value(name: str, scope_id: str, lineno: int):
             current_scope = scope_id
             mod_name = scope_id.split(":")[0]
-            while current_scope:
+            _walk_seen = set()
+            while current_scope and current_scope not in _walk_seen:
+                _walk_seen.add(current_scope)
                 records = self.assignments_by_scope.get((current_scope, name), [])
                 prior = [record for record in records if record.lineno < lineno]
                 if prior:
