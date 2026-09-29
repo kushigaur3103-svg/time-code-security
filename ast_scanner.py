@@ -766,6 +766,12 @@ STRUCTURAL_SYNTHETIC_SOURCES = {
     "CWE-668": "INSECURE_INTERFACE_BINDING",
     "CWE-1275": "cwe-1275_structural_violation",
     "CWE-208": "cwe-208_structural_violation",
+    # ─── Phase 3 Cluster 1 (insecure-permission residuals, dangerous globals,
+    #     disabled autoescape, empty-password policy) ───
+    "CWE-276": "INSECURE_FILE_MODE_RESIDUAL",
+    "CWE-96": "DANGEROUS_GLOBALS_USE",
+    "CWE-116": "TEMPLATE_AUTOESCAPE_DISABLED",
+    "CWE-521": "EMPTY_PASSWORD_POLICY",
 }
 CWE798_TARGET_RE = re.compile(r"(?i).*(password|passwd|secret_key|api_key|access_token|auth_token).*")
 CWE326_SINK_NAMES = {"RSA.generate", "Crypto.PublicKey.RSA.generate", "rsa.generate_private_key"}
@@ -775,6 +781,27 @@ CWE798_SAFE_SOURCES = {"os.environ.get", "os.getenv", "config.get"}
 CWE3B_LDAP_SINKS = {"search", "search_s", "search_st"}
 CWE3B_SESSION_KEYS = {"user_id", "user", "username", "uid"}
 CWE3B_INSECURE_INTERFACES = {"0.0.0.0", "", "::"}
+
+# ─── Phase 3 Cluster 1 structural rule constants ───
+CLUSTER1_CHMOD_CALLS = {"os.chmod", "os.lchmod", "os.fchmod"}
+CLUSTER1_EXACT_732_CALLS = {"os.chmod"}
+CLUSTER1_UMASK_CALLS = {"os.umask"}
+CLUSTER1_UMASK_SAFE = 0o022
+# Matched by *name*, not by evaluated value: a numeric threshold would also fire on
+# `os.chmod(f, stat.S_IRWXU)` (0o700), which the corpus labels safe because the reference rule
+# cannot numerically compare a Name.
+CLUSTER1_INSECURE_STAT_BITS = {"S_IWGRP", "S_IXGRP", "S_IWOTH", "S_IXOTH", "S_IRWXO", "S_IRWXG"}
+CLUSTER1_MODE_LOW_BITS = 0o7777
+CLUSTER1_INSECURE_MODE_FLOOR = 0o650
+CLUSTER1_GROUP_OTHER_WRITE_EXEC = 0o033
+CLUSTER1_NAMESPACE_BUILTINS = {"globals", "locals"}
+CLUSTER1_NAMESPACE_ATTRS = {"__globals__"}
+CLUSTER1_MAPPING_READ_METHODS = {"get", "setdefault", "pop"}
+CLUSTER1_TEMPLATE_CONTEXT_CALLS = {"render", "render_to_response", "render_to_string",
+                                  "render_template", "render_string"}
+CLUSTER1_TEMPLATE_STRING_SINKS = {"render_template_string"}
+CLUSTER1_PASSWORD_NAME_RE = re.compile(r"(?i)(password|passwd|pwd)")
+CLUSTER1_AUTOESCAPE_KEYS = {"autoescape"}
 
 # ─── Batch 3A structural rule constants ───
 CWE3A_WEAK_HASH_NAMES = {
@@ -5692,6 +5719,263 @@ class TaintTracker:
                         scope_id=scope_id,
                     ))
 
+    def _collect_cluster1_structural_findings(self) -> None:
+        """
+        Phase 3 Cluster 1 PURE_STRUCTURAL visitors, four independent predicates:
+
+          CWE-276  insecure-file-permission residuals (chmod/lchmod/fchmod stat-bit modes, umask)
+          CWE-96   dangerous-globals use (dynamic namespace reads, namespace-as-template-context,
+                   dynamic template strings reaching render_template_string)
+          CWE-116  disabled/absent template autoescape (Jinja2 Environment, Django OPTIONS dicts)
+          CWE-521  empty password policy (empty assignments, empty/None lookup defaults, and
+                   empty/None password parameters that are fed to set_password)
+
+        Appends sinks + sink_records; analyze() emits synthetic edges for them through
+        STRUCTURAL_SYNTHETIC_SOURCES.
+        """
+        for mod_name, tree in self.modules.items():
+            file_path = self.file_paths.get(mod_name, "unknown.py")
+            scope_id = f"{mod_name}:global"
+            seen: set[tuple[str, int, int]] = set()
+            reachable = list(self._reachable_nodes(tree))
+            ns_history = self._c1_namespace_history(reachable)
+            template_consumers = self._c1_template_string_consumers(reachable, scope_id)
+
+            for node in reachable:
+                for cwe_meta in self._c1_cluster1_candidates(node, scope_id, ns_history,
+                                                            template_consumers):
+                    loc_node = cwe_meta.pop("loc_node", node)
+                    dedupe_key = (cwe_meta["cwe"], getattr(loc_node, "lineno", 0),
+                                  getattr(loc_node, "col_offset", 0))
+                    if dedupe_key in seen:
+                        continue
+                    seen.add(dedupe_key)
+                    sink_node = SecurityNode(
+                        id=self.next_sink_id(),
+                        node_type=NodeType.SINK,
+                        symbol=cwe_meta["operation"],
+                        operation=cwe_meta["operation"],
+                        location=location(loc_node, file_path),
+                        metadata={"sink_type": cwe_meta["category"], "category": cwe_meta["category"],
+                                  "cwe": cwe_meta["cwe"]},
+                    )
+                    self.sinks.append(sink_node)
+                    self.sink_records.append(SinkRecord(
+                        node=node,
+                        security_node=sink_node,
+                        lineno=getattr(node, "lineno", 1),
+                        scope_id=scope_id,
+                    ))
+
+    # ── Cluster 1 predicate helpers ──
+
+    def _c1_call_names(self, node: ast.Call, scope_id: str) -> set[str]:
+        dotted = dotted_name(node.func) or ""
+        canonical = self.resolve_canonical_name(node.func, scope_id) or ""
+        return {n for n in (dotted, canonical) if n}
+
+    @staticmethod
+    def _c1_last(name: str) -> str:
+        return name.rsplit(".", 1)[-1] if name else ""
+
+    def _c1_is_namespace_expr(self, node: ast.AST) -> bool:
+        """globals()/locals() call, or any `<expr>.__globals__` attribute read."""
+        if isinstance(node, ast.Call):
+            func = node.func
+            target = self._c1_last(dotted_name(func) or getattr(func, "id", "") or "")
+            return target in CLUSTER1_NAMESPACE_BUILTINS and not isinstance(func, ast.Attribute)
+        return isinstance(node, ast.Attribute) and node.attr in CLUSTER1_NAMESPACE_ATTRS
+
+    def _c1_namespace_history(self, reachable: list) -> dict[str, list[tuple[int, bool]]]:
+        """name -> [(lineno, is-namespace)] so a namespace alias stops counting once rebound."""
+        history: dict[str, list[tuple[int, bool]]] = {}
+        for node in reachable:
+            if not isinstance(node, (ast.Assign, ast.AnnAssign)) or node.value is None:
+                continue
+            targets = node.targets if isinstance(node, ast.Assign) else [node.target]
+            is_ns = self._c1_is_namespace_expr(node.value)
+            for target in targets:
+                if isinstance(target, ast.Name):
+                    history.setdefault(target.id, []).append((getattr(node, "lineno", 0), is_ns))
+        for rows in history.values():
+            rows.sort()
+        return history
+
+    def _c1_is_namespace_use(self, node: ast.AST, history: dict) -> bool:
+        if self._c1_is_namespace_expr(node):
+            return True
+        if isinstance(node, ast.Name):
+            prior = [row for row in history.get(node.id, [])
+                     if row[0] < getattr(node, "lineno", 0)]
+            return bool(prior) and prior[-1][1]
+        return False
+
+    @staticmethod
+    def _c1_is_literal_key(node: ast.AST) -> bool:
+        if type(node).__name__ == "Index":  # Python < 3.9 wraps the subscript in ast.Index
+            node = node.value
+        return isinstance(node, ast.Constant)
+
+    def _c1_insecure_mode(self, mode_node: ast.AST, scope_id: str, lineno: int) -> tuple[bool, bool]:
+        """Returns (insecure-permission, group-or-world-bits-present-on-a-resolved-int-mode)."""
+        value = _eval_static_constant(mode_node, self.assignments_by_scope, scope_id, lineno)
+        if isinstance(value, int) and not isinstance(value, bool):
+            return (value & CLUSTER1_MODE_LOW_BITS) >= CLUSTER1_INSECURE_MODE_FLOOR, (value & 0o077) != 0
+        pending, insecure = [mode_node], False
+        while pending:
+            cur = pending.pop()
+            if isinstance(cur, ast.Attribute):
+                insecure = insecure or cur.attr in CLUSTER1_INSECURE_STAT_BITS
+            elif isinstance(cur, ast.BinOp) and isinstance(cur.op, ast.BitOr):
+                pending.extend([cur.left, cur.right])
+            elif isinstance(cur, ast.Constant) and isinstance(cur.value, int):
+                insecure = insecure or bool(cur.value & CLUSTER1_GROUP_OTHER_WRITE_EXEC)
+        return insecure, False
+
+    def _c1_template_string_consumers(self, reachable: list, scope_id: str) -> set[str]:
+        """Names bound directly from render_template_string(<name>)."""
+        out: set[str] = set()
+        for node in reachable:
+            if not isinstance(node, ast.Call):
+                continue
+            names = self._c1_call_names(node, scope_id)
+            if not any(self._c1_last(n) in CLUSTER1_TEMPLATE_STRING_SINKS for n in names):
+                continue
+            for arg in node.args:
+                if isinstance(arg, ast.Name):
+                    out.add(arg.id)
+        return out
+
+    @staticmethod
+    def _c1_is_dynamic_template(value: ast.AST) -> bool:
+        """A template literal that is interpolated, i.e. its braces are format placeholders."""
+        if isinstance(value, ast.Call) and isinstance(value.func, ast.Attribute) and value.func.attr == "format":
+            base = value.func.value
+        elif isinstance(value, ast.BinOp) and isinstance(value.op, ast.Mod):
+            base = value.left
+        else:
+            base = value
+        return (isinstance(base, ast.Constant) and isinstance(base.value, str)
+                and "{" in base.value)
+
+    def _c1_cluster1_candidates(self, node: ast.AST, scope_id: str, ns_history: dict,
+                                template_consumers: set) -> list[dict]:
+        lineno = getattr(node, "lineno", 0)
+        out: list[dict] = []
+
+        def add(operation: str, category: str, cwe: str, loc_node: ast.AST | None = None) -> None:
+            meta = {"operation": operation, "category": category, "cwe": cwe}
+            if loc_node is not None:
+                meta["loc_node"] = loc_node
+            out.append(meta)
+
+        if isinstance(node, ast.Call):
+            names = self._c1_call_names(node, scope_id)
+            last_names = {self._c1_last(n) for n in names}
+
+            # A. CWE-276: chmod-family mode with group/world write-exec bits not already
+            #    reported by the CWE-732 predicate.
+            if last_names & {"chmod", "lchmod", "fchmod"}:
+                mode_node = None
+                for kw in getattr(node, "keywords", []):
+                    if kw.arg == "mode":
+                        mode_node = kw.value
+                        break
+                if mode_node is None and len(node.args) >= 2:
+                    mode_node = node.args[1]
+                if mode_node is not None:
+                    insecure, resolved_world_bits = self._c1_insecure_mode(mode_node, scope_id, lineno)
+                    already_732 = bool(names & CLUSTER1_EXACT_732_CALLS) and resolved_world_bits
+                    if insecure and not already_732:
+                        add("INSECURE_FILE_MODE_RESIDUAL", "INSECURE_FILE_PERMISSIONS", "CWE-276")
+
+            # A. CWE-276: os.umask() clearing the default restriction mask.
+            elif last_names & {"umask"}:
+                mask = _eval_static_constant(node.args[0], self.assignments_by_scope, scope_id, lineno) \
+                    if node.args else None
+                if isinstance(mask, int) and not isinstance(mask, bool) and mask < CLUSTER1_UMASK_SAFE:
+                    add("INSECURE_UMASK", "INSECURE_FILE_PERMISSIONS", "CWE-276")
+
+            # B. CWE-96: the whole namespace is handed to a template renderer.
+            elif last_names & CLUSTER1_TEMPLATE_CONTEXT_CALLS:
+                args = list(node.args) + [kw.value for kw in getattr(node, "keywords", [])]
+                if any(self._c1_is_namespace_use(a, ns_history) for a in args):
+                    add("GLOBALS_AS_TEMPLATE_CONTEXT", "CODE_INJECTION", "CWE-96")
+
+            # C. CWE-116: a Jinja2 environment built without an autoescape argument.
+            elif last_names & {"Environment"}:
+                if not any(kw.arg in CLUSTER1_AUTOESCAPE_KEYS for kw in getattr(node, "keywords", [])):
+                    add("TEMPLATE_AUTOESCAPE_DISABLED", "XSS", "CWE-116")
+
+            # B. CWE-96: dynamic lookup inside a globals()/locals() namespace.
+            if isinstance(node.func, ast.Attribute) and node.func.attr in CLUSTER1_MAPPING_READ_METHODS \
+                    and node.args and self._c1_is_namespace_use(node.func.value, ns_history) \
+                    and not self._c1_is_literal_key(node.args[0]):
+                add("DANGEROUS_GLOBALS_USE", "CODE_INJECTION", "CWE-96")
+
+            # D. CWE-521: password looked up with an empty/None fallback.
+            if isinstance(node.func, ast.Attribute) and node.func.attr == "get" and len(node.args) == 2 \
+                    and isinstance(node.args[0], ast.Constant) \
+                    and isinstance(node.args[0].value, str) \
+                    and CLUSTER1_PASSWORD_NAME_RE.search(node.args[0].value):
+                default = node.args[1]
+                if isinstance(default, ast.Constant) and default.value in ("", None):
+                    add("EMPTY_PASSWORD_DEFAULT", "WEAK_PASSWORD", "CWE-521")
+
+        # B. CWE-96: dynamic subscript read of a namespace mapping (Load only; a store into
+        #    globals() is not an injection sink).
+        elif isinstance(node, ast.Subscript) and isinstance(node.ctx, ast.Load) \
+                and self._c1_is_namespace_use(node.value, ns_history) \
+                and not self._c1_is_literal_key(node.slice):
+            add("DANGEROUS_GLOBALS_USE", "CODE_INJECTION", "CWE-96")
+
+        # C. CWE-116: a template OPTIONS dict that disables escaping.
+        elif isinstance(node, ast.Dict):
+            for key, value in zip(node.keys, node.values):
+                if isinstance(key, ast.Constant) and key.value in CLUSTER1_AUTOESCAPE_KEYS \
+                        and isinstance(value, ast.Constant) and value.value in (False, None):
+                    add("TEMPLATE_AUTOESCAPE_DISABLED", "XSS", "CWE-116", loc_node=value)
+
+        # D. CWE-521: an empty password assigned and later used as a credential.
+        elif isinstance(node, (ast.Assign, ast.AnnAssign)) and node.value is not None:
+            targets = node.targets if isinstance(node, ast.Assign) else [node.target]
+            names = {t.id for t in targets if isinstance(t, ast.Name)}
+            if any(CLUSTER1_PASSWORD_NAME_RE.search(n) for n in names) \
+                    and isinstance(node.value, ast.Constant) and node.value.value == "":
+                add("EMPTY_PASSWORD_ASSIGNMENT", "WEAK_PASSWORD", "CWE-521")
+            # B. CWE-96: an interpolated template literal that reaches render_template_string.
+            elif names & template_consumers and self._c1_is_dynamic_template(node.value):
+                add("DANGEROUS_TEMPLATE_STRING", "CODE_INJECTION", "CWE-96")
+
+        # D. CWE-521: empty/None password parameter that is fed straight to set_password().
+        elif isinstance(node, ast.FunctionDef):
+            for param, default in self._c1_parameter_defaults(node):
+                if not CLUSTER1_PASSWORD_NAME_RE.search(param.arg):
+                    continue
+                if not (isinstance(default, ast.Constant) and default.value in ("", None)):
+                    continue
+                for inner in ast.walk(node):
+                    if not isinstance(inner, ast.Call):
+                        continue
+                    func_name = dotted_name(inner.func) or getattr(inner.func, "id", "") or ""
+                    if self._c1_last(func_name) != "set_password":
+                        continue
+                    if any(isinstance(a, ast.Name) and a.id == param.arg for a in inner.args):
+                        add("EMPTY_PASSWORD_DEFAULT", "WEAK_PASSWORD", "CWE-521")
+                        break
+
+        return out
+
+    @staticmethod
+    def _c1_parameter_defaults(node: ast.FunctionDef) -> list[tuple[ast.arg, ast.expr]]:
+        """Positional parameters paired with the default expression that applies to them."""
+        positional = list(getattr(node.args, "posonlyargs", [])) + list(node.args.args)
+        defaults = node.args.defaults
+        gap = len(positional) - len(defaults)
+        rows = [(p, defaults[i - gap]) for i, p in enumerate(positional) if i >= gap]
+        return rows + [(p, d) for p, d in zip(node.args.kwonlyargs, node.args.kw_defaults)
+                       if d is not None]
+
     def _collect_batch3a_structural_findings(self) -> None:
         """
         Batch 3A PURE_STRUCTURAL visitors (data/cwe_blueprint_batch3a.json):
@@ -9020,6 +9304,7 @@ class TaintTracker:
         self._collect_phase9_structural_findings()
         self._collect_response_write_findings()
         self._collect_template_response_xss_findings()
+        self._collect_cluster1_structural_findings()
         for assign_stmt, scope_id, lineno in self.ssl_attr_assigns:
             mod_name = scope_id.split(":")[0]
             file_path = self.file_paths.get(mod_name, "unknown.py")
@@ -9043,6 +9328,7 @@ class TaintTracker:
 
         for record in self.sink_records:
             sink = record.security_node
+            cwe = sink.metadata.get("cwe")
             target_expr = None
             if isinstance(record.node, ast.Return):
                 target_expr = record.node.value
@@ -9052,6 +9338,10 @@ class TaintTracker:
                 elif isinstance(record.node.func, ast.Attribute) and record.node.func.attr == "render":
                     if self._is_jinja_template_expr(record.node.func.value, record.scope_id):
                         target_expr = record.node.func.value
+                    elif cwe in STRUCTURAL_SYNTHETIC_SOURCES:
+                        # A structural sink already owns a synthetic source, so the render()
+                        # shape of its node must not route it into the taint-resolution prune.
+                        pass
                     else:
                         if sink in self.sinks:
                             self.sinks.remove(sink)
@@ -9064,7 +9354,6 @@ class TaintTracker:
                             target_expr = kw.value
                             break
 
-            cwe = sink.metadata.get("cwe")
             stype = sink.metadata.get("sink_type")
             op = sink.metadata.get("operation")
 
