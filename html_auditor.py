@@ -127,8 +127,10 @@ class TemplateSecurityAuditor(HTMLParser):
             return
         for marker in CSRF_TOKEN_MARKERS:
             if marker in data:
-                for frame in self._form_frames:
-                    frame[1] = True
+                # Attribute the token to the form that actually encloses it. Marking every
+                # open frame let one {% csrf_token %} exonerate unrelated forms that were
+                # left open by malformed or nested markup.
+                self._form_frames[-1][1] = True
                 return
 
     def handle_endtag(self, tag: str) -> None:

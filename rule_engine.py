@@ -996,12 +996,71 @@ _BANK_NEW_RULE_META: Dict[str, Dict[str, Any]] = {
 _BANK_NEW_CWE_SINKS: Dict[str, Set[str]] = {}
 
 
+def _call_dotted_name(func: ast.AST) -> str:
+    """Reassemble `a.b.c` from an ast.Name/ast.Attribute callee chain."""
+    parts: List[str] = []
+    current = func
+    while isinstance(current, ast.Attribute):
+        parts.append(current.attr)
+        current = current.value
+    if isinstance(current, ast.Name):
+        parts.append(current.id)
+    return ".".join(reversed(parts))
+
+
+def _is_literal_text(expr: ast.AST) -> bool:
+    if isinstance(expr, ast.Constant):
+        return isinstance(expr.value, (str, bytes))
+    if isinstance(expr, ast.JoinedStr):
+        return not any(isinstance(part, ast.FormattedValue) for part in expr.values)
+    if isinstance(expr, ast.BinOp) and isinstance(expr.op, ast.Add):
+        return _is_literal_text(expr.left) and _is_literal_text(expr.right)
+    if isinstance(expr, ast.UnaryOp):
+        return _is_literal_text(expr.operand)
+    return False
+
+
+def _http_response_dynamic_body(node: ast.AST, name: str, canon_name: Optional[str] = None) -> bool:
+    """True for `HttpResponse(...)`/subclasses whose body argument is not a compile-time literal.
+
+    Django's HttpResponse family serialises its body straight into the response, and the
+    default media type is text/html, so a non-literal body is markup the author did not
+    write. Matching the bare class name would flag `HttpResponse("static")` too, and
+    JsonResponse is excluded because it forces application/json.
+    """
+    if not isinstance(node, ast.Call):
+        return False
+    for candidate in (name, canon_name):
+        if not candidate:
+            continue
+        short = candidate.rsplit(".", 1)[-1]
+        if not (short.startswith("HttpResponse") or candidate.startswith("django.http.HttpResponse")):
+            continue
+        if candidate.endswith("JsonResponse"):
+            continue
+        body = next((kw.value for kw in node.keywords if kw.arg in {"content", "data"}), None)
+        if body is None and node.args:
+            body = node.args[0]
+        if body is None:
+            return False
+        return not _is_literal_text(body)
+    return False
+
+
+_BANK_RULE_SHAPE_PREDICATES: Dict[str, Callable[..., bool]] = {
+    "CWE-79": _http_response_dynamic_body,
+}
+
+
 def _build_bank_rule(cwe_id: str, sink_set: Set[str]) -> SecurityRule:
     meta = _BANK_NEW_RULE_META[cwe_id]
+    shape_predicate = _BANK_RULE_SHAPE_PREDICATES.get(cwe_id)
 
     def _matcher(node: ast.AST, name: str, canon_name: Optional[str] = None, _s: Set[str] = sink_set) -> bool:
         candidates = {c for c in (name, canon_name) if c}
-        return bool(candidates & _s)
+        if candidates & _s:
+            return True
+        return bool(shape_predicate and shape_predicate(node, name, canon_name))
 
     return SecurityRule(
         cwe_id=cwe_id,

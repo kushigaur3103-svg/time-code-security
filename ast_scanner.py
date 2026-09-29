@@ -800,6 +800,61 @@ CWE3A_USER_SOURCE_CALLS = {"input", "request.args.get", "request.form.get", "req
 CWE3A_DEBUG_VAR_RE = re.compile(r"(?i)^debug(_mode)?$")
 CWE3A_USER_NAME_RE = re.compile(r"(?i)^(user|username|email)$")
 CWE3A_STATE_CHANGING_METHODS = {"POST", "PUT", "PATCH", "DELETE"}
+# Request surfaces that only ever carry state-changing intent, and the operations that
+# actually change state. Reads (request.args, request.GET, request.session.get) are absent:
+# a view that cannot alter server or client state has nothing for CSRF to protect.
+# Compared case-insensitively: Django spells these POST/FILES/META, Flask spells them lower.
+CWE3A_STATE_CARRYING_REQUEST_ATTRS = {"POST", "PUT", "PATCH", "FILES", "BODY", "DATA", "FORM", "JSON"}
+CWE3A_STATE_MUTATING_METHODS = {
+    "save", "delete", "update", "create", "get_or_create", "update_or_create", "bulk_create",
+    "execute", "executemany", "executescript", "write", "writelines", "write_text",
+    "set_cookie", "delete_cookie", "flush", "cycle_key",
+}
+CWE3A_STATE_MUTATING_FUNCTIONS = {
+    "os.remove", "os.unlink", "os.rmdir", "os.system", "os.popen", "shutil.rmtree",
+    "shutil.move", "subprocess.run", "subprocess.call", "subprocess.check_call",
+    "subprocess.Popen",
+}
+
+
+def _receiver_is_request(expr: ast.AST) -> bool:
+    """True for `request`, `self.request`, or any dotted chain ending in `request`."""
+    if isinstance(expr, ast.Attribute):
+        return expr.attr == "request"
+    return isinstance(expr, ast.Name) and expr.id == "request"
+
+
+def _receiver_is_session_store(subscript: ast.Subscript) -> bool:
+    """True when a subscript targets `request.session[...]`, i.e. server-side session state."""
+    base = subscript.value
+    return isinstance(base, ast.Attribute) and base.attr == "session" and _receiver_is_request(base.value)
+
+
+def _view_accepts_state_change(node: ast.AST) -> bool:
+    """Prove a view can act on a state-changing request, from its body alone.
+
+    Used to decide whether dropping CSRF protection can actually be exploited: an exempt
+    view that only reads state cannot be driven cross-site into an unwanted change.
+    """
+    for inner in ast.walk(node):
+        if isinstance(inner, ast.Attribute):
+            if _receiver_is_request(inner.value) and inner.attr.upper() in CWE3A_STATE_CARRYING_REQUEST_ATTRS:
+                return True
+        elif isinstance(inner, ast.Call):
+            func = inner.func
+            if isinstance(func, ast.Attribute):
+                if func.attr in CWE3A_STATE_MUTATING_METHODS:
+                    return True
+                if dotted_name(func) in CWE3A_STATE_MUTATING_FUNCTIONS:
+                    return True
+        elif isinstance(inner, ast.Subscript) and _receiver_is_session_store(inner):
+            return True
+        elif isinstance(inner, ast.Compare) and isinstance(inner.left, ast.Attribute):
+            if inner.left.attr == "method":
+                if any(isinstance(c, ast.Constant) and c.value in CWE3A_STATE_CHANGING_METHODS
+                       for c in inner.comparators):
+                    return True
+    return False
 
 # ─── Phase 3 hardening rule constants ───
 # CWE-327: electronic codebook mode leaks plaintext structure regardless of cipher strength.
@@ -5599,7 +5654,10 @@ class TaintTracker:
                                     if any(m in CWE3A_STATE_CHANGING_METHODS for m in m_vals):
                                         has_route_post_or_put = True
 
-                    if has_csrf_exempt_dec:
+                    if has_csrf_exempt_dec and (has_route_post_or_put or _view_accepts_state_change(node)):
+                        # @csrf_exempt removes the only guard a state-changing request meets. When
+                        # the view neither declares a state-changing route nor performs a state
+                        # change, exemption has no security consequence and the report is noise.
                         cwe_meta = {"operation": "CSRF_MISSING_PROTECTION", "category": "CSRF_MISSING_PROTECTION", "cwe": "CWE-352"}
                     elif has_route_post_or_put and not has_csrf_protect_dec and not has_csrf_form_validation and not module_csrf_enabled:
                         cwe_meta = {"operation": "CSRF_MISSING_PROTECTION", "category": "CSRF_MISSING_PROTECTION", "cwe": "CWE-352"}
@@ -8191,6 +8249,16 @@ class TaintTracker:
             "HttpResponseBadRequest", "django.http.HttpResponseBadRequest",
             "JsonResponse", "django.http.JsonResponse",
         }
+        # Constructors whose default media type renders as HTML. JsonResponse is deliberately
+        # excluded from the non-literal rule below: it sets content_type=application/json, so
+        # "the body is dynamic" does not by itself put the value in an HTML context.
+        html_response_prefixes = ("HttpResponse", "django.http.HttpResponse")
+        ssti_constructors = {
+            "jinja2.Template", "Template", "django.template.Template", "django.Template",
+            "mako.template.Template", "pyramid.renderers.render_to_response",
+            "flask.render_template_string", "render_template_string", "django.shortcuts.render_to_string",
+            "render_to_string",
+        }
 
         def _scope_for(node: ast.AST, mod_name: str) -> str:
             current = node
@@ -8227,6 +8295,65 @@ class TaintTracker:
                 ) if name
             }
 
+        def _is_html_response(name: str) -> bool:
+            return name.startswith(html_response_prefixes) or name.rsplit(".", 1)[-1].startswith("HttpResponse")
+
+        def _resolve_once(expr: ast.AST, scope_id: str, lineno: int, visited=None) -> ast.AST:
+            """Follow plain name bindings to the expression that actually produced the value."""
+            if visited is None:
+                visited = set()
+            while isinstance(expr, ast.Name):
+                if expr.id in visited:
+                    break
+                visited.add(expr.id)
+                record = _assigned_value(expr.id, scope_id, lineno)
+                if record is None:
+                    break
+                expr, scope_id, lineno = record.value_node, record.scope_id, record.lineno
+            return expr
+
+        def _is_literal_text(expr: ast.AST) -> bool:
+            if isinstance(expr, ast.Constant):
+                return isinstance(expr.value, (str, bytes))
+            if isinstance(expr, ast.JoinedStr):
+                return not any(isinstance(part, ast.FormattedValue) for part in expr.values)
+            if isinstance(expr, ast.BinOp) and isinstance(expr.op, ast.Add):
+                return _is_literal_text(expr.left) and _is_literal_text(expr.right)
+            if isinstance(expr, ast.UnaryOp):
+                return _is_literal_text(expr.operand)
+            return False
+
+        def _has_template_marker(text: str) -> bool:
+            return "{%" in text or "{{" in text
+
+        def _template_composition(expr: ast.AST, scope_id: str, lineno: int, visited=None) -> tuple[bool, bool]:
+            """(literal carries template syntax, value is composed at runtime) for *expr*."""
+            if visited is None:
+                visited = set()
+            if isinstance(expr, ast.Name):
+                if expr.id in visited:
+                    return (False, True)
+                visited.add(expr.id)
+                record = _assigned_value(expr.id, scope_id, lineno)
+                if record is None:
+                    return (False, True)
+                return _template_composition(record.value_node, record.scope_id, record.lineno, visited)
+            if isinstance(expr, ast.Constant):
+                return (isinstance(expr.value, str) and _has_template_marker(expr.value), False)
+            if isinstance(expr, ast.JoinedStr):
+                marker = any(
+                    isinstance(part, ast.Constant) and isinstance(part.value, str) and _has_template_marker(part.value)
+                    for part in expr.values
+                )
+                return (marker, any(isinstance(part, ast.FormattedValue) for part in expr.values))
+            if isinstance(expr, ast.BinOp) and isinstance(expr.op, (ast.Add, ast.Mod)):
+                left_marker, left_dynamic = _template_composition(expr.left, scope_id, lineno, set(visited))
+                right_marker, right_dynamic = _template_composition(expr.right, scope_id, lineno, set(visited))
+                return (left_marker or right_marker, left_dynamic or right_dynamic)
+            if isinstance(expr, ast.Call) and isinstance(expr.func, ast.Attribute) and expr.func.attr == "format":
+                return _template_composition(expr.func.value, scope_id, lineno, visited)
+            return (False, True)
+
         def _template_path_literals(expr: ast.AST, scope_id: str, lineno: int, visited=None) -> list[str]:
             if expr is None:
                 return []
@@ -8251,7 +8378,8 @@ class TaintTracker:
 
         seen: set[tuple[str, int, int]] = set()
 
-        def _add_finding(node: ast.AST, mod_name: str, scope_id: str, operation: str) -> None:
+        def _add_finding(node: ast.AST, mod_name: str, scope_id: str, operation: str,
+                         cwe: str = "CWE-79", category: str = "CROSS_SITE_SCRIPTING") -> None:
             line = getattr(node, "lineno", 1)
             column = getattr(node, "col_offset", 0)
             key = (mod_name, line, column)
@@ -8263,7 +8391,7 @@ class TaintTracker:
             existing = next((
                 record for record in self.sink_records
                 if record.security_node.location == node_location
-                and record.security_node.metadata.get("cwe") == "CWE-79"
+                and record.security_node.metadata.get("cwe") == cwe
             ), None)
             if existing is not None:
                 existing.security_node.metadata["p11_source_id"] = "DYNAMIC_HTML_RESPONSE"
@@ -8275,9 +8403,9 @@ class TaintTracker:
                 operation=operation,
                 location=node_location,
                 metadata={
-                    "sink_type": "XSS",
-                    "category": "CROSS_SITE_SCRIPTING",
-                    "cwe": "CWE-79",
+                    "sink_type": "SSTI" if cwe == "CWE-1336" else "XSS",
+                    "category": category,
+                    "cwe": cwe,
                     "p11_source_id": "DYNAMIC_HTML_RESPONSE",
                     "lineno": line,
                 },
@@ -8296,8 +8424,9 @@ class TaintTracker:
                     continue
                 scope_id = _scope_for(node, mod_name)
                 lineno = getattr(node, "lineno", 1)
+                call_names = _names_for_call(node, scope_id)
 
-                if _names_for_call(node, scope_id) & response_sinks:
+                if call_names & response_sinks or any(_is_html_response(name) for name in call_names):
                     content = next((kw.value for kw in node.keywords if kw.arg in {"content", "content_type", "contentType"}), None)
                     if content is None and node.args:
                         content = node.args[0]
@@ -8310,6 +8439,26 @@ class TaintTracker:
                         taint = self.resolve_expression(content, temporary_sink, scope_id, lineno)
                         if taint.state != TaintState.CLEAN:
                             _add_finding(node, mod_name, scope_id, "HTTP_RESPONSE_HTML")
+                        elif any(_is_html_response(name) for name in call_names):
+                            # A response body that is not a compile-time literal is assembled from
+                            # program state, so it reaches the browser as markup the author did not
+                            # write. Taint alone cannot see this: the value may legitimately be
+                            # CLEAN (a rendered template, a DB row) and still be attacker-influenced.
+                            resolved = _resolve_once(content, scope_id, lineno)
+                            if not _is_literal_text(resolved):
+                                _add_finding(node, mod_name, scope_id, "HTTP_RESPONSE_DYNAMIC_CONTENT")
+
+                if call_names & ssti_constructors:
+                    source_arg = next((kw.value for kw in node.keywords if kw.arg in {"source", "template", "s"}), None)
+                    if source_arg is None and node.args:
+                        source_arg = node.args[0]
+                    if source_arg is not None:
+                        marker, dynamic = _template_composition(source_arg, scope_id, lineno)
+                        if marker and dynamic:
+                            _add_finding(
+                                node, mod_name, scope_id, "DYNAMIC_TEMPLATE_CONSTRUCTION",
+                                cwe="CWE-1336", category="SSTI",
+                            )
 
                 if isinstance(node.func, ast.Attribute) and node.func.attr == "write" and node.args:
                     receiver = node.func.value
@@ -8342,13 +8491,19 @@ class TaintTracker:
                     temporary_sink = SecurityNode(
                         id="", node_type=NodeType.SINK, symbol="STORED_HTML_TEMPLATE",
                         operation="STORED_HTML_TEMPLATE", location=location(content_record.value_node, self.file_paths.get(mod_name, "unknown.py")),
-                        metadata={"sink_type": "XSS", "cwe": "CWE-79"},
+                        metadata={"sink_type": "SSTI", "cwe": "CWE-1336"},
                     )
                     taint = self.resolve_expression(
                         content_record.value_node, temporary_sink, content_record.scope_id, content_record.lineno
                     )
                     if taint.state != TaintState.CLEAN:
-                        _add_finding(content_record.value_node, mod_name, content_record.scope_id, "STORED_HTML_TEMPLATE_WRITE")
+                        # The write stores Jinja/Django markup that the application assembled at
+                        # runtime, so the injected text is later *compiled* as template code.
+                        # Server-side template injection, not reflected XSS.
+                        _add_finding(
+                            content_record.value_node, mod_name, content_record.scope_id,
+                            "STORED_HTML_TEMPLATE_WRITE", cwe="CWE-1336", category="SSTI",
+                        )
 
     def analyze(self):
         for mod_name, tree in self.modules.items():

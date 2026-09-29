@@ -21,6 +21,20 @@ SARIF_SCHEMA = "https://raw.githubusercontent.com/oasis-tcs/sarif-spec/master/Sc
 SEVERITIES = ("CRITICAL", "HIGH", "MEDIUM", "LOW", "UNKNOWN")
 IGNORED_DIRS = {".git", ".venv", "venv", "__pycache__", "node_modules", "build", "dist"}
 
+# Every finding belongs to exactly one analysis scope: template and IaC paths are routed to
+# their auditors, everything else is Python. --scope selects which collectors run.
+SCOPE_ORDER = ("python", "docker", "html")
+SCOPE_LABELS = {"python": "Python Code", "docker": "Container/Config", "html": "HTML Templates"}
+
+
+def _scope_of(path):
+    lowered = str(path).lower()
+    if is_template_path(lowered):
+        return "html"
+    if is_iac_path(lowered):
+        return "docker"
+    return "python"
+
 
 def _file_key(path, cwd):
     try:
@@ -105,6 +119,82 @@ def _merge_findings(*finding_groups):
             seen.add(identity)
             unique.append(item)
     return sorted(unique, key=lambda entry: (entry["file"], entry["line"], entry["cwe"]))
+
+
+# Several CWEs describe one *attribute* of the same defect: a single weak-digest call can
+# be simultaneously a broken algorithm (327/328) and a storage-strength failure (759/916),
+# and one set_cookie() can lack Secure (614), HttpOnly (1004) and SameSite (1275). Reporting
+# every attribute as its own alert multiplies the count without adding an actionable site.
+# The families below collapse to one finding per (file, line); the surviving CWEs are kept
+# in `related_cwes` so nothing is lost. This is presentation-only: the engine still emits
+# every CWE, which is what the benchmark scores per rule.
+FAMILY_PRIORITY = {
+    "CRYPTO_HASH": ("CWE-327", "CWE-916", "CWE-759", "CWE-328"),
+    "INSECURE_COOKIE": ("CWE-614", "CWE-1004", "CWE-1275"),
+}
+FAMILY_OF_CWE = {
+    cwe: family for family, members in FAMILY_PRIORITY.items() for cwe in members
+}
+COOKIE_FLAG_BY_CWE = {"CWE-614": "Secure", "CWE-1004": "HttpOnly", "CWE-1275": "SameSite"}
+SEVERITY_RANK = {"UNKNOWN": 0, "LOW": 1, "MEDIUM": 2, "HIGH": 3, "CRITICAL": 4}
+
+
+def _family_message(family, primary, members_by_cwe):
+    """Alert text naming what the collapsed CWEs actually proved."""
+    if family == "INSECURE_COOKIE":
+        flags = [COOKIE_FLAG_BY_CWE[cwe] for cwe in FAMILY_PRIORITY[family] if cwe in members_by_cwe]
+        return f"{primary}: Insecure Cookie Configuration (Missing {', '.join(flags)})"
+    source = members_by_cwe[primary][0]["message"]
+    operation = source.split(":", 1)[1].strip() if ":" in source else source
+    secondaries = [cwe for cwe in FAMILY_PRIORITY[family] if cwe in members_by_cwe and cwe != primary]
+    suffix = f" (consolidated: {', '.join(secondaries)})" if secondaries else ""
+    return f"{primary}: {operation}{suffix}"
+
+
+def _consolidate_family(family, group):
+    members_by_cwe = {}
+    for finding in group:
+        members_by_cwe.setdefault(finding["cwe"], []).append(finding)
+    priority = FAMILY_PRIORITY[family]
+    primary = next(cwe for cwe in priority if cwe in members_by_cwe)
+    representative = members_by_cwe[primary][0]
+    consolidated = []
+    for cwe in priority:
+        consolidated.extend(member for member in members_by_cwe.get(cwe, []) if member is not representative)
+    return {
+        **representative,
+        "cwe": primary,
+        "line": min(member["line"] for member in group),
+        "severity": max(
+            (member["severity"] for member in group),
+            key=lambda value: SEVERITY_RANK.get(value, 0),
+        ),
+        "message": _family_message(family, primary, members_by_cwe),
+        "consolidated_from": [f"{member['cwe']}@{member['line']}" for member in consolidated],
+    }
+
+
+def consolidate_findings(findings):
+    """Collapse same-site CWE families into one finding, preserving scan order."""
+    buckets = {}
+    for finding in findings:
+        family = FAMILY_OF_CWE.get(finding["cwe"])
+        if family:
+            buckets.setdefault((family, finding["file"], finding["line"]), []).append(finding)
+
+    emitted = set()
+    consolidated = []
+    for finding in findings:
+        family = FAMILY_OF_CWE.get(finding["cwe"])
+        if not family:
+            consolidated.append(finding)
+            continue
+        key = (family, finding["file"], finding["line"])
+        if key in emitted:
+            continue
+        emitted.add(key)
+        consolidated.append(_consolidate_family(family, buckets[key]))
+    return sorted(consolidated, key=lambda item: (item["file"], item["line"], item["cwe"]))
 
 
 def _findings_for(tracker, edges):
@@ -244,14 +334,29 @@ def _sarif_document(findings, cwd):
     }
 
 
-def _print_summary(file_count, duration_ms, findings):
+def _scope_breakdown(findings):
+    counts = {scope: 0 for scope in SCOPE_ORDER}
+    for finding in findings:
+        counts[_scope_of(finding["file"])] += 1
+    return counts
+
+
+def _print_summary(file_count, duration_ms, findings, file_counts=None):
     counts = {severity: 0 for severity in SEVERITIES}
+    scope_counts = _scope_breakdown(findings)
     for finding in findings:
         severity = finding["severity"]
         counts[severity if severity in counts else "UNKNOWN"] += 1
     print(f"\nTotal scanned files: {file_count}")
+    if file_counts:
+        print("Files scanned by scope: " + ", ".join(
+            f"{SCOPE_LABELS[scope]}: {file_counts[scope]}" for scope in SCOPE_ORDER
+        ))
     print(f"Scan duration: {duration_ms:.2f} ms")
     print("Findings by severity: " + ", ".join(f"{severity.title()}: {counts[severity]}" for severity in SEVERITIES))
+    print("Findings by scope: " + ", ".join(
+        f"{SCOPE_LABELS[scope]}: {scope_counts[scope]}" for scope in SCOPE_ORDER
+    ))
 
 
 def _cross_trace_report(findings, cwd):
@@ -376,27 +481,40 @@ def _suppress_cross_file_sanitized(findings, engine):
     return kept
 
 def _scan(args):
+    scope = args.scope
     try:
         templates, iac = _collect_auxiliary_files(args.path)
-        try:
-            files = _collect_files(args.path)
-        except ValueError:
-            if not templates and not iac:
-                raise
-            files = {}
+        if scope not in ("all", "html"):
+            templates = {}
+        if scope not in ("all", "docker"):
+            iac = {}
+        tracker = None
+        files = {}
+        if scope in ("all", "python"):
+            try:
+                files = _collect_files(args.path)
+            except ValueError:
+                if not templates and not iac:
+                    raise
         started = time.perf_counter()
         if files:
             tracker = TaintTracker(files=files)
             _, _, edges = tracker.analyze()
             ast_findings = _findings_for(tracker, edges)
-            scanned_files = len(tracker.modules) + len(templates) + len(iac)
         else:
             ast_findings = []
-            scanned_files = len(templates) + len(iac)
+        file_counts = {
+            "python": len(tracker.modules) if tracker else 0,
+            "docker": len(iac),
+            "html": len(templates),
+        }
+        scanned_files = sum(file_counts.values())
         findings = _merge_findings(ast_findings, audit_templates(templates), audit_iac_files(iac))
-        cross_findings, cross_engine = _run_cross_scan(args.path)
-        findings = _suppress_cross_file_sanitized(findings, cross_engine)
-        findings.extend(cross_findings)
+        findings = consolidate_findings(findings)
+        if scope in ("all", "python"):
+            cross_findings, cross_engine = _run_cross_scan(args.path)
+            findings = _suppress_cross_file_sanitized(findings, cross_engine)
+            findings.extend(cross_findings)
         duration_ms = (time.perf_counter() - started) * 1000
     except (OSError, ValueError) as exc:
         print(f"Error: {exc}", file=sys.stderr)
@@ -404,13 +522,16 @@ def _scan(args):
 
     if args.format == "json":
         print(json.dumps({
+            "scope": scope,
             "scanned_files": scanned_files,
+            "scanned_files_by_scope": file_counts,
             "duration_ms": round(duration_ms, 2),
+            "findings_by_scope": _scope_breakdown(findings),
             "findings": findings,
         }, indent=2))
     else:
         print(_ascii_table(findings) if findings else "[+] No vulnerabilities found. Clean scan!")
-        _print_summary(scanned_files, duration_ms, findings)
+        _print_summary(scanned_files, duration_ms, findings, file_counts)
         traces = _cross_trace_report(findings, Path.cwd().resolve())
         if traces:
             print(traces)
@@ -626,6 +747,10 @@ def main(argv=None):
     scan_parser.add_argument("--sarif", metavar="OUTPUT_PATH", help="Write findings as SARIF 2.1.0 JSON")
     scan_parser.add_argument("--fail-on-critical", action="store_true", help="Exit 1 when a Critical or High finding is detected")
     scan_parser.add_argument("--format", choices=("table", "json"), default="table", help="Output format (default: table)")
+    scan_parser.add_argument(
+        "--scope", choices=("all", "python", "docker", "html"), default="all",
+        help="Limit analysis to Python code, container/config files, or HTML templates (default: all)",
+    )
     compare_parser = commands.add_parser("compare", help="Compare TCS findings with Semgrep or Bandit")
     compare_parser.add_argument("path", type=Path, help="Python file or directory to compare")
     compare_parser.add_argument("--vs", choices=("semgrep", "bandit"), default="semgrep", help="Competitor scanner (default: semgrep)")
