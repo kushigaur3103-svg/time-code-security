@@ -341,6 +341,7 @@ SANITIZER_REGISTRY = {
         "is_safe_url", "validate_url",
         "check_domain_allowlist", "is_allowed_domain",
         "validate_private_ip", "is_private_ip",
+        "urllib.parse.quote", "urllib.parse.quote_plus",
     },
     "CWE-611": {
         "defusedxml.ElementTree.parse", "defusedxml.ElementTree.fromstring",
@@ -390,6 +391,7 @@ SANITIZER_REGISTRY = {
     "safe_eval_input": {"protected_cwes": {"CWE-95"}, "protected_sinks": {"CODE_EXECUTION"}},
     "secure_path_join": {"protected_cwes": {"CWE-22"}, "protected_sinks": {"PATH_TRAVERSAL", "FILE_ACCESS"}},
     "shlex.quote": {"protected_cwes": {"CWE-78"}, "protected_sinks": {"COMMAND_INJECTION", "OS_COMMAND_EXECUTION"}},
+    "urllib.parse.quote": {"protected_cwes": {"CWE-918"}, "protected_sinks": {"SSRF"}},
     "quote": {"protected_cwes": {"CWE-78"}, "protected_sinks": {"COMMAND_INJECTION", "OS_COMMAND_EXECUTION"}},
     "os.path.basename": {"protected_cwes": {"CWE-22"}, "protected_sinks": {"PATH_TRAVERSAL", "FILE_ACCESS"}},
     "basename": {"protected_cwes": {"CWE-22"}, "protected_sinks": {"PATH_TRAVERSAL", "FILE_ACCESS"}},
@@ -6915,6 +6917,13 @@ class TaintTracker:
                     isinstance(part, ast.Constant)
                     or _is_fully_sanitized(part, scope_id, lineno, visited.copy())
                     for part in expr.values
+                )
+            # An argv collection is sanitized only when every element is: `['python2', shlex.quote(p)]`
+            # carries no dynamic command, but `[tainted, shlex.quote(p)]` still does.
+            if isinstance(expr, (ast.List, ast.Tuple)):
+                return all(
+                    _is_fully_sanitized(elt, scope_id, lineno, visited.copy())
+                    for elt in expr.elts
                 )
             if isinstance(expr, ast.FormattedValue):
                 return _is_fully_sanitized(expr.value, scope_id, lineno, visited)

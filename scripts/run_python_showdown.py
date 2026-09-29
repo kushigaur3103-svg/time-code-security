@@ -395,22 +395,65 @@ class Score:
     fp: int = 0
     tn: int = 0
     cwe_mismatch: int = 0     # right line, wrong weakness class
+    cluster_tp: int = 0       # TP only because the CWE is in the same equivalence cluster
     unscored: int = 0         # findings that hit neither a pos nor a neg assertion
+    cluster_reclaimed: list = field(default_factory=list)
+
+
+# MITRE abstraction-level divergence: the same primitive named at different levels of the same
+# family, scored as a hit instead of double-penalised as FN + out-of-label. Members are chosen from
+# the observed line-hit mismatches, and every cluster is a family the two vendors demonstrably label
+# differently for one construct (e.g. `os.chmod(0o777)` -> Semgrep CWE-276, Bandit CWE-732).
+# Deliberately absent: CWE-94/CWE-95 (dynamic compilation vs direct evaluation) and CWE-502/CWE-94
+# (deserialisation vs code injection) are distinct weakness classes, and folding them would erase a
+# real classification error rather than a naming one.
+CWE_EQUIVALENCE_CLUSTERS: tuple[frozenset[str], ...] = (
+    frozenset({"CWE-326", "CWE-327", "CWE-328", "CWE-759", "CWE-916"}),  # crypto strength/algorithm
+    frozenset({"CWE-276", "CWE-277", "CWE-732"}),                        # permission assignment
+    frozenset({"CWE-614", "CWE-1004", "CWE-1275"}),                      # cookie attribute flags
+    frozenset({"CWE-312", "CWE-319", "CWE-522", "CWE-523"}),             # credentials in cleartext
+    frozenset({"CWE-295", "CWE-322"}),                                   # peer identity unverified
+    frozenset({"CWE-79", "CWE-80", "CWE-116"}),                          # output escaping / XSS
+    frozenset({"CWE-22", "CWE-23", "CWE-36", "CWE-73"}),                 # external path/name control
+    frozenset({"CWE-77", "CWE-78", "CWE-88"}),                           # command / argument injection
+)
+
+
+def _cluster_of(cwe: str | None) -> frozenset[str] | None:
+    """The equivalence family a CWE belongs to, or None when it stands alone."""
+    if not cwe:
+        return None
+    for cluster in CWE_EQUIVALENCE_CLUSTERS:
+        if cwe in cluster:
+            return cluster
+    return None
+
+
+def _cwe_match_kind(finding: dict, cwes: list) -> str:
+    """'exact' when the tool names the declared class, 'cluster' when it names a same-family alias,
+    'none' otherwise. No CWE declared by the label degrades to 'exact' (line-only matching)."""
+    if not cwes:
+        return "exact"
+    named = {finding.get("cwe")} | set(finding.get("cwes") or [])
+    if named & set(cwes):
+        return "exact"
+    declared = {c for c in cwes if _cluster_of(c)}
+    got = {c for c in named if c and _cluster_of(c)}
+    if any(_cluster_of(a) & _cluster_of(b) for a in declared for b in got):
+        return "cluster"
+    return "none"
 
 
 def _cwe_ok(finding: dict, cwes: list) -> bool:
     """True when the tool names the weakness the label declares (no CWE declared = any hit)."""
-    if not cwes:
-        return True
-    if finding.get("cwe") in cwes:
-        return True
-    return bool(set(finding.get("cwes") or []) & set(cwes))
+    return _cwe_match_kind(finding, cwes) != "none"
 
 
 def score_tool(assertions: list[Assertion], findings: list[dict], tool: str,
                tolerance: int = 1, cwe_strict: bool = True) -> tuple[Score, list[dict]]:
     score = Score(tool=tool)
     misses: list[dict] = []
+    cluster_reclaimed = score.cluster_reclaimed
     used: set[int] = set()
     by_file: dict[str, list[tuple[int, dict]]] = {}
     for idx, finding in enumerate(findings):
@@ -424,11 +467,17 @@ def score_tool(assertions: list[Assertion], findings: list[dict], tool: str,
         else:
             hit = [i for i, f in rows]
         if assertion.kind == "pos":
-            matched = [i for i in hit
-                       if not cwe_strict or _cwe_ok(findings[i], assertion.cwes)]
+            kinds = [(i, _cwe_match_kind(findings[i], assertion.cwes)) for i in hit]
+            matched = [i for i, kind in kinds if kind != "none" or not cwe_strict]
             if matched:
                 score.tp += 1
                 used.update(matched)
+                if cwe_strict and not any(k == "exact" for _, k in kinds):
+                    score.cluster_tp += 1
+                    cluster_reclaimed.append({"assertion": asdict(assertion),
+                                              "line_matched": [{k: findings[i].get(k)
+                                                                 for k in ("line", "cwe", "native")}
+                                                                for i in hit]})
             else:
                 score.fn += 1
                 if hit:  # right place, wrong (or missing) weakness class
@@ -607,7 +656,8 @@ def master_rows(scoring: dict, scope: str, key: str = "scores") -> list[list[str
     out = []
     for tool in TOOL_ORDER:
         s = block[key][tool]["score"]
-        out.append([tool, str(s["tp"]), str(s["fp"]), str(s["tn"]), str(s["fn"]),
+        out.append([tool, str(s["tp"]), str(s["cluster_tp"]), str(s["fp"]), str(s["tn"]),
+                    str(s["fn"]),
                     _pct(block[key][tool]["precision"]),
                     _pct(block[key][tool]["recall"]),
                     _pct(block[key][tool]["f1"]),
@@ -853,8 +903,8 @@ def render_report(payload: dict, scoring: dict) -> str:
     md.append(_table(["Corpus", "Result", "sha256"], integ) + "\n")
 
     md.append("## 2. Master comparison table (merged label set, CWE-strict)\n")
-    headers = ["Tool", "TP", "FP", "TN", "FN", "Precision", "Recall", "F1",
-               "FN w/ line hit (CWE miss)", "Findings outside any label"]
+    headers = ["Tool", "TP", "TP via same-family cluster", "FP", "TN", "FN", "Precision", "Recall",
+               "F1", "FN w/ line hit (CWE miss)", "Findings outside any label"]
     md.append(_table(headers, master_rows(scoring, "combined")) + "\n")
     md.append("### Per corpus\n")
     for corpus in scoring["per_corpus"]:
@@ -865,6 +915,19 @@ def render_report(payload: dict, scoring: dict) -> str:
 
     md.append("### Sensitivity — line-only matching (declared CWE ignored)\n")
     md.append(_table(headers, master_rows(scoring, "combined", "scores_line_only")) + "\n")
+    md.append("### Same-family CWE equivalence clusters applied to the strict score\n")
+    md.append("Clusters applied (each is one MITRE family the vendors name at different abstraction "
+               "levels):\n\n" +
+              _table(["cluster", "members"],
+                     [[f"#{i + 1}", ", ".join(sorted(c))]
+                      for i, c in enumerate(CWE_EQUIVALENCE_CLUSTERS)]) + "\n\n" +
+              "Deliberately **not** folded, because they are distinct weakness classes rather than "
+              "naming variants: CWE-94 (dynamic compilation/import loading) vs CWE-95 (direct "
+              "evaluation), CWE-502 (untrusted deserialisation) vs CWE-94/95, CWE-89 (SQL) vs "
+              "CWE-862 (missing authorisation), CWE-918 (SSRF) vs CWE-79 (XSS), CWE-319 (cleartext "
+              "transmission) vs CWE-22/73 (path control). Folding any of those would convert a real "
+              "classification error into a scored true positive.\n\n" +
+              cluster_rows(scoring))
     md.append("### CWE metadata actually published by each tool on these corpora\n")
     cov = [[tool, str(scoring["combined"]["scores"][tool]["findings"]),
             str(scoring["combined"]["scores"][tool]["with_cwe"]),
@@ -1218,8 +1281,30 @@ def load_payload() -> dict:
     return json.loads(path.read_text(encoding="utf-8"))
 
 
-MASTER_HEADERS = ["Tool", "TP", "FP", "TN", "FN", "Precision", "Recall", "F1",
-                  "FN w/ line hit (CWE miss)", "Findings outside any label"]
+MASTER_HEADERS = ["Tool", "TP", "TP via same-family cluster", "FP", "TN", "FN", "Precision",
+                  "Recall", "F1", "FN w/ line hit (CWE miss)", "Findings outside any label"]
+
+
+def cluster_rows(scoring: dict, limit: int = 30) -> str:
+    """Every TP that only the equivalence clusters rescued, with both CWE strings, so a reader can
+    audit each fold instead of taking the aggregate on trust."""
+    rows, total = [], 0
+    for tool in TOOL_ORDER:
+        block = scoring["combined"]["scores"][tool]
+        total += len(block["score"]["cluster_reclaimed"])
+        for row in block["score"]["cluster_reclaimed"][:limit]:
+            a = row["assertion"]
+            rows.append([tool, a["corpus"] + ":" + (a["rule"] or "-"),
+                         f"{Path(a['file']).name}:{a['line']}",
+                         ",".join(sorted(a["cwes"])) or "-",
+                         "; ".join(f"{r.get('native')}[{r.get('cwe')}]"
+                                   for r in row["line_matched"]) or "-"])
+    if not rows:
+        return ("No positive label needed a cluster to match: every recovered TP names the declared "
+                "CWE exactly.\n")
+    return (f"{total} positive label(s) matched only through a same-family CWE cluster "
+            f"(first {len(rows)} listed):\n\n" +
+            _table(["tool", "corpus:rule", "site", "labelled CWE", "tool reported"], rows) + "\n")
 
 
 def print_master_table(scoring: dict) -> None:
@@ -1276,6 +1361,9 @@ def main(argv=None) -> int:
     parser.add_argument("--corpus", default="all", choices=["all", *CORPORA])
     parser.add_argument("--tcs-timeout", type=int, default=30,
                         help="seconds before a hung TCS CLI invocation is killed and recorded")
+    parser.add_argument("--reuse-competitors", action="store_true",
+                        help="re-sweep only TCS and reuse the Semgrep/Bandit findings already on disk "
+                             "(their analysis cannot change when only the engine changed)")
     args = parser.parse_args(argv)
 
     ARTIFACTS.mkdir(parents=True, exist_ok=True)
@@ -1309,6 +1397,7 @@ def main(argv=None) -> int:
     print("\n== tool runs ==", flush=True)
     results: dict[str, dict[str, list[dict]]] = {}
     stats: dict[str, dict] = {}
+    prior = load_payload() if args.reuse_competitors else {}
 
     def dump() -> dict:
         payload = {"integrity_before": integrity_before,
@@ -1333,16 +1422,25 @@ def main(argv=None) -> int:
         print(f"  TCS     {key}: {len(tcs)} findings, {tstats['ms_total']:.0f} ms "
               f"({tstats['crashed']} failed, {tstats.get('timeouts', 0)} killed by timeout)",
               flush=True)
-        sem, sstats = findings_from_semgrep(corpus_dir, key)
-        results[key]["Semgrep"] = sem
-        stats.setdefault("Semgrep", {})[key] = sstats
-        dump()
-        print(f"  Semgrep {key}: {len(sem)} findings, {sstats['ms_total']:.0f} ms", flush=True)
-        ban, bstats = findings_from_bandit(corpus_dir, key)
-        results[key]["Bandit"] = ban
-        stats.setdefault("Bandit", {})[key] = bstats
-        dump()
-        print(f"  Bandit  {key}: {len(ban)} findings, {bstats['ms_total']:.0f} ms", flush=True)
+        for tool in ("Semgrep", "Bandit"):
+            if args.reuse_competitors and prior.get("findings", {}).get(key, {}).get(tool) is not None:
+                results[key][tool] = prior["findings"][key][tool]
+                stats.setdefault(tool, {})[key] = prior["stats"][tool][key]
+                print(f"  {tool:<7} {key}: {len(results[key][tool])} findings (reused artefact)",
+                      flush=True)
+                continue
+            if tool == "Semgrep":
+                sem, sstats = findings_from_semgrep(corpus_dir, key)
+                results[key]["Semgrep"] = sem
+                stats.setdefault("Semgrep", {})[key] = sstats
+                dump()
+                print(f"  Semgrep {key}: {len(sem)} findings, {sstats['ms_total']:.0f} ms", flush=True)
+            else:
+                ban, bstats = findings_from_bandit(corpus_dir, key)
+                results[key]["Bandit"] = ban
+                stats.setdefault("Bandit", {})[key] = bstats
+                dump()
+                print(f"  Bandit  {key}: {len(ban)} findings, {bstats['ms_total']:.0f} ms", flush=True)
 
     payload = dump()
     print(f"\nRaw artifacts: {ARTIFACTS.relative_to(ROOT)}/raw_results.json", flush=True)
