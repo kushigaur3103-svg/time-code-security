@@ -50,6 +50,15 @@ def _has_static_decorator(node: ast.FunctionDef | ast.AsyncFunctionDef) -> bool:
     return False
 
 
+def _const_str(node: Optional[ast.AST]) -> Optional[str]:
+    """The literal string a key expression holds, or None when it is not one."""
+    if isinstance(node, ast.Index):  # Python < 3.9 keeps `d["k"]` as ast.Index
+        node = node.value
+    if isinstance(node, ast.Constant) and isinstance(node.value, str):
+        return node.value
+    return None
+
+
 @dataclass(slots=True)
 class ParamSinkEdge:
     param_idx: int
@@ -119,6 +128,8 @@ class FunctionSummarizer:
             and node.args.args[0].arg in ("self", "cls")
         )
         params = [a.arg for a in (node.args.args[1:] if takes_receiver else node.args.args)]
+        kw_containers, kw_slots = self._kwarg_slots(node, params)
+        params = params + kw_slots
         param_to_idx = {p: i for i, p in enumerate(params)}
 
         summary = FunctionSummary(
@@ -141,7 +152,7 @@ class FunctionSummarizer:
             for sub in ast.walk(stmt):
                 # 1. Track assignments: local_var = param
                 if isinstance(sub, ast.Assign):
-                    val_params = self._resolve_referenced_params(sub.value, alias_map)
+                    val_params = self._resolve_referenced_params(sub.value, alias_map, kw_containers)
                     if val_params:
                         for target in sub.targets:
                             if isinstance(target, ast.Name):
@@ -149,7 +160,7 @@ class FunctionSummarizer:
 
                 # 2. Track Returns: return param / return expr(param)
                 elif isinstance(sub, ast.Return) and sub.value is not None:
-                    ret_params = self._resolve_referenced_params(sub.value, alias_map)
+                    ret_params = self._resolve_referenced_params(sub.value, alias_map, kw_containers)
                     summary.tainted_returns.update(ret_params)
 
                 # 3. Track Sinks: sink_call(param)
@@ -168,7 +179,7 @@ class FunctionSummarizer:
                             # the parameters slot is bound by the driver and not injectable.
                             if cwe == "CWE-89" and position > 0:
                                 continue
-                            arg_params = self._resolve_referenced_params(arg, alias_map)
+                            arg_params = self._resolve_referenced_params(arg, alias_map, kw_containers)
                             for p_idx in arg_params:
                                 edge = ParamSinkEdge(
                                     param_idx=p_idx,
@@ -188,7 +199,7 @@ class FunctionSummarizer:
                 for ret in ast.walk(node)
                 if isinstance(ret, ast.Return)
                 and ret.value is not None
-                and self._resolve_referenced_params(ret.value, alias_map)
+                and self._resolve_referenced_params(ret.value, alias_map, kw_containers)
             ]
             if propagating and all(
                 self._is_sanitized_expr(expr, sanitized_locals) for expr in propagating
@@ -229,12 +240,67 @@ class FunctionSummarizer:
             return expr.id in sanitized_locals
         return False
 
-    def _resolve_referenced_params(self, expr: ast.AST, alias_map: dict[str, set[int]]) -> set[int]:
+    def _resolve_referenced_params(
+        self,
+        expr: ast.AST,
+        alias_map: dict[str, set[int]],
+        kw_containers: frozenset[str] = frozenset(),
+    ) -> set[int]:
         referenced: set[int] = set()
         for node in ast.walk(expr):
             if isinstance(node, ast.Name) and node.id in alias_map:
                 referenced.update(alias_map[node.id])
+            elif kw_containers:
+                slot = self._kwarg_slot(node, kw_containers)
+                if slot is not None and f"{slot[0]}[{slot[1]}]" in alias_map:
+                    referenced.update(alias_map[f"{slot[0]}[{slot[1]}]"])
         return referenced
+
+    @staticmethod
+    def _kwarg_slot(node: ast.AST, kw_containers: frozenset[str]) -> Optional[tuple[str, str]]:
+        """(container, literal key) for `kwargs["k"]` / `kwargs.get("k")` reads."""
+        if isinstance(node, ast.Subscript) and isinstance(node.value, ast.Name):
+            if node.value.id in kw_containers:
+                key = _const_str(node.slice)
+                return (node.value.id, key) if key is not None else None
+            return None
+        if (isinstance(node, ast.Call) and isinstance(node.func, ast.Attribute)
+                and node.func.attr in ("get", "pop") and node.args
+                and isinstance(node.func.value, ast.Name)
+                and node.func.value.id in kw_containers):
+            key = _const_str(node.args[0])
+            return (node.func.value.id, key) if key is not None else None
+        return None
+
+    @staticmethod
+    def _kwarg_slots(
+        node: ast.FunctionDef | ast.AsyncFunctionDef,
+        params: list[str],
+    ) -> tuple[frozenset[str], list[str]]:
+        """Per-key contract slots for a `**kwargs` parameter.
+
+        Django signal receivers take their payload through `**kwargs`, so a receiver such as
+        `def on_event(sender, **kwargs): os.system(kwargs["payload"])` has no positional
+        parameter to bind the emission keyword onto. Only the literal keys the body actually
+        reads become slots, which keeps each payload key tracked on its own instead of tainting
+        the whole mapping.
+        """
+        if node.args.kwarg is None:
+            return frozenset(), []
+        container = node.args.kwarg.arg
+        if container in params:
+            return frozenset(), []
+        slots: list[str] = []
+        seen = {container}
+        for sub in ast.walk(node):
+            slot = FunctionSummarizer._kwarg_slot(sub, frozenset({container}))
+            if slot is None:
+                continue
+            virtual = f"{slot[0]}[{slot[1]}]"
+            if virtual not in seen:
+                seen.add(virtual)
+                slots.append(virtual)
+        return frozenset({container}), slots
 
 
 if __name__ == "__main__":

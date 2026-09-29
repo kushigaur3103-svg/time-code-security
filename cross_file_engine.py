@@ -24,6 +24,16 @@ TAINT_SOURCE_PATTERNS = {
 }
 
 
+# Framework event-bus vocabulary: a producer never calls a handler directly, so the
+# dispatch method has to be re-read as a call of the registered subscriber.
+SIGNAL_FACTORY_METHODS = {"Signal"}
+SIGNAL_SUBSCRIBE_DECORATORS = {"receiver"}
+SIGNAL_EMISSION_METHODS = {"send", "send_robust"}
+TASK_DECORATOR_NAMES = {"shared_task", "task"}
+TASK_DECORATOR_ATTRS = {"task"}
+TASK_DISPATCH_METHODS = {"delay", "apply_async"}
+
+
 _SCOPES = (ast.FunctionDef, ast.AsyncFunctionDef, ast.Lambda, ast.ClassDef)
 
 
@@ -51,6 +61,19 @@ def _contracted_functions(tree: ast.AST):
             for item in stmt.body:
                 if isinstance(item, (ast.FunctionDef, ast.AsyncFunctionDef)):
                     yield item, f"{stmt.name}.{item.name}"
+
+
+def _dotted_prefix(expr: ast.expr) -> str:
+    """Dotted spelling of a Name/Attribute expression chain, '' when it is anything else."""
+    parts: List[str] = []
+    current: ast.expr = expr
+    while isinstance(current, ast.Attribute):
+        parts.append(current.attr)
+        current = current.value
+    if not isinstance(current, ast.Name):
+        return ""
+    parts.append(current.id)
+    return ".".join(reversed(parts))
 
 
 def _name_uses(expr: ast.expr) -> Set[str]:
@@ -110,6 +133,11 @@ class CrossFileTaintEngine:
         self.sink_route: dict[tuple[str, str, int, str, int], List[tuple[str, int, str]]] = {}
         # Cached per-callee decorator analysis: (mod, qualname) -> sanitised parameter indices.
         self._decorator_slots: dict[tuple[str, str], Set[int]] = {}
+        # Event-bus catalog: (defining module, symbol) pairs for signals, their subscribers,
+        # and Celery-style task functions reachable only through a dispatch method.
+        self.signal_definitions: Set[tuple[str, str]] = set()
+        self.signal_subscribers: dict[tuple[str, str], List[tuple[str, str]]] = {}
+        self.task_definitions: Set[tuple[str, str]] = set()
 
     def run(self) -> list[CrossFileFinding]:
         # 1. Build Index & Contracts
@@ -117,6 +145,7 @@ class CrossFileTaintEngine:
         self.summarizer = FunctionSummarizer(self.indexer)
         self.contracts = self.summarizer.build_all_summaries()
         self._propagate_transitive_sink_contracts()
+        self._build_event_catalog()
 
         # 2. Analyze Callers across all modules
         for mod_name, mod_idx in self.indexer.modules.items():
@@ -126,6 +155,133 @@ class CrossFileTaintEngine:
             self._analyze_module_calls(mod_name, mod_idx.file_path, tree)
 
         return self.findings
+
+    # ─── Framework event bus: Django signals and Celery tasks ───
+    def _build_event_catalog(self) -> None:
+        """Index signal objects, their @receiver handlers, and @shared_task / @app.task workers.
+
+        A producer never names these functions, it only calls `.send(...)` or `.delay(...)` on a
+        handle, so without this catalog the call graph has no edge into the handler and the sinks
+        behind it stay invisible across modules.
+        """
+        for mod_name, tree in self.indexer._ast_cache.items():
+            for stmt in tree.body:
+                if isinstance(stmt, ast.Assign) and self._is_signal_factory(stmt.value):
+                    for target in stmt.targets:
+                        if isinstance(target, ast.Name):
+                            self.signal_definitions.add((mod_name, target.id))
+            for func_node, qualname in _contracted_functions(tree):
+                self._register_event_handler(mod_name, func_node, qualname)
+
+    @staticmethod
+    def _is_signal_factory(value: ast.AST) -> bool:
+        """True for `x = Signal()` / `x = django.dispatch.Signal()` (Django, Blinker)."""
+        if not isinstance(value, ast.Call):
+            return False
+        callee = value.func
+        if isinstance(callee, ast.Name):
+            return callee.id in SIGNAL_FACTORY_METHODS
+        return isinstance(callee, ast.Attribute) and callee.attr in SIGNAL_FACTORY_METHODS
+
+    @staticmethod
+    def _decorator_label(decorator: ast.AST) -> Optional[str]:
+        """Trailing dotted component of a decorator, whether bare, dotted, or called."""
+        target = decorator.func if isinstance(decorator, ast.Call) else decorator
+        if isinstance(target, ast.Name):
+            return target.id
+        if isinstance(target, ast.Attribute):
+            return target.attr
+        return None
+
+    def _register_event_handler(
+        self,
+        mod_name: str,
+        func_node: ast.FunctionDef | ast.AsyncFunctionDef,
+        qualname: str,
+    ) -> None:
+        for decorator in func_node.decorator_list:
+            label = self._decorator_label(decorator)
+            if label is None:
+                continue
+            if (label in SIGNAL_SUBSCRIBE_DECORATORS and isinstance(decorator, ast.Call)
+                    and decorator.args):
+                signal_ref = self._resolve_reference(mod_name, decorator.args[0])
+                if signal_ref is not None:
+                    self.signal_definitions.add(signal_ref)
+                    self.signal_subscribers.setdefault(signal_ref, []).append((mod_name, qualname))
+            elif label in TASK_DECORATOR_NAMES:
+                self.task_definitions.add((mod_name, qualname))
+
+    def _resolve_reference(self, mod_name: str, expr: ast.AST) -> Optional[tuple[str, str]]:
+        """(defining module, symbol) a receiver or decorator argument points at."""
+        if isinstance(expr, ast.Name):
+            mod_idx = self.indexer.modules.get(mod_name)
+            binding = mod_idx.imports.get(expr.id) if mod_idx else None
+            if binding is not None:
+                target_mod = self.indexer._match_registered_module(binding.source_module)
+                if target_mod:
+                    return (target_mod, binding.imported_name or expr.id)
+            return (mod_name, expr.id)
+        if isinstance(expr, ast.Attribute):
+            if isinstance(expr.value, ast.Name) and expr.value.id in ("self", "cls"):
+                return None
+            base = _dotted_prefix(expr.value)
+            if not base:
+                return None
+            return (self.indexer._match_registered_module(base) or base, expr.attr)
+        return None
+
+    def _resolve_event_emission(
+        self,
+        caller_mod: str,
+        call: ast.Call,
+    ) -> List[tuple[str, FunctionSummary, ast.Call]]:
+        """Callee contracts hidden behind `signal.send(...)`, `signal.send_robust(...)` and
+        `task.delay(...)` / `task.apply_async(...)`, resolved through the event catalog.
+
+        Each entry also carries the call view to bind the contract against, because Celery's
+        `apply_async` hands the payload over in `args=` / `kwargs=` envelopes instead of in
+        its own signature.
+        """
+        if not isinstance(call.func, ast.Attribute):
+            return []
+        attr = call.func.attr
+        if attr in SIGNAL_EMISSION_METHODS:
+            ref = self._resolve_reference(caller_mod, call.func.value)
+            targets = self.signal_subscribers.get(ref, []) if ref else []
+        elif attr in TASK_DISPATCH_METHODS:
+            ref = self._resolve_reference(caller_mod, call.func.value)
+            targets = [ref] if ref and ref in self.task_definitions else []
+        else:
+            return []
+        dispatch_call = self._dispatch_call(attr, call)
+        resolved = []
+        for target in targets:
+            summary = self.contracts.get(target)
+            if summary is not None:
+                resolved.append((target[0], summary, dispatch_call))
+        return resolved
+
+    @staticmethod
+    def _dispatch_call(attr: str, call: ast.Call) -> ast.Call:
+        """Flatten `task.apply_async(args=[...], kwargs={...})` into the call it dispatches."""
+        if attr != "apply_async":
+            return call
+        args: List[ast.expr] = []
+        keywords: List[ast.keyword] = []
+        for kw in call.keywords:
+            if kw.arg == "args" and isinstance(kw.value, (ast.List, ast.Tuple)):
+                args.extend(kw.value.elts)
+            elif kw.arg == "kwargs" and isinstance(kw.value, ast.Dict):
+                for key, value in zip(kw.value.keys, kw.value.values):
+                    if isinstance(key, ast.Constant) and isinstance(key.value, str):
+                        keywords.append(ast.keyword(arg=key.value, value=value))
+        if not args and not keywords:
+            return call
+        dispatch = ast.Call(func=call.func, args=args, keywords=keywords)
+        for field_name in ("lineno", "end_lineno", "col_offset", "end_col_offset"):
+            setattr(dispatch, field_name, getattr(call, field_name, None))
+        return dispatch
 
     def _propagate_transitive_sink_contracts(self) -> None:
         """Fixed-point lift of callee sink contracts into pass-through callers.
@@ -339,6 +495,19 @@ class CrossFileTaintEngine:
                     tainted_vars,
                     receivers,
                 )
+                for callee_mod, summary, dispatch_call in self._resolve_event_emission(
+                    caller_mod, call_node
+                ):
+                    self._emit_contract_findings(
+                        caller_mod,
+                        caller_file,
+                        caller_func_name,
+                        dispatch_call,
+                        callee_mod,
+                        summary,
+                        tainted_vars,
+                        receivers,
+                    )
 
     def _bind_call_args(
         self,
@@ -365,7 +534,24 @@ class CrossFileTaintEngine:
         for kw in call.keywords:
             if kw.arg and kw.arg in param_to_idx:
                 bound[param_to_idx[kw.arg]] = kw.value
+            elif kw.arg:
+                slot = self._kwarg_slot_index(param_names, kw.arg)
+                if slot is not None:
+                    bound[slot] = kw.value
         return bound
+
+    @staticmethod
+    def _kwarg_slot_index(param_names: List[str], keyword: str) -> Optional[int]:
+        """Contract slot for an incoming keyword that only a `**kwargs` parameter can receive.
+
+        The summariser names those slots `<container>[<key>]`, so a signal payload keyword
+        `payload=` binds onto `kwargs[payload]` and nothing else.
+        """
+        suffix = f"[{keyword}]"
+        for idx, name in enumerate(param_names):
+            if name.endswith(suffix):
+                return idx
+        return None
 
     def _receiver_offset(
         self,
@@ -756,7 +942,25 @@ class CrossFileTaintEngine:
         if not resolved:
             return
         callee_mod, summary = resolved
+        self._emit_contract_findings(caller_mod, caller_file, caller_func_name, call,
+                                     callee_mod, summary, tainted_vars, receivers)
 
+    def _emit_contract_findings(
+        self,
+        caller_mod: str,
+        caller_file: str,
+        caller_func_name: str,
+        call: ast.Call,
+        callee_mod: str,
+        summary: FunctionSummary,
+        tainted_vars: set[str],
+        receivers: Dict[str, tuple[str, str]],
+    ) -> None:
+        """Report every sink the callee reaches from an argument the caller passed tainted.
+
+        Shared by direct calls and by event dispatch (`signal.send(...)` / `task.delay(...)`), so
+        a handler reached through the bus gets the same binding rules and trace shape.
+        """
         # Check if caller passed tainted arguments into callee's sink parameters
         neutralized = self._decorator_sanitized_params(callee_mod, summary)
         for arg_idx, arg in sorted(

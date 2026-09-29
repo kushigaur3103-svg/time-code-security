@@ -1041,6 +1041,20 @@ def extract_subscript_key(slice_node: ast.AST) -> Optional[Union[str, int]]:
             return -curr.operand.n
     return None
 
+
+# ─── Module 1: dynamic reflection (getattr) receiver constants ───
+# getattr(receiver, <non-static name>) hides the invoked method from attribute-call matching. When
+# the receiver only ever exposes security-sensitive methods, the dynamic dispatch is itself the flaw.
+DB_FACTORY_METHODS = {"cursor", "connect", "connection", "raw_connection"}
+EXEC_CAPABLE_MODULES = {"os", "subprocess", "commands", "pty", "popen2", "posix"}
+REFLECTION_NAMESPACE_MODULES = {"builtins"}
+REFLECTION_FAMILY_BY_KIND = {
+    "db": ("CWE-89", "DYNAMIC_SQL_INVOCATION", "SQL_INJECTION"),
+    "exec": ("CWE-78", "DYNAMIC_COMMAND_INVOCATION", "COMMAND_INJECTION"),
+    "namespace": ("CWE-95", "DYNAMIC_CODE_INVOCATION", "CODE_EXECUTION"),
+}
+
+
 class TaintTracker:
     def __init__(self, files: dict[str, str] = None, source: str = None, file_path: str = "target.py", audit_all: bool = False):
         self.files = files if files is not None else {file_path: source}
@@ -1059,6 +1073,7 @@ class TaintTracker:
                 self.file_paths[mod_name] = fpath
             except SyntaxError:
                 pass
+        self.dead_node_ids: set = self._compute_dead_node_ids()
         self.imports = {m: {} for m in self.modules}
         self.sources: list[SecurityNode] = []
         self.sinks: list[SecurityNode] = []
@@ -1172,6 +1187,34 @@ class TaintTracker:
                 else:
                     break
         return None
+
+    def _static_subscript_path(self, node: ast.Subscript, scope_id: str = "") -> Optional[tuple]:
+        """Decompose `root[k1][k2]...` into (root, [k1, k2, ...], kind) when every key is static.
+
+        kind is "name" for a bare-variable container and "self_attr" for a `self.field` /
+        `cls.field` container. None means the chain has no recognised root or a dynamic key.
+        """
+        keys: list = []
+        current: ast.AST = node
+        while isinstance(current, ast.Subscript):
+            key = self._extract_subscript_key(current.slice, scope_id)
+            if key is None:
+                return None
+            keys.append(key)
+            current = current.value
+        if not keys:
+            return None
+        if isinstance(current, ast.Name):
+            return (current.id, list(reversed(keys)), "name")
+        if (isinstance(current, ast.Attribute) and isinstance(current.value, ast.Name)
+                and current.value.id in ("self", "cls")):
+            return (current.attr, list(reversed(keys)), "self_attr")
+        return None
+
+    @staticmethod
+    def _subscript_path_key(root: str, keys: list) -> str:
+        """Composite key label for a subscript path; depth 1 keeps the historic `root[key]` form."""
+        return f"{root}{''.join(f'[{key}]' for key in keys)}"
 
     def _eval_const_str(self, node: Optional[ast.AST], scope_id: Optional[str] = None, visited: Optional[set[str]] = None) -> Optional[str]:
         if node is None:
@@ -1960,6 +2003,76 @@ class TaintTracker:
                 return True
         return False
 
+    def _reflection_getattr_parts(self, node: ast.Call) -> Optional[tuple]:
+        """`(receiver, attr_expr)` when `node` is a call of `getattr(receiver, attr)`."""
+        inner = node.func
+        if not isinstance(inner, ast.Call):
+            return None
+        fname = dotted_name(inner.func) or ""
+        if fname != "getattr" and not fname.endswith(".getattr"):
+            return None
+        if len(inner.args) < 2:
+            return None
+        return (inner.args[0], inner.args[1])
+
+    def _latest_assignment(self, name: str, scope_id: str, before_lineno: int = 0) -> Optional[AssignmentRecord]:
+        """Most recent (preferably unconditional) assignment of `name` in the scope chain."""
+        current = scope_id
+        mod_name = scope_id.split(":")[0] if scope_id else ""
+        while current:
+            recs = self.assignments_by_scope.get((current, name), [])
+            if before_lineno:
+                recs = [r for r in recs if r.lineno <= before_lineno]
+            if recs:
+                uncond = [r for r in recs if not r.is_conditional]
+                return (uncond or recs)[-1]
+            if "." in current and "function" in current:
+                current = current.rsplit(".", 1)[0]
+            elif ":function" in current:
+                current = f"{mod_name}:global"
+            elif current != f"{mod_name}:global":
+                current = f"{mod_name}:global"
+            else:
+                break
+        return None
+
+    def _receiver_module(self, receiver: ast.AST, scope_id: str) -> Optional[str]:
+        """Import-resolved module a receiver expression names, None for non-module receivers."""
+        dotted = dotted_name(receiver) or ""
+        root = dotted.split(".")[0] if dotted else ""
+        if not root:
+            return None
+        imports = self.imports.get(scope_id.split(":")[0] if scope_id else "", {})
+        if root in imports:
+            return imports[root]
+        return root if root in set(imports.values()) else None
+
+    def _dynamic_reflection_family(self, node: ast.Call, scope_id: str) -> Optional[str]:
+        """Sink family of `getattr(receiver, <dynamic name>)(...)` for security-sensitive receivers.
+
+        Only fires when the invoked name is not statically resolvable; a literal name is already
+        unrolled into `receiver.name` by resolve_canonical_name.
+        """
+        parts = self._reflection_getattr_parts(node)
+        if parts is None or not node.args:
+            return None
+        receiver, attr_expr = parts
+        if self._eval_const_str_with_params(attr_expr, scope_id) is not None:
+            return None
+        if isinstance(receiver, ast.Name):
+            record = self._latest_assignment(receiver.id, scope_id, getattr(node, "lineno", 0))
+            if record is not None and isinstance(record.value_node, ast.Call):
+                callee = (self.resolve_canonical_name(record.value_node.func, record.scope_id)
+                          or dotted_name(record.value_node.func) or "")
+                if callee.split(".")[-1] in DB_FACTORY_METHODS:
+                    return "db"
+        module = self._receiver_module(receiver, scope_id)
+        if module in EXEC_CAPABLE_MODULES:
+            return "exec"
+        if module in REFLECTION_NAMESPACE_MODULES:
+            return "namespace"
+        return None
+
     def is_sink_call(self, node: ast.AST, scope_id: str = "", lineno: int = 0) -> bool:
         if not isinstance(node, ast.Call): return False
         call_lineno = lineno or getattr(node, "lineno", 0)
@@ -1999,6 +2112,10 @@ class TaintTracker:
         if candidates & cwe338_names:
             if not self._is_security_sensitive_random(node, scope_id, call_lineno):
                 return False
+
+        # Module 1: getattr(receiver, <dynamic>)(...) on a DB-API / exec / builtins receiver.
+        if scope_id and self._dynamic_reflection_family(node, scope_id) is not None:
+            return True
 
         if canon:
             if canon.startswith("shadowed:"):
@@ -2072,6 +2189,13 @@ class TaintTracker:
 
         if force_cwe == "CWE-295":
             meta = {"operation": "DISABLED_SSL_VERIFICATION", "category": "INSECURE_TRANSPORT", "cwe": "CWE-295"}
+        elif scope_id and (family := self._dynamic_reflection_family(node, scope_id)) is not None:
+            cwe_value, operation, category = REFLECTION_FAMILY_BY_KIND[family]
+            receiver_label = dotted_name(self._reflection_getattr_parts(node)[0]) or "object"
+            name = f"getattr({receiver_label}, <dynamic>)"
+            meta = {"operation": operation, "category": category, "cwe": cwe_value,
+                    "dynamic_invocation": True}
+            canon_name = None
         else:
             matched_rule = match_sink_rule(node, name, canon_name)
             if matched_rule and isinstance(node.func, ast.Attribute) and node.func.attr == "render":
@@ -2538,6 +2662,86 @@ class TaintTracker:
                     if scope_id in self.classes:
                         self.class_field_assignments.setdefault((scope_id, subnode.target.id), []).append(record)
 
+    # ─── Module 4: static branch reachability ───
+    @staticmethod
+    def _literal_truthiness(node: ast.AST) -> Optional[bool]:
+        """Truthiness of a purely literal / boolean-operator expression, None when undecidable."""
+        if isinstance(node, ast.Constant):
+            value = node.value
+            if isinstance(value, (bool, int, float, complex, str, bytes)) or value is None:
+                return bool(value)
+            return None
+        if isinstance(node, ast.UnaryOp) and isinstance(node.op, ast.Not):
+            inner = TaintTracker._literal_truthiness(node.operand)
+            return None if inner is None else (not inner)
+        if isinstance(node, ast.BoolOp):
+            parts = [TaintTracker._literal_truthiness(value) for value in node.values]
+            if isinstance(node.op, ast.And):
+                if any(part is False for part in parts):
+                    return False
+                return True if all(part is True for part in parts) else None
+            if any(part is True for part in parts):
+                return True
+            return False if all(part is False for part in parts) else None
+        return None
+
+    @staticmethod
+    def _complement_pair(node: ast.AST, op_type) -> bool:
+        """True if `op_type(X, ..., not X, ...)` holds for one of the operands."""
+        if not (isinstance(node, ast.BoolOp) and isinstance(node.op, op_type)):
+            return False
+        try:
+            keys = [ast.unparse(value.operand)
+                    if isinstance(value, ast.UnaryOp) and isinstance(value.op, ast.Not) else None
+                    for value in node.values]
+            plain = {ast.unparse(value) for idx, value in enumerate(node.values) if keys[idx] is None}
+        except Exception:  # noqa: BLE001 - unparse is best-effort on exotic nodes
+            return False
+        return any(key is not None and key in plain for key in keys)
+
+    @classmethod
+    def _is_unreachable_test(cls, test: ast.AST) -> bool:
+        """Test is statically always False: falsy literal, or `X and not X`."""
+        if cls._literal_truthiness(test) is False:
+            return True
+        return cls._complement_pair(test, ast.And)
+
+    @classmethod
+    def _is_tautology_test(cls, test: ast.AST) -> bool:
+        """Test is statically always True: truthy literal, or `X or not X`."""
+        if cls._literal_truthiness(test) is True:
+            return True
+        return cls._complement_pair(test, ast.Or)
+
+    def _compute_dead_node_ids(self) -> set:
+        """Ids of AST nodes inside statically unreachable if-branches.
+
+        Structural collectors walk whole module trees, bypassing collect_statements, so they
+        need this set to keep dead branches silent.
+        """
+        dead: set = set()
+        for tree in self.modules.values():
+            for node in ast.walk(tree):
+                if not isinstance(node, ast.If):
+                    continue
+                if self._is_unreachable_test(node.test):
+                    unreachable = node.body
+                elif self._is_tautology_test(node.test):
+                    unreachable = node.orelse
+                else:
+                    continue
+                for stmt in unreachable:
+                    for descendant in ast.walk(stmt):
+                        dead.add(id(descendant))
+        return dead
+
+    def _in_dead_code(self, node: ast.AST) -> bool:
+        return id(node) in self.dead_node_ids
+
+    def _reachable_nodes(self, tree: ast.AST) -> list:
+        """Module nodes excluding statically unreachable if-branches (dead-code pruning)."""
+        return [node for node in ast.walk(tree) if not self._in_dead_code(node)]
+
     def collect_statements(self, statements: list[ast.stmt], scope_id: str, is_conditional: bool = False):
         for stmt in statements:
             if isinstance(stmt, (ast.FunctionDef, ast.AsyncFunctionDef)):
@@ -2585,6 +2789,18 @@ class TaintTracker:
                             cls_scope = self._get_enclosing_class_scope(scope_id)
                             if cls_scope:
                                 self.instance_field_writes.setdefault((cls_scope, target.value.attr), []).append((stmt.lineno, stmt.value, scope_id))
+                        nested = self._static_subscript_path(target, scope_id)
+                        if nested is not None and len(nested[1]) >= 2:
+                            # Multi-level composite write: cfg["db"]["stmt"] = value
+                            root, keys, kind = nested
+                            comp_key = self._subscript_path_key(root, keys)
+                            record = AssignmentRecord(target_name=comp_key, value_node=stmt.value, lineno=stmt.lineno, scope_id=scope_id, is_conditional=is_conditional)
+                            if kind == "name":
+                                self.assignments_by_scope.setdefault((scope_id, comp_key), []).append(record)
+                            else:
+                                cls_scope = self._get_enclosing_class_scope(scope_id)
+                                if cls_scope:
+                                    self.class_field_assignments.setdefault((cls_scope, comp_key), []).append(record)
                     elif isinstance(target, (ast.Tuple, ast.List)):
                         for idx, elt in enumerate(target.elts):
                             val_node = stmt.value.elts[idx] if (isinstance(stmt.value, (ast.Tuple, ast.List)) and idx < len(stmt.value.elts)) else stmt.value
@@ -2689,7 +2905,11 @@ class TaintTracker:
                 self.scan_for_sinks(stmt.test, scope_id, stmt.lineno)
                 self._collect_calls_in_expr(stmt.test, scope_id, stmt.lineno)
                 self._collect_named_exprs(stmt.test, scope_id, stmt.lineno, is_conditional=False)
-                pairs = self._extract_containment_pairs(stmt.test)
+                # Dead-code pruning: a statically False test never enters its body, a
+                # statically True test never enters its else, and neither can register a guard.
+                test_dead = self._is_unreachable_test(stmt.test)
+                test_live = not test_dead and self._is_tautology_test(stmt.test)
+                pairs = [] if test_dead else self._extract_containment_pairs(stmt.test)
                 if pairs:
                     is_inverted = (
                         (isinstance(stmt.test, ast.UnaryOp) and isinstance(stmt.test.op, ast.Not)) or
@@ -2771,8 +2991,10 @@ class TaintTracker:
                                     "start_line": orelse_start,
                                     "end_line": orelse_end,
                                 })
-                self.collect_statements(stmt.body, scope_id=scope_id, is_conditional=True)
-                self.collect_statements(stmt.orelse, scope_id=scope_id, is_conditional=True)
+                if not test_dead:
+                    self.collect_statements(stmt.body, scope_id=scope_id, is_conditional=True)
+                if not test_live:
+                    self.collect_statements(stmt.orelse, scope_id=scope_id, is_conditional=True)
             elif isinstance(stmt, (ast.For, ast.AsyncFor, ast.While)):
                 if isinstance(stmt, ast.While):
                     self.scan_for_sinks(stmt.test, scope_id, stmt.lineno)
@@ -2938,6 +3160,8 @@ class TaintTracker:
         mod_name = scope_id.split(":")[0]
         file_path = self.file_paths.get(mod_name, "unknown.py")
         for subnode in ast.walk(expr):
+            if self._in_dead_code(subnode):
+                continue
             call_lineno = getattr(subnode, "lineno", lineno)
             if isinstance(subnode, ast.Call) and self.is_sink_call(subnode, scope_id, call_lineno):
                 canon_name = self.resolve_canonical_name(subnode.func, scope_id) or dotted_name(subnode.func) or ""
@@ -4160,10 +4384,13 @@ class TaintTracker:
             # Field-sensitive container taint tracking
             key = self._extract_subscript_key(node.slice, scope_id)
             base_var = node.value.id if isinstance(node.value, ast.Name) else None
+            path = self._static_subscript_path(node, scope_id)
+            # Depth-1 keeps the historic `base[key]` label; deeper chains get `base[k1][k2]...`.
+            comp_key = (self._subscript_path_key(path[0], path[1])
+                        if path is not None and path[2] == "name" else None)
 
-            # 1. Composite key in assignments: d["cmd"] = ...
-            if base_var and key is not None:
-                comp_key = f"{base_var}[{key}]"
+            # 1. Composite key in assignments: d["cmd"] = ... / cfg["db"]["stmt"] = ...
+            if comp_key is not None:
                 current_scope = scope_id
                 found_record = None
                 while current_scope:
@@ -5283,7 +5510,7 @@ class TaintTracker:
             file_path = self.file_paths.get(mod_name, "unknown.py")
             scope_id = f"{mod_name}:global"
             seen: set[tuple[str, int, int]] = set()
-            for node in ast.walk(tree):
+            for node in self._reachable_nodes(tree):
                 cwe_meta = None
                 if isinstance(node, ast.Call):
                     name = dotted_name(node.func) or ""
@@ -5404,7 +5631,7 @@ class TaintTracker:
             module_csrf_disabled = False
             module_csrf_enabled = False
 
-            for node in ast.walk(tree):
+            for node in self._reachable_nodes(tree):
                 if isinstance(node, ast.Compare):
                     names_comp = {n.id for n in ast.walk(node) if isinstance(n, ast.Name)}
                     attrs_comp = {n.attr for n in ast.walk(node) if isinstance(n, ast.Attribute)}
@@ -5435,7 +5662,7 @@ class TaintTracker:
                             elif val_c is True:
                                 module_csrf_enabled = True
 
-            for node in ast.walk(tree):
+            for node in self._reachable_nodes(tree):
                 cwe_meta = None
                 lineno = getattr(node, "lineno", 0)
 
@@ -5756,7 +5983,7 @@ class TaintTracker:
                 cands = [v for lno, v in assigns_in_module.get(var_name, []) if lno < before_lineno]
                 return cands[-1] if cands else None
 
-            for node in ast.walk(tree):
+            for node in self._reachable_nodes(tree):
                 if isinstance(node, (ast.Import, ast.ImportFrom)):
                     mod_target = ""
                     if isinstance(node, ast.ImportFrom):
@@ -5780,7 +6007,7 @@ class TaintTracker:
 
             # Track try/finally for CWE-269
             try_finally_uids = []
-            for node in ast.walk(tree):
+            for node in self._reachable_nodes(tree):
                 if isinstance(node, ast.Try) and node.finalbody:
                     for fb_node in ast.walk(ast.Module(body=node.finalbody, type_ignores=[])):
                         if isinstance(fb_node, ast.Call):
@@ -5791,14 +6018,14 @@ class TaintTracker:
 
             # Check whitelist membership comparisons for CWE-90
             whitelist_checked_vars = set()
-            for node in ast.walk(tree):
+            for node in self._reachable_nodes(tree):
                 if isinstance(node, ast.Compare):
                     for op, comp in zip(node.ops, node.comparators):
                         if isinstance(op, (ast.In, ast.NotIn)):
                             if isinstance(node.left, ast.Name):
                                 whitelist_checked_vars.add(node.left.id)
 
-            for node in ast.walk(tree):
+            for node in self._reachable_nodes(tree):
                 cwe_meta = None
                 lineno = getattr(node, "lineno", 0)
 
@@ -6140,7 +6367,7 @@ class TaintTracker:
                 cands = [v for lno, v in assigns_in_module.get(var_name, []) if lno < before_lineno]
                 return cands[-1] if cands else None
 
-            for node in ast.walk(tree):
+            for node in self._reachable_nodes(tree):
                 # CWE-1275: Insecure SameSite cookie configuration
                 if isinstance(node, ast.Call):
                     is_set_cookie = False
@@ -6392,7 +6619,7 @@ class TaintTracker:
         for mod_name, tree in self.modules.items():
             seen.clear()
             dynamic_response_vars: dict[tuple[str, str], list[int]] = {}
-            scoped_nodes = [(node, _scope_for(node, mod_name)) for node in ast.walk(tree)]
+            scoped_nodes = [(node, _scope_for(node, mod_name)) for node in self._reachable_nodes(tree)]
 
             for node, scope_id in scoped_nodes:
                 if not isinstance(node, (ast.Assign, ast.AnnAssign)) or not isinstance(node.value, ast.Call):
@@ -6699,7 +6926,7 @@ class TaintTracker:
 
         for mod_name, tree in self.modules.items():
             seen.clear()
-            for node in ast.walk(tree):
+            for node in self._reachable_nodes(tree):
                 if not isinstance(node, ast.Call) or not isinstance(node.func, ast.AST):
                     continue
                 scope_id = _scope_for(node, mod_name)
@@ -6935,7 +7162,7 @@ class TaintTracker:
         for mod_name, tree in self.modules.items():
             seen.clear()
             archive_vars: dict[tuple[str, str], str] = {}
-            scoped_nodes = [(node, _scope_for(node, mod_name)) for node in ast.walk(tree)]
+            scoped_nodes = [(node, _scope_for(node, mod_name)) for node in self._reachable_nodes(tree)]
             for node, scope_id in scoped_nodes:
                 lineno = getattr(node, "lineno", 1)
                 if isinstance(node, (ast.Assign, ast.AnnAssign)) and isinstance(node.value, ast.Call):
@@ -7185,7 +7412,7 @@ class TaintTracker:
 
         for mod_name, tree in self.modules.items():
             seen.clear()
-            scoped_nodes = [(node, _scope_for(node, mod_name)) for node in ast.walk(tree)]
+            scoped_nodes = [(node, _scope_for(node, mod_name)) for node in self._reachable_nodes(tree)]
             for node, scope_id in scoped_nodes:
                 if not isinstance(node, ast.Call) or not isinstance(node.func, ast.AST):
                     continue
@@ -7423,7 +7650,7 @@ class TaintTracker:
             seen.clear()
             sax_parser_vars: set[tuple[str, str]] = set()
             environment_vars: set[tuple[str, str]] = set()
-            scoped_nodes = [(node, _scope_for(node, mod_name)) for node in ast.walk(tree)]
+            scoped_nodes = [(node, _scope_for(node, mod_name)) for node in self._reachable_nodes(tree)]
 
             for node, scope_id in scoped_nodes:
                 if isinstance(node, (ast.Assign, ast.AnnAssign)) and isinstance(node.value, ast.Call):
@@ -7741,7 +7968,7 @@ class TaintTracker:
 
         for mod_name, tree in self.modules.items():
             seen.clear()
-            for node in ast.walk(tree):
+            for node in self._reachable_nodes(tree):
                 if not isinstance(node, ast.Call) or not isinstance(node.func, ast.AST):
                     continue
                 scope_id = _scope_for(node, mod_name)
@@ -8033,7 +8260,7 @@ class TaintTracker:
 
         for mod_name, tree in self.modules.items():
             seen.clear()
-            scoped_nodes = [(node, _scope_for(node, mod_name)) for node in ast.walk(tree)]
+            scoped_nodes = [(node, _scope_for(node, mod_name)) for node in self._reachable_nodes(tree)]
             for node, scope_id in scoped_nodes:
                 if isinstance(node, (ast.Assign, ast.AnnAssign)):
                     value_node = node.value
@@ -8192,7 +8419,7 @@ class TaintTracker:
 
         seen: set[tuple[int, int]] = set()
         for mod_name, tree in self.modules.items():
-            for node in ast.walk(tree):
+            for node in self._reachable_nodes(tree):
                 if not isinstance(node, ast.Call) or not isinstance(node.func, ast.Attribute) or node.func.attr != "write":
                     continue
                 scope_id = _scope_for(node, mod_name)
@@ -8419,7 +8646,7 @@ class TaintTracker:
             ))
 
         for mod_name, tree in self.modules.items():
-            for node in ast.walk(tree):
+            for node in self._reachable_nodes(tree):
                 if not isinstance(node, ast.Call) or not isinstance(node.func, ast.AST):
                     continue
                 scope_id = _scope_for(node, mod_name)
@@ -8507,7 +8734,7 @@ class TaintTracker:
 
     def analyze(self):
         for mod_name, tree in self.modules.items():
-            for node in ast.walk(tree):
+            for node in self._reachable_nodes(tree):
                 if isinstance(node, ast.Import):
                     for alias in node.names: self.imports[mod_name][alias.asname or alias.name] = alias.name
                 elif isinstance(node, ast.ImportFrom):
@@ -8670,7 +8897,7 @@ class TaintTracker:
                             self.sink_records.append(SinkRecord(node=call_node, security_node=ssl_sink, lineno=lineno, scope_id=caller_scope))
 
         for mod_name, tree in self.modules.items():
-            for node in ast.walk(tree):
+            for node in self._reachable_nodes(tree):
                 if isinstance(node, ast.Call) and self.is_source_call(node, f"{mod_name}:global"):
                     self.get_or_create_source(node, self.file_paths.get(mod_name, "unknown.py"), f"{mod_name}:global")
         self._collect_batch2_structural_findings()
