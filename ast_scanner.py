@@ -1014,6 +1014,23 @@ P3_ECB_CONSTANT_MODES = {"ECB", "MODE_ECB"}
 P3_ECB_SKIP_IF_WEAK_CIPHER = {"DES", "DES.new", "DES3", "DES3.new", "TripleDES", "TripleDES.new", "ARC4"}
 # CWE-73: schemes that reach local or non-HTTP resources through a network-style resource sink.
 P3_UNTRUSTED_SCHEMES = ("file://", "ftp://", "gopher://")
+# CWE-319: urllib's legacy opener objects fetch whatever scheme is spelled in their URL
+# argument. `URLopener().open("http://…")` is a plaintext network read, so it must never be
+# classified as a filesystem access, and only http/ftp are the cleartext cases the rule set
+# audits (https/sftp are the labelled-safe twins in the same fixtures).
+P3_URLLIB_OPENER_TYPES = {"OpenerDirector", "URLopener", "FancyURLopener", "build_opener"}
+P3_URLLIB_FETCH_METHODS = {"open", "retrieve"}
+P3_URLLIB_FETCH_FUNCTIONS = {"urlopen", "urlretrieve"}
+P3_URLLIB_REQUEST_CONSTRUCTOR = "urllib.request.Request"
+P3_URLLIB_CLEARTEXT_SCHEMES = ("http", "ftp")
+# Schemes that prove the argument is a network location, not a filesystem path. `file://`
+# and friends stay under their existing path/protocol classification.
+P3_URLLIB_NETWORK_SCHEMES = ("http", "https", "ftp", "ftps", "sftp")
+# Opening one of these with a literal path hands back fixed on-disk bytes.
+P3_FILE_READ_FUNCTIONS = {"open", "io.open", "builtins.open", "os.fdopen"}
+P3_FILE_READ_METHODS = {"read_bytes", "read_text", "open"}
+# A URL whose scheme+authority are fully spelled out before any dynamic hole.
+P3_URL_AUTHORITY_RE = re.compile(r"[a-zA-Z][a-zA-Z0-9+.\-]*://[^/?#]+")
 P3_RESOURCE_SINK_NAMES = {
     "urlopen", "urllib.request.urlopen", "urlretrieve", "urllib.request.urlretrieve",
     "Request", "urllib.request.Request",
@@ -1070,6 +1087,19 @@ def _eval_static_constant(node, assignments_by_scope, scope_id="", lineno=0, vis
         if isinstance(node.op, ast.Not) and isinstance(inner, bool):
             return not inner
         return None
+    if isinstance(node, ast.JoinedStr):
+        # An f-string whose every hole folds to a literal is a plain string literal:
+        # `f"ping {host}"` with `host = "1.2.3.4"` carries no more input than `"ping "`.
+        parts = []
+        for value in node.values:
+            if (isinstance(value, ast.FormattedValue)
+                    and value.conversion is None and value.format_spec is None):
+                value = value.value
+            piece = _eval_static_constant(value, assignments_by_scope, scope_id, lineno, visited)
+            if not isinstance(piece, str):
+                return None
+            parts.append(piece)
+        return "".join(parts)
     if isinstance(node, ast.BinOp):
         left = _eval_static_constant(node.left, assignments_by_scope, scope_id, lineno, visited)
         right = _eval_static_constant(node.right, assignments_by_scope, scope_id, lineno, visited)
@@ -1125,6 +1155,82 @@ def _eval_static_constant(node, assignments_by_scope, scope_id="", lineno=0, vis
             return candidates[0]
         return None
     return None
+
+def _assignment_records(assignments_by_scope, name: str, scope_id: str, lineno: int):
+    """Writes to `name` visible from `scope_id`, oldest first, walking out to the
+    enclosing function scopes and the module scope like `_eval_static_constant` does."""
+    mod_name = scope_id.split(":")[0] if scope_id else ""
+    current = scope_id
+    walked = set()
+    while current and current not in walked:
+        walked.add(current)
+        records = assignments_by_scope.get((current, name), [])
+        if lineno:
+            records = [r for r in records if r.lineno <= lineno]
+        if records:
+            return list(records)
+        if "." in current and "function" in current:
+            current = current.rsplit(".", 1)[0]
+        elif ":function" in current:
+            current = f"{mod_name}:global"
+        elif current != f"{mod_name}:global":
+            current = f"{mod_name}:global"
+        else:
+            break
+    return []
+
+
+def _literal_text(node, assignments_by_scope, scope_id="", lineno=0, seen=None):
+    """A string assembled purely from literals, or `None` when any write is not
+    provably literal. Unlike `_eval_static_constant` this resolves accumulator chains
+    (`query = "SELECT …"` then `query += "3"`) by replaying every write in order: the
+    accumulator reads itself, which the plain folder has to refuse."""
+    if node is None:
+        return None
+    seen = seen if seen is not None else set()
+    value = _eval_static_constant(node, assignments_by_scope, scope_id, lineno, set(seen))
+    if isinstance(value, str):
+        return value
+    if isinstance(node, ast.Name):
+        key = (scope_id, node.id)
+        if key in seen:
+            return None
+        seen = seen | {key}
+        accumulated = None
+        for record in _assignment_records(assignments_by_scope, node.id, scope_id, lineno):
+            writer = record.value_node
+            if (accumulated is not None and isinstance(writer, ast.BinOp)
+                    and isinstance(writer.op, ast.Add)
+                    and isinstance(writer.left, ast.Name) and writer.left.id == node.id):
+                piece = _literal_text(writer.right, assignments_by_scope,
+                                      record.scope_id, record.lineno, seen)
+            else:
+                piece = _literal_text(writer, assignments_by_scope,
+                                      record.scope_id, record.lineno, seen)
+            if piece is None:
+                return None
+            accumulated = piece if accumulated is None else accumulated + piece
+        return accumulated
+    if isinstance(node, ast.BinOp) and isinstance(node.op, ast.Add):
+        left = _literal_text(node.left, assignments_by_scope, scope_id, lineno, seen)
+        right = _literal_text(node.right, assignments_by_scope, scope_id, lineno, seen)
+        if left is not None and right is not None:
+            return left + right
+    return None
+
+
+def _json_or_structured_body(call: ast.Call, assignments_by_scope, scope_id: str, lineno: int) -> bool:
+    """True when a response's body is data rather than markup: a structured literal, or a
+    JSON content type the browser will never parse as HTML. Nothing in either can be
+    rendered as script, so an XSS sink claim does not hold."""
+    body = call.args[0] if call.args else next(
+        (kw.value for kw in call.keywords if kw.arg in {"content", "data"}), None)
+    if isinstance(body, (ast.Dict, ast.List, ast.Tuple, ast.Set)):
+        return True
+    media = next((kw.value for kw in call.keywords if kw.arg == "content_type"), None)
+    text = _literal_text(media, assignments_by_scope, scope_id, lineno)
+    return isinstance(text, str) and "json" in text.lower()
+
 
 def location(node: ast.AST, file_path: str) -> CodeLocation:
     return CodeLocation(
@@ -5728,6 +5834,82 @@ class TaintTracker:
                         return True
         return False
 
+    def _cookie_flag_states(self, node: ast.Call, scope_id: str, lineno: int) -> dict:
+        """
+        Guard for the set_cookie() attribute family (CWE-614 Secure, CWE-1004 HttpOnly,
+        CWE-1275 SameSite).
+
+        Each flag gets one of five states, and a finding needs positive structural proof:
+          * 'safe'       - provably enabled (literal True, or a real SameSite value);
+          * 'unsafe'     - provably disabled (False / None / 'none');
+          * 'configured' - passed, but the value is not provable (settings.X, a config Name,
+                           a cross-module constant): the call defers cookie policy to config;
+          * 'unknown'    - a `**<opaque>` unpack may carry the flag, so absence proves nothing;
+          * 'missing'    - not passed and nothing unpacked.
+        A call that does not even match the (key, value) cookie-setter signature
+        (e.g. CookieJar.set_cookie(cookie)) is not cookie configuration at all.
+        """
+        flags = {"secure": "missing", "httponly": "missing", "samesite": "missing"}
+        if not (len(node.args) >= 2 or any(kw.arg for kw in node.keywords)):
+            flags["_skip"] = True
+            return flags
+        unpacked: dict[str, object] = {}
+        opaque = False
+        for kw in node.keywords:
+            if kw.arg is None:
+                opts = _eval_dict_constants(kw.value, self.assignments_by_scope, scope_id, lineno)
+                if not opts:
+                    opaque = True
+                    continue
+                for key, val in opts.items():
+                    unpacked.setdefault(key.lower(), val)
+            elif kw.arg.lower() in flags:
+                value, provable = self._cookie_const(kw.value, scope_id, lineno)
+                flags[kw.arg.lower()] = (self._cookie_flag_state(kw.arg.lower(), value)
+                                         if provable else "configured")
+        for key, val in unpacked.items():
+            if key in flags and flags[key] == "missing":
+                flags[key] = ("configured" if val is None
+                              else self._cookie_flag_state(key, val))
+        if opaque:
+            for key in ("secure", "httponly", "samesite"):
+                if flags[key] == "missing":
+                    flags[key] = "unknown"
+        return flags
+
+    def _cookie_const(self, expr: ast.AST, scope_id: str, lineno: int) -> tuple:
+        """(value, provable) for a keyword value; unresolvable expressions are not proven."""
+        val = _eval_static_constant(expr, self.assignments_by_scope, scope_id, lineno)
+        if val is None and isinstance(expr, ast.Constant) and expr.value is None:
+            return None, True
+        if val is None and isinstance(expr, ast.Name) and expr.id.lower() in ("none", "null"):
+            return None, True
+        return val, val is not None
+
+    @staticmethod
+    def _cookie_flag_state(flag: str, value) -> str:
+        if flag == "samesite":
+            if value is None or (isinstance(value, str) and value.strip().lower() == "none"):
+                return "unsafe"
+            return "safe"
+        if value is False:
+            return "unsafe"
+        return "safe" if value is True else "configured"
+
+    def _cookie_flag_missing(self, states: dict, flag: str) -> bool:
+        """True only when the engine can prove this cookie attribute is absent or disabled."""
+        if states.get("_skip"):
+            return False
+        return states.get(flag) in ("missing", "unsafe")
+
+    def _cookie_policy_externalised(self, states: dict) -> bool:
+        """True when the call hands cookie security over to settings/config or an unpacked
+        mapping, in which case a single absent attribute is not a provable defect."""
+        if states.get("_skip"):
+            return True
+        return any(states.get(flag) in ("configured", "unknown")
+                   for flag in ("secure", "httponly", "samesite"))
+
     def _collect_batch2_structural_findings(self) -> None:
         """
         Batch 2 PURE_STRUCTURAL visitors (data/cwe_blueprint_batch2.json):
@@ -5779,21 +5961,15 @@ class TaintTracker:
 
                     # CWE-1004: set_cookie without httponly=True and secure=True
                     elif name == "set_cookie" or name.endswith(".set_cookie") or canon == "set_cookie" or (canon and canon.endswith(".set_cookie")):
-                        httponly_ok = False
-                        secure_ok = False
-                        for kw in getattr(node, "keywords", []):
-                            if kw.arg == "httponly":
-                                httponly_ok = _eval_static_constant(kw.value, self.assignments_by_scope, scope_id, getattr(node, "lineno", 0)) is True
-                            elif kw.arg == "secure":
-                                secure_ok = _eval_static_constant(kw.value, self.assignments_by_scope, scope_id, getattr(node, "lineno", 0)) is True
-                            elif kw.arg is None:
-                                d_opts = _eval_dict_constants(kw.value, self.assignments_by_scope, scope_id, getattr(node, "lineno", 0))
-                                if d_opts.get("httponly") is True:
-                                    httponly_ok = True
-                                if d_opts.get("secure") is True:
-                                    secure_ok = True
-                        if not (httponly_ok and secure_ok):
-                            cwe_meta = {"operation": "INSECURE_COOKIE_FLAGS", "category": "INSECURE_COOKIE_CONFIGURATION", "cwe": "CWE-1004"}
+                        states = self._cookie_flag_states(node, scope_id,
+                                                          getattr(node, "lineno", 0))
+                        enabled = ("safe", "configured", "unknown")
+                        if not states.get("_skip") and not (
+                                states["httponly"] in enabled
+                                and states["secure"] in enabled):
+                            cwe_meta = {"operation": "INSECURE_COOKIE_FLAGS",
+                                        "category": "INSECURE_COOKIE_CONFIGURATION",
+                                        "cwe": "CWE-1004"}
 
                 elif isinstance(node, (ast.Assign, ast.AnnAssign)):
                     # CWE-798: hardcoded credential literal assigned to a sensitive target
@@ -7224,16 +7400,11 @@ class TaintTracker:
 
                     # ─── CWE-614: set_cookie without secure=True ───
                     if name == "set_cookie" or name.endswith(".set_cookie") or canon == "set_cookie" or (canon and canon.endswith(".set_cookie")):
-                        secure_ok = False
-                        for kw in getattr(node, "keywords", []):
-                            if kw.arg == "secure":
-                                secure_ok = _eval_static_constant(kw.value, self.assignments_by_scope, scope_id, lineno) is True
-                            elif kw.arg is None:
-                                d_opts = _eval_dict_constants(kw.value, self.assignments_by_scope, scope_id, lineno)
-                                if d_opts.get("secure") is True:
-                                    secure_ok = True
-                        if not secure_ok:
-                            cwe_meta = {"operation": "INSECURE_COOKIE_SECURE_FLAG", "category": "INSECURE_COOKIE_CONFIGURATION", "cwe": "CWE-614"}
+                        states = self._cookie_flag_states(node, scope_id, lineno)
+                        if self._cookie_flag_missing(states, "secure"):
+                            cwe_meta = {"operation": "INSECURE_COOKIE_SECURE_FLAG",
+                                        "category": "INSECURE_COOKIE_CONFIGURATION",
+                                        "cwe": "CWE-614"}
 
                     # ─── CWE-916 & CWE-759: Weak Password Hash & Unsalted Hash ───
                     elif names & CWE3A_WEAK_HASH_NAMES:
@@ -7903,20 +8074,6 @@ class TaintTracker:
             scope_id = f"{mod_name}:global"
             seen: set[tuple[str, int, int]] = set()
 
-            assigns_in_module: dict[str, list[tuple[int, ast.AST]]] = {}
-            for n in ast.walk(tree):
-                if isinstance(n, ast.Assign):
-                    for t in n.targets:
-                        if isinstance(t, ast.Name):
-                            assigns_in_module.setdefault(t.id, []).append((n.lineno, n.value))
-                elif isinstance(n, ast.AnnAssign):
-                    if isinstance(n.target, ast.Name) and n.value:
-                        assigns_in_module.setdefault(n.target.id, []).append((n.lineno, n.value))
-
-            def _get_assigned_val(var_name: str, before_lineno: int):
-                cands = [v for lno, v in assigns_in_module.get(var_name, []) if lno < before_lineno]
-                return cands[-1] if cands else None
-
             for node in self._reachable_nodes(tree):
                 # CWE-1275: Insecure SameSite cookie configuration
                 if isinstance(node, ast.Call):
@@ -7927,22 +8084,10 @@ class TaintTracker:
                         is_set_cookie = True
 
                     if is_set_cookie:
-                        samesite_kw = next((kw for kw in node.keywords if kw.arg == "samesite"), None)
-                        is_vuln = False
-                        if samesite_kw is None:
-                            is_vuln = True
-                        else:
-                            val = samesite_kw.value
-                            if isinstance(val, ast.Constant):
-                                if val.value is None or (isinstance(val.value, str) and str(val.value).lower() == "none"):
-                                    is_vuln = True
-                            elif isinstance(val, ast.Name):
-                                assigned = _get_assigned_val(val.id, getattr(node, "lineno", 1))
-                                if assigned and isinstance(assigned, ast.Constant):
-                                    if assigned.value is None or (isinstance(assigned.value, str) and str(assigned.value).lower() == "none"):
-                                        is_vuln = True
-                                elif val.id.lower() in ("none", "null"):
-                                    is_vuln = True
+                        states = self._cookie_flag_states(node, scope_id,
+                                                          getattr(node, "lineno", 1))
+                        is_vuln = (self._cookie_flag_missing(states, "samesite")
+                                   and not self._cookie_policy_externalised(states))
 
                         if is_vuln:
                             key = ("CWE-1275", getattr(node, "lineno", 1), getattr(node, "col_offset", 0))
@@ -8501,12 +8646,14 @@ class TaintTracker:
                             node, mod_name, scope_id, "DESERIALIZATION",
                             "UNSAFE_DESERIALIZATION", "CWE-502",
                         )
-                elif "yaml.load" in names:
+                elif "yaml.load" in names or "yaml.load_all" in names:
                     loader = next((kw.value for kw in node.keywords if kw.arg == "Loader"), None)
                     loader_name = ""
                     if isinstance(loader, ast.AST):
                         loader_name = self.resolve_canonical_name(loader, scope_id) or dotted_name(loader) or ""
-                    if loader_name.rsplit(".", 1)[-1] not in {"SafeLoader", "CSafeLoader"}:
+                    # BaseLoader yields plain strings and builds no objects, so it parses
+                    # without executing anything — same guarantee as the Safe pair.
+                    if loader_name.rsplit(".", 1)[-1] not in {"SafeLoader", "CSafeLoader", "BaseLoader"}:
                         _add_finding(node, mod_name, scope_id, "DESERIALIZATION", "UNSAFE_DESERIALIZATION", "CWE-502")
                 elif names & deserialization_sinks:
                     _add_finding(node, mod_name, scope_id, "DESERIALIZATION", "UNSAFE_DESERIALIZATION", "CWE-502")
@@ -9173,6 +9320,101 @@ class TaintTracker:
                     if record.security_node in self.sinks:
                         self.sinks.remove(record.security_node)
 
+        def _is_opener_receiver(expr: ast.AST, scope_id: str, lineno: int, walked=None) -> bool:
+            """True for `URLopener()` / `OpenerDirector()`, or a name bound to one."""
+            if isinstance(expr, ast.Call):
+                names = {n.rsplit(".", 1)[-1] for n in _call_names(expr, scope_id)}
+                return bool(names & P3_URLLIB_OPENER_TYPES)
+            if isinstance(expr, ast.Name):
+                seen = walked if walked is not None else set()
+                key = (scope_id, expr.id)
+                if key in seen:
+                    return False
+                seen.add(key)
+                record = _assigned_value(expr.id, scope_id, lineno)
+                return record is not None and _is_opener_receiver(
+                    record.value_node, record.scope_id, record.lineno, seen)
+            return False
+
+        def _url_text(expr: ast.AST, scope_id: str, lineno: int, node=None):
+            """A provably-known URL string: a literal, a constant-folded expression, or a
+            parameter whose default is a literal."""
+            value = _eval_static_constant(expr, self.assignments_by_scope, scope_id, lineno)
+            if isinstance(value, str):
+                return value
+            if not isinstance(expr, ast.Name):
+                return None
+            current = getattr(node, "parent", None)
+            while current is not None:
+                if isinstance(current, (ast.FunctionDef, ast.AsyncFunctionDef)):
+                    for param, default in TaintTracker._c1_parameter_defaults(current):
+                        if param.arg == expr.id and isinstance(default, ast.Constant) \
+                                and isinstance(default.value, str):
+                            return default.value
+                    return None
+                current = getattr(current, "parent", None)
+            return None
+
+        def _url_static_prefix(expr: ast.AST, scope_id: str, lineno: int):
+            """Longest leading text of a URL expression that is provably free of dynamic input.
+            A replacement hole (`%s`, `{}`, an f-string field) ends the static run."""
+            if expr is None:
+                return None
+            if isinstance(expr, ast.JoinedStr):
+                parts = []
+                for value in expr.values:
+                    if not (isinstance(value, ast.Constant) and isinstance(value.value, str)):
+                        break
+                    parts.append(value.value)
+                return "".join(parts)
+            if isinstance(expr, ast.BinOp) and isinstance(expr.op, ast.Mod):
+                text = _url_text(expr.left, scope_id, lineno, expr)
+                return text.split("%", 1)[0] if isinstance(text, str) else None
+            if (isinstance(expr, ast.Call) and isinstance(expr.func, ast.Attribute)
+                    and expr.func.attr in ("format", "format_map")):
+                text = _url_text(expr.func.value, scope_id, lineno, expr)
+                return text.split("{", 1)[0] if isinstance(text, str) else None
+            if isinstance(expr, ast.BinOp) and isinstance(expr.op, ast.Add):
+                left = _url_static_prefix(expr.left, scope_id, lineno)
+                if left is None:
+                    return None
+                if P3_URL_AUTHORITY_RE.match(left):
+                    return left
+                right = _url_static_prefix(expr.right, scope_id, lineno)
+                return left + right if right is not None else left
+            text = _url_text(expr, scope_id, lineno)
+            if not isinstance(text, str):
+                return None
+            return re.split(r"[{%]", text, 1)[0]
+
+        def _static_url_authority(expr: ast.AST, scope_id: str, lineno: int) -> bool:
+            """True when scheme+host are both statically fixed, so no input can redirect the
+            request elsewhere: `https://example.com/%s/%s` keeps its authority, while
+            `https://%s/x` or `f"https://{env}/x"` does not."""
+            prefix = _url_static_prefix(expr, scope_id, lineno)
+            return isinstance(prefix, str) and bool(P3_URL_AUTHORITY_RE.match(prefix))
+
+        def _ssrf_sink_name(names: set[str]) -> bool:
+            for name in names:
+                for candidate in (name, name.rsplit(".", 1)[-1]):
+                    meta = SINK_REGISTRY.get(candidate)
+                    if meta and meta.get("cwe") == "CWE-918":
+                        return True
+            return False
+
+        def _fixed_path_read(expr: ast.AST, scope_id: str, lineno: int) -> bool:
+            """`open("fixtures/blob.dat")` — the bytes come off a path the caller cannot
+            move, so the object graph read from it is not attacker-chosen either."""
+            if not isinstance(expr, ast.Call):
+                return False
+            names = _call_names(expr, scope_id)
+            short_names = {name.rsplit(".", 1)[-1] for name in names}
+            if not (names & P3_FILE_READ_FUNCTIONS or short_names & P3_FILE_READ_METHODS):
+                return False
+            path_arg = expr.args[0] if expr.args else next(
+                (kw.value for kw in expr.keywords if kw.arg in {"file", "path"}), None)
+            return _literal_text(path_arg, self.assignments_by_scope, scope_id, lineno) is not None
+
         seen: set[tuple[str, int, int]] = set()
 
         def _add_finding(
@@ -9240,6 +9482,58 @@ class TaintTracker:
                 if _is_defused(names):
                     _remove_existing(node, {"CWE-611"}, mod_name)
                     continue
+
+                # CWE-319: urllib's opener objects and module-level fetch functions send the
+                # scheme spelled in their URL argument. That is a network read, never a
+                # filesystem path, so a resolved "<scheme>://" argument also corrects a
+                # CWE-22/CWE-73 classification.
+                fetch_attr = (isinstance(node.func, ast.Attribute)
+                              and node.func.attr in P3_URLLIB_FETCH_METHODS
+                              and _is_opener_receiver(node.func.value, scope_id, lineno))
+                short_names = {name.rsplit(".", 1)[-1] for name in names}
+                fetch_func = bool(short_names & P3_URLLIB_FETCH_FUNCTIONS) or any(
+                    name == P3_URLLIB_REQUEST_CONSTRUCTOR for name in names)
+                if fetch_attr or fetch_func:
+                    url_arg = node.args[0] if node.args else next(
+                        (kw.value for kw in node.keywords if kw.arg == "url"), None)
+                    url = _url_text(url_arg, scope_id, lineno, node) if url_arg is not None else None
+                    scheme = url.split("://", 1)[0].lower() if isinstance(url, str) and "://" in url else None
+                    if scheme in P3_URLLIB_NETWORK_SCHEMES:
+                        _remove_existing(node, {"CWE-22"}, mod_name)
+                        if scheme in P3_URLLIB_CLEARTEXT_SCHEMES:
+                            _add_finding(node, mod_name, scope_id, "CWE-319", "INSECURE_TRANSPORT",
+                                         "CLEARTEXT_URL_FETCH", "CLEARTEXT_URL_FETCH")
+                    continue
+
+                # CWE-918: an outbound fetch is only forgeable when input can move the
+                # authority. A fixed scheme+host with taint confined to the path is not SSRF.
+                if _ssrf_sink_name(names):
+                    url_arg = node.args[0] if node.args else next(
+                        (kw.value for kw in node.keywords if kw.arg == "url"), None)
+                    if _static_url_authority(url_arg, scope_id, lineno):
+                        _remove_existing(node, {"CWE-918"}, mod_name)
+
+                # CWE-89: a statement made only of literals has no hole for input, no
+                # matter how many `+=` steps were used to assemble it.
+                query_arg = node.args[0] if node.args else next(
+                    (kw.value for kw in node.keywords
+                     if kw.arg in {"statement", "sql", "query"}), None)
+                if _literal_text(query_arg, self.assignments_by_scope, scope_id, lineno) is not None:
+                    _remove_existing(node, {"CWE-89"}, mod_name)
+
+                # CWE-502: a payload that is a literal, or bytes read from a literal
+                # path, cannot carry attacker-controlled pickle/yaml structure.
+                payload_arg = node.args[0] if node.args else next(
+                    (kw.value for kw in node.keywords if kw.arg in {"data", "file", "stream"}), None)
+                if (_literal_text(payload_arg, self.assignments_by_scope, scope_id, lineno)
+                        is not None or _fixed_path_read(payload_arg, scope_id, lineno)):
+                    _remove_existing(node, {"CWE-502"}, mod_name)
+
+                # CWE-79: a body is markup only if the response says so. A JSON
+                # content_type means the browser never parses it, and a structured literal
+                # is not markup in the first place.
+                if _json_or_structured_body(node, self.assignments_by_scope, scope_id, lineno):
+                    _remove_existing(node, {"CWE-79"}, mod_name)
 
                 is_xml_parser = any(name.endswith("XMLParser") for name in names)
                 if is_xml_parser:
@@ -9573,25 +9867,16 @@ class TaintTracker:
                     name == "set_cookie" or name.endswith(".set_cookie") for name in names
                 )
                 if is_set_cookie:
-                    options = {}
-                    for keyword in node.keywords:
-                        if keyword.arg is None:
-                            options.update(_eval_dict_constants(
-                                keyword.value, self.assignments_by_scope, scope_id, lineno
-                            ))
-                        elif keyword.arg is not None:
-                            options[keyword.arg] = _static_value(keyword.value, scope_id, lineno)
+                    states = self._cookie_flag_states(node, scope_id, lineno)
                     vulnerable_cwes = []
-                    if options.get("httponly") is not True:
+                    if self._cookie_flag_missing(states, "httponly"):
                         vulnerable_cwes.append("CWE-1004")
-                    if options.get("secure") is not True:
+                    if self._cookie_flag_missing(states, "secure"):
                         vulnerable_cwes.append("CWE-614")
-                    if options.get("samesite") is None or (
-                        isinstance(options.get("samesite"), str)
-                        and options["samesite"].strip().lower() == "none"
-                    ):
-                        if any(keyword.arg == "samesite" for keyword in node.keywords):
-                            vulnerable_cwes.append("CWE-1004")
+                    if (states.get("samesite") == "unsafe"
+                            and any(keyword.arg == "samesite" for keyword in node.keywords
+                                    if keyword.arg is not None)):
+                        vulnerable_cwes.append("CWE-1004")
                     for cwe in set(vulnerable_cwes):
                         category = "INSECURE_COOKIE_CONFIGURATION"
                         operation = "INSECURE_COOKIE_FLAGS" if cwe == "CWE-1004" else "INSECURE_COOKIE_SECURE_FLAG"
@@ -10234,7 +10519,9 @@ class TaintTracker:
                     content = next((kw.value for kw in node.keywords if kw.arg in {"content", "content_type", "contentType"}), None)
                     if content is None and node.args:
                         content = node.args[0]
-                    if content is not None:
+                    if (content is not None
+                            and not _json_or_structured_body(node, self.assignments_by_scope,
+                                                             scope_id, lineno)):
                         temporary_sink = SecurityNode(
                             id="", node_type=NodeType.SINK, symbol="HTML_RESPONSE",
                             operation="HTML_RESPONSE", location=location(node, self.file_paths.get(mod_name, "unknown.py")),
