@@ -862,6 +862,68 @@ CLUSTER2_STRUCTURAL_SOURCE_IDS = {
     "PERMISSIVE_CORS_POLICY": "PERMISSIVE_CORS_POLICY",
 }
 
+# ─── Phase 3 Cluster 3 structural rule constants (18-rule grand finale batch) ───
+CLUSTER3_NOSEC_RE = re.compile(r"#\s*nosec\b")
+CLUSTER3_WEAK_NEW_HASH_ALGOS = {"md2", "md4", "md5", "sha1", "sha0"}
+CLUSTER3_WEAK_HASH_CLASS_NAMES = {"MD2", "MD4", "MD5", "SHA", "SHA1"}
+CLUSTER3_HASH_MODULE_PAIRS = (("Crypto", "Hash"), ("Cryptodome", "Hash"))
+CLUSTER3_HASHLIB_MODULE_SEG = "hashlib"
+CLUSTER3_PASSWORD_SETTER_METHODS = {"setpassword", "set_password"}
+CLUSTER3_INSECURE_UUID_SEG = "uuid1"
+CLUSTER3_URLLIB_MODULE_SEGS = {"urllib", "urllib2"}
+CLUSTER3_URLLIB_DYNAMIC_FETCH_SEGS = {"urlopen", "open", "retrieve"}
+CLUSTER3_OPENER_CTOR_SEGS = {"URLopener", "FancyURLopener", "build_opener"}
+CLUSTER3_SHELL_EXEC_SEGS = {"system", "popen", "popen2", "popen3", "getoutput", "getstatus"}
+CLUSTER3_SUBPROCESS_SHELL_SEGS = {"Popen", "run", "call", "check_call", "check_output"}
+CLUSTER3_WILDCARD_BINARIES = {"tar", "rsync", "chown", "chmod", "chgrp"}
+CLUSTER3_URLFOR_SEG = "url_for"
+CLUSTER3_TWIML_KW = "twiml"
+CLUSTER3_TWIML_XML_RE = re.compile(r"<\s*(?:Response|Say|Dial|Message|Hangup|Sms|Body)\b")
+CLUSTER3_TWIML_ESCAPERS = {"escape"}
+CLUSTER3_LOGGER_ROOTS = {"logger", "logging", "log"}
+CLUSTER3_LOGGER_METHODS = {"info", "debug", "warn", "warning", "error", "exception", "critical"}
+CLUSTER3_SENSITIVE_LOG_NAME_RE = re.compile(
+    r"(?i)^(password|passwd|secret|secret_key|token|access_token|api_?key|auth_header|"
+    r"authorization|credentials?|salt)$")
+CLUSTER3_BOTO_CONSTRUCTOR_SEGS = {"client", "resource", "Session"}
+CLUSTER3_AWS_KEY_ID_KW = "aws_access_key_id"
+CLUSTER3_AWS_SECRET_KWS = {"aws_secret_access_key", "aws_session_token"}
+CLUSTER3_AWS_KEY_ID_SHAPE_RE = re.compile(r"^AKIA[0-9A-Za-z]{12,}$")
+CLUSTER3_AWS_SECRET_SHAPE_RE = re.compile(r"^[A-Za-z0-9/+=]{39,41}$")
+CLUSTER3_PASSWORD_PARAM_NAMES = {"password", "passwd", "secret", "token", "api_key", "apikey"}
+CLUSTER3_KEYGEN_SEGS = {"generate_private_key"}
+CLUSTER3_KEYGEN_ROOTS = {"rsa", "dsa"}
+CLUSTER3_EC_ROOT = "ec"
+CLUSTER3_WEAK_EC_CURVE_RE = re.compile(r"^SEC[PpT]\d*(1[0-9]{2}|2[01][0-9]|22[0-3])(?:[A-Za-z]|$)")
+CLUSTER3_YAML_ROOT = "yaml"
+CLUSTER3_YAML_UNSAFE_LOADERS = {"Loader", "UnsafeLoader", "FullLoader", "CLoader"}
+CLUSTER3_YAML_UNSAFE_SEGS = {"unsafe_load"}
+CLUSTER3_PICKLE_ROOTS = {"pickle", "_pickle", "cPickle", "dill", "shelve", "marshal"}
+CLUSTER3_PICKLE_METHOD_SEGS = {"loads", "dumps"}
+CLUSTER3_SHELVE_OPEN_SEG = "open"
+CLUSTER3_CSRF_EXEMPT_SEG = "csrf_exempt"
+CLUSTER3_WTF_CSRF_KEY = "WTF_CSRF_ENABLED"
+CLUSTER3_TESTING_KEY = "TESTING"
+CLUSTER3_STRUCTURAL_SOURCE_IDS = {
+    "WEAK_HASH_NEW": "WEAK_HASH_NEW",
+    "WEAK_HASH_CONSTRUCTOR": "WEAK_HASH_CONSTRUCTOR",
+    "WEAK_HASH_PASSWORD_USAGE": "WEAK_HASH_PASSWORD_USAGE",
+    "INSECURE_UUID1": "INSECURE_UUID1",
+    "DYNAMIC_URLLIB_FETCH": "DYNAMIC_URLLIB_FETCH",
+    "SUBPROCESS_WILDCARD_INJECTION": "SUBPROCESS_WILDCARD_INJECTION",
+    "URL_FOR_EXTERNAL_TRUE": "URL_FOR_EXTERNAL_TRUE",
+    "TWIML_XML_INJECTION": "TWIML_XML_INJECTION",
+    "LOGGER_CREDENTIAL_LEAK": "LOGGER_CREDENTIAL_LEAK",
+    "HARDCODED_AWS_TOKEN": "HARDCODED_AWS_TOKEN",
+    "HARDCODED_PASSWORD_DEFAULT": "HARDCODED_PASSWORD_DEFAULT",
+    "INSUFFICIENT_KEY_SIZE": "INSUFFICIENT_KEY_SIZE",
+    "UNSAFE_YAML_LOADER": "UNSAFE_YAML_LOADER",
+    "UNSAFE_PICKLE_USAGE": "UNSAFE_PICKLE_USAGE",
+    "MARSHAL_USAGE": "MARSHAL_USAGE",
+    "CSRF_EXEMPT_VIEW": "CSRF_EXEMPT_VIEW",
+    "FLASK_CSRF_DISABLED": "FLASK_CSRF_DISABLED",
+}
+
 # ─── Batch 3A structural rule constants ───
 CWE3A_WEAK_HASH_NAMES = {
     "hashlib.md5", "hashlib.sha1", "hashlib.sha256", "hashlib.sha512",
@@ -6553,6 +6615,553 @@ class TaintTracker:
                         _add(node, "PERMISSIVE_CORS_POLICY", "INSECURE_CONFIGURATION",
                              "CWE-942")
 
+    def _collect_cluster3_structural_findings(self) -> None:
+        """
+        Phase 3 Cluster 3 PURE_STRUCTURAL visitors, the eighteen-rule grand finale:
+
+          CWE-327  hashlib.new(md4/md5/sha1) without usedforsecurity=False;
+                   Crypto(Dome).Hash weak-class .new() behind an import alias;
+                   cryptography hashes.MD5()/SHA1(); weak digest fed to setPassword.
+          CWE-330  uuid.uuid1() / bare uuid1() (also via `import *`).
+          CWE-939  urllib urlopen/opener.open/retrieve with a non-constant URL.
+          CWE-155  os.system/popen2 or shell=True subprocess on 'tar|rsync|chown|chmod *'.
+          CWE-673  flask url_for(..., _external=True|<dynamic>).
+          CWE-91   TwiML twiml kw interpolating unescaped dynamic strings into XML.
+          CWE-532  logger calls passing credential-named variables.
+          CWE-798  AWS key/secret literals (shape-checked) in boto3 constructors;
+                   password-named default arguments.
+          CWE-326  rsa/dsa.generate_private_key(<2048 bits); ec weak (<224-bit) curves.
+          CWE-502  pickle/_pickle/cPickle/dill/marshal loads+dumps (alias aware),
+                   shelve.open/loads, yaml.unsafe_load and unsafe Loader= variants.
+          CWE-352  @csrf_exempt views; WTF_CSRF_ENABLED=False (subscript, attribute,
+                   bare, and config.update()/from_mapping() kwargs, TESTING=True exempt).
+
+        Appends sinks + sink_records; edges come from the generic p3_source_id synthetic
+        path in analyze().
+        """
+        function_scopes = {id(function): scope for scope, function in self.functions.items()}
+
+        def _scope_for(node: ast.AST, mod_name: str) -> str:
+            current = node
+            while current is not None:
+                scope = function_scopes.get(id(current))
+                if scope:
+                    return scope
+                current = getattr(current, "parent", None)
+            return f"{mod_name}:global"
+
+        def _segments(expr: ast.AST) -> list[str]:
+            chain: list[str] = []
+            current = expr
+            while isinstance(current, ast.Attribute):
+                chain.append(current.attr)
+                current = current.value
+            if isinstance(current, ast.Name):
+                chain.append(current.id)
+            return list(reversed(chain))
+
+        def _lower_method(name: str) -> str:
+            return (name or "").lower()
+
+        for mod_name, tree in self.modules.items():
+            file_path = self.file_paths.get(mod_name, "unknown.py")
+            mod_scope = f"{mod_name}:global"
+            reachable = list(self._reachable_nodes(tree))
+            seen: set[tuple[str, int, int]] = set()
+
+            bindings: dict[str, list[tuple[int, str, str]]] = {}
+            for node in reachable:
+                scope = _scope_for(node, mod_name)
+                if isinstance(node, ast.Import):
+                    for alias in node.names:
+                        local = alias.asname or alias.name.split(".")[0]
+                        bindings.setdefault(scope, []).append(
+                            (getattr(node, "lineno", 0), local, alias.name))
+                        if alias.asname is None and "." in alias.name:
+                            bindings.setdefault(scope, []).append(
+                                (getattr(node, "lineno", 0), alias.name, alias.name))
+                elif isinstance(node, ast.ImportFrom):
+                    module = node.module or ""
+                    for alias in node.names:
+                        local = alias.asname or alias.name
+                        full = f"{module}.{alias.name}" if module else alias.name
+                        bindings.setdefault(scope, []).append(
+                            (getattr(node, "lineno", 0), local, full))
+
+            def _resolve_chain(chain: list[str], scope: str, lineno: int) -> list[str]:
+                if not chain:
+                    return chain
+                for depth in range(min(len(chain), 3), 0, -1):
+                    prefix = ".".join(chain[:depth])
+                    best = None
+                    for scope_key in (scope, mod_scope):
+                        rows = [row for row in bindings.get(scope_key, [])
+                                if row[1] == prefix and row[0] <= lineno]
+                        if rows:
+                            best = rows[-1][2]
+                            break
+                    if best is None:
+                        best = self.imports.get(mod_name, {}).get(prefix)
+                    if best:
+                        return best.split(".") + chain[depth:]
+                return chain
+
+            def _eval_value(expr, scope: str, lineno: int, depth: int = 0):
+                if expr is None or depth > 2:
+                    return None
+                if isinstance(expr, ast.Constant):
+                    return expr.value
+                if isinstance(expr, (ast.List, ast.Tuple)):
+                    return [_eval_value(elt, scope, lineno, depth + 1) for elt in expr.elts]
+                if isinstance(expr, ast.Name):
+                    records = list(self.assignments_by_scope.get((scope, expr.id), []))
+                    records += list(self.assignments_by_scope.get((mod_scope, expr.id), []))
+                    prior = [r for r in records if r.lineno <= lineno]
+                    if prior:
+                        return _eval_value(prior[-1].value_node, scope, prior[-1].lineno,
+                                           depth + 1)
+                    return None
+                return None
+
+            def _assigned_node(name: str, scope: str, lineno: int):
+                records = list(self.assignments_by_scope.get((scope, name), []))
+                records += list(self.assignments_by_scope.get((mod_scope, name), []))
+                prior = [r for r in records if r.lineno <= lineno and r.lineno != lineno]
+                return prior[-1] if prior else None
+
+            def _static(expr, scope: str, lineno: int):
+                return _eval_static_constant(expr, self.assignments_by_scope, scope, lineno)
+
+            existing_index: dict[tuple[str, int], int] = {}
+            for record in self.sink_records:
+                loc = record.security_node.location
+                if loc.file == file_path:
+                    key = (record.security_node.metadata.get("cwe") or "", loc.line_start)
+                    existing_index[key] = existing_index.get(key, 0) + 1
+
+            nosec_lines: set[int] = set()
+            mod_source = self.files.get(file_path) or ""
+            for _idx, _text in enumerate(mod_source.splitlines(), 1):
+                if CLUSTER3_NOSEC_RE.search(_text):
+                    nosec_lines.add(_idx)
+
+            def _add(node: ast.AST, operation: str, category: str, cwe: str) -> None:
+                line = getattr(node, "lineno", 1)
+                column = getattr(node, "col_offset", 0)
+                if line in nosec_lines:
+                    return
+                key = (cwe, line, column)
+                if key in seen or existing_index.get((cwe, line)):
+                    return
+                seen.add(key)
+                scope_id = _scope_for(node, mod_name)
+                sink_node = SecurityNode(
+                    id=self.next_sink_id(),
+                    node_type=NodeType.SINK,
+                    symbol=operation,
+                    operation=operation,
+                    location=location(node, file_path),
+                    metadata={"sink_type": category, "category": category, "cwe": cwe,
+                              "p3_source_id": CLUSTER3_STRUCTURAL_SOURCE_IDS[operation]},
+                )
+                self.sinks.append(sink_node)
+                self.sink_records.append(SinkRecord(
+                    node=node,
+                    security_node=sink_node,
+                    lineno=line,
+                    scope_id=scope_id,
+                ))
+
+            def _contains_weak_hash_token(root_node) -> bool:
+                for sub in ast.walk(root_node):
+                    if isinstance(sub, ast.Attribute) and \
+                            _lower_method(sub.attr) in {"md5", "md4", "md2", "sha1"}:
+                        return True
+                    if isinstance(sub, ast.Name) and \
+                            _lower_method(sub.id) in {"md5", "md4", "md2"}:
+                        return True
+                    if isinstance(sub, ast.Constant) and isinstance(sub.value, str) and \
+                            _lower_method(sub.value) in {"md5", "md4", "md2"}:
+                        return True
+                return False
+
+            def _is_escape_call(expr) -> bool:
+                return isinstance(expr, ast.Call) and \
+                    bool(_segments(expr.func)) and _segments(expr.func)[-1] in \
+                    CLUSTER3_TWIML_ESCAPERS
+
+            def _twiml_is_dynamic(value, scope: str, lineno: int, depth: int = 0) -> bool:
+                if value is None or depth > 3:
+                    return False
+                if isinstance(value, ast.Name):
+                    record = _assigned_node(value.id, scope, lineno)
+                    if record is None:
+                        return False
+                    return _twiml_is_dynamic(record.value_node, record.scope_id,
+                                             record.lineno, depth + 1)
+                constants = [sub.value for sub in ast.walk(value)
+                             if isinstance(sub, ast.Constant) and isinstance(sub.value, str)]
+                if isinstance(value, ast.Call) and \
+                        _segments(value.func)[-1:] == ["format"] and \
+                        isinstance(value.func, ast.Attribute) and \
+                        isinstance(value.func.value, ast.Name):
+                    base_record = _assigned_node(value.func.value.id, scope, lineno)
+                    if base_record is not None:
+                        base_text = _eval_value(base_record.value_node, base_record.scope_id,
+                                                base_record.lineno)
+                        if isinstance(base_text, str):
+                            constants = constants + [base_text]
+                if not any(CLUSTER3_TWIML_XML_RE.search(text or "") for text in constants):
+                    return False
+                interpolated: list[ast.AST] = []
+                if isinstance(value, ast.JoinedStr):
+                    interpolated = [fv.value for fv in value.values
+                                    if isinstance(fv, ast.FormattedValue)]
+                elif isinstance(value, ast.BinOp):
+                    for sub in ast.walk(value):
+                        if isinstance(sub, ast.BinOp) and \
+                                isinstance(sub.op, (ast.Add, ast.Mod)):
+                            if isinstance(sub.op, ast.Add):
+                                side = sub.left if isinstance(sub.right, ast.Constant) else \
+                                    sub.right
+                            else:
+                                side = sub.right
+                            if isinstance(side, ast.Tuple):
+                                interpolated.extend(side.elts)
+                            else:
+                                interpolated.append(side)
+                    interpolated = [item for item in interpolated
+                                    if not isinstance(item, ast.Constant)]
+                elif isinstance(value, ast.Call) and _segments(value.func)[-1:] == ["format"]:
+                    interpolated = list(value.args) + [kw.value for kw in value.keywords]
+                if not interpolated:
+                    return False
+                for expr in interpolated:
+                    if _is_escape_call(expr):
+                        continue
+                    if isinstance(expr, (ast.Name, ast.Call, ast.Attribute, ast.Subscript)):
+                        return True
+                return False
+
+            def _aws_secret_looks_real(text: str) -> bool:
+                return bool(text) and len(set(text)) > 2
+
+            opener_vars: dict[str, set[str]] = {}
+
+            def _module_urllib_chain(chain: list[str]) -> bool:
+                return any(seg in CLUSTER3_URLLIB_MODULE_SEGS for seg in chain[:3])
+
+            for node in reachable:
+                scope = _scope_for(node, mod_name)
+                lineno = getattr(node, "lineno", 1)
+
+                # ---- pre-pass: opener objects (opener = urllib.URLopener()/build_opener()) ----
+                if isinstance(node, ast.Assign) and isinstance(node.value, ast.Call) and \
+                        len(node.targets) == 1 and isinstance(node.targets[0], ast.Name):
+                    value_chain = _resolve_chain(_segments(node.value.func), scope, lineno)
+                    if value_chain and value_chain[-1] in CLUSTER3_OPENER_CTOR_SEGS:
+                        opener_vars.setdefault(scope, set()).add(node.targets[0].id)
+
+                # ---- CWE-352: @csrf_exempt views ----
+                if isinstance(node, (ast.FunctionDef, ast.AsyncFunctionDef)):
+                    for decorator in node.decorator_list:
+                        dec_chain = _segments(decorator.func) if isinstance(decorator, ast.Call) \
+                            else _segments(decorator)
+                        if dec_chain and dec_chain[-1] == CLUSTER3_CSRF_EXEMPT_SEG:
+                            _add(decorator, "CSRF_EXEMPT_VIEW", "CSRF_MISSING_PROTECTION",
+                                 "CWE-352")
+                    # ---- CWE-798: password-named default arguments ----
+                    for arg, default in TaintTracker._c1_parameter_defaults(node):
+                        if arg.arg.lower() not in CLUSTER3_PASSWORD_PARAM_NAMES:
+                            continue
+                        if not (isinstance(default, ast.Constant)
+                                and isinstance(default.value, str)):
+                            continue
+                        text = default.value
+                        if len(text) < 3:
+                            continue
+                        lowered = text.lower()
+                        if any(marker in lowered for marker in
+                               ("changeme", "example", "dummy", "placeholder", "default",
+                                "test", "none", "hello", "world", "foo", "bar", "sample",
+                                "demo")):
+                            continue
+                        _add(node, "HARDCODED_PASSWORD_DEFAULT", "HARDCODED_CREDENTIAL",
+                             "CWE-798")
+
+                # ---- CWE-352: WTF_CSRF_ENABLED = False (attribute/subscript/bare) ----
+                if isinstance(node, ast.Assign):
+                    for target in node.targets:
+                        key_name = None
+                        if isinstance(target, ast.Name):
+                            key_name = target.id
+                        elif isinstance(target, ast.Attribute):
+                            key_name = target.attr
+                        elif isinstance(target, ast.Subscript) and \
+                                isinstance(target.slice, ast.Constant):
+                            key_name = target.slice.value
+                        if key_name == CLUSTER3_WTF_CSRF_KEY and \
+                                _static(node.value, scope, lineno) is False:
+                            _add(node, "FLASK_CSRF_DISABLED", "CSRF_MISSING_PROTECTION",
+                                 "CWE-352")
+
+                if not isinstance(node, ast.Call):
+                    continue
+
+                raw_chain = _segments(node.func)
+                chain = _resolve_chain(raw_chain, scope, lineno)
+                forms = {".".join(chain)} if chain else set()
+                if raw_chain:
+                    forms.add(".".join(raw_chain))
+                if raw_chain and raw_chain[0]:
+                    record = _assigned_node(raw_chain[0], scope, lineno)
+                    if record is not None:
+                        base = dotted_name(record.value_node)
+                        if base:
+                            forms.add(".".join(base.split(".") + raw_chain[1:]))
+                last_seg = raw_chain[-1] if raw_chain else ""
+                kw_map = {kw.arg: kw for kw in node.keywords if kw.arg}
+
+                # ---- CWE-327: hashlib.new(weak) without usedforsecurity=False ----
+                if last_seg == "new" and chain and chain[-2:-1] == \
+                        [CLUSTER3_HASHLIB_MODULE_SEG]:
+                    name_kw = kw_map.get("name")
+                    name_expr = name_kw.value if name_kw else (node.args[0] if node.args
+                                                               else None)
+                    algo = _static(name_expr, scope, lineno)
+                    usedfor = kw_map.get("usedforsecurity")
+                    usedfor_value = _static(usedfor.value, scope, lineno) if usedfor else None
+                    if isinstance(algo, str) and algo.lower() in \
+                            CLUSTER3_WEAK_NEW_HASH_ALGOS and usedfor_value is not False:
+                        _add(node, "WEAK_HASH_NEW", "CRYPTOGRAPHIC_FAILURES", "CWE-327")
+
+                # ---- CWE-327: Crypto(Dome).Hash weak class .new() (alias aware) ----
+                if last_seg == "new" and len(chain) >= 3:
+                    class_name = chain[-2]
+                    if class_name in CLUSTER3_WEAK_HASH_CLASS_NAMES and any(
+                            chain[i:i + 2] == list(pair)
+                            for pair in CLUSTER3_HASH_MODULE_PAIRS
+                            for i in range(len(chain) - 2)):
+                        _add(node, "WEAK_HASH_CONSTRUCTOR", "CRYPTOGRAPHIC_FAILURES",
+                             "CWE-327")
+
+                # ---- CWE-327: cryptography hashes.MD5()/SHA1() ----
+                if chain and chain[-2:-1] == ["hashes"] and \
+                        chain[-1] in {"MD5", "MD4", "MD2", "SHA1"} and \
+                        chain[0] == "cryptography":
+                    _add(node, "WEAK_HASH_CONSTRUCTOR", "CRYPTOGRAPHIC_FAILURES", "CWE-327")
+
+                # ---- CWE-327: weak digest handed to setPassword ----
+                if last_seg and _lower_method(last_seg) in CLUSTER3_PASSWORD_SETTER_METHODS:
+                    for arg in node.args:
+                        probe_expr = arg.func if isinstance(arg, ast.Call) and \
+                            isinstance(arg.func, ast.Attribute) else arg
+                        target_name = None
+                        if isinstance(probe_expr, ast.Name):
+                            target_name = probe_expr.id
+                        elif isinstance(probe_expr, ast.Attribute) and \
+                                isinstance(probe_expr.value, ast.Name):
+                            target_name = probe_expr.value.id
+                        if target_name is None:
+                            continue
+                        record = _assigned_node(target_name, scope, lineno)
+                        if record is not None and _contains_weak_hash_token(
+                                record.value_node):
+                            _add(node, "WEAK_HASH_PASSWORD_USAGE", "CRYPTOGRAPHIC_FAILURES",
+                                 "CWE-327")
+                            break
+
+                # ---- CWE-330: uuid1() ----
+                if last_seg == CLUSTER3_INSECURE_UUID_SEG and \
+                        (len(raw_chain) == 1 or "uuid" in chain):
+                    defined_locally = any(
+                        isinstance(fn, (ast.FunctionDef, ast.AsyncFunctionDef))
+                        and fn.name == CLUSTER3_INSECURE_UUID_SEG
+                        for fn in ast.walk(tree))
+                    if not defined_locally and _assigned_node(last_seg, scope, lineno) is None:
+                        _add(node, "INSECURE_UUID1", "CRYPTOGRAPHIC_FAILURES", "CWE-330")
+
+                # ---- CWE-939: dynamic urllib fetch ----
+                fetch_via_module = bool(chain) and last_seg == "urlopen" and (
+                    _module_urllib_chain(chain) or len(chain) == 1)
+                fetch_via_opener = len(raw_chain) >= 2 and last_seg in {"open", "retrieve"} \
+                    and raw_chain[0] in opener_vars.get(scope, set())
+                if (fetch_via_module or fetch_via_opener) and node.args:
+                    url_expr = node.args[0]
+                    url_value = _static(url_expr, scope, lineno)
+                    if url_value is None and isinstance(url_expr, ast.Name):
+                        current = getattr(node, "parent", None)
+                        fn_node = None
+                        while current is not None:
+                            if isinstance(current, (ast.FunctionDef, ast.AsyncFunctionDef)):
+                                fn_node = current
+                                break
+                            current = getattr(current, "parent", None)
+                        for param, default in (
+                                TaintTracker._c1_parameter_defaults(fn_node)
+                                if fn_node is not None else []):
+                            if param.arg == url_expr.id and isinstance(default, ast.Constant) \
+                                    and isinstance(default.value, str):
+                                url_value = default.value
+                                break
+                    if url_value is None:
+                        _add(node, "DYNAMIC_URLLIB_FETCH", "PROTOCOL_RESOURCE_ACCESS",
+                             "CWE-939")
+
+                # ---- CWE-155: shell wildcard against sensitive binaries ----
+                cmd_chain = chain if chain else raw_chain
+                shell_form = bool(cmd_chain) and cmd_chain[0] == "os" and \
+                    cmd_chain[-1] in CLUSTER3_SHELL_EXEC_SEGS
+                subp_form = bool(cmd_chain) and cmd_chain[0] == "subprocess" and \
+                    cmd_chain[-1] in CLUSTER3_SUBPROCESS_SHELL_SEGS
+                if (shell_form or subp_form) and node.args:
+                    executes_shell = shell_form
+                    if subp_form:
+                        shell_kw = kw_map.get("shell")
+                        executes_shell = bool(shell_kw) and \
+                            _static(shell_kw.value, scope, lineno) is True
+                    if executes_shell:
+                        command = node.args[0]
+                        cmd_text = command.value if isinstance(command, ast.Constant) and \
+                            isinstance(command.value, str) else None
+                        if cmd_text and "*" in cmd_text:
+                            tokens = cmd_text.split()
+                            binary = tokens[0].rsplit("/", 1)[-1] if tokens else ""
+                            if binary in CLUSTER3_WILDCARD_BINARIES:
+                                _add(node, "SUBPROCESS_WILDCARD_INJECTION",
+                                     "COMMAND_INJECTION", "CWE-155")
+
+                # ---- CWE-673: flask url_for(..., _external=True|dynamic) ----
+                if last_seg == CLUSTER3_URLFOR_SEG and (
+                        len(raw_chain) == 1 or raw_chain[0] == "flask"
+                        or (chain and chain[-2:-1] == ["flask"])):
+                    external = kw_map.get("_external")
+                    if external is not None:
+                        value = _static(external.value, scope, lineno)
+                        if value is True or value is None:
+                            _add(node, "URL_FOR_EXTERNAL_TRUE", "OPEN_REDIRECT", "CWE-673")
+
+                # ---- CWE-91: TwiML XML injection ----
+                twiml_kw = kw_map.get(CLUSTER3_TWIML_KW)
+                if twiml_kw is not None and _twiml_is_dynamic(twiml_kw.value, scope, lineno):
+                    _add(twiml_kw.value, "TWIML_XML_INJECTION", "XML_INJECTION", "CWE-91")
+
+                # ---- CWE-532: credential leakage into logs ----
+                if chain and last_seg in CLUSTER3_LOGGER_METHODS and \
+                        (chain[0] in CLUSTER3_LOGGER_ROOTS or
+                         (len(raw_chain) == 2 and raw_chain[0] in CLUSTER3_LOGGER_ROOTS)):
+                    leaked = False
+                    for arg in node.args[1:]:
+                        if isinstance(arg, ast.Name) and \
+                                CLUSTER3_SENSITIVE_LOG_NAME_RE.match(arg.id):
+                            leaked = True
+                            break
+                        if isinstance(arg, (ast.JoinedStr, ast.BinOp)):
+                            for sub in ast.walk(arg):
+                                if isinstance(sub, ast.Name) and \
+                                        CLUSTER3_SENSITIVE_LOG_NAME_RE.match(sub.id):
+                                    leaked = True
+                                    break
+                        if leaked:
+                            break
+                    if leaked:
+                        _add(node, "LOGGER_CREDENTIAL_LEAK", "INFORMATION_DISCLOSURE",
+                             "CWE-532")
+
+                # ---- CWE-798: hardcoded AWS tokens in boto3 constructors ----
+                boto_form = any(form.startswith("boto3") or form.endswith("boto3.client")
+                                or form == "client" or form.endswith(".client")
+                                or form.endswith(".Session") or form.endswith(".resource")
+                                or form in {"Session", "resource"}
+                                for form in forms)
+                if boto_form and last_seg in CLUSTER3_BOTO_CONSTRUCTOR_SEGS:
+                    tainted_kw = None
+                    for kw in node.keywords:
+                        if kw.arg == CLUSTER3_AWS_KEY_ID_KW:
+                            text = _eval_value(kw.value, scope, lineno)
+                            if isinstance(text, str) and \
+                                    CLUSTER3_AWS_KEY_ID_SHAPE_RE.match(text):
+                                tainted_kw = kw
+                                break
+                        elif kw.arg in CLUSTER3_AWS_SECRET_KWS:
+                            text = _eval_value(kw.value, scope, lineno)
+                            if isinstance(text, str) and \
+                                    CLUSTER3_AWS_SECRET_SHAPE_RE.match(text) and \
+                                    _aws_secret_looks_real(text):
+                                tainted_kw = kw
+                                break
+                    if tainted_kw is not None:
+                        _add(node, "HARDCODED_AWS_TOKEN", "HARDCODED_CREDENTIAL", "CWE-798")
+
+                # ---- CWE-326: insufficient RSA/DSA key size, weak EC curves ----
+                if last_seg in CLUSTER3_KEYGEN_SEGS:
+                    root = raw_chain[0] if raw_chain else ""
+                    if root in CLUSTER3_KEYGEN_ROOTS:
+                        size_kw = kw_map.get("key_size")
+                        size_expr = size_kw.value if size_kw else None
+                        if size_expr is None:
+                            constants = [arg for arg in node.args
+                                         if isinstance(arg, ast.Constant)
+                                         and isinstance(arg.value, int)]
+                            if root == "rsa":
+                                constants = [arg for arg in constants
+                                             if arg.value not in (3, 65537)]
+                            if len(constants) == 1:
+                                size_expr = constants[0]
+                        bits = _static(size_expr, scope, lineno) if size_expr is not None \
+                            else None
+                        if isinstance(bits, int) and 0 < bits < 2048:
+                            _add(size_expr, "INSUFFICIENT_KEY_SIZE",
+                                 "CRYPTOGRAPHIC_FAILURES", "CWE-326")
+                    elif root == CLUSTER3_EC_ROOT:
+                        curve_kw = kw_map.get("curve")
+                        curve_expr = curve_kw.value if curve_kw else \
+                            (node.args[0] if node.args else None)
+                        if curve_expr is not None:
+                            curve_chain = _segments(curve_expr)
+                            curve_name = curve_chain[-1] if curve_chain else ""
+                            match = re.match(r"^SEC[A-Z](\d{3})", curve_name)
+                            if match and int(match.group(1)) < 224:
+                                _add(curve_expr, "INSUFFICIENT_KEY_SIZE",
+                                     "CRYPTOGRAPHIC_FAILURES", "CWE-326")
+
+                # ---- CWE-352: app.config.update(WTF_CSRF_ENABLED=False, ...) kwargs ----
+                for kw in node.keywords:
+                    if kw.arg != CLUSTER3_WTF_CSRF_KEY:
+                        continue
+                    if _static(kw.value, scope, lineno) is not False:
+                        continue
+                    testing_kw = kw_map.get(CLUSTER3_TESTING_KEY)
+                    if testing_kw is not None and _static(testing_kw.value, scope,
+                                                          lineno) is True:
+                        continue
+                    _add(kw.value, "FLASK_CSRF_DISABLED", "CSRF_MISSING_PROTECTION",
+                         "CWE-352")
+
+                # ---- CWE-502: yaml unsafe loaders ----
+                if chain and chain[0] == CLUSTER3_YAML_ROOT and \
+                        last_seg in CLUSTER3_YAML_UNSAFE_SEGS:
+                    _add(node, "UNSAFE_YAML_LOADER", "DESERIALIZATION", "CWE-502")
+                elif chain and chain[0] == CLUSTER3_YAML_ROOT and \
+                        last_seg in {"load", "load_all"}:
+                    loader_kw = kw_map.get("Loader") or kw_map.get("Loader"
+                                                                   .lower())
+                    if loader_kw is not None:
+                        loader_name = _segments(loader_kw.value)[-1] if \
+                            _segments(loader_kw.value) else ""
+                        if loader_name in CLUSTER3_YAML_UNSAFE_LOADERS:
+                            _add(node, "UNSAFE_YAML_LOADER", "DESERIALIZATION", "CWE-502")
+
+                # ---- CWE-502: pickle-family and marshal/shelve usage ----
+                if chain and len(chain) >= 2 and chain[-2] in CLUSTER3_PICKLE_ROOTS:
+                    has_dynamic_arg = any(_static(arg, scope, lineno) is None
+                                          for arg in node.args)
+                    if has_dynamic_arg and (
+                            last_seg in CLUSTER3_PICKLE_METHOD_SEGS or
+                            (chain[-2] == "shelve" and last_seg == CLUSTER3_SHELVE_OPEN_SEG)):
+                        _add(node, "UNSAFE_PICKLE_USAGE" if chain[-2] != "marshal"
+                             else "MARSHAL_USAGE", "DESERIALIZATION", "CWE-502")
+
     def _collect_batch3a_structural_findings(self) -> None:
         """
         Batch 3A PURE_STRUCTURAL visitors (data/cwe_blueprint_batch3a.json):
@@ -9883,6 +10492,7 @@ class TaintTracker:
         self._collect_template_response_xss_findings()
         self._collect_cluster1_structural_findings()
         self._collect_cluster2_structural_findings()
+        self._collect_cluster3_structural_findings()
         for assign_stmt, scope_id, lineno in self.ssl_attr_assigns:
             mod_name = scope_id.split(":")[0]
             file_path = self.file_paths.get(mod_name, "unknown.py")
