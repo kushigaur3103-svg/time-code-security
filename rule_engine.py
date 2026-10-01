@@ -1313,6 +1313,11 @@ def get_rule(cwe_id: str) -> Optional[SecurityRule]:
     return GLOBAL_RULE_REGISTRY.get_rule(cwe_id)
 
 
+def get_active_cwe_count() -> int:
+    """Dynamically count currently active rules registered in the global registry."""
+    return len(GLOBAL_RULE_REGISTRY._rules)
+
+
 def match_sink_rule(node: ast.AST, name: str, canon_name: Optional[str] = None) -> Optional[SecurityRule]:
     return GLOBAL_RULE_REGISTRY.match_sink(node, name, canon_name)
 

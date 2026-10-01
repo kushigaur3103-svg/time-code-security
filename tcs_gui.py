@@ -600,6 +600,7 @@ def build_secret_view(finding):
 
 
 from benchmark.manifest import ALL_46_CWES, ALL_24_CWES
+from rule_engine import get_active_cwe_count
 
 
 
@@ -634,7 +635,7 @@ def build_clean_scan_view():
                         ft.Column(
                             [
                                 ft.Text(
-                                    f"NO VULNERABILITIES DETECTED within current TCS analysis scope ({len(ALL_46_CWES)} supported CWE classes).",
+                                    f"NO VULNERABILITIES DETECTED within current TCS analysis scope ({get_active_cwe_count()} supported CWE classes).",
                                     size=12,
                                     weight=ft.FontWeight.BOLD,
                                     color=COLOR_GREEN,

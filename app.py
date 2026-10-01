@@ -2248,7 +2248,12 @@ def execute_tcs_ast_scan(
     
     if active_vulnerabilities == 0:
         risk_level = "CLEAN"
-        risk_message = f"NO VULNERABILITIES DETECTED within current TCS analysis scope ({len(ALL_46_CWES)} supported CWE classes)."
+        try:
+            from rule_engine import get_active_cwe_count
+            supported_cwe_count = get_active_cwe_count()
+        except ImportError:
+            supported_cwe_count = len(ALL_46_CWES)
+        risk_message = f"NO VULNERABILITIES DETECTED within current TCS analysis scope ({supported_cwe_count} supported CWE classes)."
     elif critical_count > 0:
         risk_level = "CRITICAL"
         risk_message = "CRITICAL RISK: Arbitrary code execution, injection, or hardcoded credential leak detected."
@@ -2930,7 +2935,12 @@ def shutdown_notification_service():
 async def catch_all(request: Request, full_path: str):
     if full_path.startswith("api/"):
         raise HTTPException(status_code=404, detail="API endpoint not found")
-    return templates.TemplateResponse(request=request, name="index.html", context={"request": request, "days_left": 14, "supported_cwes": ALL_46_CWES})
+    try:
+        from rule_engine import get_active_cwe_count
+        supported_cwe_count = get_active_cwe_count()
+    except ImportError:
+        supported_cwe_count = len(ALL_46_CWES)
+    return templates.TemplateResponse(request=request, name="index.html", context={"request": request, "days_left": 14, "supported_cwes": ALL_46_CWES, "supported_cwe_count": supported_cwe_count})
 
 if __name__ == "__main__":
     import os
