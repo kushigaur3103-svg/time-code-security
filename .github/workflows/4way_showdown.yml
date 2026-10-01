@@ -60,7 +60,7 @@ jobs:
           # 2. Generate analysis user token
           TOKEN_RESPONSE=$(curl -u admin:NewAdminPassword123! -X POST "http://localhost:9000/api/user_tokens/generate?name=github-runner-token")
           echo "TOKEN_RESPONSE: $TOKEN_RESPONSE"
-          SONAR_TOKEN=*** "$TOKEN_RESPONSE" | jq -r '.token')
+          SONAR_TOKEN="$(echo "$TOKEN_RESPONSE" | jq -r '.token')"
           if [ -z "$SONAR_TOKEN" ] || [ "$SONAR_TOKEN" = "null" ]; then
             echo "::error::Failed to generate SonarQube user token"
             exit 1
