@@ -87,6 +87,10 @@ jobs:
         run: |
           curl -sSLo /tmp/sonar.zip https://binaries.sonarsource.com/Distribution/sonar-scanner-cli/sonar-scanner-cli-5.0.1.3006-linux.zip
           unzip -q /tmp/sonar.zip -d /opt
+          # The -linux distribution bundles a JRE 17 that takes priority over
+          # JAVA_HOME; SonarQube 13.x rejects it. Remove it so the scanner uses
+          # the Java 21 set up by actions/setup-java below.
+          rm -rf /opt/sonar-scanner-5.0.1.3006-linux/jre
           echo "/opt/sonar-scanner-5.0.1.3006-linux/bin" >> "$GITHUB_PATH"
 
       # sonarqube:community now ships 13.x, whose batch bootstrap rejects Java 17.
