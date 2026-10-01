@@ -84,6 +84,13 @@ jobs:
           unzip -q /tmp/sonar.zip -d /opt
           echo "/opt/sonar-scanner-5.0.1.3006-linux/bin" >> "$GITHUB_PATH"
 
+      # sonarqube:community now ships 13.x, whose batch bootstrap rejects Java 17.
+      - name: Set up Java 21 for SonarScanner
+        uses: actions/setup-java@v4
+        with:
+          distribution: temurin
+          java-version: "21"
+
       - name: Mirror benchmark corpora
         run: python scripts/setup_python_benchmark.py
 
