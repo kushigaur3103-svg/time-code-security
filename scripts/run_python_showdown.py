@@ -290,28 +290,51 @@ def findings_from_tcs_api(corpus_dir: Path) -> tuple[list[dict], dict]:
     comparison against the per-invocation CLI sweep)."""
     sys.path.insert(0, str(ROOT))
     from ast_scanner import TaintTracker  # noqa: PLC0415
+    from cli import consolidate_findings, get_rule  # noqa: PLC0415
     findings: list[dict] = []
     errors: list[dict] = []
     started = time.perf_counter()
     for path in sorted(corpus_dir.rglob("*.py")):
         try:
             tracker = TaintTracker(files={norm(path): path.read_text(encoding="utf-8",
-                                                                      errors="replace")},
-                                   audit_all=True)
+                                                                      errors="replace")})
             _s, sinks, edges = tracker.analyze()
             by_id = {s.id: s for s in sinks}
+            raw_findings = []
+            seen: set[tuple[str, int, str]] = set()
             for edge in edges:
                 sink = by_id.get(edge.target_id)
-                if sink and sink.location:
-                    findings.append({"tool": "TCS", "file": norm(path),
-                                     "line": sink.location.line_start,
-                                     "cwe": (sink.metadata or {}).get("cwe"),
-                                     "native": sink.symbol})
+                if sink is None:
+                    continue
+                cwe = (sink.metadata or {}).get("cwe")
+                if not cwe and edge.proof_graph is not None:
+                    cwe = edge.proof_graph.cwe
+                cwe = cwe or "UNKNOWN_CWE"
+                rule = get_rule(cwe)
+                confidence_label = "CONFIRMED" if edge.kind == "CONFIRMED_DATA_FLOW" else "POTENTIAL"
+                severity = rule.get_severity(confidence_label).upper() if rule else "HIGH"
+                location = sink.location
+                finding = {
+                    "file": norm(path),
+                    "line": location.line_start,
+                    "cwe": cwe,
+                    "severity": severity,
+                    "category": (sink.metadata or {}).get("category") or (rule.category if rule else "Security"),
+                    "message": f"{cwe}: {(sink.metadata or {}).get('operation') or sink.symbol}",
+                }
+                identity = (finding["file"], finding["line"], finding["cwe"])
+                if identity not in seen:
+                    seen.add(identity)
+                    raw_findings.append(finding)
+            # Apply same consolidation as CLI production pipeline
+            consolidated = consolidate_findings(raw_findings)
+            findings.extend([{"tool": "TCS", **f, "native": f.get("message", "")} for f in consolidated])
         except Exception as exc:  # noqa: BLE001
             errors.append({"file": norm(path), "error": f"{type(exc).__name__}: {exc}"[:160]})
     ms = (time.perf_counter() - started) * 1000.0
     return findings, {"mode": "api-single-process", "ms_total": ms, "crashed": len(errors),
-                      "errors": errors}
+                      "errors": errors, "invocations": 1, "timeouts": 0,
+                      "ms_median_per_file": ms / max(len(findings), 1)}
 
 
 def findings_from_semgrep(corpus_dir: Path, tag: str) -> tuple[list[dict], dict]:
