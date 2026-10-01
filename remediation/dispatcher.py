@@ -15,6 +15,11 @@ from remediation.cwe1336_jinja import Cwe1336JinjaAutoescapeTransformer
 from remediation.cwe327_weak_hash import Cwe327WeakHashTransformer
 from remediation.cwe502_yaml import Cwe502YamlSafeLoaderTransformer
 from remediation.cwe798_credentials import Cwe798CredentialsTransformer
+from remediation.cwe489_debug import Cwe489DebugFlagTransformer
+from remediation.cwe295_ssl import Cwe295SslVerificationTransformer
+from remediation.cwe377_tempfile import Cwe377TempfileTransformer
+from remediation.cwe95_eval import Cwe95EvalTransformer
+from remediation.cwe1188_binding import Cwe1188NetworkBindingTransformer
 
 
 class RuleDispatcher:
@@ -33,6 +38,11 @@ class RuleDispatcher:
         self._cwe327_transformer = Cwe327WeakHashTransformer()
         self._cwe502_transformer = Cwe502YamlSafeLoaderTransformer()
         self._cwe798_transformer = Cwe798CredentialsTransformer()
+        self._cwe489_transformer = Cwe489DebugFlagTransformer()
+        self._cwe295_transformer = Cwe295SslVerificationTransformer()
+        self._cwe377_transformer = Cwe377TempfileTransformer()
+        self._cwe95_transformer = Cwe95EvalTransformer()
+        self._cwe1188_transformer = Cwe1188NetworkBindingTransformer()
         
         self._rule_map: Dict[RemediationRule, BaseRemediationTransformer] = {
             RemediationRule.SQLI_PARAMETERIZE: self._cwe89_transformer,
@@ -43,6 +53,11 @@ class RuleDispatcher:
             RemediationRule.WEAK_HASH_REPLACE: self._cwe327_transformer,
             RemediationRule.YAML_SAFE_LOADER: self._cwe502_transformer,
             RemediationRule.CREDENTIAL_ENVIRON_GET: self._cwe798_transformer,
+            RemediationRule.DEBUG_FLAG_DISABLE: self._cwe489_transformer,
+            RemediationRule.SSL_VERIFY_ENABLE: self._cwe295_transformer,
+            RemediationRule.TEMPFILE_SECURE: self._cwe377_transformer,
+            RemediationRule.EVAL_LITERAL_REPLACE: self._cwe95_transformer,
+            RemediationRule.NETWORK_BINDING_LOCALHOST: self._cwe1188_transformer,
         }
         self._cwe_map: Dict[str, BaseRemediationTransformer] = {
             "CWE-89": self._cwe89_transformer,
@@ -54,6 +69,11 @@ class RuleDispatcher:
             "CWE-327": self._cwe327_transformer,
             "CWE-502": self._cwe502_transformer,
             "CWE-798": self._cwe798_transformer,
+            "CWE-489": self._cwe489_transformer,
+            "CWE-295": self._cwe295_transformer,
+            "CWE-377": self._cwe377_transformer,
+            "CWE-95": self._cwe95_transformer,
+            "CWE-1188": self._cwe1188_transformer,
         }
 
     def get_transformer(

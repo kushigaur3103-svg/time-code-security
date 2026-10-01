@@ -69,6 +69,16 @@ class RemediationEngine:
             default_rule = RemediationRule.YAML_SAFE_LOADER
         elif cwe == "CWE-798":
             default_rule = RemediationRule.CREDENTIAL_ENVIRON_GET
+        elif cwe == "CWE-489":
+            default_rule = RemediationRule.DEBUG_FLAG_DISABLE
+        elif cwe == "CWE-295":
+            default_rule = RemediationRule.SSL_VERIFY_ENABLE
+        elif cwe == "CWE-377":
+            default_rule = RemediationRule.TEMPFILE_SECURE
+        elif cwe == "CWE-95":
+            default_rule = RemediationRule.EVAL_LITERAL_REPLACE
+        elif cwe == "CWE-1188":
+            default_rule = RemediationRule.NETWORK_BINDING_LOCALHOST
 
         # 1. Syntax check on original input source
         try:

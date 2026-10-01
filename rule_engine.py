@@ -670,6 +670,135 @@ CWE_1336_RULE = SecurityRule(
     safety_filter=None
 )
 
+
+def _cwe327_sink_matcher(node: ast.AST, name: str, canon_name: Optional[str] = None) -> bool:
+    """Match hashlib.md5() and hashlib.sha1() calls."""
+    if isinstance(node, ast.Call):
+        func = node.func
+        if isinstance(func, ast.Attribute):
+            if func.attr in ("md5", "sha1"):
+                if isinstance(func.value, ast.Name) and func.value.id == "hashlib":
+                    return True
+    return False
+
+
+CWE_327_RULE = SecurityRule(
+    cwe_id="CWE-327",
+    name="WeakCryptographicHash",
+    category="CRYPTOGRAPHIC_WEAKNESS",
+    operation="WEAK_HASH_FUNCTION",
+    confirmed_severity="MEDIUM",
+    potential_severity="LOW",
+    remediation="Replace weak hash functions (MD5, SHA1) with SHA-256 or stronger. Use hashlib.sha256() instead.",
+    sarif_metadata={
+        "id": "CWE-327",
+        "name": "WeakCryptographicHash",
+        "shortDescription": {
+            "text": "Use of a Broken or Risky Cryptographic Algorithm"
+        },
+        "fullDescription": {
+            "text": "The application uses MD5 or SHA1 hash functions which are cryptographically broken and unsuitable for security purposes."
+        },
+        "helpUri": "https://cwe.mitre.org/data/definitions/327.html",
+        "defaultConfiguration": {
+            "level": "warning"
+        },
+        "properties": {
+            "precision": "very-high",
+            "security-severity": "5.3",
+            "tags": ["security", "external/cwe/cwe-327"]
+        }
+    },
+    sink_matcher=_cwe327_sink_matcher,
+    safety_filter=None
+)
+
+
+def _cwe614_sink_matcher(node: ast.AST, name: str, canon_name: Optional[str] = None) -> bool:
+    """Match response.set_cookie() calls."""
+    if isinstance(node, ast.Call):
+        func = node.func
+        if isinstance(func, ast.Attribute):
+            if func.attr == "set_cookie":
+                return True
+    return False
+
+
+def _cwe614_safety_filter(node: ast.Call, sink_name: str) -> bool:
+    """Check if set_cookie has all required security flags."""
+    existing_keywords = {kw.arg for kw in node.keywords if kw.arg}
+    has_secure = "secure" in existing_keywords
+    has_httponly = "httponly" in existing_keywords
+    has_samesite = "samesite" in existing_keywords
+    # Safe if all three flags are present
+    return has_secure and has_httponly and has_samesite
+
+
+CWE_614_RULE = SecurityRule(
+    cwe_id="CWE-614",
+    name="InsecureCookieFlags",
+    category="COOKIE_SECURITY",
+    operation="INSECURE_COOKIE_SET",
+    confirmed_severity="MEDIUM",
+    potential_severity="LOW",
+    remediation="Set secure=True, httponly=True, and samesite='Lax' on all cookies to prevent interception and XSS attacks.",
+    sarif_metadata={
+        "id": "CWE-614",
+        "name": "InsecureCookieFlags",
+        "shortDescription": {
+            "text": "Sensitive Cookie in HTTPS Session Without 'Secure' Attribute"
+        },
+        "fullDescription": {
+            "text": "The application sets cookies without proper security flags (secure, httponly, samesite), making them vulnerable to interception and cross-site scripting attacks."
+        },
+        "helpUri": "https://cwe.mitre.org/data/definitions/614.html",
+        "defaultConfiguration": {
+            "level": "warning"
+        },
+        "properties": {
+            "precision": "high",
+            "security-severity": "5.0",
+            "tags": ["security", "external/cwe/cwe-614"]
+        }
+    },
+    sink_matcher=_cwe614_sink_matcher,
+    safety_filter=_cwe614_safety_filter
+)
+
+
+# CWE-1275 is consolidated into CWE-614 family (same root cause)
+CWE_1275_RULE = SecurityRule(
+    cwe_id="CWE-1275",
+    name="SensitiveCookieWithoutSameSite",
+    category="COOKIE_SECURITY",
+    operation="INSECURE_COOKIE_SET",
+    confirmed_severity="MEDIUM",
+    potential_severity="LOW",
+    remediation="Set samesite='Lax' or samesite='Strict' on sensitive cookies to prevent CSRF attacks.",
+    sarif_metadata={
+        "id": "CWE-1275",
+        "name": "SensitiveCookieWithoutSameSite",
+        "shortDescription": {
+            "text": "Sensitive Cookie with Improper SameSite Attribute"
+        },
+        "fullDescription": {
+            "text": "The application sets sensitive cookies without SameSite attribute, allowing cross-site request forgery attacks."
+        },
+        "helpUri": "https://cwe.mitre.org/data/definitions/1275.html",
+        "defaultConfiguration": {
+            "level": "warning"
+        },
+        "properties": {
+            "precision": "high",
+            "security-severity": "5.0",
+            "tags": ["security", "external/cwe/cwe-1275"]
+        }
+    },
+    sink_matcher=_cwe614_sink_matcher,
+    safety_filter=_cwe614_safety_filter
+)
+
+
 CWE_798_RULE = SecurityRule(
     cwe_id="CWE-798",
     name="HardcodedCredentials",
@@ -1166,6 +1295,9 @@ GLOBAL_RULE_REGISTRY.register(CWE_78_RULE)
 GLOBAL_RULE_REGISTRY.register(CWE_22_RULE)
 GLOBAL_RULE_REGISTRY.register(CWE_502_RULE)
 GLOBAL_RULE_REGISTRY.register(CWE_1336_RULE)
+GLOBAL_RULE_REGISTRY.register(CWE_327_RULE)
+GLOBAL_RULE_REGISTRY.register(CWE_614_RULE)
+GLOBAL_RULE_REGISTRY.register(CWE_1275_RULE)
 GLOBAL_RULE_REGISTRY.register(CWE_798_RULE)
 GLOBAL_RULE_REGISTRY.register(CWE_611_RULE)
 GLOBAL_RULE_REGISTRY.register(CWE_918_RULE)
