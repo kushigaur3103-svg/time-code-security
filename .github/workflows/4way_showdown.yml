@@ -18,23 +18,38 @@ permissions:
 jobs:
   showdown:
     runs-on: ubuntu-latest
-    # SonarQube community server + its database as side containers. The scanner
-    # publishes analysis to localhost:9000, then the harness pulls the issue list
-    # from the web API and feeds it to `--sonar-report`.
-    services:
-      sonarqube:
-        image: sonarqube:community
-        ports:
-          - 9000:9000
-        options: >-
-          --ulimit nofile=131072:131072
-          --health-cmd "curl -f http://localhost:9000/api/system/status | grep -q '\"status\": \"UP\"' || exit 1"
-          --health-interval 10s
-          --health-timeout 5s
-          --health-retries 30
+    # SonarQube is NOT a native `services:` container: its embedded Elasticsearch fails
+    # the VM bootstrap check (vm.max_map_count) unless the host kernel is tuned first,
+    # and services boot before any step can run sysctl. So we tune, then `docker run`
+    # the server ourselves and poll until the web API reports UP.
 
     steps:
       - uses: actions/checkout@v4
+
+      - name: Tune Linux kernel for Elasticsearch
+        run: |
+          sudo sysctl -w vm.max_map_count=262144
+          sudo sysctl -w fs.file-max=131072
+
+      - name: Start SonarQube Container
+        run: |
+          docker run -d --name sonarqube \
+            -p 9000:9000 \
+            --ulimit nofile=131072:131072 \
+            sonarqube:community
+
+      - name: Wait for SonarQube to be UP
+        run: |
+          for i in $(seq 1 60); do
+            if curl -s http://localhost:9000/api/system/status | grep -q '"status":"UP"'; then
+              echo "SonarQube is UP after $((i * 5))s"
+              exit 0
+            fi
+            sleep 5
+          done
+          echo "::error::SonarQube did not reach UP state in 300s — dumping container logs"
+          docker logs --tail 200 sonarqube
+          exit 1
 
       - uses: actions/setup-python@v5
         with:
@@ -89,6 +104,10 @@ jobs:
         run: |
           echo '## 4-way showdown — master comparison table' >> "$GITHUB_STEP_SUMMARY"
           sed -n '/== MASTER TABLE/,/^$/p' scratch/showdown_output.txt >> "$GITHUB_STEP_SUMMARY" || true
+
+      - name: Stop SonarQube Container
+        if: always()
+        run: docker rm -f sonarqube || true
 
       - uses: actions/upload-artifact@v4
         if: always()
