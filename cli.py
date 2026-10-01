@@ -15,6 +15,7 @@ from ast_scanner import TaintTracker
 from html_auditor import audit_templates, is_template_path
 from iac_auditor import audit_iac_files, is_iac_path
 from rule_engine import get_rule
+from remediation.patch_engine import RemediationEngine
 
 
 SARIF_SCHEMA = "https://raw.githubusercontent.com/oasis-tcs/sarif-spec/master/Schemata/sarif-schema-2.1.0.json"
@@ -233,6 +234,111 @@ def _findings_for(tracker, edges):
             seen.add(identity)
             findings.append(finding)
     return sorted(findings, key=lambda item: (item["file"], item["line"], item["cwe"]))
+
+
+def _generate_autofix(finding, source_code, file_path, engine=None):
+    """
+    Generate an autofix object for a finding by running the RemediationEngine.
+    
+    Returns a dict with autofix schema or None if no deterministic fix is available.
+    
+    Autofix schema:
+    {
+        "type": "ast_patch",
+        "description": str,
+        "replacement_text": str,
+        "range": {
+            "start_line": int,
+            "start_col": int,
+            "end_line": int,
+            "end_col": int
+        },
+        "diff": str (optional),
+        "verification_passed": bool
+    }
+    """
+    if engine is None:
+        engine = RemediationEngine()
+    
+    # Map CLI finding to remediation engine format
+    remediation_finding = {
+        "id": f"TCS-{finding['cwe'].replace('-', '')}-{finding['line']}",
+        "cwe": finding["cwe"],
+        "line_number": finding["line"],
+        "file": finding["file"],
+        "code_snippet": "",  # Will be extracted from source
+    }
+    
+    try:
+        record = engine.remediate(remediation_finding, source_code, file_path)
+    except Exception:
+        # If remediation fails entirely, return None
+        return None
+    
+    # Only attach autofix for successful patches
+    if record.patch_status.value != "SUCCESS":
+        return None
+    
+    # Extract the line range from the patched snippet
+    # For now, use the finding's line as both start and end
+    # In a full implementation, we'd parse the AST to get precise column ranges
+    start_line = record.line_number
+    end_line = start_line
+    
+    # Count lines in patched snippet to estimate end line
+    if record.patched_code_snippet:
+        snippet_lines = record.patched_code_snippet.count('\n') + 1
+        end_line = start_line + snippet_lines - 1
+    
+    autofix = {
+        "type": "ast_patch",
+        "description": f"Apply {record.remediation_rule.value} transformation for {record.cwe}",
+        "replacement_text": record.patched_code_snippet,
+        "range": {
+            "start_line": start_line,
+            "start_col": 0,
+            "end_line": end_line,
+            "end_col": 0
+        },
+        "diff": record.unified_diff,
+        "verification_passed": record.verification_passed
+    }
+    
+    return autofix
+
+
+def _attach_autofixes(findings, source_cache, autofix_engine=None):
+    """
+    Attach autofix objects to findings where deterministic fixes are available.
+    
+    Args:
+        findings: List of finding dicts
+        source_cache: Dict mapping file paths to source code strings
+        autofix_engine: Optional RemediationEngine instance
+    
+    Returns:
+        List of findings with autofix objects attached where applicable
+    """
+    if autofix_engine is None:
+        autofix_engine = RemediationEngine()
+    
+    enhanced_findings = []
+    for finding in findings:
+        file_path = finding["file"]
+        source_code = source_cache.get(file_path)
+        
+        if source_code:
+            autofix = _generate_autofix(finding, source_code, file_path, autofix_engine)
+            if autofix:
+                finding_copy = finding.copy()
+                finding_copy["autofix"] = autofix
+                enhanced_findings.append(finding_copy)
+            else:
+                enhanced_findings.append(finding)
+        else:
+            enhanced_findings.append(finding)
+    
+    return enhanced_findings
 
 
 def _ascii_table(findings):
@@ -524,6 +630,22 @@ def _scan(args):
             cross_findings, cross_engine = _run_cross_scan(args.path)
             findings = _suppress_cross_file_sanitized(findings, cross_engine)
             findings.extend(cross_findings)
+        
+        # Generate autofix suggestions if requested (JSON only)
+        if args.with_autofix and args.format == "json" and files:
+            # Build source cache from scanned files
+            source_cache = {}
+            for file_path in files:
+                try:
+                    with open(file_path, 'r', encoding='utf-8') as f:
+                        source_cache[file_path.replace("\\", "/")] = f.read()
+                except (OSError, UnicodeDecodeError):
+                    pass
+            
+            # Attach autofixes where deterministic fixes are available
+            autofix_engine = RemediationEngine()
+            findings = _attach_autofixes(findings, source_cache, autofix_engine)
+        
         duration_ms = (time.perf_counter() - started) * 1000
     except (OSError, ValueError) as exc:
         print(f"Error: {exc}", file=sys.stderr)
@@ -759,6 +881,10 @@ def main(argv=None):
     scan_parser.add_argument(
         "--scope", choices=("all", "python", "docker", "html"), default="all",
         help="Limit analysis to Python code, container/config files, or HTML templates (default: all)",
+    )
+    scan_parser.add_argument(
+        "--with-autofix", action="store_true", default=False,
+        help="Include deterministic autofix suggestions in JSON output (only for supported CWEs)",
     )
     compare_parser = commands.add_parser("compare", help="Compare TCS findings with Semgrep or Bandit")
     compare_parser.add_argument("path", type=Path, help="Python file or directory to compare")
