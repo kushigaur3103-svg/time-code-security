@@ -7,6 +7,7 @@ from enum import Enum
 from typing import Optional, List, Dict, Any, Union, Tuple
 from rule_engine import match_sink_rule, check_sink_safety_rules, get_rule
 from tcs.analysis.def_use import LocalDefUseTracker
+from tcs.analysis.function_contracts import FunctionContractExtractor, FunctionSinkContract
 
 class NodeType(str, Enum):
     SOURCE = "source"
@@ -1356,6 +1357,25 @@ class TaintTracker:
         self._source_counter = 0
         self._sink_counter = 0
 
+        # Phase 4.3: Function contract extractor for wrapper sinks
+        self.contract_extractor = FunctionContractExtractor()
+        self.function_contracts: Dict[str, FunctionSinkContract] = {}
+
+    def _extract_function_contracts(self) -> None:
+        """
+        Extract function contracts from all modules after collection phase.
+
+        This must be called after collect_statements() has populated self.functions
+        and self.modules, but before sink analysis begins.
+        """
+        for mod_name, tree in self.modules.items():
+            file_path = self.file_paths.get(mod_name, f"{mod_name}.py")
+            contracts = self.contract_extractor.extract_from_module(tree, file_path)
+            # Merge contracts (later modules can override, but first wins for safety)
+            for func_name, contract in contracts.items():
+                if func_name not in self.function_contracts:
+                    self.function_contracts[func_name] = contract
+
     def next_source_id(self) -> str:
         self._source_counter += 1
         return f"SRC-{self._source_counter:03d}"
@@ -2429,6 +2449,14 @@ class TaintTracker:
         if canon in SANITIZER_REGISTRY or name in SANITIZER_REGISTRY:
             return False
 
+        # Phase 4.3: Check if this call matches a registered function contract
+        contract = self.contract_extractor.get_contract_for_call(node)
+        if contract:
+            # This is a wrapper function that flows to a known sink
+            # The actual taint check will happen in resolve_expression for the arguments
+            # For now, treat it as a potential sink
+            return True
+
         # Check for CWE-295 (Disabled SSL verification in HTTP / socket calls)
         if self._has_disabled_ssl(node, scope_id):
             return True
@@ -2532,6 +2560,10 @@ class TaintTracker:
         canon_name = self.resolve_canonical_name(node.func, scope_id) if scope_id else None
         name = dotted_name(node.func) or "sink"
 
+        # Phase 4.3: Check if this call matches a function contract
+        contract = self.contract_extractor.get_contract_for_call(node)
+        contract_cwe = contract.cwe_id if contract else None
+        
         if force_cwe == "CWE-295":
             meta = {"operation": "DISABLED_SSL_VERIFICATION", "category": "INSECURE_TRANSPORT", "cwe": "CWE-295"}
         elif scope_id and (family := self._dynamic_reflection_family(node, scope_id)) is not None:
@@ -2581,6 +2613,15 @@ class TaintTracker:
                         meta = {"operation": cwe22_rule.operation, "category": cwe22_rule.category, "cwe": cwe22_rule.cwe_id}
                     else:
                         meta = {"operation": "FILE_ACCESS", "category": "PATH_TRAVERSAL", "cwe": "CWE-22"}
+        
+        # Phase 4.3: If no meta was found but we have a contract, use it
+        if not meta and contract_cwe:
+            matched_rule = get_rule(contract_cwe)
+            if matched_rule:
+                meta = {"operation": matched_rule.operation, "category": matched_rule.category, "cwe": contract_cwe}
+            else:
+                meta = {"operation": "WRAPPER_SINK", "category": "Security", "cwe": contract_cwe}
+        
         sink = SecurityNode(
             id=sink_id, node_type=NodeType.SINK, symbol=canon_name or name,
             operation=meta.get("operation", "UNKNOWN_OPERATION"), location=loc,
@@ -10704,6 +10745,9 @@ class TaintTracker:
                     for alias in node.names: self.imports[mod_name][alias.asname or alias.name] = f"{module}.{alias.name}" if module else alias.name
         for mod_name, tree in self.modules.items():
             self.collect_statements(tree.body, scope_id=f"{mod_name}:global", is_conditional=False)
+
+        # Phase 4.3: Extract function contracts after statement collection
+        self._extract_function_contracts()
 
         # Index call sites by target function scope
         for call_node, caller_scope, lineno in self.raw_calls:
