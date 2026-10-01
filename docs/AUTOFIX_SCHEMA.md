@@ -45,16 +45,21 @@ The TimeCodeSecurity (TCS) CLI now supports optional deterministic autofix sugge
 - **Purpose**: Human-readable explanation of the fix strategy
 
 #### `autofix.replacement_text` (string, required)
-- **Content**: The patched code snippet that replaces the vulnerable code
-- **Scope**: Typically includes the modified statement(s) plus surrounding context
+- **Content**: The patched code for the vulnerable statement, unparsed from the
+  mutated AST and re-indented to match the original line
+- **Scope**: Exactly the statement covered by `autofix.range` — applying it over
+  that range yields valid Python without duplicating the original code
 - **Encoding**: Plain text with `\n` line endings
 
 #### `autofix.range` (object, required)
 Defines the source code region affected by the patch:
 - `start_line` (int): First line to replace (1-indexed)
-- `start_col` (int): Starting column offset (0-indexed, reserved for future use)
-- `end_line` (int): Last line to replace (inclusive, 1-indexed)
-- `end_col` (int): Ending column offset (0-indexed, reserved for future use)
+- `start_col` (int): Always 0 — the patch replaces whole lines starting at the statement's first line
+- `end_line` (int): Last line to replace (inclusive, 1-indexed); the original statement's span, which may exceed the finding's line for multi-line statements
+- `end_col` (int): Length of the original `end_line` (0-indexed exclusive), so the replacement covers that line in full
+
+`range` describes the **original** statement, not the patched text: a 4-line
+replacement for a 1-line statement still reports the original 1-line span.
 
 #### `autofix.diff` (string, optional)
 - **Format**: Unified diff (GNU diff format)
@@ -75,6 +80,26 @@ Phase 2 provides deterministic autofixes for:
 | CWE-89 | SQL Injection | SQLI_PARAMETERIZE | ✅ Active |
 | CWE-78 | Command Injection | CMD_INJECTION_SPLIT | ✅ Active |
 | CWE-22 | Path Traversal | PATH_TRAVERSAL_RESOLVE | ✅ Active |
+| CWE-95 | eval() Code Execution | EVAL_LITERAL_REPLACE | ✅ Active |
+| CWE-489 | Debug Mode Enabled | DEBUG_FLAG_DISABLE | ✅ Active |
+| CWE-295 | TLS Verification Disabled | SSL_VERIFY_ENABLE | ✅ Active |
+| CWE-377 | Insecure Temp File | TEMPFILE_SECURE | ✅ Active |
+| CWE-502 | Unsafe YAML Deserialization | YAML_SAFE_LOADER | ✅ Active |
+| CWE-798 | Hardcoded Credential | CREDENTIAL_ENVIRON_GET | ✅ Active |
+| CWE-327, CWE-328 | Weak Cryptographic Hash | WEAK_HASH_REPLACE | ✅ Active |
+| CWE-916, CWE-759 | Weak / Unsalted Password Hash | PASSWORD_HASH_KDF | ✅ Active |
+| CWE-1336, CWE-116 | Template Autoescape | TEMPLATE_AUTOESCAPE | ✅ Active |
+| CWE-1188 | World-Binding Service | NETWORK_BINDING_LOCALHOST | ✅ Active |
+| CWE-614, CWE-1275, CWE-668 | Insecure Cookie Flags | COOKIE_SECURE_FLAGS | ⚠️ Transformer active, scanner rule disabled (false positives on safe fixtures) |
+
+Alias routing: the scanner reports the consolidated CWE id (for example
+`CWE-916` for an unsalted `hashlib.md5` password hash), and the dispatcher maps
+that id to the corresponding transformer, so aliases receive autofixes too.
+
+CWE-916/CWE-759 rewrite to `hashlib.scrypt` rather than `hashlib.sha256`: a fast
+hash is still a weak *password* hash, so the sha256 swap used for CWE-327 would
+not clear these findings on re-scan. The emitted `salt` is a static placeholder
+and must be replaced with a per-user random salt before production use.
 
 Unsupported CWEs will have findings **without** the `autofix` field.
 
@@ -93,6 +118,17 @@ python -m cli scan myproject/ --format json --with-autofix
 ```
 
 Output: Findings include `autofix` objects where deterministic fixes are available.
+
+### Incremental Scan of Modified Lines
+```bash
+python -m cli scan app.py --lines 4-5 --format json --with-autofix
+python -m cli scan app.py --lines 4-5,20 --format json
+```
+
+Behavior: Only findings whose sink line intersects the given 1-indexed ranges are
+reported, and autofix generation is limited to those findings. Omitting `--lines`
+scans the whole file. The active ranges are echoed as a `line_filter` array in the
+JSON output. Malformed ranges exit with code 2 and an error message.
 
 ### Table Format (Autofix Ignored)
 ```bash

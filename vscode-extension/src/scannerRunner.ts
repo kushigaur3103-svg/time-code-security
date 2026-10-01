@@ -85,9 +85,14 @@ export class ScannerRunner {
   /**
    * Execute TCS scan on a file and return parsed findings.
    * @param filePath Absolute path to the Python file to scan
+   * @param options.lines  Comma-separated 1-indexed line ranges for --lines (incremental scan)
+   * @param options.content Unsaved buffer text; scanned via a temp copy so live edits are covered
    * @returns Parsed TCSScanResult or null on failure
    */
-  async scanFile(filePath: string): Promise<TCSScanResult | null> {
+  async scanFile(
+    filePath: string,
+    options: { lines?: string; content?: string } = {}
+  ): Promise<TCSScanResult | null> {
     const pythonPath = vscode.workspace
       .getConfiguration("tcs")
       .get<string>("pythonPath", "python");
@@ -108,17 +113,94 @@ export class ScannerRunner {
       .getConfiguration("tcs")
       .get<number>("timeoutMs", 10000);
 
-    const args = ["-m", "cli", "scan", filePath, "--format", "json"];
+    // The CLI reads from disk, so an unsaved buffer is staged in a temp copy and
+    // findings are re-attributed to the real file afterwards.
+    const scanTarget = this.stageScanTarget(filePath, options.content);
+    if (scanTarget === null) {
+      return null;
+    }
+
+    const args = ["-m", "cli", "scan", scanTarget, "--format", "json"];
+    if (options.lines) {
+      args.push("--lines", options.lines);
+    }
     if (enableAutoFix) {
       args.push("--with-autofix");
     }
 
-    this.log(`Scanning: ${filePath}`);
+    this.log(`Scanning: ${filePath}${options.lines ? ` [lines ${options.lines}]` : ""}`);
     this.log(`Command: ${pythonPath} ${args.join(" ")}`);
 
+    const result = await this.runProcess(pythonPath, args, cliPath, timeoutMs);
+    this.cleanupStagedFile(scanTarget, options.content);
+    if (result && options.content) {
+      result.findings = result.findings.map((finding) => ({
+        ...finding,
+        file: filePath,
+      }));
+    }
+    return result;
+  }
+
+  /** Temp file map keyed by staged path -> original path. */
+  private readonly stagedFiles = new Map<string, string>();
+
+  /**
+   * Stage an unsaved buffer into a temp file so the disk-reading CLI can scan it.
+   * Returns the path to scan. Falls back to the original path on write failure.
+   */
+  private stageScanTarget(filePath: string, content?: string): string | null {
+    if (content === undefined) {
+      return filePath;
+    }
+
+    const fs = require("fs");
+    const os = require("os");
+    const path = require("path");
+
+    const stagingDir = path.join(os.tmpdir(), "tcs-incremental");
+    const stagedPath = path.join(
+      stagingDir,
+      `${Buffer.from(filePath).toString("hex").slice(-16)}-${path.basename(filePath)}`
+    );
+
+    try {
+      fs.mkdirSync(stagingDir, { recursive: true });
+      fs.writeFileSync(stagedPath, content, "utf8");
+      this.stagedFiles.set(stagedPath, filePath);
+      return stagedPath;
+    } catch (error) {
+      this.log(`STAGE ERROR: could not write ${stagedPath}: ${error}`);
+      vscode.window.showWarningMessage(
+        "TCS: Could not stage unsaved buffer for scanning; showing saved-file results."
+      );
+      return filePath;
+    }
+  }
+
+  private cleanupStagedFile(scannedPath: string, content?: string): void {
+    if (content === undefined) {
+      return;
+    }
+    const fs = require("fs");
+    this.stagedFiles.delete(scannedPath);
+    try {
+      fs.unlinkSync(scannedPath);
+    } catch {
+      // Temp file already removed or unlockable; the OS temp dir cleans up.
+    }
+  }
+
+  private runProcess(
+    pythonPath: string,
+    args: string[],
+    cliPath: string,
+    timeoutMs: number
+  ): Promise<TCSScanResult | null> {
     return new Promise((resolve) => {
+      const path = require("path");
       const child = spawn(pythonPath, args, {
-        cwd: vscode.workspace.workspaceFolders?.[0]?.uri.fsPath,
+        cwd: path.dirname(cliPath),
         stdio: ["pipe", "pipe", "pipe"],
       });
 

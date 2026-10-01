@@ -13,6 +13,7 @@ from remediation.cwe22_path_traversal import Cwe22PathTraversalTransformer
 from remediation.cwe614_cookie import Cwe614CookieSecureTransformer
 from remediation.cwe1336_jinja import Cwe1336JinjaAutoescapeTransformer
 from remediation.cwe327_weak_hash import Cwe327WeakHashTransformer
+from remediation.cwe916_password_hash import Cwe916PasswordHashTransformer
 from remediation.cwe502_yaml import Cwe502YamlSafeLoaderTransformer
 from remediation.cwe798_credentials import Cwe798CredentialsTransformer
 from remediation.cwe489_debug import Cwe489DebugFlagTransformer
@@ -36,6 +37,7 @@ class RuleDispatcher:
         self._cwe614_transformer = Cwe614CookieSecureTransformer()
         self._cwe1336_transformer = Cwe1336JinjaAutoescapeTransformer()
         self._cwe327_transformer = Cwe327WeakHashTransformer()
+        self._cwe916_transformer = Cwe916PasswordHashTransformer()
         self._cwe502_transformer = Cwe502YamlSafeLoaderTransformer()
         self._cwe798_transformer = Cwe798CredentialsTransformer()
         self._cwe489_transformer = Cwe489DebugFlagTransformer()
@@ -51,6 +53,7 @@ class RuleDispatcher:
             RemediationRule.COOKIE_SECURE_FLAGS: self._cwe614_transformer,
             RemediationRule.TEMPLATE_AUTOESCAPE: self._cwe1336_transformer,
             RemediationRule.WEAK_HASH_REPLACE: self._cwe327_transformer,
+            RemediationRule.PASSWORD_HASH_KDF: self._cwe916_transformer,
             RemediationRule.YAML_SAFE_LOADER: self._cwe502_transformer,
             RemediationRule.CREDENTIAL_ENVIRON_GET: self._cwe798_transformer,
             RemediationRule.DEBUG_FLAG_DISABLE: self._cwe489_transformer,
@@ -65,8 +68,18 @@ class RuleDispatcher:
             "CWE-22": self._cwe22_transformer,
             "CWE-614": self._cwe614_transformer,
             "CWE-1275": self._cwe614_transformer,
+            # Alias: CWE-668 (Exposure of Resource to Wrong Sphere) shares the
+            # cookie-flags root cause.
+            "CWE-668": self._cwe614_transformer,
             "CWE-1336": self._cwe1336_transformer,
+            # Alias: CWE-116 (Improper Encoding/Escaping of Output) covers the
+            # Jinja2 autoescape remediation.
+            "CWE-116": self._cwe1336_transformer,
             "CWE-327": self._cwe327_transformer,
+            # Alias: CWE-916 / CWE-759 (weak or unsalted password hashing) needs a
+            # slow KDF; the sha256 swap would not clear these findings.
+            "CWE-916": self._cwe916_transformer,
+            "CWE-759": self._cwe916_transformer,
             "CWE-502": self._cwe502_transformer,
             "CWE-798": self._cwe798_transformer,
             "CWE-489": self._cwe489_transformer,

@@ -54,11 +54,7 @@ class Cwe489DebugFlagTransformer(BaseRemediationTransformer):
 
         try:
             patched_source = ast.unparse(tree)
-            snippet_lines = source_code.split('\n')
-            if 0 < line_number <= len(snippet_lines):
-                snippet = snippet_lines[line_number - 1]
-            else:
-                snippet = ""
+            snippet = self.patched_statement_snippet(tree, source_code, line_number) or ""
             
             return (PatchStatus.SUCCESS, patched_source, snippet, ())
         except Exception as e:

@@ -1314,8 +1314,16 @@ def get_rule(cwe_id: str) -> Optional[SecurityRule]:
 
 
 def get_active_cwe_count() -> int:
-    """Dynamically count currently active rules registered in the global registry."""
-    return len(GLOBAL_RULE_REGISTRY._rules)
+    """Count distinct CWE classes covered by currently active registry rules.
+
+    Counts unique cwe_id values, not raw rule instances, so multiple rules
+    sharing one CWE class are never double-counted.
+    """
+    return len({
+        rule.cwe_id
+        for rule in GLOBAL_RULE_REGISTRY.all_rules()
+        if getattr(rule, "cwe_id", None)
+    })
 
 
 def match_sink_rule(node: ast.AST, name: str, canon_name: Optional[str] = None) -> Optional[SecurityRule]:

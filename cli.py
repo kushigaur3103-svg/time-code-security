@@ -1,6 +1,7 @@
 """Standalone command-line interface for the TimeCodeSecurity AST scanner."""
 
 import argparse
+import ast
 import json
 import os
 from pathlib import Path
@@ -236,6 +237,79 @@ def _findings_for(tracker, edges):
     return sorted(findings, key=lambda item: (item["file"], item["line"], item["cwe"]))
 
 
+def _parse_line_ranges(spec):
+    """Parse a --lines value like '4-5' or '4-5,10' into inclusive (start, end) ranges.
+
+    Returns None when the spec is empty/absent, meaning a full-file scan.
+    Raises ValueError on malformed input so the CLI can report it cleanly.
+    """
+    if not spec:
+        return None
+    ranges = []
+    for part in str(spec).split(","):
+        part = part.strip()
+        if not part:
+            continue
+        bounds = part.split("-", 1)
+        try:
+            start = int(bounds[0].strip())
+            end = int(bounds[1].strip()) if len(bounds) > 1 else start
+        except ValueError as exc:
+            raise ValueError(f"Invalid --lines range {part!r}; expected START[-END]") from exc
+        if start < 1 or end < start:
+            raise ValueError(f"Invalid --lines range {part!r}; lines must be positive and ordered")
+        ranges.append((start, end))
+    return ranges or None
+
+
+def _in_line_ranges(line, ranges):
+    return ranges is None or any(start <= line <= end for start, end in ranges)
+
+
+def _scope_findings_to_lines(findings, ranges):
+    """Keep findings whose sink line intersects the requested ranges.
+
+    Findings without a usable line number are kept: dropping them would turn an
+    incremental scan into a false-negative source.
+    """
+    if ranges is None:
+        return findings
+    scoped = []
+    for finding in findings:
+        line = finding.get("line")
+        if not isinstance(line, int):
+            scoped.append(finding)
+            continue
+        if _in_line_ranges(line, ranges):
+            scoped.append(finding)
+    return scoped
+
+
+def _statement_span(source_code, line_number):
+    """Return the (start, end) line span of the smallest statement covering line_number.
+
+    Falls back to (line_number, line_number) when the source is unparseable or no
+    statement covers the requested line.
+    """
+    try:
+        tree = ast.parse(source_code)
+    except (SyntaxError, ValueError, RecursionError):
+        return line_number, line_number
+
+    candidates = [
+        node
+        for node in ast.walk(tree)
+        if isinstance(node, ast.stmt)
+        and getattr(node, "lineno", 0)
+        and node.lineno <= line_number <= (node.end_lineno or node.lineno)
+    ]
+    if not candidates:
+        return line_number, line_number
+
+    stmt = min(candidates, key=lambda n: (n.end_lineno or n.lineno) - n.lineno)
+    return stmt.lineno, (stmt.end_lineno or stmt.lineno)
+
+
 def _generate_autofix(finding, source_code, file_path, engine=None):
     """
     Generate an autofix object for a finding by running the RemediationEngine.
@@ -279,17 +353,19 @@ def _generate_autofix(finding, source_code, file_path, engine=None):
     if record.patch_status.value != "SUCCESS":
         return None
     
-    # Extract the line range from the patched snippet
-    # For now, use the finding's line as both start and end
-    # In a full implementation, we'd parse the AST to get precise column ranges
-    start_line = record.line_number
-    end_line = start_line
-    
-    # Count lines in patched snippet to estimate end line
-    if record.patched_code_snippet:
-        snippet_lines = record.patched_code_snippet.count('\n') + 1
-        end_line = start_line + snippet_lines - 1
-    
+    # The autofix replaces the whole original statement, so derive the range from
+    # the statement span in the UNPATCHED source. The snippet's own line count is
+    # not used: a multi-line replacement still overwrites a single-line statement.
+    stmt_start, stmt_end = _statement_span(source_code, record.line_number)
+    start_line = stmt_start
+    end_line = stmt_end
+
+    source_lines = source_code.split("\n")
+    if 0 < end_line <= len(source_lines):
+        end_col = len(source_lines[end_line - 1].rstrip("\r"))
+    else:
+        end_col = 0
+
     autofix = {
         "type": "ast_patch",
         "description": f"Apply {record.remediation_rule.value} transformation for {record.cwe}",
@@ -298,7 +374,7 @@ def _generate_autofix(finding, source_code, file_path, engine=None):
             "start_line": start_line,
             "start_col": 0,
             "end_line": end_line,
-            "end_col": 0
+            "end_col": end_col
         },
         "diff": record.unified_diff,
         "verification_passed": record.verification_passed
@@ -596,6 +672,7 @@ def _suppress_cross_file_sanitized(findings, engine):
 def _scan(args):
     scope = args.scope
     try:
+        line_ranges = _parse_line_ranges(getattr(args, "lines", None))
         templates, iac = _collect_auxiliary_files(args.path)
         if scope not in ("all", "html"):
             templates = {}
@@ -630,7 +707,11 @@ def _scan(args):
             cross_findings, cross_engine = _run_cross_scan(args.path)
             findings = _suppress_cross_file_sanitized(findings, cross_engine)
             findings.extend(cross_findings)
-        
+
+        # Incremental scan: keep only diagnostics intersecting the modified lines.
+        # Applied before autofix generation so patching work is scoped too.
+        findings = _scope_findings_to_lines(findings, line_ranges)
+
         # Generate autofix suggestions if requested (JSON only)
         if args.with_autofix and args.format == "json" and files:
             # Build source cache from scanned files
@@ -654,6 +735,7 @@ def _scan(args):
     if args.format == "json":
         print(json.dumps({
             "scope": scope,
+            "line_filter": [list(r) for r in line_ranges] if line_ranges else None,
             "scanned_files": scanned_files,
             "scanned_files_by_scope": file_counts,
             "duration_ms": round(duration_ms, 2),
@@ -885,6 +967,10 @@ def main(argv=None):
     scan_parser.add_argument(
         "--with-autofix", action="store_true", default=False,
         help="Include deterministic autofix suggestions in JSON output (only for supported CWEs)",
+    )
+    scan_parser.add_argument(
+        "--lines", metavar="START[-END][,START[-END]...]", default=None,
+        help="Incremental scan: restrict findings to the given 1-indexed line ranges, e.g. --lines 4-5",
     )
     compare_parser = commands.add_parser("compare", help="Compare TCS findings with Semgrep or Bandit")
     compare_parser.add_argument("path", type=Path, help="Python file or directory to compare")

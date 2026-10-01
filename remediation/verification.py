@@ -147,6 +147,29 @@ class RemediationVerifier:
 
         return True
 
+    def _is_same_sink_instance(
+        self,
+        finding_a: Dict[str, Any],
+        finding_b: Dict[str, Any]
+    ) -> bool:
+        """
+        True when two findings point at the identical source statement, i.e. the
+        same underlying sink reported under consolidated CWE ids. Snippet equality
+        is checked by containment because scanner and CLI snippets may differ only
+        by surrounding statement text.
+        """
+        line_a = int(finding_a.get("line_number", 0) or finding_a.get("line", 0) or 0)
+        line_b = int(finding_b.get("line_number", 0) or finding_b.get("line", 0) or 0)
+        if not line_a or line_a != line_b:
+            return False
+
+        snippet_a = str(finding_a.get("code_snippet", "")).strip()
+        snippet_b = str(finding_b.get("code_snippet", "")).strip()
+        if snippet_a and snippet_b:
+            return snippet_a in snippet_b or snippet_b in snippet_a
+
+        return True
+
     def verify(
         self,
         original_file: str,
@@ -174,9 +197,14 @@ class RemediationVerifier:
                     f"is still detected by Vector B after patching"
                 )
 
-        # 4. Negative Space Check: Verify that all unrelated findings remain intact
+        # 4. Negative Space Check: Verify that all unrelated findings remain intact.
+        # Findings that share the target's exact sink (same line + same code snippet)
+        # are the same vulnerability reported under consolidated CWE ids, so clearing
+        # them alongside the target is expected, not a regression.
         unrelated_orig = [
-            f for f in orig_findings if not self.is_matching_finding(f, target_finding)
+            f for f in orig_findings
+            if not self.is_matching_finding(f, target_finding)
+            and not self._is_same_sink_instance(f, target_finding)
         ]
         for uf in unrelated_orig:
             matched_in_patched = any(

@@ -59,12 +59,14 @@ class RemediationEngine:
             default_rule = RemediationRule.CMD_INJECTION_SPLIT
         elif cwe == "CWE-22":
             default_rule = RemediationRule.PATH_TRAVERSAL_RESOLVE
-        elif cwe in ("CWE-614", "CWE-1275"):
+        elif cwe in ("CWE-614", "CWE-1275", "CWE-668"):
             default_rule = RemediationRule.COOKIE_SECURE_FLAGS
-        elif cwe == "CWE-1336":
+        elif cwe in ("CWE-1336", "CWE-116"):
             default_rule = RemediationRule.TEMPLATE_AUTOESCAPE
-        elif cwe == "CWE-327":
+        elif cwe in ("CWE-327", "CWE-328"):
             default_rule = RemediationRule.WEAK_HASH_REPLACE
+        elif cwe in ("CWE-916", "CWE-759"):
+            default_rule = RemediationRule.PASSWORD_HASH_KDF
         elif cwe == "CWE-502":
             default_rule = RemediationRule.YAML_SAFE_LOADER
         elif cwe == "CWE-798":

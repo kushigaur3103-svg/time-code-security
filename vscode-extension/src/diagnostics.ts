@@ -5,6 +5,7 @@
 
 import * as vscode from "vscode";
 import { TCSFinding, TCSAutofix, HIGH_SEVERITY_CWES, CONFIGURATION_CWES } from "./types";
+import { LineRange } from "./incremental";
 
 export class DiagnosticsProvider {
   private readonly diagnosticCollection: vscode.DiagnosticCollection;
@@ -35,10 +36,27 @@ export class DiagnosticsProvider {
    * Convert TCS findings to VS Code diagnostics and cache them.
    * @param filePath Absolute path to the scanned file
    * @param findings Array of TCS findings for this file
+   * @param options.scannedRanges Line ranges covered by an incremental scan; cached
+   *        findings outside them are preserved instead of being wiped.
+   * @param options.announce Show a result notification (suppressed for typed scans)
    */
-  updateDiagnostics(filePath: string, findings: TCSFinding[]): void {
-    const diagnostics: vscode.Diagnostic[] = [];
+  updateDiagnostics(
+    filePath: string,
+    findings: TCSFinding[],
+    options: { scannedRanges?: LineRange[]; announce?: boolean } = {}
+  ): void {
+    const { scannedRanges, announce = true } = options;
     const fileFindings = new Map<string, TCSFinding>();
+
+    // An incremental scan only speaks for the lines it covered, so retain the
+    // previously cached findings that fall outside the scanned ranges.
+    if (scannedRanges && scannedRanges.length > 0) {
+      for (const cached of this.findingCache.get(filePath)?.values() ?? []) {
+        if (!this.isLineInRanges(cached.line, scannedRanges)) {
+          fileFindings.set(`${cached.line}:${cached.cwe}`, cached);
+        }
+      }
+    }
 
     // Filter findings for this specific file
     const relevantFindings = findings.filter((f) => {
@@ -52,13 +70,17 @@ export class DiagnosticsProvider {
     });
 
     for (const finding of relevantFindings) {
-      const diagnostic = this.convertFindingToDiagnostic(finding);
+      // Cache the full finding with autofix payload using line as key
+      fileFindings.set(`${finding.line}:${finding.cwe}`, finding);
+    }
+
+    // Diagnostics are regenerated from the merged cache so every retained and
+    // refreshed finding is represented exactly once.
+    const diagnostics: vscode.Diagnostic[] = [];
+    for (const cached of fileFindings.values()) {
+      const diagnostic = this.convertFindingToDiagnostic(cached);
       if (diagnostic) {
         diagnostics.push(diagnostic);
-
-        // Cache the full finding with autofix payload using line as key
-        const cacheKey = `${finding.line}:${finding.cwe}`;
-        fileFindings.set(cacheKey, finding);
       }
     }
 
@@ -68,9 +90,15 @@ export class DiagnosticsProvider {
     // Update cache
     this.findingCache.set(filePath, fileFindings);
 
-    vscode.window.showInformationMessage(
-      `TCS: ${relevantFindings.length} finding(s) reported for ${this.getFileName(filePath)}`
-    );
+    if (announce) {
+      vscode.window.showInformationMessage(
+        `TCS: ${fileFindings.size} finding(s) reported for ${this.getFileName(filePath)}`
+      );
+    }
+  }
+
+  private isLineInRanges(line: number, ranges: LineRange[]): boolean {
+    return ranges.some((range) => line >= range.start && line <= range.end);
   }
 
   /**

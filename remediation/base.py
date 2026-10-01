@@ -56,3 +56,47 @@ class BaseRemediationTransformer(ABC):
             returns (PatchStatus.FAILED_SYNTAX / FAILED_VERIFICATION, None, None, limitations)
         """
         ...
+
+    @staticmethod
+    def patched_statement_snippet(
+        tree: ast.AST,
+        source_code: str,
+        line_number: int
+    ) -> Optional[str]:
+        """
+        Renders the patched text of the statement covering line_number after the
+        AST has been mutated, preserving the original indentation.
+
+        Transformers mutate `tree` in place, so unparsing the enclosing statement
+        yields the replacement block that editors must write over the vulnerable
+        statement. Returns None when no statement covers the requested line.
+        """
+        candidates = [
+            node
+            for node in ast.walk(tree)
+            if isinstance(node, ast.stmt)
+            and getattr(node, "lineno", 0)
+            and node.lineno <= line_number <= (node.end_lineno or node.lineno)
+        ]
+        if not candidates:
+            return None
+
+        # Deepest (smallest span) enclosing statement
+        stmt = min(candidates, key=lambda n: (n.end_lineno or n.lineno) - n.lineno)
+
+        try:
+            rendered = ast.unparse(stmt)
+        except Exception:
+            return None
+
+        original_lines = source_code.split("\n")
+        if 0 < line_number <= len(original_lines):
+            indent = original_lines[line_number - 1][: len(original_lines[line_number - 1]) - len(original_lines[line_number - 1].lstrip())]
+        else:
+            indent = ""
+
+        rendered_lines = rendered.split("\n")
+        out = [f"{indent}{rendered_lines[0]}"]
+        for extra in rendered_lines[1:]:
+            out.append(f"{indent}{extra}" if extra.strip() else extra)
+        return "\n".join(out)
