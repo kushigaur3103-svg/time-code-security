@@ -58,6 +58,21 @@ from sca_reachability.engine import analyze_dependency_reachability
 import remediation
 from benchmark.manifest import ALL_46_CWES
 
+
+def _active_supported_cwe_count() -> int:
+    """Distinct CWE classes covered by the live rule registry.
+
+    Every index.html render site must pass this as `supported_cwe_count`; without
+    it the template falls back to the length of the curated ALL_46_CWES badge list,
+    which under-reports the engine's coverage.
+    """
+    try:
+        from rule_engine import get_active_cwe_count
+        return get_active_cwe_count()
+    except ImportError:
+        return len(ALL_46_CWES)
+
+
 logger = logging.getLogger("tcs.app")
 
 class DualConfidenceStr(str):
@@ -452,6 +467,7 @@ async def dashboard(request: Request):
         "request": request,
         "days_left": 14,
         "supported_cwes": ALL_46_CWES,
+        "supported_cwe_count": _active_supported_cwe_count(),
     }
     return templates.TemplateResponse(request=request, name="index.html", context=context)
 
@@ -2248,12 +2264,7 @@ def execute_tcs_ast_scan(
     
     if active_vulnerabilities == 0:
         risk_level = "CLEAN"
-        try:
-            from rule_engine import get_active_cwe_count
-            supported_cwe_count = get_active_cwe_count()
-        except ImportError:
-            supported_cwe_count = len(ALL_46_CWES)
-        risk_message = f"NO VULNERABILITIES DETECTED within current TCS analysis scope ({supported_cwe_count} supported CWE classes)."
+        risk_message = f"NO VULNERABILITIES DETECTED within current TCS analysis scope ({_active_supported_cwe_count()} supported CWE classes)."
     elif critical_count > 0:
         risk_level = "CRITICAL"
         risk_message = "CRITICAL RISK: Arbitrary code execution, injection, or hardcoded credential leak detected."
@@ -2935,12 +2946,7 @@ def shutdown_notification_service():
 async def catch_all(request: Request, full_path: str):
     if full_path.startswith("api/"):
         raise HTTPException(status_code=404, detail="API endpoint not found")
-    try:
-        from rule_engine import get_active_cwe_count
-        supported_cwe_count = get_active_cwe_count()
-    except ImportError:
-        supported_cwe_count = len(ALL_46_CWES)
-    return templates.TemplateResponse(request=request, name="index.html", context={"request": request, "days_left": 14, "supported_cwes": ALL_46_CWES, "supported_cwe_count": supported_cwe_count})
+    return templates.TemplateResponse(request=request, name="index.html", context={"request": request, "days_left": 14, "supported_cwes": ALL_46_CWES, "supported_cwe_count": _active_supported_cwe_count()})
 
 if __name__ == "__main__":
     import os
