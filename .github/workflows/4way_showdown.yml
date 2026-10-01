@@ -61,7 +61,8 @@ jobs:
             -Dsonar.sources=external \
             -Dsonar.inclusions="**/*.py" \
             -Dsonar.host.url=http://localhost:9000 \
-            -Dsonar.token=sqp_admin_token_placeholder \
+            -Dsonar.login=admin \
+            -Dsonar.password=admin \
             -Dsonar.scm.disabled=true \
             -Dsonar.qualitygate.wait=true
 
@@ -69,12 +70,12 @@ jobs:
         run: |
           mkdir -p scratch
           for i in $(seq 1 60); do
-            curl -sf "http://localhost:9000/api/ce/activity?status=SUCCESS&componentKeys=tcs-showdown" >/dev/null && break
+            curl -sf -u admin:admin "http://localhost:9000/api/ce/activity?status=SUCCESS&componentKeys=tcs-showdown" >/dev/null && break
             sleep 5
           done
-          curl -sf "http://localhost:9000/api/issues/search?componentKeys=tcs-showdown&ps=500&additionalFields=_all" \
+          curl -sf -u admin:admin "http://localhost:9000/api/issues/search?componentKeys=tcs-showdown&ps=500&additionalFields=_all" \
             -o scratch/sonar_issues.json
-          curl -sf "http://localhost:9000/api/hotspots/search?projectKey=tcs-showdown&ps=500" \
+          curl -sf -u admin:admin "http://localhost:9000/api/hotspots/search?projectKey=tcs-showdown&ps=500" \
             -o scratch/sonar_hotspots.json || echo "[]" > scratch/sonar_hotspots.json
 
       - name: Run 4-way showdown with Sonar report
