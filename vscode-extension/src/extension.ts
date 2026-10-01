@@ -6,9 +6,11 @@
 import * as vscode from "vscode";
 import { ScannerRunner } from "./scannerRunner";
 import { DiagnosticsProvider } from "./diagnostics";
+import { TCSCodeActionProvider } from "./codeActions";
 
 let diagnosticsProvider: DiagnosticsProvider | undefined;
 let scannerRunner: ScannerRunner | undefined;
+let codeActionProvider: TCSCodeActionProvider | undefined;
 
 export function activate(context: vscode.ExtensionContext) {
   console.log("TCS Security Engine extension is now active!");
@@ -16,6 +18,7 @@ export function activate(context: vscode.ExtensionContext) {
   // Initialize providers
   diagnosticsProvider = new DiagnosticsProvider();
   scannerRunner = new ScannerRunner();
+  codeActionProvider = new TCSCodeActionProvider(diagnosticsProvider);
 
   // Register manual scan command
   const scanCommand = vscode.commands.registerCommand(
@@ -30,6 +33,15 @@ export function activate(context: vscode.ExtensionContext) {
     "tcs.showOutput",
     () => {
       scannerRunner?.showOutput();
+    }
+  );
+
+  // Register CodeActionProvider for Quick Fixes
+  const codeActionRegistration = vscode.languages.registerCodeActionsProvider(
+    "python",
+    codeActionProvider,
+    {
+      providedCodeActionKinds: [vscode.CodeActionKind.QuickFix],
     }
   );
 
@@ -65,7 +77,12 @@ export function activate(context: vscode.ExtensionContext) {
   updateSaveListener();
 
   // Add to subscriptions
-  context.subscriptions.push(scanCommand, showOutputCommand, configChangeListener);
+  context.subscriptions.push(
+    scanCommand,
+    showOutputCommand,
+    configChangeListener,
+    codeActionRegistration
+  );
 
   // Scan current file on activation if it's Python
   const activeEditor = vscode.window.activeTextEditor;
@@ -122,4 +139,5 @@ export function deactivate(): void {
   if (diagnosticsProvider) {
     diagnosticsProvider.dispose();
   }
+  // CodeActionProvider doesn't need explicit disposal, handled by registration
 }
