@@ -106,16 +106,35 @@ class FunctionContractExtractor:
         Extract all function contracts from an AST module.
 
         Returns dict mapping function name to FunctionSinkContract.
+        Perf: one pass collects functions and calls; a module with zero calls
+        into known sinks is rejected before any per-function analysis runs.
         """
         self.contracts.clear()
 
+        # Perf: collect functions and sink candidate calls in one pass
+        func_nodes: List[ast.AST] = []
+        sink_shortnames = {name.split(".")[-1] for name in KNOWN_SINKS}
+        has_known_sink_call = False
         for node in ast.walk(tree):
             if isinstance(node, (ast.FunctionDef, ast.AsyncFunctionDef)):
-                contract = self._analyze_function(node, file_path)
-                if contract:
-                    # Only register if not already present (first one wins for safety)
-                    if contract.func_name not in self.contracts:
-                        self.contracts[contract.func_name] = contract
+                func_nodes.append(node)
+            elif isinstance(node, ast.Call):
+                call_name = self._get_call_name(node)
+                if call_name and (
+                    call_name in KNOWN_SINKS
+                    or call_name.split(".")[-1] in sink_shortnames
+                ):
+                    has_known_sink_call = True
+
+        if not has_known_sink_call:
+            return self.contracts
+
+        for func_node in func_nodes:
+            contract = self._analyze_function(func_node, file_path)
+            if contract:
+                # Only register if not already present (first one wins for safety)
+                if contract.func_name not in self.contracts:
+                    self.contracts[contract.func_name] = contract
 
         return self.contracts
 
@@ -209,25 +228,18 @@ class FunctionContractExtractor:
         - The parameter is used directly without intervening logic
 
         This is the CRITICAL SAFETY FILTER for zero false positives.
+        Perf: single traversal — guard, sanitizer, and kill checks in one pass.
         """
-        # Check for conditional guards (if statements) before the sink
         for stmt in ast.walk(func_node):
             if not hasattr(stmt, 'lineno'):
                 continue
             if stmt.lineno >= sink_lineno:
                 continue
-            
+
             # If there's ANY if statement before the sink, don't create contract
             # This prevents contracts on guarded wrappers like SSRF validators
             if isinstance(stmt, ast.If):
                 return False
-
-        # Walk all statements before the sink
-        for stmt in ast.walk(func_node):
-            if not hasattr(stmt, 'lineno'):
-                continue
-            if stmt.lineno >= sink_lineno:
-                continue
 
             # Check for assignments to the parameter
             if isinstance(stmt, ast.Assign):

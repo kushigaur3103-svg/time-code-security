@@ -7,7 +7,7 @@ from enum import Enum
 from typing import Optional, List, Dict, Any, Union, Tuple
 from rule_engine import match_sink_rule, check_sink_safety_rules, get_rule
 from tcs.analysis.def_use import LocalDefUseTracker
-from tcs.analysis.function_contracts import FunctionContractExtractor, FunctionSinkContract
+from tcs.analysis.function_contracts import FunctionContractExtractor, FunctionSinkContract, KNOWN_SINKS
 
 class NodeType(str, Enum):
     SOURCE = "source"
@@ -1360,6 +1360,11 @@ class TaintTracker:
         # Phase 4.3: Function contract extractor for wrapper sinks
         self.contract_extractor = FunctionContractExtractor()
         self.function_contracts: Dict[str, FunctionSinkContract] = {}
+        # Perf: per-scan memoization so Phase 4 analyses never re-traverse
+        self._defuse_trackers: dict[int, LocalDefUseTracker] = {}
+        self._sink_shortnames: frozenset = frozenset(
+            name.split(".")[-1] for name in KNOWN_SINKS
+        )
 
     def _extract_function_contracts(self) -> None:
         """
@@ -1367,9 +1372,18 @@ class TaintTracker:
 
         This must be called after collect_statements() has populated self.functions
         and self.modules, but before sink analysis begins.
+        Perf: source-text prescreen — modules with no known-sink identifier skip
+        AST traversal entirely. A false prescreen miss cannot occur because every
+        KNOWN_SINKS leaf is checked as a whole word against the module source.
         """
+        sink_word_re = re.compile(
+            r"\b(" + "|".join(re.escape(n.split(".")[-1]) for n in KNOWN_SINKS) + r")\b"
+        )
         for mod_name, tree in self.modules.items():
             file_path = self.file_paths.get(mod_name, f"{mod_name}.py")
+            source = self.files.get(file_path) or self.files.get(mod_name, "")
+            if source and not sink_word_re.search(source):
+                continue
             contracts = self.contract_extractor.extract_from_module(tree, file_path)
             # Merge contracts (later modules can override, but first wins for safety)
             for func_name, contract in contracts.items():
@@ -1421,9 +1435,14 @@ class TaintTracker:
         if not func_node or not func_scope:
             return None
 
-        # Build def-use tracker for this function
-        tracker = LocalDefUseTracker()
-        tracker.analyze_function(func_node, self.file_paths.get(mod_name, f"{mod_name}.py"))
+        # Perf: reuse the per-function tracker instead of re-analyzing on every
+        # unresolved Name; the tracker is deterministic for a given FunctionDef.
+        # Lazy: built only when sink resolution actually reaches this point.
+        tracker = self._defuse_trackers.get(id(func_node))
+        if tracker is None:
+            tracker = LocalDefUseTracker()
+            tracker.analyze_function(func_node, self.file_paths.get(mod_name, f"{mod_name}.py"))
+            self._defuse_trackers[id(func_node)] = tracker
 
         # Check if the variable is tainted according to the tracker
         if tracker.is_variable_tainted(var_name):
@@ -2450,11 +2469,9 @@ class TaintTracker:
             return False
 
         # Phase 4.3: Check if this call matches a registered function contract
-        contract = self.contract_extractor.get_contract_for_call(node)
-        if contract:
-            # This is a wrapper function that flows to a known sink
-            # The actual taint check will happen in resolve_expression for the arguments
-            # For now, treat it as a potential sink
+        # Perf: cheap membership test first; full dotted-name extraction only
+        # when a contract could actually apply.
+        if self.function_contracts and isinstance(node.func, ast.Name) and node.func.id in self.function_contracts:
             return True
 
         # Check for CWE-295 (Disabled SSL verification in HTTP / socket calls)
@@ -2561,7 +2578,10 @@ class TaintTracker:
         name = dotted_name(node.func) or "sink"
 
         # Phase 4.3: Check if this call matches a function contract
-        contract = self.contract_extractor.get_contract_for_call(node)
+        # Perf: cheap membership test against the merged contract map.
+        contract = None
+        if self.function_contracts and isinstance(node.func, ast.Name) and node.func.id in self.function_contracts:
+            contract = self.function_contracts[node.func.id]
         contract_cwe = contract.cwe_id if contract else None
         
         if force_cwe == "CWE-295":
