@@ -460,11 +460,27 @@ def _sonar_raw_issues(payload: dict) -> list[dict]:
     return raw
 
 
-def findings_from_sonar_report(report_path: Path) -> tuple[list[dict], dict]:
-    """Parse a SonarQube JSON/SARIF report on disk into the standard scorecard schema.
+def _sonar_raw_hotspots(payload: dict) -> list[dict]:
+    """Flatten SonarQube /api/hotspots/search JSON into {rule, file, line, category} records.
+    Hotspots carry a rule key like 'python:S2068' and a component field identical to issues."""
+    raw: list[dict] = []
+    if not isinstance(payload.get("hotspots"), list):
+        return raw
+    for hs in payload["hotspots"]:
+        component = str(hs.get("component") or "")
+        path = component.split(":", 1)[1] if ":" in component else component
+        raw.append({"rule": str(hs.get("ruleKey", "")), "file": path,
+                    "line": int(hs.get("line") or 0),
+                    "category": str(hs.get("vulnerabilityProbability") or "SECURITY_HOTSPOT")})
+    return raw
+
+
+def findings_from_sonar_report(report_path: Path, hotspots_path: Path | None = None) -> tuple[list[dict], dict]:
+    """Parse SonarQube issues (JSON/SARIF) plus optional hotspots into the standard scorecard schema.
     Pure offline parsing — the harness never invokes sonar-scanner locally. Rules with no
     CWE in SONAR_RULE_MAP are filtered out and counted in `stats["unmapped_rules"]`."""
     payload = read_json(report_path)
+    hotspots_payload = read_json(hotspots_path) if hotspots_path and hotspots_path.exists() else {}
     findings: list[dict] = []
     unmapped: dict[str, int] = {}
     for issue in _sonar_raw_issues(payload):
@@ -476,6 +492,15 @@ def findings_from_sonar_report(report_path: Path) -> tuple[list[dict], dict]:
                          "line": issue["line"], "cwe": cwe,
                          "rule": issue["rule"], "category": issue["category"],
                          "cwes": [cwe], "native": issue["rule"].split(":", 1)[-1]})
+    for hs in _sonar_raw_hotspots(hotspots_payload):
+        cwe = SONAR_RULE_MAP.get(hs["rule"])
+        if not cwe:
+            unmapped[hs["rule"]] = unmapped.get(hs["rule"], 0) + 1
+            continue
+        findings.append({"tool": "Sonar", "file": norm(hs["file"]),
+                         "line": hs["line"], "cwe": cwe,
+                         "rule": hs["rule"], "category": hs["category"],
+                         "cwes": [cwe], "native": hs["rule"].split(":", 1)[-1]})
     stats = {"mode": "external-report-parse", "invocations": 1, "crashed": 0,
              "results": len(findings), "unmapped_rules": sum(unmapped.values()),
              "unmapped_detail": unmapped}
@@ -1510,7 +1535,8 @@ def main(argv=None) -> int:
     sonar_all: list[dict] = []
     sonar_stats: dict = {}
     if args.sonar_report:
-        sonar_all, sonar_stats = findings_from_sonar_report(Path(args.sonar_report))
+        hotspots_file = Path(args.sonar_report).parent / "sonar_hotspots.json"
+        sonar_all, sonar_stats = findings_from_sonar_report(Path(args.sonar_report), hotspots_file)
         _register_sonar()
         print(f"  Sonar   report parsed: {len(sonar_all)} mapped findings, "
               f"{sonar_stats['unmapped_rules']} dropped as untracked rules", flush=True)
