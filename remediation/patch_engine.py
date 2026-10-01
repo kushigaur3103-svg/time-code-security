@@ -59,6 +59,16 @@ class RemediationEngine:
             default_rule = RemediationRule.CMD_INJECTION_SPLIT
         elif cwe == "CWE-22":
             default_rule = RemediationRule.PATH_TRAVERSAL_RESOLVE
+        elif cwe in ("CWE-614", "CWE-1275"):
+            default_rule = RemediationRule.COOKIE_SECURE_FLAGS
+        elif cwe == "CWE-1336":
+            default_rule = RemediationRule.TEMPLATE_AUTOESCAPE
+        elif cwe == "CWE-327":
+            default_rule = RemediationRule.WEAK_HASH_REPLACE
+        elif cwe == "CWE-502":
+            default_rule = RemediationRule.YAML_SAFE_LOADER
+        elif cwe == "CWE-798":
+            default_rule = RemediationRule.CREDENTIAL_ENVIRON_GET
 
         # 1. Syntax check on original input source
         try:
