@@ -2,6 +2,9 @@ name: 4-way showdown (TCS vs Semgrep vs Bandit vs SonarQube)
 
 # Manual dispatch only — never triggers on push/PR. All four analyzers run on the
 # GitHub runner; the laptop is only used to read the printed scorecard.
+# repository_dispatch (event type "tcs-showdown") is included because the
+# workflow_dispatch REST endpoint 404s for this account's PAT; the local harness
+# triggers runs through /dispatches instead.
 on:
   workflow_dispatch:
     inputs:
@@ -11,6 +14,8 @@ on:
         required: false
         default: api
         options: [api, cli]
+  repository_dispatch:
+    types: [tcs-showdown]
 
 permissions:
   contents: read
@@ -120,7 +125,7 @@ jobs:
       - name: Run 4-way showdown with Sonar report
         run: |
           python scripts/run_python_showdown.py --stage all \
-            --tcs-mode "${{ inputs.tcs_mode }}" \
+            --tcs-mode "${{ inputs.tcs_mode || github.event.client_payload.tcs_mode || 'api' }}" \
             --sonar-report scratch/sonar_issues.json | tee scratch/showdown_output.txt
 
       - name: Publish master table to job summary
