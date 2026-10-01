@@ -15,35 +15,68 @@ export class ScannerRunner {
   }
 
   /**
-   * Resolve the path to cli.py based on configuration or auto-detection.
+   * Resolve the path to cli.py using multiple fallback strategies.
+   * Checks in order:
+   * 1. Explicit setting tcs.cliPath (absolute or relative)
+   * 2. Workspace root: workspaceRoot/cli.py
+   * 3. One directory up from workspace root: workspaceRoot/../cli.py
+   * 4. Extension parent directory: __dirname/../../cli.py
    */
   private async resolveCliPath(): Promise<string | null> {
+    const fs = require("fs");
+    const path = require("path");
     const config = vscode.workspace.getConfiguration("tcs");
     const configuredPath = config.get<string>("cliPath", "").trim();
 
+    const candidates: string[] = [];
+
+    // Strategy 1: Explicit user configuration
     if (configuredPath) {
-      // If absolute path, use it directly
       if (configuredPath.startsWith("/") || /^[A-Za-z]:/.test(configuredPath)) {
-        return configuredPath;
-      }
-      // Otherwise, resolve relative to workspace root
-      const workspaceFolders = vscode.workspace.workspaceFolders;
-      if (workspaceFolders && workspaceFolders.length > 0) {
-        const workspaceRoot = workspaceFolders[0].uri.fsPath;
-        return `${workspaceRoot}/${configuredPath}`;
+        // Absolute path - use directly
+        candidates.push(configuredPath);
+      } else {
+        // Relative path - resolve against workspace root
+        const workspaceFolders = vscode.workspace.workspaceFolders;
+        if (workspaceFolders && workspaceFolders.length > 0) {
+          const workspaceRoot = workspaceFolders[0].uri.fsPath;
+          candidates.push(path.join(workspaceRoot, configuredPath));
+        }
       }
     }
 
-    // Auto-detect: search for cli.py in workspace root
+    // Strategy 2: Workspace root
     const workspaceFolders = vscode.workspace.workspaceFolders;
     if (workspaceFolders && workspaceFolders.length > 0) {
       const workspaceRoot = workspaceFolders[0].uri.fsPath;
-      const fs = require("fs");
-      const path = require("path");
-      const candidate = path.join(workspaceRoot, "cli.py");
-      if (fs.existsSync(candidate)) {
-        return candidate;
+      candidates.push(path.join(workspaceRoot, "cli.py"));
+      
+      // Strategy 3: One directory up from workspace root
+      candidates.push(path.join(workspaceRoot, "..", "cli.py"));
+    }
+
+    // Strategy 4: Extension parent directory (for development/debugging)
+    const extensionParentPath = path.join(__dirname, "..", "..", "cli.py");
+    candidates.push(extensionParentPath);
+
+    // Verify each candidate and return first existing file
+    for (const candidate of candidates) {
+      try {
+        const normalized = path.normalize(candidate);
+        if (fs.existsSync(normalized)) {
+          this.log(`Found cli.py at: ${normalized}`);
+          return normalized;
+        }
+      } catch (error) {
+        // Silently skip invalid paths
       }
+    }
+
+    // All strategies failed - log detailed diagnostics
+    this.log("ERROR: Could not locate cli.py using any resolution strategy");
+    this.log("Checked paths:");
+    for (const candidate of candidates) {
+      this.log(`  - ${candidate} (not found)`);
     }
 
     return null;
@@ -62,7 +95,7 @@ export class ScannerRunner {
     const cliPath = await this.resolveCliPath();
     if (!cliPath) {
       vscode.window.showErrorMessage(
-        "TCS CLI not found. Configure 'tcs.cliPath' in settings or ensure cli.py is in workspace root."
+        "TCS: Could not locate cli.py. Please set tcs.cliPath in settings or ensure cli.py is in workspace root."
       );
       return null;
     }
