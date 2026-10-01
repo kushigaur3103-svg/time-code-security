@@ -53,9 +53,9 @@ Corpus mutation check (SHA-256 over each mirrored tree, before vs after the run)
 
 | Tool | Wall clock (all corpora) | Split |
 |---|---|---|
-| TCS | 131.5 s | semgrep_rules 100.7s, bandit 30.8s |
-| Semgrep | 105.6 s | semgrep_rules 61.0s, bandit 44.6s |
-| Bandit | 15.8 s | semgrep_rules 1.9s, bandit 13.9s |
+| TCS | 173.6 s | semgrep_rules 129.9s, bandit 43.7s |
+| Semgrep | 113.3 s | semgrep_rules 73.7s, bandit 39.7s |
+| Bandit | 23.7 s | semgrep_rules 2.8s, bandit 20.9s |
 
 ### Sensitivity — line-only matching (declared CWE ignored)
 
@@ -504,8 +504,8 @@ Deliberately **not** folded, because they are distinct weakness classes rather t
 
 | Tool | Corpus | Mode | Invocations | Failed invocations | Exit | Median/file |
 |---|---|---|---|---|---|---|
-| TCS | semgrep_rules | cli-per-file | 368 | 0 | - | 203.9 ms |
-| TCS | bandit | cli-per-file | 98 | 0 | - | 288.1 ms |
+| TCS | semgrep_rules | cli-per-file | 368 | 0 | - | 344.5 ms |
+| TCS | bandit | cli-per-file | 98 | 0 | - | 429.5 ms |
 | Semgrep | semgrep_rules | single subprocess run | 1 | 0 | 0 | - |
 | Semgrep | bandit | single subprocess run | 1 | 0 | 0 | - |
 | Bandit | semgrep_rules | single subprocess run | 1 | 0 | 1 | - |
@@ -543,7 +543,7 @@ The first sweep of this harness ran against an unmodified engine; its artefacts 
 **D1 — unbounded scope walk (hang).** 8 file(s) exceeded the 30s per-file budget and were killed in the baseline sweep; this sweep killed 0 file(s) under the same budget.
 
 *Mechanism (measured): the scope-walk loop alternates between stripping the last `.` and restoring `mod:global`. For a module key whose path contains both a dot and the substring `function` — e.g. `external/…/is-function-without-parentheses.py` — branch 1 (`. in scope and 'function' in scope`) strips `.py:global`, branch 3 restores it, and the cycle never terminates because no assignment record is found on the way. The `visited` set only guards re-entrancy per (scope, name); it does not bound this inner walk. Identical source under a key without that shape completes instantly, so the trigger is the module-key spelling, not the code — a directory scan that contains one such file hangs indefinitely.
-* The same four-branch idiom is replicated at **38 sites** in `ast_scanner.py`; the fix bounds **46 walks**. That count is deliberately larger than the idiom census because it covers every `while` loop that rewrites its cursor through the scope-parent chain, including the walks that take only part of the chain. Each now records the cursors it has already visited and exits on a repeat instead of oscillating.
+* The same four-branch idiom is replicated at **39 sites** in `ast_scanner.py`; the fix bounds **46 walks**. That count is deliberately larger than the idiom census because it covers every `while` loop that rewrites its cursor through the scope-parent chain, including the walks that take only part of the chain. Each now records the cursors it has already visited and exits on a repeat instead of oscillating.
 * Why the guard cannot change a result: the `rsplit` branch strictly shortens the cursor and `<mod>:global` is the only non-shortening step, so the reachable cursor set is finite and a walk that visits a new cursor at each step must terminate — a repeated cursor therefore implies a cycle, not a long chain. Every lookup inside these walks is read-only, so breaking on a repeat can only turn a hang into the loop's own exit path.
 
 **D2 — an uncaught exception aborted the whole scan.** 2 file(s) ended with a non-zero exit and no JSON in the baseline sweep; 0 did in this one.
@@ -558,7 +558,7 @@ The first sweep of this harness ran against an unmodified engine; its artefacts 
 * Residual gap this section does not fix: with the `NameError` gone, `python/django/security/injection/mass-assignment.py` parses and analyses cleanly but still emits no CWE-915 finding, because the `**request.POST` kwargs-expansion edge is not wired to the mass-assignment sink even though the sinks at its two labelled lines are registered. That is a sink/edge-model change rather than a crash fix, and adding a matcher without a sound model is out of scope here.
 
 **Effect of the fixes on this benchmark.**
-* TCS wall clock over 466 CLI invocations: 350.7 s → 131.5 s (-62.5%). The saving is the killed timeouts; the per-file median moved the other way, partly because the guard runs on every scope walk of every file and partly because the two sweeps did not run under the same machine load.
+* TCS wall clock over 466 CLI invocations: 350.7 s → 173.6 s (-50.5%). The saving is the killed timeouts; the per-file median moved the other way, partly because the guard runs on every scope walk of every file and partly because the two sweeps did not run under the same machine load.
 * Findings: 831 → 1055 distinct sites, i.e. 291 added and **67 removed on files the baseline sweep already scanned successfully** — the regression count this section exists to measure. 9 of the 291 additions land on the 10 files that the baseline sweep lost.
 * Scores: 5 of 24 tool × metric cells in the merged CWE-strict table are identical across the two sweeps. The differences are TCS TP 354→585; TCS FP 87→50; TCS TN 869→906; TCS FN 1105→874; TCS Precision 80.27%→92.13%; TCS Recall 24.26%→40.10%; TCS F1 37.26%→55.87%; Semgrep TP 939→947; Semgrep FN 520→512; Semgrep Precision 90.29%→90.36%; Semgrep Recall 64.36%→64.91%; Semgrep F1 75.15%→75.55%; Semgrep Findings outside any label 366→354; Bandit TP 404→447; Bandit FN 1055→1012; Bandit Precision 63.62%→65.93%; Bandit Recall 27.69%→30.64%; Bandit F1 38.59%→41.83%; Bandit Findings outside any label 592→548. What changed is that the files now returning nothing do so because the engine answered rather than because it was killed.
 
@@ -566,8 +566,8 @@ The first sweep of this harness ran against an unmodified engine; its artefacts 
 |---|---|---|---|---|---|
 | baseline/bandit | 98 | 5 | 6 | 171065 | 209.2 |
 | baseline/semgrep_rules | 368 | 3 | 4 | 179663 | 234.9 |
-| this sweep/bandit | 98 | 0 | 0 | 30816 | 288.1 |
-| this sweep/semgrep_rules | 368 | 0 | 0 | 100700 | 203.9 |
+| this sweep/bandit | 98 | 0 | 0 | 43678 | 429.5 |
+| this sweep/semgrep_rules | 368 | 0 | 0 | 129934 | 344.5 |
 
 ## 8. TCS missed positives: auto-cited evidence and AST root causes
 
