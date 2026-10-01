@@ -59,6 +59,29 @@ ANNOT = re.compile(r"^\s*(?P<code>.*?)(?<!\\)#\s*(?P<kind>ruleid|ok|tadpol|todo|
 NOSEC = re.compile(r"#\s*nosec\b")
 CWE_TEXT = re.compile(r"CWE-(\d{2,5})", re.I)
 
+# SonarQube Python security hotspots/rules -> canonical CWE ids. Only rules that map to a
+# tracked CWE are scored; everything else in the report is filtered out by the parser.
+SONAR_RULE_MAP = {
+    "python:S3649": "CWE-89",    # SQL injection
+    "python:S2076": "CWE-78",    # OS command injection
+    "python:S2083": "CWE-22",    # Path traversal
+    "python:S5131": "CWE-79",    # Cross-site scripting (reflected)
+    "python:S2631": "CWE-95",    # eval / code injection
+    "python:S5144": "CWE-918",   # Server-side request forgery
+    "python:S5146": "CWE-601",   # Open redirect
+    "python:S4790": "CWE-327",   # Use of weak cryptography
+    "python:S5542": "CWE-327",   # Broken encryption
+    "python:S5547": "CWE-327",   # Weak hashing algorithm
+    "python:S2245": "CWE-338",   # Insecure randomness
+    "python:S4830": "CWE-295",   # Certificate validation
+    "python:S5527": "CWE-295",   # hostname / certificate mismatch
+    "python:S5147": "CWE-502",   # Unsafe deserialization
+    "python:S2755": "CWE-611",   # XML external entity processing
+    "python:S2068": "CWE-798",   # Hardcoded credentials
+    "python:S5145": "CWE-117",   # Log injection
+    "python:S5659": "CWE-326",   # Insufficient key size
+}
+
 
 # ─────────────────────────────────────────── helpers ───────────────────────────────────────────
 def norm(path: str) -> str:
@@ -409,6 +432,56 @@ def findings_from_bandit(corpus_dir: Path, tag: str) -> tuple[list[dict], dict]:
     return findings, stats
 
 
+def _sonar_raw_issues(payload: dict) -> list[dict]:
+    """Flatten either supported report shape into {rule, file, line, category} records.
+    Accepts SonarQube `/api/issues/search` JSON (`{"issues": [...]}`) and SARIF 2.1.0
+    (`{"runs": [{"results": [...]}]}`), the two outputs `sonar-scanner` ecosystems publish."""
+    raw: list[dict] = []
+    if isinstance(payload.get("issues"), list):
+        for it in payload["issues"]:
+            # component is "projectKey:path/to/file.py" in the API, plain path in exports
+            component = str(it.get("component") or it.get("componentKey") or "")
+            path = component.split(":", 1)[1] if ":" in component else component
+            raw.append({"rule": str(it.get("rule", "")), "file": path,
+                        "line": int(it.get("line") or 0),
+                        "category": str(it.get("type") or "SECURITY_HOTSPOT")})
+    elif isinstance(payload.get("runs"), list):
+        for run in payload["runs"]:
+            driver = str(((run.get("tool") or {}).get("driver") or {}).get("name") or "")
+            for res in run.get("results") or []:
+                phys = ((res.get("locations") or [{}])[0].get("physicalLocation") or {})
+                uri = str((phys.get("artifactLocation") or {}).get("uri") or "")
+                props = res.get("properties") or {}
+                raw.append({"rule": str(res.get("ruleId", "")),
+                            "file": uri.replace("file:///", "").replace("file://", ""),
+                            "line": int((phys.get("region") or {}).get("startLine") or 0),
+                            "category": str(props.get("category") or props.get("type")
+                                           or driver or "SONAR")})
+    return raw
+
+
+def findings_from_sonar_report(report_path: Path) -> tuple[list[dict], dict]:
+    """Parse a SonarQube JSON/SARIF report on disk into the standard scorecard schema.
+    Pure offline parsing — the harness never invokes sonar-scanner locally. Rules with no
+    CWE in SONAR_RULE_MAP are filtered out and counted in `stats["unmapped_rules"]`."""
+    payload = read_json(report_path)
+    findings: list[dict] = []
+    unmapped: dict[str, int] = {}
+    for issue in _sonar_raw_issues(payload):
+        cwe = SONAR_RULE_MAP.get(issue["rule"])
+        if not cwe:
+            unmapped[issue["rule"]] = unmapped.get(issue["rule"], 0) + 1
+            continue
+        findings.append({"tool": "Sonar", "file": norm(issue["file"]),
+                         "line": issue["line"], "cwe": cwe,
+                         "rule": issue["rule"], "category": issue["category"],
+                         "cwes": [cwe], "native": issue["rule"].split(":", 1)[-1]})
+    stats = {"mode": "external-report-parse", "invocations": 1, "crashed": 0,
+             "results": len(findings), "unmapped_rules": sum(unmapped.values()),
+             "unmapped_detail": unmapped}
+    return findings, stats
+
+
 # ─────────────────────────────────────────── scoring ──────────────────────────────────────────
 @dataclass
 class Score:
@@ -532,6 +605,12 @@ def prf(score: Score) -> tuple[float, float, float]:
 
 # ────────────────────────────────────────── aggregation ─────────────────────────────────────────
 TOOL_ORDER = ["TCS", "Semgrep", "Bandit"]
+
+
+def _register_sonar() -> None:
+    """Promote Sonar to the 4th scored tool for this process. Idempotent: never duplicates."""
+    if "Sonar" not in TOOL_ORDER:
+        TOOL_ORDER.append("Sonar")
 
 
 def _as_assertion(row: dict) -> Assertion:
@@ -1360,6 +1439,8 @@ def print_master_table(scoring: dict) -> None:
 
 
 def score_and_report(payload: dict, stage: str) -> int:
+    if any("Sonar" in (rows or {}) for rows in payload.get("findings", {}).values()):
+        _register_sonar()
     payload = refresh_semgrep_from_artifacts(payload)
     scoring = score_all(payload)
     scoring["_payload"] = payload
@@ -1387,6 +1468,10 @@ def main(argv=None) -> int:
     parser.add_argument("--reuse-competitors", action="store_true",
                         help="re-sweep only TCS and reuse the Semgrep/Bandit findings already on disk "
                              "(their analysis cannot change when only the engine changed)")
+    parser.add_argument("--sonar-report", metavar="PATH", default=None,
+                        help="path to a SonarQube issue JSON or SARIF report produced by the cloud "
+                             "4-way workflow; parsed offline into the 4th tool column, never invoking "
+                             "sonar-scanner locally")
     args = parser.parse_args(argv)
 
     ARTIFACTS.mkdir(parents=True, exist_ok=True)
@@ -1421,6 +1506,14 @@ def main(argv=None) -> int:
     results: dict[str, dict[str, list[dict]]] = {}
     stats: dict[str, dict] = {}
     prior = load_payload() if args.reuse_competitors else {}
+
+    sonar_all: list[dict] = []
+    sonar_stats: dict = {}
+    if args.sonar_report:
+        sonar_all, sonar_stats = findings_from_sonar_report(Path(args.sonar_report))
+        _register_sonar()
+        print(f"  Sonar   report parsed: {len(sonar_all)} mapped findings, "
+              f"{sonar_stats['unmapped_rules']} dropped as untracked rules", flush=True)
 
     def dump() -> dict:
         payload = {"integrity_before": integrity_before,
@@ -1464,6 +1557,13 @@ def main(argv=None) -> int:
                 stats.setdefault("Bandit", {})[key] = bstats
                 dump()
                 print(f"  Bandit  {key}: {len(ban)} findings, {bstats['ms_total']:.0f} ms", flush=True)
+        if args.sonar_report:
+            prefix = norm(str(CORPORA[key]["dir"].relative_to(ROOT)))
+            per_corpus = [f for f in sonar_all if f["file"].startswith(prefix)]
+            results[key]["Sonar"] = per_corpus
+            stats.setdefault("Sonar", {})[key] = {**sonar_stats, "ms_total": 0.0}
+            dump()
+            print(f"  Sonar   {key}: {len(per_corpus)} findings (parsed report)", flush=True)
 
     payload = dump()
     print(f"\nRaw artifacts: {ARTIFACTS.relative_to(ROOT)}/raw_results.json", flush=True)

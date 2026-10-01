@@ -1,0 +1,100 @@
+name: 4-way showdown (TCS vs Semgrep vs Bandit vs SonarQube)
+
+# Manual dispatch only — never triggers on push/PR. All four analyzers run on the
+# GitHub runner; the laptop is only used to read the printed scorecard.
+on:
+  workflow_dispatch:
+    inputs:
+      tcs_mode:
+        description: "TCS execution mode in the harness"
+        type: choice
+        required: false
+        default: api
+        options: [api, cli]
+
+permissions:
+  contents: read
+
+jobs:
+  showdown:
+    runs-on: ubuntu-latest
+    # SonarQube community server + its database as side containers. The scanner
+    # publishes analysis to localhost:9000, then the harness pulls the issue list
+    # from the web API and feeds it to `--sonar-report`.
+    services:
+      sonarqube:
+        image: sonarqube:community
+        ports:
+          - 9000:9000
+        options: >-
+          --ulimit nofile=131072:131072
+          --health-cmd "curl -f http://localhost:9000/api/system/status | grep -q '\"status\": \"UP\"' || exit 1"
+          --health-interval 10s
+          --health-timeout 5s
+          --health-retries 30
+
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.11"
+
+      - name: Install competitors
+        run: |
+          python -m pip install --upgrade pip
+          pip install semgrep bandit
+
+      - name: Install SonarScanner CLI
+        run: |
+          curl -sSLo /tmp/sonar.zip https://binaries.sonarsource.com/Distribution/sonar-scanner-cli/sonar-scanner-cli-5.0.1.3006-linux.zip
+          unzip -q /tmp/sonar.zip -d /opt
+          echo "/opt/sonar-scanner-5.0.1.3006-linux/bin" >> "$GITHUB_PATH"
+
+      - name: Mirror benchmark corpora
+        run: python scripts/setup_python_benchmark.py
+
+      - name: Run SonarQube analysis over external corpora
+        run: |
+          sonar-scanner \
+            -Dsonar.projectKey=tcs-showdown \
+            -Dsonar.sources=external \
+            -Dsonar.inclusions="**/*.py" \
+            -Dsonar.host.url=http://localhost:9000 \
+            -Dsonar.token=sqp_admin_token_placeholder \
+            -Dsonar.scm.disabled=true \
+            -Dsonar.qualitygate.wait=true
+
+      - name: Wait for compute engine and export issue JSON
+        run: |
+          mkdir -p scratch
+          for i in $(seq 1 60); do
+            curl -sf "http://localhost:9000/api/ce/activity?status=SUCCESS&componentKeys=tcs-showdown" >/dev/null && break
+            sleep 5
+          done
+          curl -sf "http://localhost:9000/api/issues/search?componentKeys=tcs-showdown&ps=500&additionalFields=_all" \
+            -o scratch/sonar_issues.json
+          curl -sf "http://localhost:9000/api/hotspots/search?projectKey=tcs-showdown&ps=500" \
+            -o scratch/sonar_hotspots.json || echo "[]" > scratch/sonar_hotspots.json
+
+      - name: Run 4-way showdown with Sonar report
+        run: |
+          python scripts/run_python_showdown.py --stage all \
+            --tcs-mode "${{ inputs.tcs_mode }}" \
+            --sonar-report scratch/sonar_issues.json | tee scratch/showdown_output.txt
+
+      - name: Publish master table to job summary
+        if: always()
+        run: |
+          echo '## 4-way showdown — master comparison table' >> "$GITHUB_STEP_SUMMARY"
+          sed -n '/== MASTER TABLE/,/^$/p' scratch/showdown_output.txt >> "$GITHUB_STEP_SUMMARY" || true
+
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: showdown-artifacts
+          path: |
+            reports/python_ground_truth_showdown.md
+            scratch/showdown/raw_results.json
+            scratch/showdown/scoring.json
+            scratch/sonar_issues.json
