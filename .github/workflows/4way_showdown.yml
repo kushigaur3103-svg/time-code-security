@@ -51,6 +51,24 @@ jobs:
           docker logs --tail 200 sonarqube
           exit 1
 
+      - name: Change default admin password and generate token
+        id: sonar_auth
+        run: |
+          # 1. Change default admin password from 'admin' to 'NewAdminPassword123!'
+          curl -u admin:admin -X POST "http://localhost:9000/api/users/change_password?login=admin&previousPassword=admin&password=NewAdminPassword123!"
+
+          # 2. Generate analysis user token
+          TOKEN_RESPONSE=$(curl -u admin:NewAdminPassword123! -X POST "http://localhost:9000/api/user_tokens/generate?name=github-runner-token")
+          echo "TOKEN_RESPONSE: $TOKEN_RESPONSE"
+          SONAR_TOKEN=*** "$TOKEN_RESPONSE" | jq -r '.token')
+          if [ -z "$SONAR_TOKEN" ] || [ "$SONAR_TOKEN" = "null" ]; then
+            echo "::error::Failed to generate SonarQube user token"
+            exit 1
+          fi
+
+          # 3. Export token as environment variable
+          echo "SONAR_TOKEN=$SONAR_TOKEN" >> "$GITHUB_ENV"
+
       - uses: actions/setup-python@v5
         with:
           python-version: "3.11"
@@ -76,8 +94,7 @@ jobs:
             -Dsonar.sources=external \
             -Dsonar.inclusions="**/*.py" \
             -Dsonar.host.url=http://localhost:9000 \
-            -Dsonar.login=admin \
-            -Dsonar.password=admin \
+            -Dsonar.token="${SONAR_TOKEN}" \
             -Dsonar.scm.disabled=true \
             -Dsonar.qualitygate.wait=true
 
@@ -85,12 +102,12 @@ jobs:
         run: |
           mkdir -p scratch
           for i in $(seq 1 60); do
-            curl -sf -u admin:admin "http://localhost:9000/api/ce/activity?status=SUCCESS&componentKeys=tcs-showdown" >/dev/null && break
+            curl -sf -u "${SONAR_TOKEN}:" "http://localhost:9000/api/ce/activity?status=SUCCESS&componentKeys=tcs-showdown" >/dev/null && break
             sleep 5
           done
-          curl -sf -u admin:admin "http://localhost:9000/api/issues/search?componentKeys=tcs-showdown&ps=500&additionalFields=_all" \
+          curl -sf -u "${SONAR_TOKEN}:" "http://localhost:9000/api/issues/search?componentKeys=tcs-showdown&ps=500&additionalFields=_all" \
             -o scratch/sonar_issues.json
-          curl -sf -u admin:admin "http://localhost:9000/api/hotspots/search?projectKey=tcs-showdown&ps=500" \
+          curl -sf -u "${SONAR_TOKEN}:" "http://localhost:9000/api/hotspots/search?projectKey=tcs-showdown&ps=500" \
             -o scratch/sonar_hotspots.json || echo "[]" > scratch/sonar_hotspots.json
 
       - name: Run 4-way showdown with Sonar report
