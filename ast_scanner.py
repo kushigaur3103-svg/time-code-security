@@ -6,6 +6,7 @@ from dataclasses import dataclass, field, asdict
 from enum import Enum
 from typing import Optional, List, Dict, Any, Union, Tuple
 from rule_engine import match_sink_rule, check_sink_safety_rules, get_rule
+from tcs.analysis.def_use import LocalDefUseTracker
 
 class NodeType(str, Enum):
     SOURCE = "source"
@@ -1362,6 +1363,57 @@ class TaintTracker:
     def next_sink_id(self) -> str:
         self._sink_counter += 1
         return f"SNK-{self._sink_counter:03d}"
+
+    def _resolve_alias_with_def_use(self, var_name: str, scope_id: str, lineno: int) -> Optional[str]:
+        """
+        Use LocalDefUseTracker to resolve multi-hop aliases within a function scope.
+
+        This is a lightweight integration that builds a def-use tracker for the
+        enclosing function and checks if the variable carries taint from a source
+        through alias chains.
+
+        Returns the ultimate source variable name if tainted, None otherwise.
+        STRICT: Only intra-procedural, only within same FunctionDef.
+        """
+        # Find the enclosing function for this scope
+        mod_name = scope_id.split(":")[0] if ":" in scope_id else scope_id
+        func_node = None
+        func_scope = None
+
+        # Walk up the scope chain to find the function
+        current = scope_id
+        while current:
+            if ":function:" in current or (current != f"{mod_name}:global" and "." in current):
+                candidate = self.functions.get(current)
+                if candidate:
+                    func_node = candidate
+                    func_scope = current
+                    break
+            if current == f"{mod_name}:global":
+                break
+            if "." in current and "function" in current:
+                current = current.rsplit(".", 1)[0]
+            elif ":function" in current:
+                current = f"{mod_name}:global"
+            else:
+                break
+
+        if not func_node or not func_scope:
+            return None
+
+        # Build def-use tracker for this function
+        tracker = LocalDefUseTracker()
+        tracker.analyze_function(func_node, self.file_paths.get(mod_name, f"{mod_name}.py"))
+
+        # Check if the variable is tainted according to the tracker
+        if tracker.is_variable_tainted(var_name):
+            # Get the alias chain to find the ultimate source
+            chain = tracker.get_alias_chain(var_name)
+            if chain:
+                # Return the last element in the chain (the original source)
+                return chain[-1]
+
+        return None
 
     def get_source_snippet(self, file_path: str, start_line: int, end_line: int, node: Optional[ast.AST] = None) -> str:
         code = self.files.get(file_path)
@@ -3914,6 +3966,48 @@ class TaintTracker:
 
             if not records_before:
                 if base_taint: return base_taint
+
+                # Phase 4.2: Try def-use tracker for multi-hop alias resolution
+                ultimate_source = self._resolve_alias_with_def_use(node.id, scope_id, current_lineno)
+                if ultimate_source:
+                    # The variable is tainted through an alias chain
+                    # Create proof nodes showing the alias propagation
+                    step_idx = 0
+                    source_pn = self.create_proof_node(
+                        step_index=step_idx,
+                        node_type=ProofNodeType.SOURCE,
+                        file_path=file_name,
+                        node=None,
+                        symbol=ultimate_source,
+                        scope_id=scope_id,
+                        lineno=current_lineno,
+                        override_snippet=f"{ultimate_source} (source via alias chain)"
+                    )
+                    step_idx += 1
+                    alias_pn = self.create_proof_node(
+                        step_index=step_idx,
+                        node_type=ProofNodeType.ASSIGNMENT,
+                        file_path=file_name,
+                        node=node,
+                        symbol=node.id,
+                        scope_id=scope_id,
+                        lineno=current_lineno,
+                        override_snippet=f"{node.id} = ... (alias of {ultimate_source})"
+                    )
+                    edge = ProofEdge(
+                        from_node_id=source_pn.node_id,
+                        to_node_id=alias_pn.node_id,
+                        edge_type="ALIAS_PROPAGATION"
+                    )
+                    return TaintValue(
+                        state=TaintState.TAINTED,
+                        source_id=f"SRC-alias-{ultimate_source}",
+                        confidence=1.0,
+                        path=[f"{file_name}:{ultimate_source}", f"{file_name}:{node.id}"],
+                        last_operation=f"alias_chain_from_{ultimate_source}",
+                        proof_nodes=[source_pn, alias_pn],
+                        proof_edges=[edge]
+                    )
 
                 # Interprocedural argument -> parameter flow resolution (supports closures and outer scopes)
                 enc_scope = scope_id

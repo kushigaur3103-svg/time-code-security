@@ -16,10 +16,16 @@ from typing import Optional, Dict, Set, Tuple, List
 
 
 # Known sanitizers that break taint propagation
+# CRITICAL: str/bytes/repr/ascii are NOT sanitizers — they don't neutralize
+# shell metacharacters, SQL quotes, or path traversal dots.
 KNOWN_SANITIZERS: Set[str] = {
-    "int", "float", "str", "bool",
-    "shlex.quote", "html.escape", "urllib.parse.quote",
-    "os.path.abspath", "os.path.realpath", "pathlib.Path.resolve",
+    "int", "float", "bool",  # Strict type conversions (reject non-numeric → exception)
+    "shlex.quote",           # Shell argument quoting
+    "html.escape",           # HTML entity encoding
+    "urllib.parse.quote",    # URL percent-encoding
+    "os.path.abspath",       # Path normalization (removes ..)
+    "os.path.realpath",      # Symlink-resolving path normalization
+    "pathlib.Path.resolve",  # Modern pathlib path resolution
 }
 
 

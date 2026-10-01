@@ -327,7 +327,7 @@ class TestMultipleSanitizers:
 def process(src):
     a = int(src)
     b = float(src)
-    c = str(src)
+    c = bool(src)
     dangerous_call(a, b, c)
 """
         func = parse_function(code)
@@ -337,12 +337,58 @@ def process(src):
         # All sanitized variables should NOT be tainted
         assert not tracker.is_variable_tainted("a"), "'a' should be clean (int sanitizer)"
         assert not tracker.is_variable_tainted("b"), "'b' should be clean (float sanitizer)"
-        assert not tracker.is_variable_tainted("c"), "'c' should be clean (str sanitizer)"
+        assert not tracker.is_variable_tainted("c"), "'c' should be clean (bool sanitizer)"
 
         # Verify all are in killed_vars
         assert "a" in tracker.killed_vars
         assert "b" in tracker.killed_vars
         assert "c" in tracker.killed_vars
+
+
+class TestNonSanitizerStr:
+    """Test 15: str() is NOT a sanitizer — critical security fix."""
+
+    def test_str_does_not_break_taint(self):
+        """str(src) does NOT neutralize injection vectors → MUST REMAIN TAINTED."""
+        code = """
+def process(src):
+    a = src
+    b = str(a)
+    dangerous_call(b)
+"""
+        func = parse_function(code)
+        tracker = LocalDefUseTracker()
+        tracker.analyze_function(func)
+
+        # 'a' should be tainted
+        assert tracker.is_variable_tainted("a"), "'a' should be tainted"
+
+        # 'b' should STILL BE TAINTED (str is not a sanitizer)
+        assert tracker.is_variable_tainted("b"), "'b' must remain tainted — str() is NOT a sanitizer"
+        assert "b" not in tracker.killed_vars, "'b' should NOT be in killed_vars"
+
+        # Verify no sanitizer was recorded
+        alias_info = tracker.alias_map.get("b")
+        assert alias_info is not None
+        assert alias_info.sanitizer_applied is None, f"str() should not be recorded as sanitizer, got {alias_info.sanitizer_applied}"
+
+    def test_bytes_repr_ascii_not_sanitizers(self):
+        """bytes(), repr(), ascii() are NOT sanitizers."""
+        code = """
+def process(src):
+    a = bytes(src, 'utf-8')
+    b = repr(src)
+    c = ascii(src)
+    dangerous_call(a, b, c)
+"""
+        func = parse_function(code)
+        tracker = LocalDefUseTracker()
+        tracker.analyze_function(func)
+
+        # All should remain tainted
+        assert tracker.is_variable_tainted("a"), "bytes() is not a sanitizer"
+        assert tracker.is_variable_tainted("b"), "repr() is not a sanitizer"
+        assert tracker.is_variable_tainted("c"), "ascii() is not a sanitizer"
 
 
 class TestTaintPathTracing:
