@@ -796,9 +796,15 @@ SINK_REGISTRY = {
     "random.randrange": {"operation": "INSECURE_RANDOM", "category": "INSECURE_RANDOMNESS", "cwe": "CWE-338"},
     "random.sample": {"operation": "INSECURE_RANDOM", "category": "INSECURE_RANDOMNESS", "cwe": "CWE-338"},
 
+    # CWE-322: Key Exchange without Entity Authentication (implicit host key trust)
+    # paramiko AutoAddPolicy and WarningPolicy both bypass host-key verification.
+    "paramiko.client.AutoAddPolicy": {"operation": "HOST_KEY_VERIFICATION_BYPASS", "category": "INSECURE_NETWORK_COMMUNICATION", "cwe": "CWE-322"},
+    "paramiko.AutoAddPolicy": {"operation": "HOST_KEY_VERIFICATION_BYPASS", "category": "INSECURE_NETWORK_COMMUNICATION", "cwe": "CWE-322"},
+    "paramiko.client.WarningPolicy": {"operation": "INSECURE_HOST_KEY_POLICY", "category": "INSECURE_NETWORK_COMMUNICATION", "cwe": "CWE-322", "severity": "HIGH"},
+    "paramiko.WarningPolicy": {"operation": "INSECURE_HOST_KEY_POLICY", "category": "INSECURE_NETWORK_COMMUNICATION", "cwe": "CWE-322", "severity": "HIGH"},
+    "AutoAddPolicy": {"operation": "HOST_KEY_VERIFICATION_BYPASS", "category": "INSECURE_NETWORK_COMMUNICATION", "cwe": "CWE-322"},
+    "WarningPolicy": {"operation": "INSECURE_HOST_KEY_POLICY", "category": "INSECURE_NETWORK_COMMUNICATION", "cwe": "CWE-322", "severity": "HIGH"},
     # CWE-295: Disabled SSL/TLS Verification
-    "paramiko.client.AutoAddPolicy": {"operation": "HOST_KEY_VERIFICATION_BYPASS", "category": "INSECURE_TRANSPORT", "cwe": "CWE-295"},
-    "paramiko.AutoAddPolicy": {"operation": "HOST_KEY_VERIFICATION_BYPASS", "category": "INSECURE_TRANSPORT", "cwe": "CWE-295"},
     "urllib3.disable_warnings": {"operation": "DISABLED_SSL_VERIFICATION", "category": "INSECURE_TRANSPORT", "cwe": "CWE-295"},
     "ssl._create_unverified_context": {"operation": "DISABLED_SSL_VERIFICATION", "category": "INSECURE_TRANSPORT", "cwe": "CWE-295"},
 
@@ -1052,6 +1058,8 @@ CLUSTER3_STRUCTURAL_SOURCE_IDS = {
     "MARSHAL_USAGE": "MARSHAL_USAGE",
     "CSRF_EXEMPT_VIEW": "CSRF_EXEMPT_VIEW",
     "FLASK_CSRF_DISABLED": "FLASK_CSRF_DISABLED",
+    "HARDCODED_CONFIG": "HARDCODED_CONFIG",
+    "ACTIVE_DEBUG_CODE": "ACTIVE_DEBUG_CODE",
 }
 
 # ─── Batch 3A structural rule constants ───
@@ -2188,6 +2196,52 @@ class TaintTracker:
                         out.add(token)
         return out
 
+    def _is_insecure_host_key_policy(self, node: ast.Call, scope_id: str = "") -> bool:
+        """CWE-322: Detect set_missing_host_key_policy(AutoAddPolicy|WarningPolicy).
+
+        Covers all forms:
+          client.set_missing_host_key_policy(client.AutoAddPolicy())  # instantiated
+          client.set_missing_host_key_policy(client.AutoAddPolicy)    # bare class
+          client.set_missing_host_key_policy(client.WarningPolicy())  # WarningPolicy
+          client.set_missing_host_key_policy(WarningPolicy)           # bare import
+        """
+        func = node.func
+        attr = (func.attr if isinstance(func, ast.Attribute)
+                else (func.id if isinstance(func, ast.Name) else None))
+        if attr != "set_missing_host_key_policy":
+            return False
+        if not node.args:
+            return False
+        policy_arg = node.args[0]
+        # Unwrap call: AutoAddPolicy() -> AutoAddPolicy
+        target = policy_arg.func if isinstance(policy_arg, ast.Call) else policy_arg
+        policy_name = ""
+        if isinstance(target, ast.Name):
+            policy_name = target.id
+        elif isinstance(target, ast.Attribute):
+            policy_name = target.attr
+        if policy_name in ("AutoAddPolicy", "WarningPolicy"):
+            return True
+        # Resolve variable assigned to AutoAddPolicy/WarningPolicy
+        if isinstance(target, ast.Name) and target.id and scope_id:
+            curr_scope = scope_id
+            _walk_seen: set[str] = set()
+            while curr_scope and curr_scope not in _walk_seen:
+                _walk_seen.add(curr_scope)
+                recs = self.assignments_by_scope.get((curr_scope, target.id), [])
+                for r in recs:
+                    val = r.value_node
+                    v_target = val.func if isinstance(val, ast.Call) else val
+                    v_name = (v_target.id if isinstance(v_target, ast.Name)
+                              else (v_target.attr if isinstance(v_target, ast.Attribute) else ""))
+                    if v_name in ("AutoAddPolicy", "WarningPolicy"):
+                        return True
+                if "." in curr_scope:
+                    curr_scope = curr_scope.rsplit(".", 1)[0]
+                else:
+                    break
+        return False
+
     def _has_disabled_ssl(self, node: ast.Call, scope_id: str = "") -> bool:
         for kw in getattr(node, "keywords", []):
             if kw.arg == "verify":
@@ -2250,8 +2304,52 @@ class TaintTracker:
                             curr_scope = curr_scope.rsplit(".", 1)[0]
                         else:
                             break
-            if kw.arg == "cert_reqs" and isinstance(kw.value, ast.Constant) and str(kw.value.value).upper() in ("CERT_NONE", "NONE"):
-                return True
+            # CWE-295: cert_reqs=ssl.CERT_NONE / CERT_OPTIONAL or string equivalents.
+            # NOTE: cert_reqs=None means "use default / follow context" — NOT a finding (zero-FP guard).
+            if kw.arg in ("cert_reqs", "ssl_cert_reqs"):
+                val = kw.value
+                if isinstance(val, ast.Constant):
+                    # Only flag string literals like "NONE" or "CERT_NONE"/"CERT_OPTIONAL".
+                    # Do NOT flag Python None (NoneType) — that is the safe default.
+                    if isinstance(val.value, str) and val.value.upper() in (
+                        "CERT_NONE", "NONE", "CERT_OPTIONAL", "OPTIONAL"
+                    ):
+                        return True
+                elif isinstance(val, ast.Attribute) and val.attr in (
+                    "CERT_NONE", "CERT_OPTIONAL", "CERT_NO_CHECK"
+                ):
+                    # e.g. ssl.CERT_NONE, ssl.CERT_OPTIONAL
+                    return True
+                elif isinstance(val, ast.Name) and val.id in (
+                    "CERT_NONE", "CERT_OPTIONAL", "CERT_NO_CHECK"
+                ):
+                    # e.g. bare CERT_NONE after "from ssl import CERT_NONE"
+                    return True
+                elif isinstance(val, ast.Name):
+                    # Resolve variable: might be assigned ssl.CERT_NONE elsewhere
+                    curr_scope = scope_id
+                    _walk_seen: set[str] = set()
+                    while curr_scope and curr_scope not in _walk_seen:
+                        _walk_seen.add(curr_scope)
+                        recs = self.assignments_by_scope.get((curr_scope, val.id), [])
+                        for r in recs:
+                            if isinstance(r.value_node, ast.Constant):
+                                if isinstance(r.value_node.value, str) and r.value_node.value.upper() in (
+                                    "CERT_NONE", "NONE", "CERT_OPTIONAL", "OPTIONAL"
+                                ):
+                                    return True
+                            elif isinstance(r.value_node, ast.Attribute) and r.value_node.attr in (
+                                "CERT_NONE", "CERT_OPTIONAL", "CERT_NO_CHECK"
+                            ):
+                                return True
+                            elif isinstance(r.value_node, ast.Name) and r.value_node.id in (
+                                "CERT_NONE", "CERT_OPTIONAL", "CERT_NO_CHECK"
+                            ):
+                                return True
+                        if "." in curr_scope:
+                            curr_scope = curr_scope.rsplit(".", 1)[0]
+                        else:
+                            break
         return False
 
     def _is_security_sensitive_random(self, node: ast.Call, scope_id: str = "", lineno: int = 0) -> bool:
@@ -2659,6 +2757,22 @@ class TaintTracker:
         if self._has_disabled_ssl(node, scope_id):
             return True
 
+        # Check for CWE-322: set_missing_host_key_policy with insecure policy
+        # The policy constructor is evidence for the outer setter, not a sink itself.
+        _parent = getattr(node, "parent", None)
+        if isinstance(_parent, ast.Call):
+            _p_func = _parent.func
+            _p_attr = (_p_func.attr if isinstance(_p_func, ast.Attribute)
+                       else (_p_func.id if isinstance(_p_func, ast.Name) else None))
+            if _p_attr == "set_missing_host_key_policy":
+                _inner = node.func
+                _inner_name = (_inner.attr if isinstance(_inner, ast.Attribute)
+                               else (_inner.id if isinstance(_inner, ast.Name) else ""))
+                if _inner_name in ("AutoAddPolicy", "WarningPolicy"):
+                    return False
+        if self._is_insecure_host_key_policy(node, scope_id):
+            return True
+
         # Check for hashlib.new(...) with weak algorithm (CWE-327)
         hashlib_algo = self._get_hashlib_new_algo(node, scope_id)
         if hashlib_algo in ("md5", "sha1", "des"):
@@ -2792,8 +2906,12 @@ class TaintTracker:
                 meta = {"operation": matched_rule.operation, "category": matched_rule.category, "cwe": matched_rule.cwe_id}
             else:
                 meta = {}
+                # 0. Check for CWE-322: insecure paramiko host key policy
+                if self._is_insecure_host_key_policy(node, scope_id):
+                    meta = {"operation": "INSECURE_HOST_KEY_POLICY",
+                            "category": "INSECURE_NETWORK_COMMUNICATION", "cwe": "CWE-322"}
                 # 1. Check for CWE-295: disabled SSL/TLS verification
-                if self._has_disabled_ssl(node, scope_id):
+                elif self._has_disabled_ssl(node, scope_id):
                     meta = {"operation": "DISABLED_SSL_VERIFICATION", "category": "INSECURE_TRANSPORT", "cwe": "CWE-295"}
                 # 2. Check for hashlib.new(...) with weak algorithm (CWE-327)
                 elif (hashlib_algo := self._get_hashlib_new_algo(node, scope_id)) in ("md5", "sha1", "des"):
@@ -7942,6 +8060,21 @@ class TaintTracker:
                     _add(kw.value, "FLASK_CSRF_DISABLED", "CSRF_MISSING_PROTECTION",
                          "CWE-352")
 
+                # ---- CWE-215/CWE-489: app.config.update(DEBUG=True, SECRET_KEY="...") ----
+                if chain and len(chain) >= 2 and chain[-1] == "update" and \
+                        chain[-2] == "config":
+                    _DEBUG_BOOL_KEYS = frozenset({"DEBUG"})
+                    _STRING_CONFIG_KEYS = frozenset({"SECRET_KEY", "ENV"})
+                    for kw in node.keywords:
+                        val = _static(kw.value, scope, lineno)
+                        if val is not None:
+                            if kw.arg in _DEBUG_BOOL_KEYS and val is True:
+                                _add(kw.value, "ACTIVE_DEBUG_CODE", "ACTIVE_DEBUG_CODE",
+                                     "CWE-489")
+                            elif kw.arg in _STRING_CONFIG_KEYS:
+                                _add(kw.value, "HARDCODED_CONFIG", "HARDCODED_CONFIG",
+                                     "CWE-489")
+
                 # ---- CWE-502: yaml unsafe loaders ----
                 if chain and chain[0] == CLUSTER3_YAML_ROOT and \
                         last_seg in CLUSTER3_YAML_UNSAFE_SEGS:
@@ -8189,6 +8322,36 @@ class TaintTracker:
                             if isinstance(target.slice, ast.Constant):
                                 slice_str = str(target.slice.value)
 
+                        # CWE-489: hardcoded config keys with literal values.
+                        # DEBUG = True -> CWE-489 (active debug code).
+                        # SECRET_KEY/ENV string literals -> CWE-489 (hardcoded config per corpus mapping).
+                        # Skip if RHS is dynamic (os.environ, os.getenv, etc.).
+                        _DEBUG_BOOL_KEYS = frozenset({"DEBUG"})
+                        _STRING_CONFIG_KEYS = frozenset({"SECRET_KEY", "ENV"})
+                        _ALL_CONFIG_KEYS = _DEBUG_BOOL_KEYS | _STRING_CONFIG_KEYS
+                        is_config_subscript = slice_str in _ALL_CONFIG_KEYS
+                        is_config_attr = t_str.endswith(".config.DEBUG") or \
+                                         t_str.endswith(".config.SECRET_KEY") or \
+                                         t_str.endswith(".config.ENV")
+                        if val_const is not None and (is_config_subscript or is_config_attr):
+                            if slice_str in _DEBUG_BOOL_KEYS or t_str.endswith(".DEBUG"):
+                                # Only flag DEBUG=True (active debug code), not DEBUG=False
+                                if val_const is True:
+                                    cwe_meta = {
+                                        "operation": "ACTIVE_DEBUG_CODE",
+                                        "category": "ACTIVE_DEBUG_CODE",
+                                        "cwe": "CWE-489",
+                                    }
+                                    break
+                            elif slice_str in _STRING_CONFIG_KEYS or t_str.endswith(".SECRET_KEY") or t_str.endswith(".ENV"):
+                                # SECRET_KEY/ENV: flag any literal value
+                                cwe_meta = {
+                                    "operation": "HARDCODED_CONFIG",
+                                    "category": "HARDCODED_CONFIG",
+                                    "cwe": "CWE-489",
+                                }
+                                break
+
                         # CWE-489: DEBUG = True or app.config["DEBUG"] = True or app.debug = True
                         if val_const is True:
                             if t_str in ("DEBUG", "DEBUG_MODE") or t_str.endswith(".debug") or slice_str == "DEBUG":
@@ -8279,13 +8442,19 @@ class TaintTracker:
                         continue
                     seen.add(dedupe_key)
                     sink_id = self.next_sink_id()
+                    source_id = cwe_meta.get("p7_source_id") or cwe_meta["operation"].upper().replace(" ", "_")
                     sink_node = SecurityNode(
                         id=sink_id,
                         node_type=NodeType.SINK,
                         symbol=cwe_meta["operation"],
                         operation=cwe_meta["operation"],
                         location=location(node, file_path),
-                        metadata={"sink_type": cwe_meta["category"], "category": cwe_meta["category"], "cwe": cwe_meta["cwe"]},
+                        metadata={
+                            "sink_type": cwe_meta["category"],
+                            "category": cwe_meta["category"],
+                            "cwe": cwe_meta["cwe"],
+                            "p7_source_id": source_id,
+                        },
                     )
                     self.sinks.append(sink_node)
                     self.sink_records.append(SinkRecord(
@@ -9376,8 +9545,15 @@ class TaintTracker:
         path_write_sinks = {"open", "builtins.open"}
         path_delete_sinks = {"os.remove", "os.unlink", "shutil.rmtree"}
         tls_sinks = {
-            "requests.get", "requests.post", "requests.put", "requests.delete", "requests.request",
-            "httpx.get", "httpx.post", "httpx.Client", "urllib3.PoolManager",
+            "requests.get", "requests.post", "requests.put", "requests.delete",
+            "requests.request", "requests.head", "requests.patch",
+            "httpx.get", "httpx.post", "httpx.Client",
+            "urllib3.PoolManager", "PoolManager",
+            "urllib3.ProxyManager", "ProxyManager",
+            "urllib3.connectionpool.HTTPSConnectionPool", "HTTPSConnectionPool",
+            "urllib3.connection_from_url", "connection_from_url",
+            "urllib3.proxy_from_url", "proxy_from_url",
+            "ssl.wrap_socket", "wrap_socket",
         }
         path_sanitizers = {
             "os.path.abspath", "posixpath.abspath", "ntpath.abspath",
@@ -11766,6 +11942,16 @@ class TaintTracker:
                     kind="CONFIRMED_DATA_FLOW",
                     confidence=1.0,
                     transform="disabled_ssl_verification"
+                ))
+                continue
+
+            if cwe == "CWE-322":
+                self.edges.append(DataFlowEdge(
+                    source_id="INSECURE_CONFIGURATION",
+                    target_id=sink.id,
+                    kind="CONFIRMED_DATA_FLOW",
+                    confidence=1.0,
+                    transform="insecure_host_key_policy"
                 ))
                 continue
 
