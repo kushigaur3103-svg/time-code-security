@@ -920,6 +920,31 @@ STRUCTURAL_SYNTHETIC_SOURCES = {
     "CWE-521": "EMPTY_PASSWORD_POLICY",
 }
 CWE798_TARGET_RE = re.compile(r"(?i).*(password|passwd|secret_key|api_key|access_token|auth_token).*")
+# Dummy/test string blocklist for CWE-798 - suppress known test placeholders
+CWE798_DUMMY_STRINGS = frozenset({
+    "this-is-probably-a-test", "this-is-not-a-key", "this-is-secret",
+    "your-password-here", "your-api-key-here", "your-secret-here",
+    "<your-password-here>", "<your-api-key-here>", "<your-secret-here>",
+})
+
+def _is_cwe798_dummy_string(value: str) -> bool:
+    """Check if a string value matches known test/dummy patterns for CWE-798 suppression."""
+    if value in CWE798_DUMMY_STRINGS:
+        return True
+    # Check for repeated character patterns (e.g., "xxxx...", "XXXX...", "0000...")
+    if len(value) >= 8:
+        # All same character (case-insensitive)
+        if len(set(value.lower())) == 1:
+            return True
+        # Pattern like "xxx..." where first char repeats for most of the string
+        first_char = value[0].lower()
+        if all(c.lower() == first_char for c in value[:len(value)//2]):
+            return True
+    # Check for <your-...-here> pattern
+    if value.startswith("<your-") and value.endswith(">"):
+        return True
+    return False
+
 CWE326_SINK_NAMES = {"RSA.generate", "Crypto.PublicKey.RSA.generate",
                      "rsa.generate_private_key",
                      # Phase 6.3: DSA + Cryptodome module forms.
@@ -6622,18 +6647,22 @@ class TaintTracker:
                     # CWE-798: hardcoded credential literal assigned to a sensitive target
                     value_node = node.value
                     if isinstance(value_node, ast.Constant) and isinstance(value_node.value, str) and len(value_node.value) >= 8:
-                        targets = node.targets if isinstance(node, ast.Assign) else [node.target]
-                        for target in targets:
-                            t_str = ""
-                            if isinstance(target, ast.Name):
-                                t_str = target.id
-                            elif isinstance(target, ast.Attribute):
-                                t_str = dotted_name(target) or target.attr
-                            elif isinstance(target, ast.Subscript) and isinstance(target.value, ast.Name):
-                                t_str = target.value.id
-                            if t_str and CWE798_TARGET_RE.match(t_str):
-                                cwe_meta = {"operation": "HARDCODED_CREDENTIAL", "category": "HARDCODED_CREDENTIALS", "cwe": "CWE-798"}
-                                break
+                        # Suppress known test/dummy strings
+                        if _is_cwe798_dummy_string(value_node.value):
+                            pass  # Skip this assignment - it's a test placeholder
+                        else:
+                            targets = node.targets if isinstance(node, ast.Assign) else [node.target]
+                            for target in targets:
+                                t_str = ""
+                                if isinstance(target, ast.Name):
+                                    t_str = target.id
+                                elif isinstance(target, ast.Attribute):
+                                    t_str = dotted_name(target) or target.attr
+                                elif isinstance(target, ast.Subscript) and isinstance(target.value, ast.Name):
+                                    t_str = target.value.id
+                                if t_str and CWE798_TARGET_RE.match(t_str):
+                                    cwe_meta = {"operation": "HARDCODED_CREDENTIAL", "category": "HARDCODED_CREDENTIALS", "cwe": "CWE-798"}
+                                    break
 
                 elif isinstance(node, ast.ExceptHandler):
                     # CWE-209: sensitive error exposure from except handler
@@ -10940,6 +10969,11 @@ class TaintTracker:
             if not normalized or len(normalized) < 8:
                 return False
             lowered = normalized.lower()
+            
+            # Phase 8.5: Suppress known test/dummy strings
+            if _is_cwe798_dummy_string(normalized):
+                return False
+            
             if lowered in credential_placeholders or any(
                 marker in lowered for marker in (
                     "placeholder", "changeme", "change_me", "your_password",
