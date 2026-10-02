@@ -776,7 +776,12 @@ STRUCTURAL_SYNTHETIC_SOURCES = {
     "CWE-521": "EMPTY_PASSWORD_POLICY",
 }
 CWE798_TARGET_RE = re.compile(r"(?i).*(password|passwd|secret_key|api_key|access_token|auth_token).*")
-CWE326_SINK_NAMES = {"RSA.generate", "Crypto.PublicKey.RSA.generate", "rsa.generate_private_key"}
+CWE326_SINK_NAMES = {"RSA.generate", "Crypto.PublicKey.RSA.generate",
+                     "rsa.generate_private_key",
+                     # Phase 6.3: DSA + Cryptodome module forms.
+                     "DSA.generate", "Crypto.PublicKey.DSA.generate",
+                     "Cryptodome.PublicKey.DSA.generate",
+                     "Cryptodome.PublicKey.RSA.generate"}
 CWE798_SAFE_SOURCES = {"os.environ.get", "os.getenv", "config.get"}
 
 # ─── Batch 3B structural rule constants ───
@@ -866,10 +871,19 @@ CLUSTER2_STRUCTURAL_SOURCE_IDS = {
 
 # ─── Phase 3 Cluster 3 structural rule constants (18-rule grand finale batch) ───
 CLUSTER3_NOSEC_RE = re.compile(r"#\s*nosec\b")
-CLUSTER3_WEAK_NEW_HASH_ALGOS = {"md2", "md4", "md5", "sha1", "sha0"}
+CLUSTER3_WEAK_NEW_HASH_ALGOS = {"md2", "md4", "md5", "sha1", "sha0", "sha224"}
 CLUSTER3_WEAK_HASH_CLASS_NAMES = {"MD2", "MD4", "MD5", "SHA", "SHA1"}
 CLUSTER3_HASH_MODULE_PAIRS = (("Crypto", "Hash"), ("Cryptodome", "Hash"))
 CLUSTER3_HASHLIB_MODULE_SEG = "hashlib"
+# Phase 6.3: weak ssl.PROTOCOL_* constants (call args, kwargs and default args).
+CLUSTER3_WEAK_SSL_PROTOCOL_SEGS = frozenset({
+    "PROTOCOL_SSLv2", "PROTOCOL_SSLv3", "PROTOCOL_TLSv1", "PROTOCOL_TLSv1_1",
+})
+CLUSTER3_SSL_MODULE_ROOT = "ssl"
+# Phase 6.3: legacy broken ciphers under Crypto.Cipher / Cryptodome.Cipher.
+CLUSTER3_LEGACY_CIPHER_NAMES = frozenset({"Blowfish", "DES", "ARC2", "ARC4", "IDEA", "XOR"})
+CLUSTER3_CIPHER_MODULE_SEG = "Cipher"
+CLUSTER3_CIPHER_MODULE_ROOTS = frozenset({"Crypto", "Cryptodome"})
 CLUSTER3_PASSWORD_SETTER_METHODS = {"setpassword", "set_password"}
 CLUSTER3_INSECURE_UUID_SEG = "uuid1"
 CLUSTER3_URLLIB_MODULE_SEGS = {"urllib", "urllib2"}
@@ -919,6 +933,8 @@ CLUSTER3_STRUCTURAL_SOURCE_IDS = {
     "HARDCODED_AWS_TOKEN": "HARDCODED_AWS_TOKEN",
     "HARDCODED_PASSWORD_DEFAULT": "HARDCODED_PASSWORD_DEFAULT",
     "INSUFFICIENT_KEY_SIZE": "INSUFFICIENT_KEY_SIZE",
+    "WEAK_SSL_PROTOCOL": "WEAK_SSL_PROTOCOL",
+    "WEAK_CIPHER_LEGACY": "WEAK_CIPHER_LEGACY",
     "UNSAFE_YAML_LOADER": "UNSAFE_YAML_LOADER",
     "UNSAFE_PICKLE_USAGE": "UNSAFE_PICKLE_USAGE",
     "MARSHAL_USAGE": "MARSHAL_USAGE",
@@ -6639,18 +6655,33 @@ class TaintTracker:
             def _kw_arguments(call: ast.Call):
                 return {kw.arg: kw for kw in getattr(call, "keywords", []) if kw.arg}
 
-            existing_index: dict[tuple[str, int], int] = {}
+            existing_index: dict[tuple[str, int], list] = {}
             for record in self.sink_records:
                 loc = record.security_node.location
                 if loc.file == file_path:
                     key = (record.security_node.metadata.get("cwe") or "", loc.line_start)
-                    existing_index[key] = existing_index.get(key, 0) + 1
+                    existing_index.setdefault(key, []).append(record.security_node)
+
+            def _merge_into_existing_sink(cwe: str, line: int, operation: str) -> None:
+                """Phase 6.3: an edgeless registry sink at the same (cwe, line) used to swallow
+                the structural finding; stamp its synthetic source id instead (mirrors the
+                P3 `_add_finding` merge)."""
+                source_id = CLUSTER2_STRUCTURAL_SOURCE_IDS.get(operation)
+                if not source_id:
+                    return
+                for existing in existing_index.get((cwe, line)) or []:
+                    if not existing.metadata.get("p3_source_id"):
+                        existing.metadata["p3_source_id"] = source_id
+                        return
 
             def _add(node: ast.AST, operation: str, category: str, cwe: str) -> None:
                 line = getattr(node, "lineno", 1)
                 column = getattr(node, "col_offset", 0)
                 key = (cwe, line, column)
-                if key in seen or existing_index.get((cwe, line)):
+                if key in seen:
+                    return
+                if existing_index.get((cwe, line)):
+                    _merge_into_existing_sink(cwe, line, operation)
                     return
                 seen.add(key)
                 scope_id = _scope_for(node, mod_name)
@@ -7063,12 +7094,23 @@ class TaintTracker:
             def _static(expr, scope: str, lineno: int):
                 return _eval_static_constant(expr, self.assignments_by_scope, scope, lineno)
 
-            existing_index: dict[tuple[str, int], int] = {}
+            existing_index: dict[tuple[str, int], list] = {}
             for record in self.sink_records:
                 loc = record.security_node.location
                 if loc.file == file_path:
                     key = (record.security_node.metadata.get("cwe") or "", loc.line_start)
-                    existing_index[key] = existing_index.get(key, 0) + 1
+                    existing_index.setdefault(key, []).append(record.security_node)
+
+            def _merge_into_existing_sink(cwe: str, line: int, operation: str) -> None:
+                """Phase 6.3: stamp the synthetic source id onto an edgeless registry sink at
+                the same (cwe, line) instead of dropping the structural finding."""
+                source_id = CLUSTER3_STRUCTURAL_SOURCE_IDS.get(operation)
+                if not source_id:
+                    return
+                for existing in existing_index.get((cwe, line)) or []:
+                    if not existing.metadata.get("p3_source_id"):
+                        existing.metadata["p3_source_id"] = source_id
+                        return
 
             nosec_lines: set[int] = set()
             mod_source = self.files.get(file_path) or ""
@@ -7082,7 +7124,10 @@ class TaintTracker:
                 if line in nosec_lines:
                     return
                 key = (cwe, line, column)
-                if key in seen or existing_index.get((cwe, line)):
+                if key in seen:
+                    return
+                if existing_index.get((cwe, line)):
+                    _merge_into_existing_sink(cwe, line, operation)
                     return
                 seen.add(key)
                 scope_id = _scope_for(node, mod_name)
@@ -7236,6 +7281,14 @@ class TaintTracker:
                             _add(node, "FLASK_CSRF_DISABLED", "CSRF_MISSING_PROTECTION",
                                  "CWE-352")
 
+                # ---- CWE-326: weak ssl.PROTOCOL_* constant (args, kwargs, defaults) ----
+                if isinstance(node, (ast.Attribute, ast.Name)):
+                    ssl_segs = _segments(node)
+                    if ssl_segs and ssl_segs[-1] in CLUSTER3_WEAK_SSL_PROTOCOL_SEGS and \
+                            _resolve_chain(ssl_segs, scope, lineno)[:1] == \
+                            [CLUSTER3_SSL_MODULE_ROOT]:
+                        _add(node, "WEAK_SSL_PROTOCOL", "INSECURE_TRANSPORT", "CWE-326")
+
                 if not isinstance(node, ast.Call):
                     continue
 
@@ -7265,6 +7318,13 @@ class TaintTracker:
                     if isinstance(algo, str) and algo.lower() in \
                             CLUSTER3_WEAK_NEW_HASH_ALGOS and usedfor_value is not False:
                         _add(node, "WEAK_HASH_NEW", "CRYPTOGRAPHIC_FAILURES", "CWE-327")
+
+                # ---- CWE-327: legacy Crypto(Dome).Cipher algorithms (alias aware) ----
+                if last_seg == "new" and len(chain) >= 4 and \
+                        chain[-3] == CLUSTER3_CIPHER_MODULE_SEG and \
+                        chain[-2] in CLUSTER3_LEGACY_CIPHER_NAMES and \
+                        chain[0] in CLUSTER3_CIPHER_MODULE_ROOTS:
+                    _add(node, "WEAK_CIPHER_LEGACY", "WEAK_CRYPTOGRAPHY", "CWE-327")
 
                 # ---- CWE-327: Crypto(Dome).Hash weak class .new() (alias aware) ----
                 if last_seg == "new" and len(chain) >= 3:
