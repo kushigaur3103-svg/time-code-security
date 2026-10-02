@@ -28,7 +28,7 @@ Corpus mutation check (SHA-256 over each mirrored tree, before vs after the run)
 | Tool | TP | TP via same-family cluster | FP | TN | FN | Precision | Recall | F1 | FN w/ line hit (CWE miss) | Findings outside any label |
 |---|---|---|---|---|---|---|---|---|---|---|
 | TCS | 585 | 31 | 50 | 906 | 874 | 92.13% | 40.10% | 55.87% | 17 | 292 |
-| Semgrep | 947 | 8 | 101 | 855 | 512 | 90.36% | 64.91% | 75.55% | 8 | 354 |
+| Semgrep | 46 | 0 | 6 | 950 | 1413 | 88.46% | 3.15% | 6.09% | 0 | 27 |
 | Bandit | 447 | 43 | 231 | 725 | 1012 | 65.93% | 30.64% | 41.83% | 137 | 548 |
 
 ### Per corpus
@@ -38,7 +38,7 @@ Corpus mutation check (SHA-256 over each mirrored tree, before vs after the run)
 | Tool | TP | TP via same-family cluster | FP | TN | FN | Precision | Recall | F1 | FN w/ line hit (CWE miss) | Findings outside any label |
 |---|---|---|---|---|---|---|---|---|---|---|
 | TCS | 547 | 31 | 48 | 881 | 836 | 91.93% | 39.55% | 55.31% | 17 | 263 |
-| Semgrep | 901 | 8 | 95 | 834 | 482 | 90.46% | 65.15% | 75.75% | 8 | 327 |
+| Semgrep | 0 | 0 | 0 | 929 | 1383 | 0.00% | 0.00% | 0.00% | 0 | 0 |
 | Bandit | 371 | 43 | 218 | 711 | 1012 | 62.99% | 26.83% | 37.63% | 137 | 507 |
 
 **bandit** — Bandit examples (file-level + nosec lines)
@@ -53,16 +53,16 @@ Corpus mutation check (SHA-256 over each mirrored tree, before vs after the run)
 
 | Tool | Wall clock (all corpora) | Split |
 |---|---|---|
-| TCS | 11.1 s | semgrep_rules 8.6s, bandit 2.5s |
-| Semgrep | 78.7 s | semgrep_rules 50.2s, bandit 28.6s |
-| Bandit | 20.0 s | semgrep_rules 4.2s, bandit 15.8s |
+| TCS | 20.4 s | semgrep_rules 15.7s, bandit 4.6s |
+| Semgrep | 141.1 s | semgrep_rules 107.9s, bandit 33.2s |
+| Bandit | 24.4 s | semgrep_rules 3.7s, bandit 20.6s |
 
 ### Sensitivity — line-only matching (declared CWE ignored)
 
 | Tool | TP | TP via same-family cluster | FP | TN | FN | Precision | Recall | F1 | FN w/ line hit (CWE miss) | Findings outside any label |
 |---|---|---|---|---|---|---|---|---|---|---|
 | TCS | 602 | 0 | 50 | 906 | 857 | 92.33% | 41.26% | 57.03% | 0 | 250 |
-| Semgrep | 955 | 0 | 101 | 855 | 504 | 90.44% | 65.46% | 75.94% | 0 | 259 |
+| Semgrep | 46 | 0 | 6 | 950 | 1413 | 88.46% | 3.15% | 6.09% | 0 | 27 |
 | Bandit | 584 | 0 | 231 | 725 | 875 | 71.66% | 40.03% | 51.36% | 0 | 399 |
 
 ### Same-family CWE equivalence clusters applied to the strict score
@@ -82,7 +82,7 @@ Clusters applied (each is one MITRE family the vendors name at different abstrac
 
 Deliberately **not** folded, because they are distinct weakness classes rather than naming variants: CWE-94 (dynamic compilation/import loading) vs CWE-95 (direct evaluation), CWE-502 (untrusted deserialisation) vs CWE-94/95, CWE-89 (SQL) vs CWE-862 (missing authorisation), CWE-918 (SSRF) vs CWE-79 (XSS), CWE-319 (cleartext transmission) vs CWE-22/73 (path control). Folding any of those would convert a real classification error into a scored true positive.
 
-82 positive label(s) matched only through a same-family CWE cluster (first 68 listed):
+74 positive label(s) matched only through a same-family CWE cluster (first 60 listed):
 
 | tool | corpus:rule | site | labelled CWE | tool reported |
 |---|---|---|---|---|
@@ -116,14 +116,6 @@ Deliberately **not** folded, because they are distinct weakness classes rather t
 | TCS | semgrep_rules:no-auth-over-http | no-auth-over-http.py:9 | CWE-523 | CWE-319: CLEARTEXT_HTTP_TRANSMISSION[CWE-319]; CWE-522: CLEARTEXT_AUTH_TRANSPORT[CWE-522] |
 | TCS | semgrep_rules:no-auth-over-http | no-auth-over-http.py:22 | CWE-523 | CWE-319: CLEARTEXT_HTTP_TRANSMISSION[CWE-319]; CWE-522: CLEARTEXT_AUTH_TRANSPORT[CWE-522] |
 | TCS | semgrep_rules:no-auth-over-http | no-auth-over-http.py:37 | CWE-523 | CWE-319: CLEARTEXT_HTTP_TRANSMISSION[CWE-319]; CWE-522: CLEARTEXT_AUTH_TRANSPORT[CWE-522] |
-| Semgrep | semgrep_rules:incorrect-autoescape-disabled | autoescape-disabled-false.fixed.py:16 | CWE-116 | direct-use-of-jinja2[CWE-79] |
-| Semgrep | semgrep_rules:incorrect-autoescape-disabled | autoescape-disabled-false.fixed.py:20 | CWE-116 | direct-use-of-jinja2[CWE-79] |
-| Semgrep | semgrep_rules:incorrect-autoescape-disabled | autoescape-disabled-false.fixed.py:40 | CWE-116 | direct-use-of-jinja2[CWE-79] |
-| Semgrep | semgrep_rules:incorrect-autoescape-disabled | autoescape-disabled-false.py:16 | CWE-116 | direct-use-of-jinja2[CWE-79] |
-| Semgrep | semgrep_rules:incorrect-autoescape-disabled | autoescape-disabled-false.py:20 | CWE-116 | direct-use-of-jinja2[CWE-79] |
-| Semgrep | semgrep_rules:incorrect-autoescape-disabled | autoescape-disabled-false.py:40 | CWE-116 | direct-use-of-jinja2[CWE-79] |
-| Semgrep | semgrep_rules:missing-autoescape-disabled | missing-autoescape-disabled.fixed.py:30 | CWE-116 | direct-use-of-jinja2[CWE-79] |
-| Semgrep | semgrep_rules:missing-autoescape-disabled | missing-autoescape-disabled.py:30 | CWE-116 | direct-use-of-jinja2[CWE-79] |
 | Bandit | semgrep_rules:insecure-file-permissions | insecure-file-permissions.py:4 | CWE-276 | B103[CWE-732] |
 | Bandit | semgrep_rules:insecure-file-permissions | insecure-file-permissions.py:6 | CWE-276 | B103[CWE-732] |
 | Bandit | semgrep_rules:insecure-file-permissions | insecure-file-permissions.py:8 | CWE-276 | B103[CWE-732] |
@@ -160,7 +152,7 @@ Deliberately **not** folded, because they are distinct weakness classes rather t
 | Tool | Findings | Carrying a CWE | Coverage |
 |---|---|---|---|
 | TCS | 1055 | 1055 | 100.00% |
-| Semgrep | 1866 | 1842 | 98.71% |
+| Semgrep | 279 | 279 | 100.00% |
 | Bandit | 1765 | 1765 | 100.00% |
 
 ## 3. Per-CWE breakdown (100% of declared CWEs)
@@ -227,55 +219,55 @@ Deliberately **not** folded, because they are distinct weakness classes rather t
 
 | CWE | Pos | Neg | TP | FN | FP | TN | Recall | Precision |
 |---|---|---|---|---|---|---|---|---|
-| CWE-20 | 2 | 2 | 1 | 1 | 1 | 1 | 50.00% | 50.00% |
-| CWE-22 | 23 | 7 | 23 | 0 | 0 | 7 | 100.00% | 100.00% |
-| CWE-73 | 1 | 1 | 1 | 0 | 0 | 1 | 100.00% | 100.00% |
-| CWE-74 | 2 | 2 | 2 | 0 | 0 | 2 | 100.00% | 100.00% |
-| CWE-78 | 189 | 100 | 118 | 71 | 7 | 93 | 62.43% | 94.40% |
-| CWE-79 | 95 | 56 | 91 | 4 | 1 | 55 | 95.79% | 98.91% |
-| CWE-89 | 150 | 87 | 143 | 7 | 34 | 53 | 95.33% | 80.79% |
-| CWE-91 | 5 | 4 | 5 | 0 | 0 | 4 | 100.00% | 100.00% |
-| CWE-93 | 1 | 1 | 1 | 0 | 0 | 1 | 100.00% | 100.00% |
-| CWE-95 | 64 | 35 | 53 | 11 | 0 | 35 | 82.81% | 100.00% |
-| CWE-96 | 17 | 7 | 17 | 0 | 0 | 7 | 100.00% | 100.00% |
-| CWE-116 | 10 | 24 | 8 | 2 | 22 | 2 | 80.00% | 26.67% |
-| CWE-134 | 2 | 2 | 2 | 0 | 0 | 2 | 100.00% | 100.00% |
-| CWE-155 | 4 | 5 | 4 | 0 | 0 | 5 | 100.00% | 100.00% |
-| CWE-200 | 3 | 2 | 3 | 0 | 0 | 2 | 100.00% | 100.00% |
-| CWE-250 | 2 | 2 | 2 | 0 | 0 | 2 | 100.00% | 100.00% |
-| CWE-276 | 22 | 7 | 22 | 0 | 0 | 7 | 100.00% | 100.00% |
-| CWE-287 | 6 | 8 | 3 | 3 | 0 | 8 | 50.00% | 100.00% |
-| CWE-295 | 18 | 9 | 18 | 0 | 0 | 9 | 100.00% | 100.00% |
-| CWE-310 | 1 | 1 | 1 | 0 | 0 | 1 | 100.00% | 100.00% |
-| CWE-319 | 89 | 72 | 88 | 1 | 8 | 64 | 98.88% | 91.67% |
-| CWE-322 | 2 | 1 | 2 | 0 | 0 | 1 | 100.00% | 100.00% |
-| CWE-326 | 43 | 29 | 37 | 6 | 1 | 28 | 86.05% | 97.37% |
-| CWE-327 | 60 | 44 | 47 | 13 | 0 | 44 | 78.33% | 100.00% |
-| CWE-330 | 3 | 1 | 3 | 0 | 0 | 1 | 100.00% | 100.00% |
-| CWE-352 | 24 | 18 | 9 | 15 | 0 | 18 | 37.50% | 100.00% |
-| CWE-477 | 1 | 2 | 1 | 0 | 0 | 2 | 100.00% | 100.00% |
-| CWE-489 | 10 | 9 | 10 | 0 | 1 | 8 | 100.00% | 90.91% |
-| CWE-502 | 34 | 18 | 34 | 0 | 3 | 15 | 100.00% | 91.89% |
-| CWE-521 | 8 | 7 | 5 | 3 | 3 | 4 | 62.50% | 62.50% |
-| CWE-522 | 8 | 2 | 8 | 0 | 0 | 2 | 100.00% | 100.00% |
-| CWE-523 | 7 | 6 | 7 | 0 | 1 | 5 | 100.00% | 87.50% |
-| CWE-532 | 2 | 0 | 2 | 0 | 0 | 0 | 100.00% | 100.00% |
-| CWE-553 | 3 | 0 | 3 | 0 | 0 | 0 | 100.00% | 100.00% |
-| CWE-601 | 6 | 10 | 6 | 0 | 0 | 10 | 100.00% | 100.00% |
-| CWE-611 | 4 | 12 | 3 | 1 | 4 | 8 | 75.00% | 42.86% |
-| CWE-614 | 22 | 33 | 10 | 12 | 0 | 33 | 45.45% | 100.00% |
-| CWE-668 | 4 | 0 | 4 | 0 | 0 | 0 | 100.00% | 100.00% |
-| CWE-673 | 4 | 4 | 4 | 0 | 0 | 4 | 100.00% | 100.00% |
-| CWE-704 | 14 | 9 | 14 | 0 | 0 | 9 | 100.00% | 100.00% |
-| CWE-706 | 1 | 1 | 1 | 0 | 0 | 1 | 100.00% | 100.00% |
-| CWE-770 | 1 | 1 | 1 | 0 | 0 | 1 | 100.00% | 100.00% |
-| CWE-776 | 3 | 1 | 3 | 0 | 0 | 1 | 100.00% | 100.00% |
-| CWE-798 | 6 | 11 | 6 | 0 | 0 | 11 | 100.00% | 100.00% |
-| CWE-915 | 2 | 1 | 2 | 0 | 0 | 1 | 100.00% | 100.00% |
-| CWE-918 | 39 | 13 | 39 | 0 | 8 | 5 | 100.00% | 82.98% |
-| CWE-939 | 7 | 9 | 7 | 0 | 0 | 9 | 100.00% | 100.00% |
-| CWE-942 | 5 | 3 | 2 | 3 | 0 | 3 | 40.00% | 100.00% |
-| CWE-943 | 2 | 2 | 2 | 0 | 0 | 2 | 100.00% | 100.00% |
+| CWE-20 | 2 | 2 | 0 | 2 | 0 | 2 | 0.00% | 0.00% |
+| CWE-22 | 23 | 7 | 0 | 23 | 0 | 7 | 0.00% | 0.00% |
+| CWE-73 | 1 | 1 | 0 | 1 | 0 | 1 | 0.00% | 0.00% |
+| CWE-74 | 2 | 2 | 0 | 2 | 0 | 2 | 0.00% | 0.00% |
+| CWE-78 | 189 | 100 | 0 | 189 | 0 | 100 | 0.00% | 0.00% |
+| CWE-79 | 95 | 56 | 0 | 95 | 0 | 56 | 0.00% | 0.00% |
+| CWE-89 | 150 | 87 | 0 | 150 | 0 | 87 | 0.00% | 0.00% |
+| CWE-91 | 5 | 4 | 0 | 5 | 0 | 4 | 0.00% | 0.00% |
+| CWE-93 | 1 | 1 | 0 | 1 | 0 | 1 | 0.00% | 0.00% |
+| CWE-95 | 64 | 35 | 0 | 64 | 0 | 35 | 0.00% | 0.00% |
+| CWE-96 | 17 | 7 | 0 | 17 | 0 | 7 | 0.00% | 0.00% |
+| CWE-116 | 10 | 24 | 0 | 10 | 0 | 24 | 0.00% | 0.00% |
+| CWE-134 | 2 | 2 | 0 | 2 | 0 | 2 | 0.00% | 0.00% |
+| CWE-155 | 4 | 5 | 0 | 4 | 0 | 5 | 0.00% | 0.00% |
+| CWE-200 | 3 | 2 | 0 | 3 | 0 | 2 | 0.00% | 0.00% |
+| CWE-250 | 2 | 2 | 0 | 2 | 0 | 2 | 0.00% | 0.00% |
+| CWE-276 | 22 | 7 | 0 | 22 | 0 | 7 | 0.00% | 0.00% |
+| CWE-287 | 6 | 8 | 0 | 6 | 0 | 8 | 0.00% | 0.00% |
+| CWE-295 | 18 | 9 | 0 | 18 | 0 | 9 | 0.00% | 0.00% |
+| CWE-310 | 1 | 1 | 0 | 1 | 0 | 1 | 0.00% | 0.00% |
+| CWE-319 | 89 | 72 | 0 | 89 | 0 | 72 | 0.00% | 0.00% |
+| CWE-322 | 2 | 1 | 0 | 2 | 0 | 1 | 0.00% | 0.00% |
+| CWE-326 | 43 | 29 | 0 | 43 | 0 | 29 | 0.00% | 0.00% |
+| CWE-327 | 60 | 44 | 0 | 60 | 0 | 44 | 0.00% | 0.00% |
+| CWE-330 | 3 | 1 | 0 | 3 | 0 | 1 | 0.00% | 0.00% |
+| CWE-352 | 24 | 18 | 0 | 24 | 0 | 18 | 0.00% | 0.00% |
+| CWE-477 | 1 | 2 | 0 | 1 | 0 | 2 | 0.00% | 0.00% |
+| CWE-489 | 10 | 9 | 0 | 10 | 0 | 9 | 0.00% | 0.00% |
+| CWE-502 | 34 | 18 | 0 | 34 | 0 | 18 | 0.00% | 0.00% |
+| CWE-521 | 8 | 7 | 0 | 8 | 0 | 7 | 0.00% | 0.00% |
+| CWE-522 | 8 | 2 | 0 | 8 | 0 | 2 | 0.00% | 0.00% |
+| CWE-523 | 7 | 6 | 0 | 7 | 0 | 6 | 0.00% | 0.00% |
+| CWE-532 | 2 | 0 | 0 | 2 | 0 | 0 | 0.00% | 0.00% |
+| CWE-553 | 3 | 0 | 0 | 3 | 0 | 0 | 0.00% | 0.00% |
+| CWE-601 | 6 | 10 | 0 | 6 | 0 | 10 | 0.00% | 0.00% |
+| CWE-611 | 4 | 12 | 0 | 4 | 0 | 12 | 0.00% | 0.00% |
+| CWE-614 | 22 | 33 | 0 | 22 | 0 | 33 | 0.00% | 0.00% |
+| CWE-668 | 4 | 0 | 0 | 4 | 0 | 0 | 0.00% | 0.00% |
+| CWE-673 | 4 | 4 | 0 | 4 | 0 | 4 | 0.00% | 0.00% |
+| CWE-704 | 14 | 9 | 0 | 14 | 0 | 9 | 0.00% | 0.00% |
+| CWE-706 | 1 | 1 | 0 | 1 | 0 | 1 | 0.00% | 0.00% |
+| CWE-770 | 1 | 1 | 0 | 1 | 0 | 1 | 0.00% | 0.00% |
+| CWE-776 | 3 | 1 | 0 | 3 | 0 | 1 | 0.00% | 0.00% |
+| CWE-798 | 6 | 11 | 0 | 6 | 0 | 11 | 0.00% | 0.00% |
+| CWE-915 | 2 | 1 | 0 | 2 | 0 | 1 | 0.00% | 0.00% |
+| CWE-918 | 39 | 13 | 0 | 39 | 0 | 13 | 0.00% | 0.00% |
+| CWE-939 | 7 | 9 | 0 | 7 | 0 | 9 | 0.00% | 0.00% |
+| CWE-942 | 5 | 3 | 0 | 5 | 0 | 3 | 0.00% | 0.00% |
+| CWE-943 | 2 | 2 | 0 | 2 | 0 | 2 | 0.00% | 0.00% |
 | CWE-1004 | 14 | 25 | 0 | 14 | 0 | 25 | 0.00% | 0.00% |
 | CWE-1236 | 3 | 4 | 0 | 3 | 0 | 4 | 0.00% | 0.00% |
 | CWE-1275 | 10 | 17 | 0 | 10 | 0 | 17 | 0.00% | 0.00% |
@@ -358,20 +350,13 @@ Deliberately **not** folded, because they are distinct weakness classes rather t
 | semgrep_rules:insecure-file-permissions -> CWE-732: INSECURE_FILE_PERMISSIONS | 2 |
 | semgrep_rules:subprocess-shell-true -> CWE-78: subprocess.call | 2 |
 
-**Semgrep** — 45 distinct labelled-negative sites.
+**Semgrep** — 3 distinct labelled-negative sites.
 
 | labelled negative site (corpus:rule) | FP hits |
 |---|---|
-| semgrep_rules:missing-autoescape-disabled -> direct-use-of-jinja2 | 16 |
 | bandit:bandit-expected-issues=0 -> avoid-mark-safe | 15 |
-| semgrep_rules:psycopg-sqli -> sqlalchemy-execute-raw-query | 7 |
 | bandit:nosec -> avoid-mark-safe | 7 |
-| semgrep_rules:incorrect-autoescape-disabled -> direct-use-of-jinja2 | 6 |
-| semgrep_rules:pg8000-sqli -> sqlalchemy-execute-raw-query | 6 |
-| semgrep_rules:tainted-sql-string -> sqlalchemy-execute-raw-query | 5 |
-| semgrep_rules:tainted-url-host -> raw-html-format | 5 |
-| semgrep_rules:aiopg-sqli -> sqlalchemy-execute-raw-query | 5 |
-| semgrep_rules:asyncpg-sqli -> sqlalchemy-execute-raw-query | 5 |
+| bandit:nosec -> insecure-hash-algorithm-sha1 | 2 |
 
 **Bandit** — 92 distinct labelled-negative sites.
 
@@ -405,20 +390,20 @@ Deliberately **not** folded, because they are distinct weakness classes rather t
 | semgrep_rules:flask-deprecated-apis | 11 |
 | semgrep_rules:use-raise-for-status | 11 |
 
-**Semgrep** — 504 missed positives over 155 sites.
+**Semgrep** — 1413 missed positives over 357 sites.
 
 | corpus:rule | missed lines |
 |---|---|
 | semgrep_rules:dangerous-system-call-tainted-env-args | 30 |
+| semgrep_rules:sqlalchemy-execute-raw-query | 28 |
+| semgrep_rules:dangerous-system-call | 26 |
 | semgrep_rules:default-mutable-dict | 24 |
 | semgrep_rules:default-mutable-list | 24 |
-| semgrep_rules:attr-mutable-initializer | 12 |
-| semgrep_rules:logging-error-without-handling | 12 |
-| semgrep_rules:flask-deprecated-apis | 11 |
-| semgrep_rules:use-raise-for-status | 11 |
-| semgrep_rules:dangerous-system-call-audit | 10 |
-| semgrep_rules:bad-operator-in-filter | 9 |
-| semgrep_rules:django-compat-2_0-extra-forms | 8 |
+| semgrep_rules:tainted-sql-string | 22 |
+| semgrep_rules:tainted-url-host | 22 |
+| semgrep_rules:insecure-file-permissions | 22 |
+| semgrep_rules:path-traversal-open | 18 |
+| semgrep_rules:weak-ssl-version | 18 |
 
 **Bandit** — 875 missed positives over 289 sites.
 
@@ -458,14 +443,6 @@ Deliberately **not** folded, because they are distinct weakness classes rather t
 
 | site | labelled CWE | tool reported |
 |---|---|---|
-| semgrep_rules:external/semgrep_rules_python/python/django/security/injection/tainted-sql-string.py:15 | CWE-89 | tainted-sql-string[CWE-915] |
-| semgrep_rules:external/semgrep_rules_python/python/django/security/injection/tainted-sql-string.py:25 | CWE-89 | tainted-sql-string[CWE-915] |
-| semgrep_rules:external/semgrep_rules_python/python/django/security/injection/tainted-sql-string.py:35 | CWE-89 | tainted-sql-string[CWE-915] |
-| semgrep_rules:external/semgrep_rules_python/python/django/security/injection/tainted-sql-string.py:45 | CWE-89 | tainted-sql-string[CWE-915] |
-| semgrep_rules:external/semgrep_rules_python/python/django/security/injection/tainted-sql-string.py:72 | CWE-89 | tainted-sql-string[CWE-915] |
-| semgrep_rules:external/semgrep_rules_python/python/django/security/injection/tainted-sql-string.py:82 | CWE-89 | tainted-sql-string[CWE-915] |
-| semgrep_rules:external/semgrep_rules_python/python/django/security/injection/tainted-sql-string.py:95 | CWE-89 | tainted-sql-string[CWE-915] |
-| semgrep_rules:external/semgrep_rules_python/python/flask/security/audit/host-header-injection-python.py:15 | CWE-20 | tainted-url-host[CWE-918]; tainted-url-host[CWE-918] |
 
 **Bandit**
 
@@ -489,7 +466,7 @@ Deliberately **not** folded, because they are distinct weakness classes rather t
 | Tool | Silent on the whole file | Spoke about the file, wrong line | Right line, wrong CWE | Class/rule never reported by this tool anywhere | Class/rule reported elsewhere |
 |---|---|---|---|---|---|
 | TCS | 593 | 264 | 17 | 386 | 488 |
-| Semgrep | 478 | 26 | 8 | 361 | 151 |
+| Semgrep | 1413 | 0 | 0 | 582 | 831 |
 | Bandit | 612 | 263 | 137 | 625 | 387 |
 
 ### 4.5 Weakness classes with zero recall (capability gaps, not placement misses)
@@ -497,15 +474,15 @@ Deliberately **not** folded, because they are distinct weakness classes rather t
 | Tool | CWEs with 0 TP among positive labels | Classes |
 |---|---|---|
 | TCS | 17 | CWE-20, CWE-73, CWE-74, CWE-93, CWE-134, CWE-200, CWE-250, CWE-287, CWE-310, CWE-477, CWE-553, CWE-706, CWE-770, CWE-776, CWE-915, CWE-943, CWE-1236 |
-| Semgrep | 4 | CWE-1004, CWE-1236, CWE-1275, CWE-1333 |
+| Semgrep | 53 | CWE-20, CWE-22, CWE-73, CWE-74, CWE-78, CWE-79, CWE-89, CWE-91, CWE-93, CWE-95, CWE-96, CWE-116, CWE-134, CWE-155, CWE-200, CWE-250, CWE-276, CWE-287, CWE-295, CWE-310, CWE-319, CWE-322 … |
 | Bandit | 42 | CWE-20, CWE-22, CWE-73, CWE-74, CWE-91, CWE-93, CWE-95, CWE-96, CWE-116, CWE-134, CWE-200, CWE-250, CWE-287, CWE-310, CWE-330, CWE-352, CWE-477, CWE-489, CWE-521, CWE-522, CWE-523, CWE-532 … |
 
 ## 5. Tool execution health
 
 | Tool | Corpus | Mode | Invocations | Failed invocations | Exit | Median/file |
 |---|---|---|---|---|---|---|
-| TCS | semgrep_rules | api-single-process | 1 | 0 | - | 10.0 ms |
-| TCS | bandit | api-single-process | 1 | 0 | - | 13.0 ms |
+| TCS | semgrep_rules | api-single-process | 1 | 0 | - | 18.2 ms |
+| TCS | bandit | api-single-process | 1 | 0 | - | 24.2 ms |
 | Semgrep | semgrep_rules | single subprocess run | 1 | 0 | 0 | - |
 | Semgrep | bandit | single subprocess run | 1 | 0 | 0 | - |
 | Bandit | semgrep_rules | single subprocess run | 1 | 0 | 1 | - |
@@ -558,16 +535,16 @@ The first sweep of this harness ran against an unmodified engine; its artefacts 
 * Residual gap this section does not fix: with the `NameError` gone, `python/django/security/injection/mass-assignment.py` parses and analyses cleanly but still emits no CWE-915 finding, because the `**request.POST` kwargs-expansion edge is not wired to the mass-assignment sink even though the sinks at its two labelled lines are registered. That is a sink/edge-model change rather than a crash fix, and adding a matcher without a sound model is out of scope here.
 
 **Effect of the fixes on this benchmark.**
-* TCS wall clock over 2 CLI invocations: 350.7 s → 11.1 s (-96.8%). The saving is the killed timeouts; the per-file median moved the other way, partly because the guard runs on every scope walk of every file and partly because the two sweeps did not run under the same machine load.
+* TCS wall clock over 2 CLI invocations: 350.7 s → 20.4 s (-94.2%). The saving is the killed timeouts; the per-file median moved the other way, partly because the guard runs on every scope walk of every file and partly because the two sweeps did not run under the same machine load.
 * Findings: 831 → 1055 distinct sites, i.e. 291 added and **67 removed on files the baseline sweep already scanned successfully** — the regression count this section exists to measure. 9 of the 291 additions land on the 10 files that the baseline sweep lost.
-* Scores: 5 of 24 tool × metric cells in the merged CWE-strict table are identical across the two sweeps. The differences are TCS TP 354→585; TCS FP 87→50; TCS TN 869→906; TCS FN 1105→874; TCS Precision 80.27%→92.13%; TCS Recall 24.26%→40.10%; TCS F1 37.26%→55.87%; Semgrep TP 939→947; Semgrep FN 520→512; Semgrep Precision 90.29%→90.36%; Semgrep Recall 64.36%→64.91%; Semgrep F1 75.15%→75.55%; Semgrep Findings outside any label 366→354; Bandit TP 404→447; Bandit FN 1055→1012; Bandit Precision 63.62%→65.93%; Bandit Recall 27.69%→30.64%; Bandit F1 38.59%→41.83%; Bandit Findings outside any label 592→548. What changed is that the files now returning nothing do so because the engine answered rather than because it was killed.
+* Scores: 3 of 24 tool × metric cells in the merged CWE-strict table are identical across the two sweeps. The differences are TCS TP 354→585; TCS FP 87→50; TCS TN 869→906; TCS FN 1105→874; TCS Precision 80.27%→92.13%; TCS Recall 24.26%→40.10%; TCS F1 37.26%→55.87%; Semgrep TP 939→46; Semgrep FP 101→6; Semgrep TN 855→950; Semgrep FN 520→1413; Semgrep Precision 90.29%→88.46%; Semgrep Recall 64.36%→3.15%; Semgrep F1 75.15%→6.09%; Semgrep Findings outside any label 366→27; Bandit TP 404→447; Bandit FN 1055→1012; Bandit Precision 63.62%→65.93%; Bandit Recall 27.69%→30.64%; Bandit F1 38.59%→41.83%; Bandit Findings outside any label 592→548. What changed is that the files now returning nothing do so because the engine answered rather than because it was killed.
 
 | corpus | invocations | killed by timeout | aborted | ms total | median ms/file |
 |---|---|---|---|---|---|
 | baseline/bandit | 98 | 5 | 6 | 171065 | 209.2 |
 | baseline/semgrep_rules | 368 | 3 | 4 | 179663 | 234.9 |
-| this sweep/bandit | 1 | 0 | 0 | 2501 | 13.0 |
-| this sweep/semgrep_rules | 1 | 0 | 0 | 8598 | 10.0 |
+| this sweep/bandit | 1 | 0 | 0 | 4650 | 24.2 |
+| this sweep/semgrep_rules | 1 | 0 | 0 | 15730 | 18.2 |
 
 ## 8. TCS missed positives: auto-cited evidence and AST root causes
 
@@ -599,6 +576,6 @@ Analyst commentary on the shapes above (every count in this section is computed 
 
 ## 9. Verdict
 
-* On independent labels the ranking by F1 is Semgrep 75.55% > TCS 55.87% > Bandit 41.83%.
-* By precision: TCS 92.13% > Semgrep 90.36% > Bandit 65.93% — TCS is first of 3 (92.13%), behind TCS's 92.13%. By recall: Semgrep 64.91% > TCS 40.10% > Bandit 30.64% — TCS is second of 3 (40.10%). TCS is therefore first on precision and second on recall, the expected signature of a taint-engine scored on a corpus of syntactic patterns: it reports few findings and most of them are right, and it simply does not have checks for 16 of the 53 labelled classes (see §8).
+* On independent labels the ranking by F1 is TCS 55.87% > Bandit 41.83% > Semgrep 6.09%.
+* By precision: TCS 92.13% > Semgrep 88.46% > Bandit 65.93% — TCS is first of 3 (92.13%), behind TCS's 92.13%. By recall: TCS 40.10% > Bandit 30.64% > Semgrep 3.15% — TCS is first of 3 (40.10%). TCS is therefore first on precision and first on recall, the expected signature of a taint-engine scored on a corpus of syntactic patterns: it reports few findings and most of them are right, and it simply does not have checks for 16 of the 53 labelled classes (see §8).
 * TCS's own benchmark reports 100% precision and recall on 552 cases; those labels are authored in this repository and describe the cases the engine was built to solve. On this benchmark the labels are written by the two competitors and cover 53 weakness classes, of which TCS implements a subset — the 40.10% recall figure is the honest measure of that gap, and the two numbers are not in conflict.
