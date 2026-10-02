@@ -444,7 +444,7 @@ SANITIZER_REGISTRY = {
     "argon2.PasswordHasher": {"protected_cwes": {"CWE-327", "CWE-328"}, "protected_sinks": {"WEAK_HASH", "WEAK_CRYPTOGRAPHY"}},
     "argon2": {"protected_cwes": {"CWE-327", "CWE-328", "CWE-312"}, "protected_sinks": {"WEAK_HASH", "WEAK_CRYPTOGRAPHY", "CLEARTEXT_SENSITIVE_STORAGE"}},
 
-    # CWE-338 Sanitizers
+    # CWE-338 Sanitizers (CSPRNGs)
     "secrets.token_hex": {"protected_cwes": {"CWE-338"}, "protected_sinks": {"INSECURE_RANDOM", "INSECURE_RANDOMNESS"}},
     "token_hex": {"protected_cwes": {"CWE-338"}, "protected_sinks": {"INSECURE_RANDOM", "INSECURE_RANDOMNESS"}},
     "secrets.token_urlsafe": {"protected_cwes": {"CWE-338"}, "protected_sinks": {"INSECURE_RANDOM", "INSECURE_RANDOMNESS"}},
@@ -453,6 +453,8 @@ SANITIZER_REGISTRY = {
     "os.urandom": {"protected_cwes": {"CWE-338"}, "protected_sinks": {"INSECURE_RANDOM", "INSECURE_RANDOMNESS"}},
     "secrets.randbelow": {"protected_cwes": {"CWE-338"}, "protected_sinks": {"INSECURE_RANDOM", "INSECURE_RANDOMNESS"}},
     "randbelow": {"protected_cwes": {"CWE-338"}, "protected_sinks": {"INSECURE_RANDOM", "INSECURE_RANDOMNESS"}},
+    "random.SystemRandom": {"protected_cwes": {"CWE-338"}, "protected_sinks": {"INSECURE_RANDOM", "INSECURE_RANDOMNESS"}},
+    "SystemRandom": {"protected_cwes": {"CWE-338"}, "protected_sinks": {"INSECURE_RANDOM", "INSECURE_RANDOMNESS"}},
 
     # CWE-295 Sanitizers
     "verify_ssl_cert": {"protected_cwes": {"CWE-295"}, "protected_sinks": {"DISABLED_SSL_VERIFICATION", "INSECURE_TRANSPORT"}},
@@ -789,12 +791,49 @@ SINK_REGISTRY = {
     "algorithms.TripleDES": {"operation": "WEAK_CIPHER", "category": "WEAK_CRYPTOGRAPHY", "cwe": "CWE-327"},
     "cryptography.hazmat.primitives.ciphers.algorithms.TripleDES": {"operation": "WEAK_CIPHER", "category": "WEAK_CRYPTOGRAPHY", "cwe": "CWE-327"},
 
-    # CWE-338: Insecure Randomness
+    # CWE-338: Insecure Randomness (all stdlib random.* methods)
     "random.random": {"operation": "INSECURE_RANDOM", "category": "INSECURE_RANDOMNESS", "cwe": "CWE-338"},
     "random.randint": {"operation": "INSECURE_RANDOM", "category": "INSECURE_RANDOMNESS", "cwe": "CWE-338"},
-    "random.choice": {"operation": "INSECURE_RANDOM", "category": "INSECURE_RANDOMNESS", "cwe": "CWE-338"},
     "random.randrange": {"operation": "INSECURE_RANDOM", "category": "INSECURE_RANDOMNESS", "cwe": "CWE-338"},
+    "random.choice": {"operation": "INSECURE_RANDOM", "category": "INSECURE_RANDOMNESS", "cwe": "CWE-338"},
+    "random.choices": {"operation": "INSECURE_RANDOM", "category": "INSECURE_RANDOMNESS", "cwe": "CWE-338"},
     "random.sample": {"operation": "INSECURE_RANDOM", "category": "INSECURE_RANDOMNESS", "cwe": "CWE-338"},
+    "random.shuffle": {"operation": "INSECURE_RANDOM", "category": "INSECURE_RANDOMNESS", "cwe": "CWE-338"},
+    "random.randbytes": {"operation": "INSECURE_RANDOM", "category": "INSECURE_RANDOMNESS", "cwe": "CWE-338"},
+    "random.uniform": {"operation": "INSECURE_RANDOM", "category": "INSECURE_RANDOMNESS", "cwe": "CWE-338"},
+    "random.triangular": {"operation": "INSECURE_RANDOM", "category": "INSECURE_RANDOMNESS", "cwe": "CWE-338"},
+    "random.betavariate": {"operation": "INSECURE_RANDOM", "category": "INSECURE_RANDOMNESS", "cwe": "CWE-338"},
+    "random.expovariate": {"operation": "INSECURE_RANDOM", "category": "INSECURE_RANDOMNESS", "cwe": "CWE-338"},
+    "random.gammavariate": {"operation": "INSECURE_RANDOM", "category": "INSECURE_RANDOMNESS", "cwe": "CWE-338"},
+    "random.gauss": {"operation": "INSECURE_RANDOM", "category": "INSECURE_RANDOMNESS", "cwe": "CWE-338"},
+    "random.lognormvariate": {"operation": "INSECURE_RANDOM", "category": "INSECURE_RANDOMNESS", "cwe": "CWE-338"},
+    "random.normalvariate": {"operation": "INSECURE_RANDOM", "category": "INSECURE_RANDOMNESS", "cwe": "CWE-338"},
+    "random.vonmisesvariate": {"operation": "INSECURE_RANDOM", "category": "INSECURE_RANDOMNESS", "cwe": "CWE-338"},
+    "random.paretovariate": {"operation": "INSECURE_RANDOM", "category": "INSECURE_RANDOMNESS", "cwe": "CWE-338"},
+    "random.weibullvariate": {"operation": "INSECURE_RANDOM", "category": "INSECURE_RANDOMNESS", "cwe": "CWE-338"},
+    "random.getrandbits": {"operation": "INSECURE_RANDOM", "category": "INSECURE_RANDOMNESS", "cwe": "CWE-338"},
+    "random.Random": {"operation": "INSECURE_RANDOM", "category": "INSECURE_RANDOMNESS", "cwe": "CWE-338"},
+    # Short names (when imported as `from random import randint`)
+    "randint": {"operation": "INSECURE_RANDOM", "category": "INSECURE_RANDOMNESS", "cwe": "CWE-338"},
+    "randrange": {"operation": "INSECURE_RANDOM", "category": "INSECURE_RANDOMNESS", "cwe": "CWE-338"},
+    "choice": {"operation": "INSECURE_RANDOM", "category": "INSECURE_RANDOMNESS", "cwe": "CWE-338"},
+    "choices": {"operation": "INSECURE_RANDOM", "category": "INSECURE_RANDOMNESS", "cwe": "CWE-338"},
+    "sample": {"operation": "INSECURE_RANDOM", "category": "INSECURE_RANDOMNESS", "cwe": "CWE-338"},
+    "shuffle": {"operation": "INSECURE_RANDOM", "category": "INSECURE_RANDOMNESS", "cwe": "CWE-338"},
+    "randbytes": {"operation": "INSECURE_RANDOM", "category": "INSECURE_RANDOMNESS", "cwe": "CWE-338"},
+    "uniform": {"operation": "INSECURE_RANDOM", "category": "INSECURE_RANDOMNESS", "cwe": "CWE-338"},
+    "triangular": {"operation": "INSECURE_RANDOM", "category": "INSECURE_RANDOMNESS", "cwe": "CWE-338"},
+    "betavariate": {"operation": "INSECURE_RANDOM", "category": "INSECURE_RANDOMNESS", "cwe": "CWE-338"},
+    "expovariate": {"operation": "INSECURE_RANDOM", "category": "INSECURE_RANDOMNESS", "cwe": "CWE-338"},
+    "gammavariate": {"operation": "INSECURE_RANDOM", "category": "INSECURE_RANDOMNESS", "cwe": "CWE-338"},
+    "gauss": {"operation": "INSECURE_RANDOM", "category": "INSECURE_RANDOMNESS", "cwe": "CWE-338"},
+    "lognormvariate": {"operation": "INSECURE_RANDOM", "category": "INSECURE_RANDOMNESS", "cwe": "CWE-338"},
+    "normalvariate": {"operation": "INSECURE_RANDOM", "category": "INSECURE_RANDOMNESS", "cwe": "CWE-338"},
+    "vonmisesvariate": {"operation": "INSECURE_RANDOM", "category": "INSECURE_RANDOMNESS", "cwe": "CWE-338"},
+    "paretovariate": {"operation": "INSECURE_RANDOM", "category": "INSECURE_RANDOMNESS", "cwe": "CWE-338"},
+    "weibullvariate": {"operation": "INSECURE_RANDOM", "category": "INSECURE_RANDOMNESS", "cwe": "CWE-338"},
+    "getrandbits": {"operation": "INSECURE_RANDOM", "category": "INSECURE_RANDOMNESS", "cwe": "CWE-338"},
+    "random": {"operation": "INSECURE_RANDOM", "category": "INSECURE_RANDOMNESS", "cwe": "CWE-338"},
 
     # CWE-322: Key Exchange without Entity Authentication (implicit host key trust)
     # paramiko AutoAddPolicy and WarningPolicy both bypass host-key verification.
@@ -1492,6 +1531,12 @@ class TaintTracker:
         self.ssl_attr_assigns: list[tuple[ast.Assign, str, int]] = []
         self._source_counter = 0
         self._sink_counter = 0
+        
+        # Store source lines for nosec suppression check
+        self._source_lines_by_file: dict[str, list[str]] = {}
+        for fpath, code in self.files.items():
+            if code is not None:
+                self._source_lines_by_file[fpath] = code.splitlines()
 
         # Phase 4.3: Function contract extractor for wrapper sinks
         self.contract_extractor = FunctionContractExtractor()
@@ -2739,6 +2784,20 @@ class TaintTracker:
     def is_sink_call(self, node: ast.AST, scope_id: str = "", lineno: int = 0) -> bool:
         if not isinstance(node, ast.Call): return False
         call_lineno = lineno or getattr(node, "lineno", 0)
+        
+        # Respect # nosec suppression comments (Bandit compatibility)
+        # Get source lines from the current module being analyzed
+        source_lines = []
+        for fpath, lines in getattr(self, '_source_lines_by_file', {}).items():
+            # Use the first available source (simplification - assumes single-file analysis)
+            source_lines = lines
+            break
+        
+        if source_lines and 1 <= call_lineno <= len(source_lines):
+            line_text = source_lines[call_lineno - 1]
+            if CLUSTER3_NOSEC_RE.search(line_text):
+                return False
+        
         name = dotted_name(node.func) or ""
         canon = self.resolve_canonical_name(node.func, scope_id) if scope_id else name
 
@@ -2784,19 +2843,33 @@ class TaintTracker:
         if self._is_exempt_cwe327(node, scope_id, call_lineno):
             return False
 
-        # Check for CWE-338 (Randomness): only classify as sink in security contexts
+        # CWE-338: All random.* calls are flagged unconditionally (insecure PRNG)
+        # CSPRNGs (secrets.*, os.urandom, random.SystemRandom) are excluded via sanitizer registry
         candidates = {c for c in (name, canon) if c}
         for c in list(candidates):
             if "." in c:
                 candidates.add(c.split(".")[-1])
-
+        
         cwe338_names = {
             "random.random", "random.randint", "random.choice", "random.randrange", "random.sample",
-            "randint", "randrange", "choice", "sample"
+            "random.choices", "random.shuffle", "random.randbytes", "random.uniform", "random.triangular",
+            "random.betavariate", "random.expovariate", "random.gammavariate", "random.gauss",
+            "random.lognormvariate", "random.normalvariate", "random.vonmisesvariate",
+            "random.paretovariate", "random.weibullvariate", "random.getrandbits", "random.Random",
+            "randint", "randrange", "choice", "choices", "sample", "shuffle", "randbytes",
+            "uniform", "triangular", "betavariate", "expovariate", "gammavariate", "gauss",
+            "lognormvariate", "normalvariate", "vonmisesvariate", "paretovariate", "weibullvariate",
+            "getrandbits", "random"
         }
         if candidates & cwe338_names:
-            if not self._is_security_sensitive_random(node, scope_id, call_lineno):
-                return False
+            # Exclude calls on SystemRandom instances: random.SystemRandom().randint()
+            if isinstance(node.func, ast.Attribute):
+                receiver_name = dotted_name(node.func.value) or ""
+                receiver_canon = self.resolve_canonical_name(node.func.value, scope_id) if (scope_id and hasattr(self, "resolve_canonical_name")) else receiver_name
+                if "SystemRandom" in receiver_name or "SystemRandom" in receiver_canon:
+                    return False  # CSPRNG instance method - safe
+            # Flag ALL other random.* calls unconditionally - no security context gate
+            pass  # Continue to sink matching
 
         # Module 1: getattr(receiver, <dynamic>)(...) on a DB-API / exec / builtins receiver.
         if scope_id and self._dynamic_reflection_family(node, scope_id) is not None:
@@ -2811,8 +2884,7 @@ class TaintTracker:
             if matched:
                 if matched.cwe_id == "CWE-327" and self._is_exempt_cwe327(node, scope_id, call_lineno):
                     return False
-                if matched.cwe_id == "CWE-338" and not self._is_security_sensitive_random(node, scope_id, call_lineno):
-                    return False
+                # CWE-338: no security context gate - flag all random.* calls
                 if isinstance(node.func, ast.Attribute) and node.func.attr == "render":
                     if not self._is_jinja_template_expr(node.func.value, scope_id):
                         return False
@@ -2825,8 +2897,7 @@ class TaintTracker:
             if matched:
                 if matched.cwe_id == "CWE-327" and self._is_exempt_cwe327(node, scope_id, call_lineno):
                     return False
-                if matched.cwe_id == "CWE-338" and not self._is_security_sensitive_random(node, scope_id, call_lineno):
-                    return False
+                # CWE-338: no security context gate - flag all random.* calls
                 if isinstance(node.func, ast.Attribute) and node.func.attr == "render":
                     if not self._is_jinja_template_expr(node.func.value, scope_id):
                         return False
@@ -2838,8 +2909,7 @@ class TaintTracker:
                 cwe = SINK_REGISTRY[c].get("cwe")
                 if cwe == "CWE-327" and self._is_exempt_cwe327(node, scope_id, call_lineno):
                     return False
-                if cwe == "CWE-338" and not self._is_security_sensitive_random(node, scope_id, call_lineno):
-                    return False
+                # CWE-338: no security context gate - flag all random.* calls
                 return True
 
         if isinstance(node.func, ast.Attribute):
