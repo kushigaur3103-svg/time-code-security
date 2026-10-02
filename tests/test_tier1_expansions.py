@@ -240,3 +240,71 @@ class TestStdlibXmlSinks:
 
     def test_literal_parse_safe_shape(self):
         _silent("import xml.etree.ElementTree as ET\nET.parse('f.xml')\n", 2, "CWE-611")
+
+
+# ─── 6. Phase 6.4: hashlib.sha224 direct call (CWE-327/328) ──────────────────
+
+class TestHashlibSha224:
+    def test_sha224_direct_call(self):
+        _fires("import hashlib\nhashlib.sha224(b'test')\n", 2, "CWE-328")
+
+    def test_sha224_usedforsecurity_false_guard(self):
+        _silent("import hashlib\nhashlib.sha224(b'test', usedforsecurity=False)\n", 2, "CWE-328")
+
+
+# ─── 7. Phase 6.4: pyOpenSSL insecure SSL methods (CWE-326) ──────────────────
+
+class TestPyOpenSSLMethods:
+    def test_sslv2_method(self):
+        _fires("from OpenSSL import SSL\nSSL.SSLv2_METHOD\n", 2, "CWE-326")
+
+    def test_sslv3_method(self):
+        _fires("from OpenSSL import SSL\nSSL.SSLv3_METHOD\n", 2, "CWE-326")
+
+    def test_sslv23_method(self):
+        _fires("from OpenSSL import SSL\nSSL.SSLv23_METHOD\n", 2, "CWE-326")
+
+    def test_tlsv1_method(self):
+        _fires("from OpenSSL import SSL\nSSL.TLSv1_METHOD\n", 2, "CWE-326")
+
+    def test_tlsv1_1_method(self):
+        _fires("from OpenSSL import SSL\nSSL.TLSv1_1_METHOD\n", 2, "CWE-326")
+
+    def test_pyopenssl_module_prefix(self):
+        _fires("from pyOpenSSL import SSL\nSSL.SSLv2_METHOD\n", 2, "CWE-326")
+
+    def test_tlsv1_2_method_silent(self):
+        _silent("from OpenSSL import SSL\nSSL.TLSv1_2_METHOD\n", 2, "CWE-326")
+
+
+# ─── 8. Phase 6.4: cryptography legacy cipher algorithms (CWE-327) ───────────
+
+class TestCryptographyLegacyAlgos:
+    def test_blowfish(self):
+        _fires(
+            "from cryptography.hazmat.primitives.ciphers import algorithms\n"
+            "algorithms.Blowfish(key)\n",
+            2, "CWE-327",
+        )
+
+    def test_arc4(self):
+        _fires(
+            "from cryptography.hazmat.primitives.ciphers import algorithms\n"
+            "algorithms.ARC4(key)\n",
+            2, "CWE-327",
+        )
+
+    def test_idea(self):
+        _fires(
+            "from cryptography.hazmat.primitives.ciphers import algorithms\n"
+            "algorithms.IDEA(key)\n",
+            2, "CWE-327",
+        )
+
+    def test_aes_silent(self):
+        _silent(
+            "from cryptography.hazmat.primitives.ciphers import algorithms\n"
+            "algorithms.AES(key)\n",
+            2, "CWE-327",
+        )
+

@@ -677,6 +677,10 @@ SINK_REGISTRY = {
     # CWE-327 / CWE-328: Broken Cryptographic Hashes & Ciphers
     "hashlib.md5": {"operation": "WEAK_HASH", "category": "WEAK_CRYPTOGRAPHY", "cwe": "CWE-327"},
     "md5": {"operation": "WEAK_HASH", "category": "WEAK_CRYPTOGRAPHY", "cwe": "CWE-327"},
+    "hashlib.sha1": {"operation": "WEAK_HASH", "category": "WEAK_CRYPTOGRAPHY", "cwe": "CWE-327"},
+    "sha1": {"operation": "WEAK_HASH", "category": "WEAK_CRYPTOGRAPHY", "cwe": "CWE-327"},
+    "hashlib.sha224": {"operation": "WEAK_HASH", "category": "WEAK_CRYPTOGRAPHY", "cwe": "CWE-327"},
+    "sha224": {"operation": "WEAK_HASH", "category": "WEAK_CRYPTOGRAPHY", "cwe": "CWE-327"},
     "Crypto.Cipher.DES": {"operation": "WEAK_CIPHER", "category": "WEAK_CRYPTOGRAPHY", "cwe": "CWE-327"},
     "Crypto.Cipher.DES.new": {"operation": "WEAK_CIPHER", "category": "WEAK_CRYPTOGRAPHY", "cwe": "CWE-327"},
     "DES.new": {"operation": "WEAK_CIPHER", "category": "WEAK_CRYPTOGRAPHY", "cwe": "CWE-327"},
@@ -880,6 +884,17 @@ CLUSTER3_WEAK_SSL_PROTOCOL_SEGS = frozenset({
     "PROTOCOL_SSLv2", "PROTOCOL_SSLv3", "PROTOCOL_TLSv1", "PROTOCOL_TLSv1_1",
 })
 CLUSTER3_SSL_MODULE_ROOT = "ssl"
+# Phase 6.4: pyOpenSSL insecure protocol method constants (OpenSSL.SSL.*_METHOD).
+CLUSTER3_PYOPENSSL_METHOD_SEGS = frozenset({
+    "SSLv2_METHOD", "SSLv3_METHOD", "SSLv23_METHOD", "TLSv1_METHOD", "TLSv1_1_METHOD",
+})
+CLUSTER3_PYOPENSSL_SSL_ROOT = "SSL"
+CLUSTER3_PYOPENSSL_OPENSSL_ROOT = "OpenSSL"
+# Phase 6.4: cryptography.hazmat legacy cipher algorithms (Blowfish, ARC4, IDEA).
+CLUSTER3_CRYPTOGRAPHY_LEGACY_ALGOS = frozenset({"Blowfish", "ARC4", "IDEA"})
+CLUSTER3_CRYPTOGRAPHY_ALGO_SEG = "algorithms"
+CLUSTER3_CRYPTOGRAPHY_CIPHERS_SEG = "ciphers"
+CLUSTER3_CRYPTOGRAPHY_HAZMAT_ROOT = "cryptography"
 # Phase 6.3: legacy broken ciphers under Crypto.Cipher / Cryptodome.Cipher.
 CLUSTER3_LEGACY_CIPHER_NAMES = frozenset({"Blowfish", "DES", "ARC2", "ARC4", "IDEA", "XOR"})
 CLUSTER3_CIPHER_MODULE_SEG = "Cipher"
@@ -934,6 +949,8 @@ CLUSTER3_STRUCTURAL_SOURCE_IDS = {
     "HARDCODED_PASSWORD_DEFAULT": "HARDCODED_PASSWORD_DEFAULT",
     "INSUFFICIENT_KEY_SIZE": "INSUFFICIENT_KEY_SIZE",
     "WEAK_SSL_PROTOCOL": "WEAK_SSL_PROTOCOL",
+    "PYOPENSSL_INSECURE_METHOD": "PYOPENSSL_INSECURE_METHOD",
+    "CRYPTOGRAPHY_LEGACY_ALGO": "CRYPTOGRAPHY_LEGACY_ALGO",
     "WEAK_CIPHER_LEGACY": "WEAK_CIPHER_LEGACY",
     "UNSAFE_YAML_LOADER": "UNSAFE_YAML_LOADER",
     "UNSAFE_PICKLE_USAGE": "UNSAFE_PICKLE_USAGE",
@@ -7289,6 +7306,27 @@ class TaintTracker:
                             [CLUSTER3_SSL_MODULE_ROOT]:
                         _add(node, "WEAK_SSL_PROTOCOL", "INSECURE_TRANSPORT", "CWE-326")
 
+                # ---- CWE-326: pyOpenSSL insecure protocol methods (SSL.*_METHOD) ----
+                if isinstance(node, (ast.Attribute, ast.Name)):
+                    openssl_segs = _segments(node)
+                    if openssl_segs and openssl_segs[-1] in CLUSTER3_PYOPENSSL_METHOD_SEGS:
+                        chain = _resolve_chain(openssl_segs, scope, lineno)
+                        # Match any X.SSLv2_METHOD where the parent is SSL (covers OpenSSL.SSL,
+                        # pyOpenSSL.SSL, or bare SSL after from-import).
+                        if len(chain) >= 2 and chain[-2] == CLUSTER3_PYOPENSSL_SSL_ROOT:
+                            _add(node, "PYOPENSSL_INSECURE_METHOD", "INSECURE_TRANSPORT", "CWE-326")
+
+                # ---- CWE-327: cryptography.hazmat legacy cipher algorithms ----
+                if isinstance(node, (ast.Attribute, ast.Name)):
+                    algo_segs = _segments(node)
+                    if algo_segs and algo_segs[-1] in CLUSTER3_CRYPTOGRAPHY_LEGACY_ALGOS:
+                        chain = _resolve_chain(algo_segs, scope, lineno)
+                        # Match: algorithms.Blowfish under cryptography.hazmat.primitives.ciphers
+                        if len(chain) >= 5 and chain[-2] == CLUSTER3_CRYPTOGRAPHY_ALGO_SEG and \
+                                chain[-3] == CLUSTER3_CRYPTOGRAPHY_CIPHERS_SEG and \
+                                chain[0] == CLUSTER3_CRYPTOGRAPHY_HAZMAT_ROOT:
+                            _add(node, "CRYPTOGRAPHY_LEGACY_ALGO", "WEAK_CRYPTOGRAPHY", "CWE-327")
+
                 if not isinstance(node, ast.Call):
                     continue
 
@@ -9828,7 +9866,8 @@ class TaintTracker:
         function_scopes = {id(function): scope for scope, function in self.functions.items()}
         redirect_sinks = {"redirect", "flask.redirect", "django.shortcuts.redirect"}
         weak_hash_sinks = {
-            "hashlib.md5", "hashlib.sha1", "Crypto.Hash.MD5", "Crypto.Hash.SHA1",
+            "hashlib.md5", "hashlib.sha1", "hashlib.sha224",
+            "Crypto.Hash.MD5", "Crypto.Hash.SHA1",
         }
         redirect_validators = {
             "is_safe_redirect_url", "validate_redirect_url",
