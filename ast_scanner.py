@@ -10889,6 +10889,53 @@ class TaintTracker:
                             "INSECURE_COOKIE_STORAGE",
                         )
 
+                # ─── CWE-614/CWE-1004: Pyramid AuthTkt helpers without secure/httponly ───
+                is_authtkt_helper = any(
+                    name in ("AuthTktCookieHelper", "pyramid.authentication.AuthTktCookieHelper",
+                             "AuthTktAuthenticationPolicy", "pyramid.authentication.AuthTktAuthenticationPolicy")
+                    for name in names
+                )
+                if is_authtkt_helper:
+                    # Check for **kwargs unpacking - if present, skip as config is externalised
+                    has_unpack = any(kw.arg is None for kw in node.keywords)
+                    if not has_unpack:
+                        # Extract flag values from keywords
+                        has_secure_kw = False
+                        has_httponly_kw = False
+                        secure_is_false = False
+                        httponly_is_false = False
+                        
+                        for kw in node.keywords:
+                            if kw.arg == "secure":
+                                has_secure_kw = True
+                                val = _eval_static_constant(kw.value, self.assignments_by_scope, scope_id, lineno)
+                                if val is False:
+                                    secure_is_false = True
+                            elif kw.arg == "httponly":
+                                has_httponly_kw = True
+                                val = _eval_static_constant(kw.value, self.assignments_by_scope, scope_id, lineno)
+                                if val is False:
+                                    httponly_is_false = True
+                        
+                        # Determine vulnerability based on missing or explicitly False flags
+                        vulnerable_cwes = []
+                        
+                        # Secure flag check (CWE-614) - flag if secure keyword is absent or explicitly False
+                        if not has_secure_kw or secure_is_false:
+                            vulnerable_cwes.append("CWE-614")
+                        
+                        # HttpOnly flag check (CWE-1004) - flag if httponly keyword is absent or explicitly False
+                        if not has_httponly_kw or httponly_is_false:
+                            vulnerable_cwes.append("CWE-1004")
+                        
+                        for cwe in set(vulnerable_cwes):
+                            category = "INSECURE_COOKIE_CONFIGURATION"
+                            operation = "INSECURE_COOKIE_FLAGS" if cwe == "CWE-1004" else "INSECURE_COOKIE_SECURE_FLAG"
+                            _add_finding(
+                                node, mod_name, scope_id, cwe, category, operation,
+                                "INSECURE_COOKIE_STORAGE",
+                            )
+
     def _collect_phase9_structural_findings(self) -> None:
         """Collect concrete hardcoded credentials and catastrophic regex patterns."""
         function_scopes = {id(function): scope for scope, function in self.functions.items()}

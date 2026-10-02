@@ -10,7 +10,7 @@ Executes end-to-end post-commit sanity and compliance checks in one shot:
    - Scans representative benchmark corpus files across multiple vulnerability classes.
    - Generates an OASIS SARIF v2.1.0 JSON export file.
    - Validates official SARIF schema compliance, including driver metadata,
-     107 driver rules from rules catalog, and valid ruleIndex cross-referencing.
+     108 driver rules from rules catalog, and valid ruleIndex cross-referencing.
 3. Desktop GUI Component & Rules Catalog Verification:
    - Verifies all 46 benchmark CWEs are registered and present in data/rules_catalog.json.
    - Instantiates interactive GUI components (rules catalog container, structural view,
@@ -118,7 +118,7 @@ def check_benchmark_suite() -> bool:
 
 def check_sarif_export() -> bool:
     """Check 2: Executes scan on benchmark corpus and verifies SARIF 2.1.0 compliance."""
-    print_header("CHECK 2/4: SARIF v2.1.0 Export & Schema Validation (107 Rules)")
+    print_header("CHECK 2/4: SARIF v2.1.0 Export & Schema Validation (108 Rules)")
     start_time = time.perf_counter()
 
     # Select representative cases across Batch 1 and Batch 2 CWEs
@@ -166,8 +166,8 @@ def check_sarif_export() -> bool:
     assert driver.get("name") == TOOL_NAME, f"Invalid tool name: {driver.get('name')}"
 
     rules = driver.get("rules", [])
-    print(f"  Driver Rules Loaded      : {len(rules)} (expected 107)")
-    assert len(rules) == 107, f"Expected 107 driver rules in SARIF export, got {len(rules)}"
+    print(f"  Driver Rules Loaded      : {len(rules)} (expected 108)")
+    assert len(rules) == 108, f"Expected 108 driver rules in SARIF export, got {len(rules)}"
 
     # Validate rule structure
     rule_ids = set()

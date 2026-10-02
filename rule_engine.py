@@ -1079,12 +1079,23 @@ _BANK_NEW_RULE_META: Dict[str, Dict[str, Any]] = {
     "CWE-295": {
         "name": "ImproperCertificateValidation",
         "category": "INSECURE_TRANSPORT",
-        "operation": "HOST_KEY_VERIFICATION_BYPASS",
+        "operation": "DISABLED_SSL_VERIFICATION",
         "confirmed_severity": "HIGH",
         "potential_severity": "MEDIUM",
-        "remediation": "Do not use AutoAddPolicy or disable host key/certificate verification. Verify host keys against a known_hosts store and validate certificates.",
+        "remediation": "Do not disable certificate validation (verify=False, cert_reqs=ssl.CERT_NONE). Always enable TLS verification and use trusted CA bundles.",
         "short": "Improper Certificate Validation",
-        "full": "The application auto-accepts unknown SSH host keys or disables certificate validation, enabling man-in-the-middle attacks.",
+        "full": "The application disables TLS/SSL certificate validation, enabling man-in-the-middle attacks and credential theft.",
+        "security_severity": "5.9",
+    },
+    "CWE-322": {
+        "name": "InsecureHostKeyPolicyVerification",
+        "category": "INSECURE_NETWORK_COMMUNICATION",
+        "operation": "INSECURE_HOST_KEY_POLICY",
+        "confirmed_severity": "HIGH",
+        "potential_severity": "MEDIUM",
+        "remediation": "Do not use AutoAddPolicy or WarningPolicy for SSH host key verification. Use RejectPolicy and verify host keys against a known_hosts store.",
+        "short": "Insecure Host Key Policy Verification",
+        "full": "The application accepts SSH host keys without verification (AutoAddPolicy or WarningPolicy), enabling man-in-the-middle attacks.",
         "security_severity": "5.9",
     },
     "CWE-327": {
@@ -1306,6 +1317,32 @@ GLOBAL_RULE_REGISTRY.register(CWE_1333_RULE)
 GLOBAL_RULE_REGISTRY.register(CWE_601_RULE)
 for _bank_rule in _BANK_GENERATED_RULES:
     GLOBAL_RULE_REGISTRY.register(_bank_rule)
+# CWE-322 is handled by AST structural checks (not SINK_REGISTRY bank matcher).
+# Register a named rule so get_rule("CWE-322") returns meaningful metadata.
+_CWE_322_META = _BANK_NEW_RULE_META.get("CWE-322", {})
+if _CWE_322_META and "CWE-322" not in GLOBAL_RULE_REGISTRY._rules:
+    GLOBAL_RULE_REGISTRY.register(SecurityRule(
+        cwe_id="CWE-322",
+        name=_CWE_322_META["name"],
+        category=_CWE_322_META["category"],
+        operation=_CWE_322_META["operation"],
+        confirmed_severity=_CWE_322_META["confirmed_severity"],
+        potential_severity=_CWE_322_META["potential_severity"],
+        remediation=_CWE_322_META["remediation"],
+        sarif_metadata={
+            "id": "CWE-322",
+            "name": _CWE_322_META["name"],
+            "shortDescription": {"text": _CWE_322_META["short"]},
+            "fullDescription": {"text": _CWE_322_META["full"]},
+            "helpUri": "https://cwe.mitre.org/data/definitions/322.html",
+            "defaultConfiguration": {"level": "error"},
+            "properties": {
+                "precision": "high",
+                "security-severity": _CWE_322_META["security_severity"],
+                "tags": ["security", "external/cwe/cwe-322"],
+            },
+        },
+    ))
 _load_catalog_security_rules(GLOBAL_RULE_REGISTRY)
 
 
