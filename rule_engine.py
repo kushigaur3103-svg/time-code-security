@@ -1165,7 +1165,7 @@ def _http_response_dynamic_body(node: ast.AST, name: str, canon_name: Optional[s
         short = candidate.rsplit(".", 1)[-1]
         if not (short.startswith("HttpResponse") or candidate.startswith("django.http.HttpResponse")):
             continue
-        if candidate.endswith("JsonResponse"):
+        if candidate.endswith("JsonResponse") or "Redirect" in short:
             continue
         body = next((kw.value for kw in node.keywords if kw.arg in {"content", "data"}), None)
         if body is None and node.args:

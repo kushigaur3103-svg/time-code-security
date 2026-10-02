@@ -297,6 +297,10 @@ class SinkRecord:
     call_context: Optional[dict[str, Any]] = None
 
 SOURCE_REGISTRY = {
+    # Django REST Framework / Flask Request Data
+    "request.data": {"operation": "HTTP_BODY_PARAMETER_ACCESS", "source_type": "USER_CONTROLLED", "category": "WEB_PARAMETER", "severity": "HIGH"},
+    "request.data.get": {"operation": "HTTP_BODY_PARAMETER_ACCESS", "source_type": "USER_CONTROLLED", "category": "WEB_PARAMETER", "severity": "HIGH"},
+    "request.data.getlist": {"operation": "HTTP_BODY_PARAMETER_ACCESS", "source_type": "USER_CONTROLLED", "category": "WEB_PARAMETER", "severity": "HIGH"},
     "request.args.get": {"operation": "HTTP_QUERY_PARAMETER_ACCESS", "source_type": "USER_CONTROLLED"},
     "request.args.getlist": {"operation": "HTTP_QUERY_PARAMETER_ACCESS", "source_type": "USER_CONTROLLED"},
     "request.form.get": {"operation": "HTTP_BODY_PARAMETER_ACCESS", "source_type": "USER_CONTROLLED"},
@@ -353,6 +357,8 @@ SANITIZER_REGISTRY = {
     "CWE-601": {
         "is_safe_redirect_url", "validate_redirect_url",
         "url_has_allowed_host_and_scheme", "is_relative_url",
+        "is_safe_url", "django.utils.http.is_safe_url",
+        "django.utils.http.url_has_allowed_host_and_scheme",
     },
     "CWE-327": {
         "hashlib.sha256", "sha256",
@@ -404,8 +410,9 @@ SANITIZER_REGISTRY = {
     "uuid.UUID": {"protected_cwes": {"CWE-22"}, "protected_sinks": {"PATH_TRAVERSAL", "FILE_ACCESS"}},
     "UUID": {"protected_cwes": {"CWE-22"}, "protected_sinks": {"PATH_TRAVERSAL", "FILE_ACCESS"}},
 
-    # CWE-918 Sanitizers
-    "is_safe_url": {"protected_cwes": {"CWE-918"}, "protected_sinks": {"SERVER_SIDE_REQUEST_FORGERY", "SSRF_REQUEST"}},
+    # CWE-918 / CWE-601 Sanitizers
+    "is_safe_url": {"protected_cwes": {"CWE-918", "CWE-601"}, "protected_sinks": {"SERVER_SIDE_REQUEST_FORGERY", "SSRF_REQUEST", "OPEN_REDIRECT", "URL_REDIRECTION"}},
+    "django.utils.http.is_safe_url": {"protected_cwes": {"CWE-918", "CWE-601"}, "protected_sinks": {"SERVER_SIDE_REQUEST_FORGERY", "SSRF_REQUEST", "OPEN_REDIRECT", "URL_REDIRECTION"}},
     "validate_url": {"protected_cwes": {"CWE-918"}, "protected_sinks": {"SERVER_SIDE_REQUEST_FORGERY", "SSRF_REQUEST"}},
     "check_domain_allowlist": {"protected_cwes": {"CWE-918"}, "protected_sinks": {"SERVER_SIDE_REQUEST_FORGERY", "SSRF_REQUEST"}},
     "is_allowed_domain": {"protected_cwes": {"CWE-918"}, "protected_sinks": {"SERVER_SIDE_REQUEST_FORGERY", "SSRF_REQUEST"}},
@@ -424,6 +431,7 @@ SANITIZER_REGISTRY = {
     "is_safe_redirect_url": {"protected_cwes": {"CWE-601"}, "protected_sinks": {"OPEN_REDIRECT", "URL_REDIRECTION"}},
     "validate_redirect_url": {"protected_cwes": {"CWE-601"}, "protected_sinks": {"OPEN_REDIRECT", "URL_REDIRECTION"}},
     "url_has_allowed_host_and_scheme": {"protected_cwes": {"CWE-601"}, "protected_sinks": {"OPEN_REDIRECT", "URL_REDIRECTION"}},
+    "django.utils.http.url_has_allowed_host_and_scheme": {"protected_cwes": {"CWE-601"}, "protected_sinks": {"OPEN_REDIRECT", "URL_REDIRECTION"}},
     "is_relative_url": {"protected_cwes": {"CWE-601"}, "protected_sinks": {"OPEN_REDIRECT", "URL_REDIRECTION"}},
 
     # CWE-327 / CWE-328 / CWE-312 Sanitizers
@@ -608,6 +616,20 @@ SINK_REGISTRY = {
     "builtins.exec": {"operation": "ARBITRARY_CODE_EXECUTION", "category": "CODE_EXECUTION", "cwe": "CWE-95"},
     "builtins.compile": {"operation": "ARBITRARY_CODE_EXECUTION", "category": "CODE_EXECUTION", "cwe": "CWE-95"},
 
+    # Dynamic Interpreter & Compiler Execution (CWE-95)
+    "code.InteractiveConsole.push": {"operation": "DYNAMIC_CODE_EXECUTION", "category": "CODE_INJECTION", "cwe": "CWE-95", "severity": "CRITICAL", "target_arg": 0},
+    "InteractiveConsole.push": {"operation": "DYNAMIC_CODE_EXECUTION", "category": "CODE_INJECTION", "cwe": "CWE-95", "severity": "CRITICAL", "target_arg": 0},
+    "code.InteractiveInterpreter.runcode": {"operation": "DYNAMIC_CODE_EXECUTION", "category": "CODE_INJECTION", "cwe": "CWE-95", "severity": "CRITICAL", "target_arg": 0},
+    "InteractiveInterpreter.runcode": {"operation": "DYNAMIC_CODE_EXECUTION", "category": "CODE_INJECTION", "cwe": "CWE-95", "severity": "CRITICAL", "target_arg": 0},
+    "code.InteractiveInterpreter.runsource": {"operation": "DYNAMIC_CODE_EXECUTION", "category": "CODE_INJECTION", "cwe": "CWE-95", "severity": "CRITICAL", "target_arg": 0},
+    "InteractiveInterpreter.runsource": {"operation": "DYNAMIC_CODE_EXECUTION", "category": "CODE_INJECTION", "cwe": "CWE-95", "severity": "CRITICAL", "target_arg": 0},
+    "code.compile_command": {"operation": "DYNAMIC_CODE_EXECUTION", "category": "CODE_INJECTION", "cwe": "CWE-95", "severity": "HIGH", "target_arg": 0},
+    "compile_command": {"operation": "DYNAMIC_CODE_EXECUTION", "category": "CODE_INJECTION", "cwe": "CWE-95", "severity": "HIGH", "target_arg": 0},
+    "_xxsubinterpreters.run_string": {"operation": "DYNAMIC_CODE_EXECUTION", "category": "CODE_INJECTION", "cwe": "CWE-95", "severity": "CRITICAL", "target_arg": 1},
+    "_testcapi.run_in_subinterp": {"operation": "DYNAMIC_CODE_EXECUTION", "category": "CODE_INJECTION", "cwe": "CWE-95", "severity": "CRITICAL", "target_arg": 0},
+    "support.run_in_subinterp": {"operation": "DYNAMIC_CODE_EXECUTION", "category": "CODE_INJECTION", "cwe": "CWE-95", "severity": "CRITICAL", "target_arg": 0},
+    "test.support.run_in_subinterp": {"operation": "DYNAMIC_CODE_EXECUTION", "category": "CODE_INJECTION", "cwe": "CWE-95", "severity": "CRITICAL", "target_arg": 0},
+
     # CWE-78: Command Injection
     "os.system": {"operation": "OS_COMMAND_EXECUTION", "category": "COMMAND_INJECTION", "cwe": "CWE-78"},
     "subprocess.run": {"operation": "OS_COMMAND_EXECUTION", "category": "COMMAND_INJECTION", "cwe": "CWE-78"},
@@ -626,6 +648,8 @@ SINK_REGISTRY = {
 
     # CWE-22: Path Traversal
     "open": {"operation": "FILE_ACCESS", "category": "PATH_TRAVERSAL", "cwe": "CWE-22"},
+    "send_file": {"operation": "FILE_ACCESS", "category": "PATH_TRAVERSAL", "cwe": "CWE-22", "severity": "HIGH", "target_arg": 0},
+    "flask.send_file": {"operation": "FILE_ACCESS", "category": "PATH_TRAVERSAL", "cwe": "CWE-22", "severity": "HIGH", "target_arg": 0},
     "shutil.rmtree": {"operation": "FILE_DELETE", "category": "PATH_TRAVERSAL", "cwe": "CWE-22"},
     "extractall": {"operation": "ARCHIVE_EXTRACTION", "category": "PATH_TRAVERSAL", "cwe": "CWE-22"},
     "extract": {"operation": "ARCHIVE_EXTRACTION", "category": "PATH_TRAVERSAL", "cwe": "CWE-22"},
@@ -658,21 +682,92 @@ SINK_REGISTRY = {
     "lxml.etree.parse": {"operation": "XML_PARSING", "category": "XML_EXTERNAL_ENTITY", "cwe": "CWE-611"},
 
     # CWE-918: Server-Side Request Forgery (SSRF)
-    "urllib.request.urlopen": {"operation": "SSRF_REQUEST", "category": "SERVER_SIDE_REQUEST_FORGERY", "cwe": "CWE-918"},
-    "urlopen": {"operation": "SSRF_REQUEST", "category": "SERVER_SIDE_REQUEST_FORGERY", "cwe": "CWE-918"},
-    "requests.get": {"operation": "SSRF_REQUEST", "category": "SERVER_SIDE_REQUEST_FORGERY", "cwe": "CWE-918"},
-    "requests.post": {"operation": "SSRF_REQUEST", "category": "SERVER_SIDE_REQUEST_FORGERY", "cwe": "CWE-918"},
-    "requests.put": {"operation": "SSRF_REQUEST", "category": "SERVER_SIDE_REQUEST_FORGERY", "cwe": "CWE-918"},
-    "requests.delete": {"operation": "SSRF_REQUEST", "category": "SERVER_SIDE_REQUEST_FORGERY", "cwe": "CWE-918"},
-    "httpx.get": {"operation": "SSRF_REQUEST", "category": "SERVER_SIDE_REQUEST_FORGERY", "cwe": "CWE-918"},
-    "httpx.post": {"operation": "SSRF_REQUEST", "category": "SERVER_SIDE_REQUEST_FORGERY", "cwe": "CWE-918"},
-    "aiohttp.ClientSession.get": {"operation": "SSRF_REQUEST", "category": "SERVER_SIDE_REQUEST_FORGERY", "cwe": "CWE-918"},
-    "aiohttp.ClientSession.post": {"operation": "SSRF_REQUEST", "category": "SERVER_SIDE_REQUEST_FORGERY", "cwe": "CWE-918"},
+    "urllib.request.urlopen": {"operation": "SSRF_REQUEST", "category": "SERVER_SIDE_REQUEST_FORGERY", "cwe": "CWE-918", "severity": "HIGH", "target_arg": 0},
+    "urlopen": {"operation": "SSRF_REQUEST", "category": "SERVER_SIDE_REQUEST_FORGERY", "cwe": "CWE-918", "severity": "HIGH", "target_arg": 0},
+    "urllib.request.urlretrieve": {"operation": "SSRF_REQUEST", "category": "SERVER_SIDE_REQUEST_FORGERY", "cwe": "CWE-918", "severity": "HIGH", "target_arg": 0},
+    "urlretrieve": {"operation": "SSRF_REQUEST", "category": "SERVER_SIDE_REQUEST_FORGERY", "cwe": "CWE-918", "severity": "HIGH", "target_arg": 0},
+    "urllib.request.Request": {"operation": "SSRF_REQUEST", "category": "SERVER_SIDE_REQUEST_FORGERY", "cwe": "CWE-918", "severity": "HIGH", "target_arg": 0},
+    "Request": {"operation": "SSRF_REQUEST", "category": "SERVER_SIDE_REQUEST_FORGERY", "cwe": "CWE-918", "severity": "HIGH", "target_arg": 0},
+    "requests.get": {"operation": "SSRF_REQUEST", "category": "SERVER_SIDE_REQUEST_FORGERY", "cwe": "CWE-918", "severity": "HIGH", "target_arg": 0},
+    "requests.post": {"operation": "SSRF_REQUEST", "category": "SERVER_SIDE_REQUEST_FORGERY", "cwe": "CWE-918", "severity": "HIGH", "target_arg": 0},
+    "requests.put": {"operation": "SSRF_REQUEST", "category": "SERVER_SIDE_REQUEST_FORGERY", "cwe": "CWE-918", "severity": "HIGH", "target_arg": 0},
+    "requests.delete": {"operation": "SSRF_REQUEST", "category": "SERVER_SIDE_REQUEST_FORGERY", "cwe": "CWE-918", "severity": "HIGH", "target_arg": 0},
+    "requests.head": {"operation": "SSRF_REQUEST", "category": "SERVER_SIDE_REQUEST_FORGERY", "cwe": "CWE-918", "severity": "HIGH", "target_arg": 0},
+    "requests.patch": {"operation": "SSRF_REQUEST", "category": "SERVER_SIDE_REQUEST_FORGERY", "cwe": "CWE-918", "severity": "HIGH", "target_arg": 0},
+    "requests.options": {"operation": "SSRF_REQUEST", "category": "SERVER_SIDE_REQUEST_FORGERY", "cwe": "CWE-918", "severity": "HIGH", "target_arg": 0},
+    "requests.request": {"operation": "SSRF_REQUEST", "category": "SERVER_SIDE_REQUEST_FORGERY", "cwe": "CWE-918", "severity": "HIGH", "target_arg": 1},
+    "requests.Session.get": {"operation": "SSRF_REQUEST", "category": "SERVER_SIDE_REQUEST_FORGERY", "cwe": "CWE-918", "severity": "HIGH", "target_arg": 0},
+    "requests.Session.post": {"operation": "SSRF_REQUEST", "category": "SERVER_SIDE_REQUEST_FORGERY", "cwe": "CWE-918", "severity": "HIGH", "target_arg": 0},
+    "requests.Session.put": {"operation": "SSRF_REQUEST", "category": "SERVER_SIDE_REQUEST_FORGERY", "cwe": "CWE-918", "severity": "HIGH", "target_arg": 0},
+    "requests.Session.delete": {"operation": "SSRF_REQUEST", "category": "SERVER_SIDE_REQUEST_FORGERY", "cwe": "CWE-918", "severity": "HIGH", "target_arg": 0},
+    "requests.Session.head": {"operation": "SSRF_REQUEST", "category": "SERVER_SIDE_REQUEST_FORGERY", "cwe": "CWE-918", "severity": "HIGH", "target_arg": 0},
+    "requests.Session.patch": {"operation": "SSRF_REQUEST", "category": "SERVER_SIDE_REQUEST_FORGERY", "cwe": "CWE-918", "severity": "HIGH", "target_arg": 0},
+    "requests.Session.request": {"operation": "SSRF_REQUEST", "category": "SERVER_SIDE_REQUEST_FORGERY", "cwe": "CWE-918", "severity": "HIGH", "target_arg": 1},
+    "Session.get": {"operation": "SSRF_REQUEST", "category": "SERVER_SIDE_REQUEST_FORGERY", "cwe": "CWE-918", "severity": "HIGH", "target_arg": 0},
+    "Session.post": {"operation": "SSRF_REQUEST", "category": "SERVER_SIDE_REQUEST_FORGERY", "cwe": "CWE-918", "severity": "HIGH", "target_arg": 0},
+    "Session.put": {"operation": "SSRF_REQUEST", "category": "SERVER_SIDE_REQUEST_FORGERY", "cwe": "CWE-918", "severity": "HIGH", "target_arg": 0},
+    "Session.delete": {"operation": "SSRF_REQUEST", "category": "SERVER_SIDE_REQUEST_FORGERY", "cwe": "CWE-918", "severity": "HIGH", "target_arg": 0},
+    "Session.head": {"operation": "SSRF_REQUEST", "category": "SERVER_SIDE_REQUEST_FORGERY", "cwe": "CWE-918", "severity": "HIGH", "target_arg": 0},
+    "Session.patch": {"operation": "SSRF_REQUEST", "category": "SERVER_SIDE_REQUEST_FORGERY", "cwe": "CWE-918", "severity": "HIGH", "target_arg": 0},
+    "Session.request": {"operation": "SSRF_REQUEST", "category": "SERVER_SIDE_REQUEST_FORGERY", "cwe": "CWE-918", "severity": "HIGH", "target_arg": 1},
+    "httpx.get": {"operation": "SSRF_REQUEST", "category": "SERVER_SIDE_REQUEST_FORGERY", "cwe": "CWE-918", "severity": "HIGH", "target_arg": 0},
+    "httpx.post": {"operation": "SSRF_REQUEST", "category": "SERVER_SIDE_REQUEST_FORGERY", "cwe": "CWE-918", "severity": "HIGH", "target_arg": 0},
+    "httpx.put": {"operation": "SSRF_REQUEST", "category": "SERVER_SIDE_REQUEST_FORGERY", "cwe": "CWE-918", "severity": "HIGH", "target_arg": 0},
+    "httpx.delete": {"operation": "SSRF_REQUEST", "category": "SERVER_SIDE_REQUEST_FORGERY", "cwe": "CWE-918", "severity": "HIGH", "target_arg": 0},
+    "httpx.head": {"operation": "SSRF_REQUEST", "category": "SERVER_SIDE_REQUEST_FORGERY", "cwe": "CWE-918", "severity": "HIGH", "target_arg": 0},
+    "httpx.patch": {"operation": "SSRF_REQUEST", "category": "SERVER_SIDE_REQUEST_FORGERY", "cwe": "CWE-918", "severity": "HIGH", "target_arg": 0},
+    "httpx.request": {"operation": "SSRF_REQUEST", "category": "SERVER_SIDE_REQUEST_FORGERY", "cwe": "CWE-918", "severity": "HIGH", "target_arg": 1},
+    "httpx.Client.get": {"operation": "SSRF_REQUEST", "category": "SERVER_SIDE_REQUEST_FORGERY", "cwe": "CWE-918", "severity": "HIGH", "target_arg": 0},
+    "httpx.Client.post": {"operation": "SSRF_REQUEST", "category": "SERVER_SIDE_REQUEST_FORGERY", "cwe": "CWE-918", "severity": "HIGH", "target_arg": 0},
+    "httpx.Client.put": {"operation": "SSRF_REQUEST", "category": "SERVER_SIDE_REQUEST_FORGERY", "cwe": "CWE-918", "severity": "HIGH", "target_arg": 0},
+    "httpx.Client.delete": {"operation": "SSRF_REQUEST", "category": "SERVER_SIDE_REQUEST_FORGERY", "cwe": "CWE-918", "severity": "HIGH", "target_arg": 0},
+    "httpx.Client.head": {"operation": "SSRF_REQUEST", "category": "SERVER_SIDE_REQUEST_FORGERY", "cwe": "CWE-918", "severity": "HIGH", "target_arg": 0},
+    "httpx.Client.patch": {"operation": "SSRF_REQUEST", "category": "SERVER_SIDE_REQUEST_FORGERY", "cwe": "CWE-918", "severity": "HIGH", "target_arg": 0},
+    "httpx.Client.request": {"operation": "SSRF_REQUEST", "category": "SERVER_SIDE_REQUEST_FORGERY", "cwe": "CWE-918", "severity": "HIGH", "target_arg": 1},
+    "httpx.AsyncClient.get": {"operation": "SSRF_REQUEST", "category": "SERVER_SIDE_REQUEST_FORGERY", "cwe": "CWE-918", "severity": "HIGH", "target_arg": 0},
+    "httpx.AsyncClient.post": {"operation": "SSRF_REQUEST", "category": "SERVER_SIDE_REQUEST_FORGERY", "cwe": "CWE-918", "severity": "HIGH", "target_arg": 0},
+    "httpx.AsyncClient.put": {"operation": "SSRF_REQUEST", "category": "SERVER_SIDE_REQUEST_FORGERY", "cwe": "CWE-918", "severity": "HIGH", "target_arg": 0},
+    "httpx.AsyncClient.delete": {"operation": "SSRF_REQUEST", "category": "SERVER_SIDE_REQUEST_FORGERY", "cwe": "CWE-918", "severity": "HIGH", "target_arg": 0},
+    "httpx.AsyncClient.head": {"operation": "SSRF_REQUEST", "category": "SERVER_SIDE_REQUEST_FORGERY", "cwe": "CWE-918", "severity": "HIGH", "target_arg": 0},
+    "httpx.AsyncClient.patch": {"operation": "SSRF_REQUEST", "category": "SERVER_SIDE_REQUEST_FORGERY", "cwe": "CWE-918", "severity": "HIGH", "target_arg": 0},
+    "httpx.AsyncClient.request": {"operation": "SSRF_REQUEST", "category": "SERVER_SIDE_REQUEST_FORGERY", "cwe": "CWE-918", "severity": "HIGH", "target_arg": 1},
+    "Client.get": {"operation": "SSRF_REQUEST", "category": "SERVER_SIDE_REQUEST_FORGERY", "cwe": "CWE-918", "severity": "HIGH", "target_arg": 0},
+    "Client.post": {"operation": "SSRF_REQUEST", "category": "SERVER_SIDE_REQUEST_FORGERY", "cwe": "CWE-918", "severity": "HIGH", "target_arg": 0},
+    "Client.put": {"operation": "SSRF_REQUEST", "category": "SERVER_SIDE_REQUEST_FORGERY", "cwe": "CWE-918", "severity": "HIGH", "target_arg": 0},
+    "Client.delete": {"operation": "SSRF_REQUEST", "category": "SERVER_SIDE_REQUEST_FORGERY", "cwe": "CWE-918", "severity": "HIGH", "target_arg": 0},
+    "Client.head": {"operation": "SSRF_REQUEST", "category": "SERVER_SIDE_REQUEST_FORGERY", "cwe": "CWE-918", "severity": "HIGH", "target_arg": 0},
+    "Client.patch": {"operation": "SSRF_REQUEST", "category": "SERVER_SIDE_REQUEST_FORGERY", "cwe": "CWE-918", "severity": "HIGH", "target_arg": 0},
+    "Client.request": {"operation": "SSRF_REQUEST", "category": "SERVER_SIDE_REQUEST_FORGERY", "cwe": "CWE-918", "severity": "HIGH", "target_arg": 1},
+    "AsyncClient.get": {"operation": "SSRF_REQUEST", "category": "SERVER_SIDE_REQUEST_FORGERY", "cwe": "CWE-918", "severity": "HIGH", "target_arg": 0},
+    "AsyncClient.post": {"operation": "SSRF_REQUEST", "category": "SERVER_SIDE_REQUEST_FORGERY", "cwe": "CWE-918", "severity": "HIGH", "target_arg": 0},
+    "AsyncClient.put": {"operation": "SSRF_REQUEST", "category": "SERVER_SIDE_REQUEST_FORGERY", "cwe": "CWE-918", "severity": "HIGH", "target_arg": 0},
+    "AsyncClient.delete": {"operation": "SSRF_REQUEST", "category": "SERVER_SIDE_REQUEST_FORGERY", "cwe": "CWE-918", "severity": "HIGH", "target_arg": 0},
+    "AsyncClient.head": {"operation": "SSRF_REQUEST", "category": "SERVER_SIDE_REQUEST_FORGERY", "cwe": "CWE-918", "severity": "HIGH", "target_arg": 0},
+    "AsyncClient.patch": {"operation": "SSRF_REQUEST", "category": "SERVER_SIDE_REQUEST_FORGERY", "cwe": "CWE-918", "severity": "HIGH", "target_arg": 0},
+    "AsyncClient.request": {"operation": "SSRF_REQUEST", "category": "SERVER_SIDE_REQUEST_FORGERY", "cwe": "CWE-918", "severity": "HIGH", "target_arg": 1},
+    "aiohttp.ClientSession.get": {"operation": "SSRF_REQUEST", "category": "SERVER_SIDE_REQUEST_FORGERY", "cwe": "CWE-918", "severity": "HIGH", "target_arg": 0},
+    "aiohttp.ClientSession.post": {"operation": "SSRF_REQUEST", "category": "SERVER_SIDE_REQUEST_FORGERY", "cwe": "CWE-918", "severity": "HIGH", "target_arg": 0},
+    "aiohttp.ClientSession.put": {"operation": "SSRF_REQUEST", "category": "SERVER_SIDE_REQUEST_FORGERY", "cwe": "CWE-918", "severity": "HIGH", "target_arg": 0},
+    "aiohttp.ClientSession.delete": {"operation": "SSRF_REQUEST", "category": "SERVER_SIDE_REQUEST_FORGERY", "cwe": "CWE-918", "severity": "HIGH", "target_arg": 0},
+    "aiohttp.ClientSession.head": {"operation": "SSRF_REQUEST", "category": "SERVER_SIDE_REQUEST_FORGERY", "cwe": "CWE-918", "severity": "HIGH", "target_arg": 0},
+    "aiohttp.ClientSession.patch": {"operation": "SSRF_REQUEST", "category": "SERVER_SIDE_REQUEST_FORGERY", "cwe": "CWE-918", "severity": "HIGH", "target_arg": 0},
+    "aiohttp.ClientSession.request": {"operation": "SSRF_REQUEST", "category": "SERVER_SIDE_REQUEST_FORGERY", "cwe": "CWE-918", "severity": "HIGH", "target_arg": 1},
+    "ClientSession.get": {"operation": "SSRF_REQUEST", "category": "SERVER_SIDE_REQUEST_FORGERY", "cwe": "CWE-918", "severity": "HIGH", "target_arg": 0},
+    "ClientSession.post": {"operation": "SSRF_REQUEST", "category": "SERVER_SIDE_REQUEST_FORGERY", "cwe": "CWE-918", "severity": "HIGH", "target_arg": 0},
+    "ClientSession.put": {"operation": "SSRF_REQUEST", "category": "SERVER_SIDE_REQUEST_FORGERY", "cwe": "CWE-918", "severity": "HIGH", "target_arg": 0},
+    "ClientSession.delete": {"operation": "SSRF_REQUEST", "category": "SERVER_SIDE_REQUEST_FORGERY", "cwe": "CWE-918", "severity": "HIGH", "target_arg": 0},
+    "ClientSession.head": {"operation": "SSRF_REQUEST", "category": "SERVER_SIDE_REQUEST_FORGERY", "cwe": "CWE-918", "severity": "HIGH", "target_arg": 0},
+    "ClientSession.patch": {"operation": "SSRF_REQUEST", "category": "SERVER_SIDE_REQUEST_FORGERY", "cwe": "CWE-918", "severity": "HIGH", "target_arg": 0},
+    "ClientSession.request": {"operation": "SSRF_REQUEST", "category": "SERVER_SIDE_REQUEST_FORGERY", "cwe": "CWE-918", "severity": "HIGH", "target_arg": 1},
 
     # CWE-601: Open Redirect
     "redirect": {"operation": "OPEN_REDIRECT", "category": "URL_REDIRECTION", "cwe": "CWE-601"},
     "flask.redirect": {"operation": "OPEN_REDIRECT", "category": "URL_REDIRECTION", "cwe": "CWE-601"},
     "django.shortcuts.redirect": {"operation": "OPEN_REDIRECT", "category": "URL_REDIRECTION", "cwe": "CWE-601"},
+    "HttpResponseRedirect": {"operation": "OPEN_REDIRECT", "category": "URL_REDIRECTION", "cwe": "CWE-601", "target_arg": 0},
+    "django.http.HttpResponseRedirect": {"operation": "OPEN_REDIRECT", "category": "URL_REDIRECTION", "cwe": "CWE-601", "target_arg": 0},
+    "HttpResponsePermanentRedirect": {"operation": "OPEN_REDIRECT", "category": "URL_REDIRECTION", "cwe": "CWE-601", "target_arg": 0},
+    "django.http.HttpResponsePermanentRedirect": {"operation": "OPEN_REDIRECT", "category": "URL_REDIRECTION", "cwe": "CWE-601", "target_arg": 0},
 
     # CWE-327 / CWE-328: Broken Cryptographic Hashes & Ciphers
     "hashlib.md5": {"operation": "WEAK_HASH", "category": "WEAK_CRYPTOGRAPHY", "cwe": "CWE-327"},
@@ -1830,6 +1925,11 @@ class TaintTracker:
                         ret_canons = [self.resolve_canonical_name(r.value, func_scope, visited) for r in returns if r.value]
                         if ret_canons and all(c == ret_canons[0] and c is not None for c in ret_canons):
                             return ret_canons[0]
+                canon_func = self.resolve_canonical_name(node.func, scope_id, visited)
+                if canon_func:
+                    cls_name = canon_func.split(".")[-1]
+                    if cls_name and cls_name[0].isupper():
+                        return canon_func
 
         if isinstance(node, ast.Subscript):
             # Check globals()["key"] / locals()["key"] reflection
@@ -1982,10 +2082,15 @@ class TaintTracker:
             if unq in SOURCE_REGISTRY: lookup_name = unq
         meta = SOURCE_REGISTRY.get(lookup_name, {})
         sym = f"{lookup_name}(...)" if isinstance(node, ast.Call) else (f"{lookup_name}[...]" if isinstance(node, ast.Subscript) else f"{lookup_name}")
+        source_meta = {"source_type": meta.get("source_type", "USER_CONTROLLED")}
+        if "category" in meta:
+            source_meta["category"] = meta["category"]
+        if "severity" in meta:
+            source_meta["severity"] = meta["severity"]
         source = SecurityNode(
             id=source_id, node_type=NodeType.SOURCE, symbol=sym,
             operation=meta.get("operation", "USER_INPUT_ACCESS"), location=loc,
-            metadata={"source_type": meta.get("source_type", "USER_CONTROLLED")}
+            metadata=source_meta
         )
         self.sources.append(source)
         return source
@@ -2039,6 +2144,49 @@ class TaintTracker:
             return True
 
         return False
+
+    def _get_route_param_names(self, fn_node: Optional[ast.AST]) -> set[str]:
+        out: set[str] = set()
+        if fn_node is None or not isinstance(fn_node, (ast.FunctionDef, ast.AsyncFunctionDef)):
+            return out
+        for dec in getattr(fn_node, "decorator_list", []):
+            call = dec if isinstance(dec, ast.Call) else None
+            if call is None:
+                continue
+            func_name = ""
+            if isinstance(call.func, ast.Attribute):
+                func_name = call.func.attr
+            elif isinstance(call.func, ast.Name):
+                func_name = call.func.id
+            if func_name not in CLUSTER2_ROUTE_DECORATOR_SEGMENTS:
+                continue
+
+            all_param_names = {p.arg for p in fn_node.args.args}
+            if getattr(fn_node.args, "vararg", None):
+                all_param_names.add(fn_node.args.vararg.arg)
+            if getattr(fn_node.args, "kwarg", None):
+                all_param_names.add(fn_node.args.kwarg.arg)
+            for kw in getattr(fn_node.args, "kwonlyargs", []):
+                all_param_names.add(kw.arg)
+            for p in getattr(fn_node.args, "posonlyargs", []):
+                all_param_names.add(p.arg)
+
+            path_strings = []
+            for arg in getattr(call, "args", []):
+                if isinstance(arg, ast.Constant) and isinstance(arg.value, str):
+                    path_strings.append(arg.value)
+            for kw in getattr(call, "keywords", []):
+                if kw.arg in ("rule", "path") and isinstance(kw.value, ast.Constant) and isinstance(kw.value.value, str):
+                    path_strings.append(kw.value.value)
+
+            for path_str in path_strings:
+                for token in re.findall(r"<(?:\w+:)?(\w+)>", path_str):
+                    if token in all_param_names:
+                        out.add(token)
+                for token in re.findall(r"\{(\w+)(?::\w+)?\}", path_str):
+                    if token in all_param_names:
+                        out.add(token)
+        return out
 
     def _has_disabled_ssl(self, node: ast.Call, scope_id: str = "") -> bool:
         for kw in getattr(node, "keywords", []):
@@ -2592,6 +2740,15 @@ class TaintTracker:
                 if self._is_definitely_safe_local_read(node.func.value, scope_id, call_lineno):
                     return False
                 return True
+
+        # Asyncio run_in_executor callback sink (exec/eval)
+        func_attr = node.func.attr if isinstance(node.func, ast.Attribute) else (node.func.id if isinstance(node.func, ast.Name) else None)
+        if func_attr == "run_in_executor" and len(node.args) >= 3:
+            cb = node.args[1]
+            cb_name = cb.id if isinstance(cb, ast.Name) else (cb.attr if isinstance(cb, ast.Attribute) else None)
+            cb_canon = self.resolve_canonical_name(cb, scope_id) if (scope_id and isinstance(cb, ast.AST)) else None
+            if {cb_name, cb_canon} & {"exec", "eval", "builtins.exec", "builtins.eval"}:
+                return True
         return False
 
     def check_sink_safety(self, node: ast.Call, sink_name: str) -> bool:
@@ -2648,7 +2805,21 @@ class TaintTracker:
                 # 3. Check for unbounded read (CWE-400)
                 elif isinstance(node.func, ast.Attribute) and node.func.attr == "read" and len(node.args) == 0:
                     meta = {"operation": "UNBOUNDED_READ", "category": "RESOURCE_EXHAUSTION", "cwe": "CWE-400"}
-                # 3. Check SINK_REGISTRY
+                # 4. Check for asyncio run_in_executor with exec/eval (CWE-95)
+                elif ((isinstance(node.func, ast.Attribute) and node.func.attr == "run_in_executor") or
+                      (isinstance(node.func, ast.Name) and node.func.id == "run_in_executor")) and len(node.args) >= 3:
+                    cb = node.args[1]
+                    cb_name = cb.id if isinstance(cb, ast.Name) else (cb.attr if isinstance(cb, ast.Attribute) else None)
+                    cb_canon = self.resolve_canonical_name(cb, scope_id) if (scope_id and isinstance(cb, ast.AST)) else None
+                    if {cb_name, cb_canon} & {"exec", "eval", "builtins.exec", "builtins.eval"}:
+                        meta = {
+                            "operation": "DYNAMIC_CODE_EXECUTION",
+                            "category": "CODE_INJECTION",
+                            "cwe": "CWE-95",
+                            "severity": "CRITICAL",
+                            "target_arg": 2,
+                        }
+                # 5. Check SINK_REGISTRY
                 if not meta:
                     candidates = [c for c in (canon_name, name) if c]
                     for c in candidates:
@@ -2675,10 +2846,13 @@ class TaintTracker:
             else:
                 meta = {"operation": "WRAPPER_SINK", "category": "Security", "cwe": contract_cwe}
         
+        sink_meta = {"sink_type": meta.get("category", "UNKNOWN_CATEGORY"), "cwe": meta.get("cwe", "UNKNOWN_CWE")}
+        if "target_arg" in meta:
+            sink_meta["target_arg"] = meta["target_arg"]
         sink = SecurityNode(
             id=sink_id, node_type=NodeType.SINK, symbol=canon_name or name,
             operation=meta.get("operation", "UNKNOWN_OPERATION"), location=loc,
-            metadata={"sink_type": meta.get("category", "UNKNOWN_CATEGORY"), "cwe": meta.get("cwe", "UNKNOWN_CWE")}
+            metadata=sink_meta
         )
         self.sinks.append(sink)
         return sink
@@ -2774,6 +2948,20 @@ class TaintTracker:
                     pairs.append((test_node.args[1].id, None))
                 elif base_name != "re" and len(test_node.args) >= 1 and isinstance(test_node.args[0], ast.Name):
                     pairs.append((test_node.args[0].id, None))
+            elif isinstance(test_node.func, ast.Attribute) and test_node.func.attr == "startswith":
+                # Static prefix guard: if url.startswith("https://trusted.domain.com/")
+                target_name = dotted_name(test_node.func.value) or (test_node.func.value.id if isinstance(test_node.func.value, ast.Name) else None)
+                if target_name and test_node.args:
+                    prefix_arg = test_node.args[0]
+                    is_safe_prefix = False
+                    if isinstance(prefix_arg, ast.Constant) and isinstance(prefix_arg.value, str):
+                        if prefix_arg.value.startswith(("http://", "https://", "/")):
+                            is_safe_prefix = True
+                    elif isinstance(prefix_arg, (ast.Tuple, ast.List)):
+                        if any(isinstance(e, ast.Constant) and isinstance(e.value, str) and e.value.startswith(("http://", "https://", "/")) for e in prefix_arg.elts):
+                            is_safe_prefix = True
+                    if is_safe_prefix:
+                        pairs.append((target_name, None))
             else:
                 fn_name = dotted_name(test_node.func) or ""
                 canon = self.resolve_canonical_name(test_node.func) if hasattr(self, "resolve_canonical_name") else ""
@@ -3917,6 +4105,13 @@ class TaintTracker:
 
                 records = self.class_field_assignments.get((target_cls_scope, node.attr), [])
                 if not records:
+                    if not self.audit_all:
+                        return TaintValue(
+                            state=TaintState.CLEAN,
+                            confidence=1.0,
+                            path=[f"{file_name}:self.{node.attr}"],
+                            last_operation=f"clean_unrecorded_attr:self.{node.attr}"
+                        )
                     # Rule C: Unrecorded / External: fall back to UNKNOWN with confidence 0.50
                     return TaintValue(
                         state=TaintState.UNKNOWN,
@@ -3989,6 +4184,13 @@ class TaintTracker:
                     last_operation=f"unknown_class_attr:self.{node.attr}"
                 )
             elif is_self_cls:
+                if not self.audit_all:
+                    return TaintValue(
+                        state=TaintState.CLEAN,
+                        confidence=1.0,
+                        path=[f"{file_name}:self.{node.attr}"],
+                        last_operation=f"clean_unrecorded_attr:self.{node.attr}"
+                    )
                 return TaintValue(
                     state=TaintState.UNKNOWN,
                     confidence=0.50,
@@ -4211,6 +4413,37 @@ class TaintTracker:
                     # Parameter with no call sites (or self/cls)
                     if node.id in ("self", "cls"):
                         return TaintValue(state=TaintState.CLEAN, confidence=1.0, last_operation=f"self:{node.id}")
+                    if target_func_node and node.id in self._get_route_param_names(target_func_node):
+                        param_symbol = f"{node.id} ({target_func_node.name})"
+                        param_pn = self.create_proof_node(
+                            step_index=0,
+                            node_type=ProofNodeType.SOURCE,
+                            file_path=file_name,
+                            node=target_func_node,
+                            symbol=param_symbol,
+                            scope_id=target_scope or scope_id,
+                            lineno=target_func_node.lineno,
+                            override_snippet=self.get_source_snippet(file_name, target_func_node.lineno, target_func_node.lineno, target_func_node) or f"def {target_func_node.name}(..., {node.id}, ...)"
+                        )
+                        source_id = self.next_source_id()
+                        src_node = SecurityNode(
+                            id=source_id,
+                            node_type=NodeType.SOURCE,
+                            symbol=param_symbol,
+                            operation="HTTP_ROUTE_PARAMETER_ACCESS",
+                            location=CodeLocation(file=file_name, line_start=target_func_node.lineno, line_end=target_func_node.lineno, column_start=0, column_end=0),
+                            metadata={"source_type": "USER_CONTROLLED", "parameter": node.id, "function": target_func_node.name, "category": "WEB_PARAMETER", "severity": "HIGH"}
+                        )
+                        self.sources.append(src_node)
+                        return TaintValue(
+                            state=TaintState.TAINTED,
+                            source_id=source_id,
+                            confidence=1.0,
+                            path=[f"{file_name}:{node.id}"],
+                            last_operation=f"route_param:{node.id}",
+                            proof_nodes=[param_pn],
+                            proof_edges=[]
+                        )
                     # Parameter with no active taint binding to an untrusted source:
                     # In default high-signal mode (not audit_all), suppress speculative POTENTIAL warnings.
                     # In aggressive mode (--audit-all), emit UNKNOWN (confidence 0.50).
@@ -4854,17 +5087,19 @@ class TaintTracker:
             framework_sources = (
                 "request.args", "request.form", "request.values", "request.headers",
                 "request.cookies", "request.GET", "request.POST", "request.query_params", "sys.argv",
-                "os.environ", "request.META", "request.FILES"
+                "os.environ", "request.META", "request.FILES", "request.data"
             )
             if norm_val in framework_sources or dname_val in framework_sources:
                 loc = location(node, file_name)
                 is_env = (norm_val == "os.environ" or dname_val == "os.environ")
                 is_sys_argv = (norm_val == "sys.argv" or dname_val == "sys.argv")
+                is_req_data = (norm_val == "request.data" or dname_val == "request.data")
                 target_state = TaintState.UNKNOWN if (is_sys_argv or is_env) else TaintState.TAINTED
                 target_conf = 0.50 if (is_sys_argv or is_env) else 1.0
                 target_op = (
                     "ENVIRONMENT_VARIABLE_ACCESS" if is_env
                     else "CLI_ARGUMENT_ACCESS" if is_sys_argv
+                    else "HTTP_BODY_PARAMETER_ACCESS" if is_req_data
                     else "HTTP_PARAMETER_ACCESS"
                 )
                 for existing in self.sources:
@@ -4879,7 +5114,11 @@ class TaintTracker:
                         )
                         return TaintValue(state=target_state, source_id=existing.id, confidence=target_conf, path=[existing.id], last_operation=f"{norm_val}[]", proof_nodes=[src_pn], proof_edges=[])
                 source_id = self.next_source_id()
-                src = SecurityNode(id=source_id, node_type=NodeType.SOURCE, symbol=f"{norm_val}[...]", operation=target_op, location=loc, metadata={"source_type": "USER_CONTROLLED"})
+                src_meta = {"source_type": "USER_CONTROLLED"}
+                if is_req_data:
+                    src_meta["category"] = "WEB_PARAMETER"
+                    src_meta["severity"] = "HIGH"
+                src = SecurityNode(id=source_id, node_type=NodeType.SOURCE, symbol=f"{norm_val}[...]", operation=target_op, location=loc, metadata=src_meta)
                 self.sources.append(src)
                 src_pn = self.create_proof_node(
                     step_index=0,
@@ -5711,7 +5950,7 @@ class TaintTracker:
         if isinstance(node, ast.Subscript):
             canon_val = self.resolve_canonical_name(node.value, scope_id) or dotted_name(node.value) or ""
             norm_val = canon_val[6:] if canon_val.startswith("flask.") else canon_val
-            if norm_val in ("request.args", "request.form", "request.values", "request.headers", "request.cookies", "request.META", "request.FILES") or dotted_name(node.value) in ("request.args", "request.form", "request.values", "request.headers", "request.cookies", "request.META", "request.FILES"):
+            if norm_val in ("request.args", "request.form", "request.values", "request.headers", "request.cookies", "request.META", "request.FILES", "request.data") or dotted_name(node.value) in ("request.args", "request.form", "request.values", "request.headers", "request.cookies", "request.META", "request.FILES", "request.data"):
                 src = self.get_or_create_source(node, file_name, scope_id)
                 return ProvenanceValue(
                     state=ProvenanceState.TAINTED,
@@ -5939,7 +6178,39 @@ class TaintTracker:
                             source_trace=(*res_p.source_trace, f"param:{node.id}"),
                             origin_node=node
                         )
-                # Unresolved parameter with no call sites
+                if node.id in ("self", "cls"):
+                    return ProvenanceValue(state=ProvenanceState.STATIC, confidence=1.0, source_trace=(f"self:{node.id}",), origin_node=node)
+
+                # Web route parameter seeding:
+                if target_func_node and node.id in self._get_route_param_names(target_func_node):
+                    param_symbol = f"{node.id} ({target_func_node.name})"
+                    source_id = self.next_source_id()
+                    src_node = SecurityNode(
+                        id=source_id,
+                        node_type=NodeType.SOURCE,
+                        symbol=param_symbol,
+                        operation="HTTP_ROUTE_PARAMETER_ACCESS",
+                        location=CodeLocation(file=file_name, line_start=target_func_node.lineno, line_end=target_func_node.lineno, column_start=0, column_end=0),
+                        metadata={"source_type": "USER_CONTROLLED", "parameter": node.id, "function": target_func_node.name, "category": "WEB_PARAMETER", "severity": "HIGH"}
+                    )
+                    self.sources.append(src_node)
+                    return ProvenanceValue(
+                        state=ProvenanceState.TAINTED,
+                        confidence=1.0,
+                        source_id=source_id,
+                        source_trace=(f"route_param:{node.id}", f"{file_name}:{node.id}"),
+                        origin_node=node
+                    )
+
+                if not self.audit_all:
+                    return ProvenanceValue(
+                        state=ProvenanceState.INTERNAL_DYNAMIC,
+                        confidence=1.0,
+                        source_trace=(f"unbound_param:{node.id}",),
+                        origin_node=node
+                    )
+
+                # Unresolved parameter with no call sites (in audit_all mode)
                 param_symbol = f"{node.id} ({target_func_node.name})"
                 source_id = self.next_source_id()
                 src_node = SecurityNode(
@@ -6791,6 +7062,17 @@ class TaintTracker:
                         validated.setdefault(scope, set()).add("redirect")
                     if segs & CLUSTER2_SSRF_VALIDATORS:
                         validated.setdefault(scope, set()).add("ssrf")
+                    if segs & {"startswith"}:
+                        prefix_val = None
+                        if node.args and isinstance(node.args[0], ast.Constant) and isinstance(node.args[0].value, str):
+                            prefix_val = node.args[0].value
+                        elif node.args and isinstance(node.args[0], (ast.Tuple, ast.List)):
+                            for elt in node.args[0].elts:
+                                if isinstance(elt, ast.Constant) and isinstance(elt.value, str) and elt.value.startswith(("http://", "https://", "/")):
+                                    prefix_val = elt.value
+                                    break
+                        if prefix_val and prefix_val.startswith(("http://", "https://", "/")):
+                            validated.setdefault(scope, set()).add("ssrf")
                     is_ssrf_sink = False
                     for form in forms:
                         parts = form.split(".")
@@ -6815,15 +7097,108 @@ class TaintTracker:
                         "redirect" not in scope_validators:
                     _add(assign_node, "UNTRUSTED_REDIRECT_SOURCE", "OPEN_REDIRECT", "CWE-601")
                 if name in consumed_ssrf.get(scope, set()) and \
-                        "ssrf" not in scope_validators:
+                        "ssrf" not in scope_validators and \
+                        not any(g.get("var_name") == name for g in self.containment_guards):
                     _add(assign_node, "SSRF_UNTRUSTED_URL_SOURCE",
                          "SERVER_SIDE_REQUEST_FORGERY", "CWE-918")
+
+            pattern_mod_host = re.compile(r"://([^/@]*?)%[sr]")
+            pattern_fmt_host = re.compile(r"://([^/@]*?)\{")
+            pattern_scheme_suffix = re.compile(r"://[^/@]*$")
+
+            def _expr_is_tainted(expr: Optional[ast.AST], scope: str) -> bool:
+                if expr is None:
+                    return False
+                if _is_request_taint_expr(expr):
+                    return True
+                owner = _enclosing_function(expr)
+                owner_scope = function_scopes.get(id(owner)) if owner else mod_scope
+                fn_route_params = route_params.get(owner_scope, set())
+                if isinstance(expr, ast.Name):
+                    if expr.id in fn_route_params:
+                        return True
+                    if (scope, expr.id) in taint_vars or (owner_scope, expr.id) in taint_vars:
+                        return True
+                for sub in ast.walk(expr):
+                    if _is_request_taint_expr(sub):
+                        return True
+                    if isinstance(sub, ast.Name):
+                        if sub.id in fn_route_params or (scope, sub.id) in taint_vars or (owner_scope, sub.id) in taint_vars:
+                            return True
+                return False
+
+            def _is_tainted_url_host_expr(root_expr: ast.AST, scope: str, lineno: int) -> bool:
+                if root_expr is None:
+                    return False
+                for sub in ast.walk(root_expr):
+                    # 1. Modulo formatting: template % args
+                    if isinstance(sub, ast.BinOp) and isinstance(sub.op, ast.Mod):
+                        tmpl = _eval_static_constant(sub.left, self.assignments_by_scope, scope, lineno)
+                        if tmpl is None and isinstance(sub.left, ast.Constant) and isinstance(sub.left.value, str):
+                            tmpl = sub.left.value
+                        if isinstance(tmpl, str) and pattern_mod_host.search(tmpl):
+                            if isinstance(sub.right, (ast.Tuple, ast.List)):
+                                if sub.right.elts and _expr_is_tainted(sub.right.elts[0], scope):
+                                    return True
+                            elif _expr_is_tainted(sub.right, scope):
+                                return True
+                    # 2. str.format(...)
+                    elif isinstance(sub, ast.Call) and isinstance(sub.func, ast.Attribute) and sub.func.attr == "format":
+                        tmpl = _eval_static_constant(sub.func.value, self.assignments_by_scope, scope, lineno)
+                        if tmpl is None and isinstance(sub.func.value, ast.Constant) and isinstance(sub.func.value.value, str):
+                            tmpl = sub.func.value.value
+                        if isinstance(tmpl, str) and pattern_fmt_host.search(tmpl):
+                            all_args = list(sub.args) + [kw.value for kw in sub.keywords]
+                            if any(_expr_is_tainted(a, scope) for a in all_args):
+                                return True
+                    # 3. String concatenation: left + right
+                    elif isinstance(sub, ast.BinOp) and isinstance(sub.op, ast.Add):
+                        left_str = _eval_static_constant(sub.left, self.assignments_by_scope, scope, lineno)
+                        if left_str is None and isinstance(sub.left, ast.Constant) and isinstance(sub.left.value, str):
+                            left_str = sub.left.value
+                        if isinstance(left_str, str) and pattern_scheme_suffix.search(left_str):
+                            if _expr_is_tainted(sub.right, scope):
+                                return True
+                    # 4. f-string: f"..."
+                    elif isinstance(sub, ast.JoinedStr):
+                        running_prefix = ""
+                        for part in sub.values:
+                            if isinstance(part, ast.Constant) and isinstance(part.value, str):
+                                running_prefix += part.value
+                            elif isinstance(part, ast.FormattedValue):
+                                if pattern_scheme_suffix.search(running_prefix):
+                                    if _expr_is_tainted(part.value, scope):
+                                        return True
+                                running_prefix = ""
+                return False
 
             # 5. Node-local predicates.
             for node in reachable:
                 scope = _scope_for(node, mod_name)
                 fn_node = _enclosing_function(node)
                 fn_scope = (function_scopes.get(id(fn_node)) if fn_node else mod_scope)
+
+                # CWE-918: Tainted URL host construction
+                if isinstance(node, (ast.Assign, ast.AnnAssign, ast.Return)):
+                    val = node.value
+                    if val is not None and _is_tainted_url_host_expr(val, scope, getattr(node, "lineno", 0)):
+                        scope_validators = validated.get(scope, set())
+                        if "ssrf" not in scope_validators:
+                            _add(node, "SSRF_UNTRUSTED_URL_SOURCE", "SERVER_SIDE_REQUEST_FORGERY", "CWE-918")
+                elif isinstance(node, ast.AugAssign):
+                    if isinstance(node.target, ast.Name):
+                        prior_recs = self.assignments_by_scope.get((scope, node.target.id), [])
+                        ended_scheme = False
+                        for pr in prior_recs:
+                            if pr.lineno < node.lineno:
+                                pr_val = _eval_static_constant(pr.value_node, self.assignments_by_scope, scope, pr.lineno)
+                                if isinstance(pr_val, str) and pattern_scheme_suffix.search(pr_val):
+                                    ended_scheme = True
+                                    break
+                        if ended_scheme and _expr_is_tainted(node.value, scope):
+                            scope_validators = validated.get(scope, set())
+                            if "ssrf" not in scope_validators:
+                                _add(node, "SSRF_UNTRUSTED_URL_SOURCE", "SERVER_SIDE_REQUEST_FORGERY", "CWE-918")
 
                 if isinstance(node, ast.Assign):
                     first_target = node.targets[0] if node.targets else None
@@ -8692,7 +9067,15 @@ class TaintTracker:
         function_scopes = {id(function): scope for scope, function in self.functions.items()}
         deserialization_sinks = {"dill.load", "dill.loads", "shelve.open", "jsonpickle.decode"}
         pickle_sinks = {"pickle.loads", "pickle.load", "_pickle.loads", "_pickle.load"}
-        code_sinks = {"eval", "builtins.eval", "exec", "builtins.exec", "compile", "builtins.compile"}
+        code_sinks = {
+            "eval", "builtins.eval", "exec", "builtins.exec", "compile", "builtins.compile",
+            "code.InteractiveConsole.push", "InteractiveConsole.push",
+            "code.InteractiveInterpreter.runcode", "InteractiveInterpreter.runcode",
+            "code.InteractiveInterpreter.runsource", "InteractiveInterpreter.runsource",
+            "code.compile_command", "compile_command",
+            "_testcapi.run_in_subinterp", "support.run_in_subinterp", "test.support.run_in_subinterp",
+        }
+        subinterp_sinks = {"_xxsubinterpreters.run_string"}
         added_process_sinks = {
             "os.popen", "os.spawnlp", "os.spawnlpe", "os.spawnv", "os.spawnve",
             "os.posix_spawn", "posix_spawn",
@@ -8747,6 +9130,15 @@ class TaintTracker:
                 return True
             if isinstance(expr, (ast.List, ast.Tuple)):
                 return all(_is_static(element, scope_id, lineno) for element in expr.elts)
+            if isinstance(expr, ast.Call):
+                call_names = _call_names(expr, scope_id)
+                if call_names & {"compile", "builtins.compile", "code.compile_command", "compile_command"}:
+                    if expr.args:
+                        return _is_static(expr.args[0], scope_id, lineno)
+            if isinstance(expr, ast.Name):
+                record = _assigned_value(expr.id, scope_id, lineno)
+                if record is not None and record.value_node is not None:
+                    return _is_static(record.value_node, record.scope_id, record.lineno)
             return _eval_static_constant(expr, self.assignments_by_scope, scope_id, lineno) is not None
 
         def _is_dynamic(expr: ast.AST, scope_id: str, lineno: int) -> bool:
@@ -8838,7 +9230,7 @@ class TaintTracker:
 
         seen: set[tuple[str, int, int]] = set()
 
-        def _add_finding(node: ast.Call, mod_name: str, scope_id: str, operation: str, category: str, cwe: str) -> None:
+        def _add_finding(node: ast.Call, mod_name: str, scope_id: str, operation: str, category: str, cwe: str, target_arg: int = 0) -> None:
             line = getattr(node, "lineno", 1)
             column = getattr(node, "col_offset", 0)
             key = (cwe, line, column)
@@ -8861,6 +9253,10 @@ class TaintTracker:
             ), None)
             if existing_record is not None:
                 existing_record.security_node.metadata["p4_source_id"] = source_ids[cwe]
+                if "operation" not in existing_record.security_node.metadata:
+                    existing_record.security_node.metadata["operation"] = operation
+                if target_arg != 0 and "target_arg" not in existing_record.security_node.metadata:
+                    existing_record.security_node.metadata["target_arg"] = target_arg
                 return
             sink_node = SecurityNode(
                 id=self.next_sink_id(),
@@ -8872,7 +9268,9 @@ class TaintTracker:
                     "sink_type": category,
                     "category": category,
                     "cwe": cwe,
+                    "operation": operation,
                     "p4_source_id": source_ids[cwe],
+                    "target_arg": target_arg,
                 },
             )
             self.sinks.append(sink_node)
@@ -8925,9 +9323,29 @@ class TaintTracker:
                         )
 
                 if names & code_sinks:
-                    code_expr = _argument(node, 0, {"source"})
+                    code_expr = _argument(node, 0, {"source", "code", "line"})
                     if _is_dynamic(code_expr, scope_id, lineno):
                         _add_finding(node, mod_name, scope_id, "DYNAMIC_CODE_EXECUTION", "CODE_EXECUTION", "CWE-95")
+                elif names & subinterp_sinks:
+                    code_expr = _argument(node, 1, {"code", "source"})
+                    if _is_dynamic(code_expr, scope_id, lineno):
+                        _add_finding(node, mod_name, scope_id, "DYNAMIC_CODE_EXECUTION", "CODE_EXECUTION", "CWE-95", target_arg=1)
+
+                func_attr = node.func.attr if isinstance(node.func, ast.Attribute) else (node.func.id if isinstance(node.func, ast.Name) else None)
+                if func_attr == "run_in_executor" and len(node.args) >= 3:
+                    cb = node.args[1]
+                    cb_names = _call_names(ast.Call(func=cb, args=[], keywords=[]), scope_id) if isinstance(cb, ast.AST) else set()
+                    if isinstance(cb, ast.Name):
+                        cb_names.add(cb.id)
+                    elif isinstance(cb, ast.Attribute):
+                        cb_names.add(cb.attr)
+                    cb_canon = self.resolve_canonical_name(cb, scope_id) if (scope_id and isinstance(cb, ast.AST)) else None
+                    if cb_canon:
+                        cb_names.add(cb_canon)
+                    if cb_names & {"exec", "eval", "builtins.exec", "builtins.eval"}:
+                        code_expr = node.args[2]
+                        if _is_dynamic(code_expr, scope_id, lineno):
+                            _add_finding(node, mod_name, scope_id, "DYNAMIC_CODE_EXECUTION", "CODE_EXECUTION", "CWE-95", target_arg=2)
 
                 if names & (added_process_sinks | shell_process_sinks):
                     process_name = next((name for name in names if name in added_process_sinks), "")
@@ -9864,7 +10282,11 @@ class TaintTracker:
     def _collect_phase8_structural_findings(self) -> None:
         """Collect open redirect, weak hash, and insecure cookie findings."""
         function_scopes = {id(function): scope for scope, function in self.functions.items()}
-        redirect_sinks = {"redirect", "flask.redirect", "django.shortcuts.redirect"}
+        redirect_sinks = {
+            "redirect", "flask.redirect", "django.shortcuts.redirect",
+            "HttpResponseRedirect", "django.http.HttpResponseRedirect",
+            "HttpResponsePermanentRedirect", "django.http.HttpResponsePermanentRedirect",
+        }
         weak_hash_sinks = {
             "hashlib.md5", "hashlib.sha1", "hashlib.sha224",
             "Crypto.Hash.MD5", "Crypto.Hash.SHA1",
@@ -9872,6 +10294,8 @@ class TaintTracker:
         redirect_validators = {
             "is_safe_redirect_url", "validate_redirect_url",
             "url_has_allowed_host_and_scheme", "is_relative_url",
+            "is_safe_url", "django.utils.http.is_safe_url",
+            "django.utils.http.url_has_allowed_host_and_scheme",
         }
 
         def _scope_for(node: ast.AST, mod_name: str) -> str:
@@ -9986,6 +10410,27 @@ class TaintTracker:
                 current = getattr(current, "parent", None)
             return False
 
+        def _is_safe_route_expr(expr: ast.AST) -> bool:
+            if expr is None:
+                return True
+            if isinstance(expr, ast.Constant):
+                return True
+            if isinstance(expr, ast.Attribute):
+                if expr.attr in {"path", "full_path"}:
+                    return True
+            if isinstance(expr, ast.Call):
+                dname = dotted_name(expr.func) or ""
+                short = dname.rsplit(".", 1)[-1]
+                if short in {"get_full_path", "url_for"} or dname in {"request.get_full_path", "flask.url_for"}:
+                    return True
+                if short in redirect_validators or dname in redirect_validators:
+                    return True
+            if isinstance(expr, ast.JoinedStr):
+                return all(_is_safe_route_expr(part.value) for part in expr.values if isinstance(part, ast.FormattedValue))
+            if isinstance(expr, ast.BinOp) and isinstance(expr.op, ast.Add):
+                return _is_safe_route_expr(expr.left) and _is_safe_route_expr(expr.right)
+            return False
+
         def _redirect_is_safe(call: ast.Call, target: ast.AST, scope_id: str, lineno: int, visited=None) -> bool:
             if target is None:
                 return False
@@ -9993,6 +10438,8 @@ class TaintTracker:
                 visited = set()
             static_value = _static_value(target, scope_id, lineno)
             if isinstance(static_value, str):
+                return True
+            if _is_safe_route_expr(target):
                 return True
             if isinstance(target, ast.Name):
                 existing_sink = next((
@@ -10006,6 +10453,28 @@ class TaintTracker:
                     target.id, scope_id, lineno, existing_sink
                 ):
                     return True
+                target_var = target.id
+                current_func = None
+                for func_id, f_scope in function_scopes.items():
+                    if f_scope == scope_id:
+                        current_func = self.functions.get(f_scope)
+                        break
+                if current_func:
+                    for sub in ast.walk(current_func):
+                        if isinstance(sub, ast.Call):
+                            sub_names = _names_for_call(sub, scope_id)
+                            if any(sn in redirect_validators or sn.rsplit(".", 1)[-1] in redirect_validators for sn in sub_names):
+                                arg_names = {a.id for a in sub.args if isinstance(a, ast.Name)}
+                                kw_names = {kw.value.id for kw in getattr(sub, "keywords", []) if isinstance(kw.value, ast.Name)}
+                                if target_var in (arg_names | kw_names):
+                                    return True
+                        elif isinstance(sub, ast.Attribute) and sub.attr == "netloc":
+                            if isinstance(sub.value, ast.Call):
+                                c_names = _names_for_call(sub.value, scope_id)
+                                if any("urlparse" in cn or "url_parse" in cn for cn in c_names):
+                                    c_args = {a.id for a in sub.value.args if isinstance(a, ast.Name)}
+                                    if target_var in c_args:
+                                        return True
                 key = (scope_id, target.id)
                 if key in visited:
                     return False
@@ -10014,6 +10483,8 @@ class TaintTracker:
                 if record is not None:
                     return _redirect_is_safe(call, record.value_node, record.scope_id, record.lineno, visited)
                 return _relative_guarded(call, target)
+            if isinstance(target, ast.IfExp):
+                return _redirect_is_safe(call, target.body, scope_id, lineno, visited) and _redirect_is_safe(call, target.orelse, scope_id, lineno, visited)
             if isinstance(target, ast.Call):
                 names = _names_for_call(target, scope_id)
                 if any(
@@ -10021,6 +10492,8 @@ class TaintTracker:
                     or name.rsplit(".", 1)[-1] in redirect_validators
                     for name in names
                 ):
+                    return True
+                if any(name in {"url_for", "request.get_full_path"} or name.endswith(".url_for") for name in names):
                     return True
             if isinstance(target, ast.Subscript) and isinstance(target.value, ast.Name):
                 record = _assigned_value(target.value.id, scope_id, lineno)
@@ -10094,7 +10567,7 @@ class TaintTracker:
                 lineno = getattr(node, "lineno", 1)
                 names = _names_for_call(node, scope_id)
 
-                if any(name in redirect_sinks or name.endswith(".redirect") for name in names):
+                if any(name in redirect_sinks or name.endswith(".redirect") or name.endswith("HttpResponseRedirect") or name.endswith("HttpResponsePermanentRedirect") for name in names):
                     target = next((kw.value for kw in node.keywords if kw.arg in {"location", "url", "to"}), None)
                     if target is None and node.args:
                         target = node.args[0]
@@ -10104,8 +10577,10 @@ class TaintTracker:
                                 node, mod_name, scope_id, "CWE-601", "URL_REDIRECTION",
                                 "OPEN_REDIRECT", "OPEN_REDIRECT_VULNERABILITY",
                             )
+                        else:
+                            _remove_existing(node, {"CWE-601", "CWE-79"}, mod_name)
                     elif target is not None:
-                        _remove_existing(node, {"CWE-601"}, mod_name)
+                        _remove_existing(node, {"CWE-601", "CWE-79"}, mod_name)
 
                 if names & weak_hash_sinks:
                     usedforsecurity = next((kw.value for kw in node.keywords if kw.arg == "usedforsecurity"), None)
@@ -10589,6 +11064,8 @@ class TaintTracker:
             "HttpResponse", "django.http.HttpResponse",
             "HttpResponseBadRequest", "django.http.HttpResponseBadRequest",
             "JsonResponse", "django.http.JsonResponse",
+            "make_response", "flask.make_response",
+            "Response", "pyramid.response.Response", "pyramid.request.Response",
         }
         # Constructors whose default media type renders as HTML. JsonResponse is deliberately
         # excluded from the non-literal rule below: it sets content_type=application/json, so
@@ -10639,7 +11116,10 @@ class TaintTracker:
             }
 
         def _is_html_response(name: str) -> bool:
-            return name.startswith(html_response_prefixes) or name.rsplit(".", 1)[-1].startswith("HttpResponse")
+            short = name.rsplit(".", 1)[-1]
+            if "Redirect" in short:
+                return False
+            return name.startswith(html_response_prefixes) or short.startswith("HttpResponse")
 
         def _resolve_once(expr: ast.AST, scope_id: str, lineno: int, visited=None) -> ast.AST:
             """Follow plain name bindings to the expression that actually produced the value."""
@@ -10657,13 +11137,37 @@ class TaintTracker:
 
         def _is_literal_text(expr: ast.AST) -> bool:
             if isinstance(expr, ast.Constant):
-                return isinstance(expr.value, (str, bytes))
+                return True
+            if isinstance(expr, (ast.List, ast.Tuple)):
+                return all(_is_literal_text(elt) for elt in expr.elts)
+            if isinstance(expr, ast.Dict):
+                return all(_is_literal_text(k) and _is_literal_text(v) for k, v in zip(expr.keys, expr.values))
             if isinstance(expr, ast.JoinedStr):
                 return not any(isinstance(part, ast.FormattedValue) for part in expr.values)
             if isinstance(expr, ast.BinOp) and isinstance(expr.op, ast.Add):
                 return _is_literal_text(expr.left) and _is_literal_text(expr.right)
             if isinstance(expr, ast.UnaryOp):
                 return _is_literal_text(expr.operand)
+            return False
+
+        def _is_safe_response_body(expr: ast.AST, scope_id: str, lineno: int) -> bool:
+            if expr is None:
+                return True
+            resolved = _resolve_once(expr, scope_id, lineno)
+            if _is_literal_text(resolved):
+                return True
+            if isinstance(resolved, (ast.List, ast.Tuple)):
+                return all(_is_safe_response_body(elt, scope_id, lineno) for elt in resolved.elts)
+            if isinstance(resolved, ast.Dict):
+                return all(_is_safe_response_body(v, scope_id, lineno) for v in resolved.values)
+            if isinstance(resolved, ast.Call):
+                c_names = _names_for_call(resolved, scope_id)
+                if any(cn in {"jsonify", "flask.jsonify", "json.dumps", "redirect", "flask.redirect"} or cn.endswith((".jsonify", ".dumps", ".redirect")) for cn in c_names):
+                    return True
+                if any(cn in {"render_template", "flask.render_template"} or cn.endswith(".render_template") for cn in c_names):
+                    t_arg = resolved.args[0] if resolved.args else next((kw.value for kw in resolved.keywords if kw.arg in {"template_name_or_list", "template"}), None)
+                    if t_arg and isinstance(t_arg, ast.Constant) and isinstance(t_arg.value, str) and t_arg.value.endswith((".html", ".htm")):
+                        return True
             return False
 
         def _has_template_marker(text: str) -> bool:
@@ -10719,13 +11223,13 @@ class TaintTracker:
                 return values
             return []
 
-        seen: set[tuple[str, int, int]] = set()
+        seen: set[tuple[str, int, int, str]] = set()
 
         def _add_finding(node: ast.AST, mod_name: str, scope_id: str, operation: str,
                          cwe: str = "CWE-79", category: str = "CROSS_SITE_SCRIPTING") -> None:
             line = getattr(node, "lineno", 1)
             column = getattr(node, "col_offset", 0)
-            key = (mod_name, line, column)
+            key = (mod_name, line, column, cwe)
             if key in seen:
                 return
             seen.add(key)
@@ -10763,35 +11267,120 @@ class TaintTracker:
 
         for mod_name, tree in self.modules.items():
             for node in self._reachable_nodes(tree):
-                if not isinstance(node, ast.Call) or not isinstance(node.func, ast.AST):
-                    continue
                 scope_id = _scope_for(node, mod_name)
                 lineno = getattr(node, "lineno", 1)
+
+                if isinstance(node, ast.Assign) and len(node.targets) == 1:
+                    target = node.targets[0]
+                    if isinstance(target, ast.Attribute) and target.attr == "body":
+                        if isinstance(target.value, ast.Attribute) and target.value.attr == "response":
+                            if not _is_literal_text(_resolve_once(node.value, scope_id, lineno)):
+                                _add_finding(node, mod_name, scope_id, "HTTP_RESPONSE_HTML", cwe="CWE-79", category="CROSS_SITE_SCRIPTING")
+                    continue
+
+                if not isinstance(node, ast.Call) or not isinstance(node.func, ast.AST):
+                    continue
                 call_names = _names_for_call(node, scope_id)
 
                 if call_names & response_sinks or any(_is_html_response(name) for name in call_names):
-                    content = next((kw.value for kw in node.keywords if kw.arg in {"content", "content_type", "contentType"}), None)
+                    content = next((kw.value for kw in node.keywords if kw.arg in {"content", "response", "body", "data"}), None)
                     if content is None and node.args:
                         content = node.args[0]
-                    if (content is not None
-                            and not _json_or_structured_body(node, self.assignments_by_scope,
-                                                             scope_id, lineno)):
-                        temporary_sink = SecurityNode(
-                            id="", node_type=NodeType.SINK, symbol="HTML_RESPONSE",
-                            operation="HTML_RESPONSE", location=location(node, self.file_paths.get(mod_name, "unknown.py")),
-                            metadata={"sink_type": "XSS", "cwe": "CWE-79"},
-                        )
-                        taint = self.resolve_expression(content, temporary_sink, scope_id, lineno)
-                        if taint.state != TaintState.CLEAN:
-                            _add_finding(node, mod_name, scope_id, "HTTP_RESPONSE_HTML")
-                        elif any(_is_html_response(name) for name in call_names):
-                            # A response body that is not a compile-time literal is assembled from
-                            # program state, so it reaches the browser as markup the author did not
-                            # write. Taint alone cannot see this: the value may legitimately be
-                            # CLEAN (a rendered template, a DB row) and still be attacker-influenced.
-                            resolved = _resolve_once(content, scope_id, lineno)
-                            if not _is_literal_text(resolved):
-                                _add_finding(node, mod_name, scope_id, "HTTP_RESPONSE_DYNAMIC_CONTENT")
+                    ct_node = next((kw.value for kw in node.keywords if kw.arg in {"content_type", "mimetype", "contentType"}), None)
+                    ct_val = _literal_text(ct_node, self.assignments_by_scope, scope_id, lineno) if ct_node else None
+
+                    if ct_val in {"application/json", "text/json", "text/plain", "application/octet-stream"}:
+                        pass
+                    elif content is not None and not _json_or_structured_body(node, self.assignments_by_scope, scope_id, lineno):
+                        if _is_safe_response_body(content, scope_id, lineno):
+                            if ct_val == "text/html":
+                                _add_finding(node, mod_name, scope_id, "HTTP_RESPONSE_HTML", cwe="CWE-79", category="CROSS_SITE_SCRIPTING")
+                        else:
+                            temporary_sink = SecurityNode(
+                                id="", node_type=NodeType.SINK, symbol="HTML_RESPONSE",
+                                operation="HTML_RESPONSE", location=location(node, self.file_paths.get(mod_name, "unknown.py")),
+                                metadata={"sink_type": "XSS", "cwe": "CWE-79"},
+                            )
+                            taint = self.resolve_expression(content, temporary_sink, scope_id, lineno)
+                            if taint.state != TaintState.CLEAN or ct_val == "text/html" or not _is_literal_text(_resolve_once(content, scope_id, lineno)):
+                                _add_finding(node, mod_name, scope_id, "HTTP_RESPONSE_HTML", cwe="CWE-79", category="CROSS_SITE_SCRIPTING")
+
+                if call_names & {"render_template", "flask.render_template"} or any(name.endswith(".render_template") for name in call_names):
+                    mod_imports = getattr(self, "imports", {}).get(mod_name, {})
+                    target_mod = mod_imports.get("render_template", "") if isinstance(mod_imports, dict) else ""
+                    not_flask = bool(target_mod and not target_mod.startswith("flask"))
+                    if not not_flask:
+                        t_arg = node.args[0] if node.args else next((kw.value for kw in node.keywords if kw.arg in {"template_name_or_list", "template"}), None)
+                        if t_arg is not None:
+                            is_html = False
+                            if isinstance(t_arg, ast.Constant) and isinstance(t_arg.value, str):
+                                is_html = t_arg.value.endswith((".html", ".htm"))
+                            elif isinstance(t_arg, ast.BinOp) and isinstance(t_arg.op, ast.Add):
+                                if isinstance(t_arg.right, ast.Constant) and isinstance(t_arg.right.value, str):
+                                    is_html = t_arg.right.value.endswith((".html", ".htm"))
+                            elif isinstance(t_arg, ast.BinOp) and isinstance(t_arg.op, ast.Mod):
+                                if isinstance(t_arg.left, ast.Constant) and isinstance(t_arg.left.value, str):
+                                    is_html = t_arg.left.value.endswith((".html", ".htm"))
+                            elif isinstance(t_arg, ast.Call) and isinstance(t_arg.func, ast.Attribute) and t_arg.func.attr == "format":
+                                if isinstance(t_arg.func.value, ast.Constant) and isinstance(t_arg.func.value.value, str):
+                                    is_html = t_arg.func.value.value.endswith((".html", ".htm"))
+                            elif isinstance(t_arg, ast.JoinedStr):
+                                const_parts = [p.value for p in t_arg.values if isinstance(p, ast.Constant) and isinstance(p.value, str)]
+                                if const_parts and const_parts[-1].endswith((".html", ".htm")):
+                                    is_html = True
+                            elif isinstance(t_arg, ast.Name):
+                                rec = _assigned_value(t_arg.id, scope_id, lineno)
+                                if rec and isinstance(rec.value_node, ast.Constant) and isinstance(rec.value_node.value, str):
+                                    is_html = rec.value_node.value.endswith((".html", ".htm"))
+
+                            has_context = len(node.args) > 1 or any(kw.arg not in {"template_name_or_list", "template"} for kw in node.keywords)
+                            if not is_html and has_context:
+                                _add_finding(node, mod_name, scope_id, "UNESCAPED_TEMPLATE_EXTENSION", cwe="CWE-79", category="CROSS_SITE_SCRIPTING")
+
+                if call_names & {"format_html", "django.utils.html.format_html"} or any(name.endswith(".format_html") for name in call_names):
+                    fmt_arg = node.args[0] if node.args else next((kw.value for kw in node.keywords if kw.arg in {"format_string", "format_str"}), None)
+                    if fmt_arg is not None:
+                        is_misused = False
+                        if isinstance(fmt_arg, ast.JoinedStr) and any(isinstance(p, ast.FormattedValue) for p in fmt_arg.values):
+                            is_misused = True
+                        elif isinstance(fmt_arg, ast.BinOp) and isinstance(fmt_arg.op, ast.Mod):
+                            is_misused = True
+                        elif isinstance(fmt_arg, ast.Call) and isinstance(fmt_arg.func, ast.Attribute) and fmt_arg.func.attr == "format":
+                            is_misused = True
+                        if is_misused:
+                            _add_finding(node, mod_name, scope_id, "FORMAT_HTML_FSTRING_PARAMETER", cwe="CWE-79", category="CROSS_SITE_SCRIPTING")
+
+                if any("mako" in name or name in {"Template", "template.Template"} for name in call_names):
+                    if not (isinstance(node.func, ast.Attribute) and node.func.attr == "render"):
+                        is_mako = any("mako" in name for name in call_names)
+                        if not is_mako:
+                            mod_imports = getattr(self, "imports", {}).get(mod_name, {})
+                            if isinstance(mod_imports, dict):
+                                is_mako = any("mako" in tgt for tgt in mod_imports.values())
+                        if is_mako and not any(name.startswith("jinja2") for name in call_names):
+                            _add_finding(node, mod_name, scope_id, "MAKO_TEMPLATES_DETECTED", cwe="CWE-79", category="CROSS_SITE_SCRIPTING")
+
+                if isinstance(node.func, ast.Attribute) and node.func.attr == "render":
+                    r_names = set()
+                    if isinstance(node.func.value, ast.Call):
+                        r_names = _names_for_call(node.func.value, scope_id)
+                    elif isinstance(node.func.value, (ast.Name, ast.Attribute)):
+                        rec_name = dotted_name(node.func.value) or (node.func.value.id if isinstance(node.func.value, ast.Name) else "")
+                        if rec_name:
+                            rec = _assigned_value(rec_name, scope_id, lineno)
+                            if rec and isinstance(rec.value_node, ast.Call):
+                                r_names = _names_for_call(rec.value_node, rec.scope_id)
+                    if any("jinja2" in rn or rn in {"Template", "get_template"} for rn in r_names):
+                        has_args = bool(node.args or node.keywords)
+                        if has_args or isinstance(node.func.value, ast.Call):
+                            _add_finding(node, mod_name, scope_id, "DIRECT_USE_OF_JINJA2", cwe="CWE-79", category="CROSS_SITE_SCRIPTING")
+                    elif any("mako" in rn for rn in r_names):
+                        _add_finding(node, mod_name, scope_id, "MAKO_TEMPLATES_DETECTED", cwe="CWE-79", category="CROSS_SITE_SCRIPTING")
+
+                if call_names & {"render_template_string", "flask.render_template_string"} or any(name.endswith(".render_template_string") for name in call_names):
+                    src_arg = node.args[0] if node.args else next((kw.value for kw in node.keywords if kw.arg in {"source", "s"}), None)
+                    if src_arg is not None and not _is_literal_text(_resolve_once(src_arg, scope_id, lineno)):
+                        _add_finding(node, mod_name, scope_id, "RENDER_TEMPLATE_STRING", cwe="CWE-79", category="CROSS_SITE_SCRIPTING")
 
                 if call_names & ssti_constructors:
                     source_arg = next((kw.value for kw in node.keywords if kw.arg in {"source", "template", "s"}), None)
@@ -11070,7 +11659,7 @@ class TaintTracker:
                 elif isinstance(record.node.func, ast.Attribute) and record.node.func.attr == "render":
                     if self._is_jinja_template_expr(record.node.func.value, record.scope_id):
                         target_expr = record.node.func.value
-                    elif cwe in STRUCTURAL_SYNTHETIC_SOURCES:
+                    elif cwe in STRUCTURAL_SYNTHETIC_SOURCES or sink.metadata.get("p11_source_id"):
                         # A structural sink already owns a synthetic source, so the render()
                         # shape of its node must not route it into the taint-resolution prune.
                         pass
@@ -11079,10 +11668,14 @@ class TaintTracker:
                             self.sinks.remove(sink)
                         continue
                 elif record.node.args:
-                    target_expr = record.node.args[0]
+                    target_arg_idx = sink.metadata.get("target_arg", 0)
+                    if len(record.node.args) > target_arg_idx:
+                        target_expr = record.node.args[target_arg_idx]
+                    else:
+                        target_expr = record.node.args[0]
                 elif getattr(record.node, "keywords", []):
                     for kw in record.node.keywords:
-                        if kw.arg in ("source", "template", "s"):
+                        if kw.arg in ("source", "template", "s", "filename_or_fp", "filename", "path_or_file", "path", "code", "line", "url"):
                             target_expr = kw.value
                             break
 
