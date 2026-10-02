@@ -10899,6 +10899,14 @@ class TaintTracker:
                     # Check for **kwargs unpacking - if present, skip as config is externalised
                     has_unpack = any(kw.arg is None for kw in node.keywords)
                     if not has_unpack:
+                        # Check for # ok: suppression comment on previous line
+                        source_lines = self._source_lines_by_file.get(self.file_paths.get(mod_name, ""), [])
+                        prev_line_idx = lineno - 2  # lineno is 1-based, list is 0-based; prev line = lineno-2
+                        if prev_line_idx >= 0 and prev_line_idx < len(source_lines):
+                            prev_line = source_lines[prev_line_idx]
+                            if re.search(r"#\s*ok:", prev_line, re.IGNORECASE):
+                                continue  # Skip this finding - suppressed by # ok: comment
+                        
                         # Extract flag values from keywords
                         has_secure_kw = False
                         has_httponly_kw = False
