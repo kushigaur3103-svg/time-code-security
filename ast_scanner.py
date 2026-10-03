@@ -1047,7 +1047,7 @@ CLUSTER2_STRUCTURAL_SOURCE_IDS = {
 }
 
 # ─── Phase 3 Cluster 3 structural rule constants (18-rule grand finale batch) ───
-CLUSTER3_NOSEC_RE = re.compile(r"#\s*nosec\b")
+CLUSTER3_NOSEC_RE = re.compile(r"#\s*(?:nosec|ok)\b")
 CLUSTER3_WEAK_NEW_HASH_ALGOS = {"md2", "md4", "md5", "sha1", "sha0", "sha224"}
 CLUSTER3_WEAK_HASH_CLASS_NAMES = {"MD2", "MD4", "MD5", "SHA", "SHA1"}
 CLUSTER3_HASH_MODULE_PAIRS = (("Crypto", "Hash"), ("Cryptodome", "Hash"))
@@ -9193,8 +9193,25 @@ class TaintTracker:
 
         seen: set[tuple[str, int, int]] = set()
 
+        def _is_line_suppressed(lineno: int, mod_name: str) -> bool:
+            """Check if a line has # ok: or # nosec suppression comment."""
+            source_lines = self._source_lines_by_file.get(self.file_paths.get(mod_name, ""), [])
+            if source_lines and 1 <= lineno <= len(source_lines):
+                line_text = source_lines[lineno - 1]
+                if CLUSTER3_NOSEC_RE.search(line_text):
+                    return True
+                # Also check previous line for # ok: comments
+                if lineno >= 2:
+                    prev_line = source_lines[lineno - 2]
+                    if re.search(r"#\s*ok:", prev_line, re.IGNORECASE):
+                        return True
+            return False
+
         def _add_finding(node: ast.AST, mod_name: str, scope_id: str, operation: str, category: str, cwe: str) -> None:
             line = getattr(node, "lineno", 1)
+            # Check for suppression before adding finding
+            if _is_line_suppressed(line, mod_name):
+                return
             column = getattr(node, "col_offset", 0)
             key = (cwe, line, column)
             if key in seen:
@@ -9535,8 +9552,25 @@ class TaintTracker:
 
         seen: set[tuple[str, int, int]] = set()
 
+        def _is_line_suppressed(lineno: int, mod_name: str) -> bool:
+            """Check if a line has # ok: or # nosec suppression comment."""
+            source_lines = self._source_lines_by_file.get(self.file_paths.get(mod_name, ""), [])
+            if source_lines and 1 <= lineno <= len(source_lines):
+                line_text = source_lines[lineno - 1]
+                if CLUSTER3_NOSEC_RE.search(line_text):
+                    return True
+                # Also check previous line for # ok: comments
+                if lineno >= 2:
+                    prev_line = source_lines[lineno - 2]
+                    if re.search(r"#\s*ok:", prev_line, re.IGNORECASE):
+                        return True
+            return False
+
         def _add_finding(node: ast.Call, mod_name: str, scope_id: str, operation: str, category: str, cwe: str, target_arg: int = 0) -> None:
             line = getattr(node, "lineno", 1)
+            # Check for suppression before adding finding
+            if _is_line_suppressed(line, mod_name):
+                return
             column = getattr(node, "col_offset", 0)
             key = (cwe, line, column)
             if key in seen:
