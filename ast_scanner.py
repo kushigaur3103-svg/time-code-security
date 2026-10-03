@@ -642,6 +642,17 @@ SINK_REGISTRY = {
     "asyncio.create_subprocess_shell": {"operation": "OS_COMMAND_EXECUTION", "category": "COMMAND_INJECTION", "cwe": "CWE-78"},
     "asyncio.subprocess.create_subprocess_shell": {"operation": "OS_COMMAND_EXECUTION", "category": "COMMAND_INJECTION", "cwe": "CWE-78"},
 
+    # CWE-89: SQL Injection
+    "cursor.execute": {"operation": "SQL_QUERY_EXECUTION", "category": "SQL_INJECTION", "cwe": "CWE-89"},
+    "cursor.executemany": {"operation": "SQL_QUERY_EXECUTION", "category": "SQL_INJECTION", "cwe": "CWE-89"},
+    "connection.execute": {"operation": "SQL_QUERY_EXECUTION", "category": "SQL_INJECTION", "cwe": "CWE-89"},
+    "engine.execute": {"operation": "SQL_QUERY_EXECUTION", "category": "SQL_INJECTION", "cwe": "CWE-89"},
+    "session.execute": {"operation": "SQL_QUERY_EXECUTION", "category": "SQL_INJECTION", "cwe": "CWE-89"},
+    "Model.objects.raw": {"operation": "SQL_QUERY_EXECUTION", "category": "SQL_INJECTION", "cwe": "CWE-89"},
+    "Model.objects.extra": {"operation": "SQL_QUERY_EXECUTION", "category": "SQL_INJECTION", "cwe": "CWE-89"},
+    "RawSQL": {"operation": "SQL_QUERY_EXECUTION", "category": "SQL_INJECTION", "cwe": "CWE-89"},
+    "django.db.models.expressions.RawSQL": {"operation": "SQL_QUERY_EXECUTION", "category": "SQL_INJECTION", "cwe": "CWE-89"},
+
     # CWE-502: Unsafe Deserialization
     "pickle.loads": {"operation": "DESERIALIZATION", "category": "UNSAFE_DESERIALIZATION", "cwe": "CWE-502"},
     "pickle.load": {"operation": "DESERIALIZATION", "category": "UNSAFE_DESERIALIZATION", "cwe": "CWE-502"},
@@ -9583,6 +9594,7 @@ class TaintTracker:
                 "CWE-94": "DYNAMIC_CODE_EXECUTION",
                 "CWE-95": "DYNAMIC_CODE_EXECUTION",
                 "CWE-78": "OS_COMMAND_EXECUTION",
+                "CWE-89": "SQL_QUERY_EXECUTION",
                 "CWE-522": "HARDCODED_JWT_SECRET",
             }
             existing_record = next((
@@ -9723,6 +9735,26 @@ class TaintTracker:
                         elif not shell_enabled and not is_os_system:
                             if _dynamic_executable(command, scope_id, lineno):
                                 _add_finding(node, mod_name, scope_id, "OS_COMMAND_EXECUTION", "COMMAND_INJECTION", "CWE-78")
+
+                # ---- CWE-89: SQL Injection detection ----
+                sql_sinks = {
+                    "cursor.execute", "cursor.executemany",
+                    "connection.execute", "engine.execute", "session.execute",
+                    "Model.objects.raw", "Model.objects.extra",
+                    "RawSQL", "django.db.models.expressions.RawSQL",
+                }
+                if names & sql_sinks:
+                    # Get the query string (first argument)
+                    query_expr = _argument(node, 0, {"query", "sql", "statement"})
+                    
+                    # CRITICAL: Skip if parameterized query (second argument present)
+                    # This prevents flagging: cursor.execute("SELECT * FROM t WHERE id=%s", (user_id,))
+                    has_params = len(node.args) > 1 or any(kw.arg for kw in node.keywords)
+                    
+                    if query_expr and not has_params:
+                        # Only flag if query contains dynamic content
+                        if _is_dynamic(query_expr, scope_id, lineno) and not _is_fully_sanitized(query_expr, scope_id, lineno):
+                            _add_finding(node, mod_name, scope_id, "SQL_QUERY_EXECUTION", "SQL_INJECTION", "CWE-89")
 
     def _collect_phase5_structural_findings(self) -> None:
         """Collect Phase 5 path traversal, archive extraction, and TLS findings."""
