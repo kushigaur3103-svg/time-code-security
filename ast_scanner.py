@@ -653,6 +653,21 @@ SINK_REGISTRY = {
     "RawSQL": {"operation": "SQL_QUERY_EXECUTION", "category": "SQL_INJECTION", "cwe": "CWE-89"},
     "django.db.models.expressions.RawSQL": {"operation": "SQL_QUERY_EXECUTION", "category": "SQL_INJECTION", "cwe": "CWE-89"},
 
+    # CWE-319: Cleartext Transmission of Sensitive Information
+    "requests.get": {"operation": "INSECURE_HTTP_REQUEST", "category": "CLEARTEXT_TRANSMISSION", "cwe": "CWE-319"},
+    "requests.post": {"operation": "INSECURE_HTTP_REQUEST", "category": "CLEARTEXT_TRANSMISSION", "cwe": "CWE-319"},
+    "requests.put": {"operation": "INSECURE_HTTP_REQUEST", "category": "CLEARTEXT_TRANSMISSION", "cwe": "CWE-319"},
+    "requests.delete": {"operation": "INSECURE_HTTP_REQUEST", "category": "CLEARTEXT_TRANSMISSION", "cwe": "CWE-319"},
+    "requests.request": {"operation": "INSECURE_HTTP_REQUEST", "category": "CLEARTEXT_TRANSMISSION", "cwe": "CWE-319"},
+    "urllib.request.urlopen": {"operation": "INSECURE_URL_OPEN", "category": "CLEARTEXT_TRANSMISSION", "cwe": "CWE-319"},
+    "urllib.request.urlretrieve": {"operation": "INSECURE_URL_RETRIEVE", "category": "CLEARTEXT_TRANSMISSION", "cwe": "CWE-319"},
+    "ftplib.FTP": {"operation": "INSECURE_FTP", "category": "CLEARTEXT_TRANSMISSION", "cwe": "CWE-319"},
+    "telnetlib.Telnet": {"operation": "INSECURE_TELNET", "category": "CLEARTEXT_TRANSMISSION", "cwe": "CWE-319"},
+
+    # CWE-352: Cross-Site Request Forgery
+    "csrf_exempt": {"operation": "CSRF_EXEMPT_DECORATOR", "category": "CSRF_VULNERABILITY", "cwe": "CWE-352"},
+    "django.views.decorators.csrf.csrf_exempt": {"operation": "CSRF_EXEMPT_DECORATOR", "category": "CSRF_VULNERABILITY", "cwe": "CWE-352"},
+
     # CWE-502: Unsafe Deserialization
     "pickle.loads": {"operation": "DESERIALIZATION", "category": "UNSAFE_DESERIALIZATION", "cwe": "CWE-502"},
     "pickle.load": {"operation": "DESERIALIZATION", "category": "UNSAFE_DESERIALIZATION", "cwe": "CWE-502"},
@@ -1013,6 +1028,9 @@ CLUSTER2_HTTP_URL_ARG_INDEX = {"request": 1, "Request": 1}
 CLUSTER2_SESSION_CONSTRUCTORS = {"Session"}
 CLUSTER2_CLEARTEXT_SCHEME = "http://"
 CLUSTER2_LOCAL_HOSTS = {"localhost", "127.0.0.1", "0.0.0.0", "::1"}
+# CWE-319 allowlists: XML namespaces, schema domains, and test/example domains
+CLUSTER2_SCHEMA_DOMAINS = {"w3.org", "schemas.xmlsoap.org", "json-schema.org", "schemas.microsoft.com", "xml.org"}
+CLUSTER2_TEST_DOMAINS = {"example.com", "example.org", "example.net", "test.org", "test.com"}
 CLUSTER2_HTTP_POOL_SEGMENT = "HTTPConnectionPool"
 # CWE-704: unvalidated numeric conversions on request-controlled values.
 CLUSTER2_NAN_CONVERSIONS = {"float", "bool", "complex"}
@@ -1157,6 +1175,7 @@ CWE3A_SENSITIVE_VALUE_RE = re.compile(r"(?i).*(password|passwd|pwd|secret|api_ke
 CWE3A_IDOR_MODELS = {"user", "account", "profile", "invoice", "order", "payment", "document", "token"}
 CWE3A_LOCALHOST_HOSTS = {"localhost", "127.0.0.1", "0.0.0.0", "::1"}
 CWE3A_SCHEMA_DOMAINS = {"w3.org", "schemas.xmlsoap.org", "json-schema.org"}
+CWE3A_TEST_DOMAINS = {"example.com", "example.org", "example.net", "test.org", "test.com"}
 CWE3A_NETWORK_SINKS = {
     "requests.get", "requests.post", "requests.put", "requests.delete",
     "urllib.request.urlopen", "urlopen", "httpx.get", "httpx.post",
@@ -1270,6 +1289,10 @@ P3_STRUCTURAL_SOURCE_IDS = {
     "INSECURE_CIPHER_MODE": "WEAK_CIPHER_MODE_CONFIGURATION",
     "PROTOCOL_RESOURCE_ACCESS": "UNTRUSTED_URL_SCHEME",
     "SVG_XSS_RESPONSE": "DYNAMIC_SVG_RESPONSE",
+    "INSECURE_HTTP_REQUEST": "CLEARTEXT_TRANSMISSION",
+    "INSECURE_FTP": "CLEARTEXT_TRANSMISSION",
+    "INSECURE_TELNET": "CLEARTEXT_TRANSMISSION",
+    "CSRF_EXEMPT_DECORATOR": "CSRF_VULNERABILITY",
 }
 
 def _eval_dict_constants(dict_node, assignments_by_scope, scope_id="", lineno=0):
@@ -7167,7 +7190,17 @@ class TaintTracker:
                     return False
                 host = url[len(CLUSTER2_CLEARTEXT_SCHEME):].split("/", 1)[0]
                 host = host.rsplit(":", 1)[0]
-                return host.lower() not in CLUSTER2_LOCAL_HOSTS
+                # Allowlist: localhost/loopback addresses
+                if host.lower() in CLUSTER2_LOCAL_HOSTS:
+                    return False
+                # Allowlist: XML namespace and schema domains (w3.org, schemas.microsoft.com, etc.)
+                for schema_domain in CLUSTER2_SCHEMA_DOMAINS:
+                    if schema_domain in url:
+                        return False
+                # Allowlist: test/example domains (exact match only, no subdomains)
+                if host.lower() in CLUSTER2_TEST_DOMAINS:
+                    return False
+                return True
 
             def _contains_wildcard(expr, scope: str, lineno: int) -> bool:
                 value = _eval_value(expr, scope, lineno)
@@ -8378,6 +8411,11 @@ class TaintTracker:
                                         break
                                 for schema in CWE3A_SCHEMA_DOMAINS:
                                     if schema in url_val:
+                                        is_whitelisted = True
+                                        break
+                                # Check test/example domains
+                                for domain in CWE3A_TEST_DOMAINS:
+                                    if domain in url_val:
                                         is_whitelisted = True
                                         break
                                 if not is_whitelisted:
@@ -9700,6 +9738,8 @@ class TaintTracker:
                 "CWE-95": "DYNAMIC_CODE_EXECUTION",
                 "CWE-78": "OS_COMMAND_EXECUTION",
                 "CWE-89": "SQL_QUERY_EXECUTION",
+                "CWE-319": "CLEARTEXT_TRANSMISSION",
+                "CWE-352": "CSRF_VULNERABILITY",
                 "CWE-522": "HARDCODED_JWT_SECRET",
             }
             existing_record = next((
@@ -9890,6 +9930,25 @@ class TaintTracker:
                             if not _is_pure_literal(query_expr, scope_id, lineno) and \
                                not _uses_safe_builder(query_expr, scope_id, lineno):
                                 _add_finding(node, mod_name, scope_id, "SQL_QUERY_EXECUTION", "SQL_INJECTION", "CWE-89")
+
+                # ---- CWE-319: Cleartext Transmission detection (FTP/Telnet only) ----
+                # Note: HTTP detection is handled in Phase 7 with proper allowlists
+                
+                # FTP without TLS
+                if "ftplib.FTP" in names:
+                    # Exclude FTP_TLS which is secure
+                    func_name = dotted_name(node.func) or ""
+                    if "FTP_TLS" not in func_name:
+                        _add_finding(node, mod_name, scope_id, "INSECURE_FTP", "CLEARTEXT_TRANSMISSION", "CWE-319")
+                
+                # Telnet (always insecure)
+                if "telnetlib.Telnet" in names:
+                    _add_finding(node, mod_name, scope_id, "INSECURE_TELNET", "CLEARTEXT_TRANSMISSION", "CWE-319")
+
+                # ---- CWE-352: CSRF vulnerability detection ----
+                csrf_exempt_names = {"csrf_exempt", "django.views.decorators.csrf.csrf_exempt"}
+                if names & csrf_exempt_names:
+                    _add_finding(node, mod_name, scope_id, "CSRF_EXEMPT_DECORATOR", "CSRF_VULNERABILITY", "CWE-352")
 
     def _collect_phase5_structural_findings(self) -> None:
         """Collect Phase 5 path traversal, archive extraction, and TLS findings."""
