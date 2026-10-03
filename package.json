@@ -14,5 +14,8 @@
   },
   "devDependencies": {
     "turbo": "latest"
+  },
+  "overrides": {
+    "deepmerge-ts": "^8.0.0"
   }
 }
