@@ -667,6 +667,9 @@ SINK_REGISTRY = {
     # CWE-352: Cross-Site Request Forgery
     "csrf_exempt": {"operation": "CSRF_EXEMPT_DECORATOR", "category": "CSRF_VULNERABILITY", "cwe": "CWE-352"},
     "django.views.decorators.csrf.csrf_exempt": {"operation": "CSRF_EXEMPT_DECORATOR", "category": "CSRF_VULNERABILITY", "cwe": "CWE-352"},
+    # Phase 11.2: Pyramid view_config / set_default_csrf_options are deliberately NOT registry sinks:
+    # the registry flags every call unconditionally, but these are only unsafe when a keyword
+    # literally carries require_csrf=False / check_origin=False. See the guarded keyword checks.
 
     # CWE-502: Unsafe Deserialization
     "pickle.loads": {"operation": "DESERIALIZATION", "category": "UNSAFE_DESERIALIZATION", "cwe": "CWE-502"},
@@ -9933,6 +9936,7 @@ class TaintTracker:
                 "CWE-319": "CLEARTEXT_TRANSMISSION",
                 "CWE-352": "CSRF_VULNERABILITY",
                 "CWE-522": "HARDCODED_JWT_SECRET",
+                "CWE-327": "INSECURE_CRYPTOGRAPHY",
             }
             existing_record = next((
                 record for record in self.sink_records
@@ -10009,6 +10013,71 @@ class TaintTracker:
                             node, mod_name, scope_id, "HARDCODED_JWT_SECRET",
                             "INSECURE_CREDENTIAL_TRANSPORT", "CWE-522",
                         )
+                    # Phase 11.2: CWE-327 - Detect algorithm='none'
+                    alg_expr = next((kw.value for kw in node.keywords if kw.arg == "algorithm"), None)
+                    if alg_expr is None and len(node.args) > 2:
+                        alg_expr = node.args[2]
+                    alg_value = _eval_static_constant(
+                        alg_expr, self.assignments_by_scope, scope_id, lineno
+                    ) if alg_expr is not None else None
+                    if isinstance(alg_value, str) and alg_value.lower() == "none":
+                        _add_finding(
+                            node, mod_name, scope_id, "JWT_NONE_ALGORITHM",
+                            "INSECURE_CRYPTOGRAPHY", "CWE-327",
+                        )
+
+                # Phase 11.2: CWE-327 - Detect jwt.decode with algorithms=['none']
+                if "jwt.decode" in names:
+                    alg_kw = next((kw for kw in node.keywords if kw.arg == "algorithms"), None)
+                    if alg_kw and isinstance(alg_kw.value, ast.List):
+                        for elt in alg_kw.value.elts:
+                            alg_val = _eval_static_constant(elt, self.assignments_by_scope, scope_id, lineno)
+                            if isinstance(alg_val, str) and alg_val.lower() == "none":
+                                _add_finding(
+                                    node, mod_name, scope_id, "JWT_NONE_ALGORITHM",
+                                    "INSECURE_CRYPTOGRAPHY", "CWE-327",
+                                )
+                                break
+
+                # Phase 11.2: CWE-327 - Hashids(salt=<framework SECRET_KEY>) derives a reversible
+                # id-space from the application signing key. Only the framework secret qualifies:
+                # a literal or a derived digest (e.g. md5.hexdigest()) is a different weakness.
+                if "Hashids" in names or "hashids.Hashids" in names:
+                    salt_kw = next((kw for kw in node.keywords if kw.arg == "salt"), None)
+                    salt_expr = salt_kw.value if salt_kw is not None else (node.args[0] if node.args else None)
+                    if isinstance(salt_expr, ast.AST) and not isinstance(salt_expr, ast.Constant):
+                        salt_repr = ast.dump(salt_expr)
+                        if "SECRET_KEY" in salt_repr or "secret_key" in salt_repr:
+                            _add_finding(
+                                node, mod_name, scope_id, "HASHIDS_WITH_SECRET",
+                                "INSECURE_CRYPTOGRAPHY", "CWE-327",
+                            )
+
+                # Phase 11.2: CWE-352 - Pyramid config.set_default_csrf_options(check_origin=False)
+                func_attr_name = None
+                if isinstance(node.func, ast.Attribute):
+                    func_attr_name = node.func.attr
+                if func_attr_name == "set_default_csrf_options":
+                    for kw in node.keywords:
+                        if kw.arg == "check_origin" and isinstance(kw.value, ast.Constant) and kw.value.value is False:
+                            _add_finding(
+                                node, mod_name, scope_id, "PYRAMID_CSRF_OPTIONS_DISABLED",
+                                "CSRF_VULNERABILITY", "CWE-352",
+                            )
+
+                # Phase 11.2: CWE-352 - Pyramid @view_config(require_csrf=False) or check_origin=False
+                if "view_config" in names or "pyramid.view.view_config" in names:
+                    for kw in node.keywords:
+                        if kw.arg == "require_csrf" and isinstance(kw.value, ast.Constant) and kw.value.value is False:
+                            _add_finding(
+                                node, mod_name, scope_id, "PYRAMID_CSRF_DISABLED",
+                                "CSRF_VULNERABILITY", "CWE-352",
+                            )
+                        elif kw.arg == "check_origin" and isinstance(kw.value, ast.Constant) and kw.value.value is False:
+                            _add_finding(
+                                node, mod_name, scope_id, "PYRAMID_CHECK_ORIGIN_DISABLED",
+                                "CSRF_VULNERABILITY", "CWE-352",
+                            )
 
                 if names & code_sinks:
                     code_expr = _argument(node, 0, {"source", "code", "line"})
