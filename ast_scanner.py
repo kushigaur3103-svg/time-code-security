@@ -781,6 +781,9 @@ SINK_REGISTRY = {
     "Crypto.Cipher.DES": {"operation": "WEAK_CIPHER", "category": "WEAK_CRYPTOGRAPHY", "cwe": "CWE-327"},
     "Crypto.Cipher.DES.new": {"operation": "WEAK_CIPHER", "category": "WEAK_CRYPTOGRAPHY", "cwe": "CWE-327"},
     "DES.new": {"operation": "WEAK_CIPHER", "category": "WEAK_CRYPTOGRAPHY", "cwe": "CWE-327"},
+    # Cryptodome variants (Phase 9.3)
+    "Cryptodome.Cipher.DES": {"operation": "WEAK_CIPHER", "category": "WEAK_CRYPTOGRAPHY", "cwe": "CWE-327"},
+    "Cryptodome.Cipher.DES.new": {"operation": "WEAK_CIPHER", "category": "WEAK_CRYPTOGRAPHY", "cwe": "CWE-327"},
     # Phase 3: 3DES / TripleDES are deprecated by NIST SP 800-131A rev.2 alongside single DES.
     "Crypto.Cipher.DES3": {"operation": "WEAK_CIPHER", "category": "WEAK_CRYPTOGRAPHY", "cwe": "CWE-327"},
     "Crypto.Cipher.DES3.new": {"operation": "WEAK_CIPHER", "category": "WEAK_CRYPTOGRAPHY", "cwe": "CWE-327"},
@@ -790,6 +793,9 @@ SINK_REGISTRY = {
     "TripleDES.new": {"operation": "WEAK_CIPHER", "category": "WEAK_CRYPTOGRAPHY", "cwe": "CWE-327"},
     "algorithms.TripleDES": {"operation": "WEAK_CIPHER", "category": "WEAK_CRYPTOGRAPHY", "cwe": "CWE-327"},
     "cryptography.hazmat.primitives.ciphers.algorithms.TripleDES": {"operation": "WEAK_CIPHER", "category": "WEAK_CRYPTOGRAPHY", "cwe": "CWE-327"},
+    # Cryptodome DES3 variants (Phase 9.3)
+    "Cryptodome.Cipher.DES3": {"operation": "WEAK_CIPHER", "category": "WEAK_CRYPTOGRAPHY", "cwe": "CWE-327"},
+    "Cryptodome.Cipher.DES3.new": {"operation": "WEAK_CIPHER", "category": "WEAK_CRYPTOGRAPHY", "cwe": "CWE-327"},
 
     # CWE-338: Insecure Randomness (all stdlib random.* methods)
     "random.random": {"operation": "INSECURE_RANDOM", "category": "INSECURE_RANDOMNESS", "cwe": "CWE-338"},
@@ -1061,7 +1067,7 @@ CLUSTER3_CRYPTOGRAPHY_ALGO_SEG = "algorithms"
 CLUSTER3_CRYPTOGRAPHY_CIPHERS_SEG = "ciphers"
 CLUSTER3_CRYPTOGRAPHY_HAZMAT_ROOT = "cryptography"
 # Phase 6.3: legacy broken ciphers under Crypto.Cipher / Cryptodome.Cipher.
-CLUSTER3_LEGACY_CIPHER_NAMES = frozenset({"Blowfish", "DES", "ARC2", "ARC4", "IDEA", "XOR"})
+CLUSTER3_LEGACY_CIPHER_NAMES = frozenset({"Blowfish", "DES", "DES3", "ARC2", "ARC4", "IDEA", "XOR", "TripleDES"})
 CLUSTER3_CIPHER_MODULE_SEG = "Cipher"
 CLUSTER3_CIPHER_MODULE_ROOTS = frozenset({"Crypto", "Cryptodome"})
 CLUSTER3_PASSWORD_SETTER_METHODS = {"setpassword", "set_password"}
@@ -1116,6 +1122,7 @@ CLUSTER3_STRUCTURAL_SOURCE_IDS = {
     "WEAK_SSL_PROTOCOL": "WEAK_SSL_PROTOCOL",
     "PYOPENSSL_INSECURE_METHOD": "PYOPENSSL_INSECURE_METHOD",
     "CRYPTOGRAPHY_LEGACY_ALGO": "CRYPTOGRAPHY_LEGACY_ALGO",
+    "INSECURE_CIPHER_MODE_ECB": "INSECURE_CIPHER_MODE_ECB",
     "WEAK_CIPHER_LEGACY": "WEAK_CIPHER_LEGACY",
     "UNSAFE_YAML_LOADER": "UNSAFE_YAML_LOADER",
     "UNSAFE_PICKLE_USAGE": "UNSAFE_PICKLE_USAGE",
@@ -7918,6 +7925,17 @@ class TaintTracker:
                                 chain[-3] == CLUSTER3_CRYPTOGRAPHY_CIPHERS_SEG and \
                                 chain[0] == CLUSTER3_CRYPTOGRAPHY_HAZMAT_ROOT:
                             _add(node, "CRYPTOGRAPHY_LEGACY_ALGO", "WEAK_CRYPTOGRAPHY", "CWE-327")
+
+                # ---- CWE-327: insecure ECB mode (Phase 9.3) ----
+                if isinstance(node, ast.Call):
+                    func_name = dotted_name(node.func) or ""
+                    last_part = func_name.rsplit(".", 1)[-1] if func_name else ""
+                    # Check for modes.ECB(...) or ECB(...) constructor calls
+                    if last_part in P3_ECB_MARKER_ATTRS or (isinstance(node.func, ast.Name) and node.func.id in P3_ECB_MARKER_ATTRS):
+                        # Don't double-report if already flagged as weak cipher
+                        callee = dotted_name(node.func) or ""
+                        if callee not in P3_ECB_SKIP_IF_WEAK_CIPHER:
+                            _add(node, "INSECURE_CIPHER_MODE_ECB", "WEAK_CRYPTOGRAPHY", "CWE-327")
 
                 if not isinstance(node, ast.Call):
                     continue
