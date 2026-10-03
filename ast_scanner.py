@@ -11367,6 +11367,391 @@ class TaintTracker:
                         if flagged:
                             _emit79(node, mod_name, scope_id, "UNESCAPED_TEMPLATE_EXTENSION")
 
+    def _collect_cwe22_path_traversal_findings(self) -> None:
+        """Phase 11: recover path traversal constructs where request/user-controlled
+        data flows into file-system sinks (open, os.remove, send_file, FileResponse)."""
+        function_scopes = {id(function): scope for scope, function in self.functions.items()}
+
+        # SUPPRESSION ENFORCEMENT: prune paths annotated '# ok:' on same or previous line.
+        # SANITIZER GUARD: skip paths wrapped in secure_filename/os.path.basename/os.path.abspath.
+        pruned: set[str] = set()
+        kept_sinks = []
+        sanitizer_segments = {"secure_filename", "basename", "abspath", "realpath", "commonpath"}
+
+        def _assigned_before(name: str, scope_id: str, lineno: int):
+            records = self.assignments_by_scope.get((scope_id, name), [])
+            prior = [record for record in records if record.lineno < lineno]
+            return prior[-1] if prior else None
+
+        def _callee_segment(call_node: ast.Call) -> str:
+            func = call_node.func
+            if isinstance(func, ast.Attribute):
+                return func.attr
+            if isinstance(func, ast.Name):
+                return func.id
+            return ""
+
+        def _sanitized_path_arg(expr: ast.AST, scope_id: str, lineno: int) -> bool:
+            """Check if path expression is wrapped in a sanitizer."""
+            if isinstance(expr, ast.Call):
+                seg = _callee_segment(expr)
+                if seg in sanitizer_segments:
+                    return True
+            # Check resolved value
+            if isinstance(expr, ast.Name):
+                record = _assigned_before(expr.id, scope_id, lineno)
+                if record is not None:
+                    return _sanitized_path_arg(record.value_node, record.scope_id, record.lineno)
+            return False
+
+        for sink in self.sinks:
+            meta = sink.metadata or {}
+            if meta.get("cwe") == "CWE-22":
+                lines = self._source_lines_by_file.get(sink.location.file, [])
+                start = sink.location.line_start
+                # Check current line and up to 2 lines before for suppression marker
+                suppressed = False
+                for offset in range(3):
+                    check_line = start - offset
+                    if check_line >= 1 and len(lines) >= check_line:
+                        if re.search(r"#\s*ok\b", lines[check_line - 1], re.IGNORECASE):
+                            suppressed = True
+                            break
+                record = next((r for r in self.sink_records
+                               if r.security_node is sink and isinstance(r.node, ast.Call)), None)
+                sanitized = record is not None and any(
+                    _sanitized_path_arg(arg, record.scope_id, start)
+                    for arg in record.node.args[:1])
+                if suppressed or sanitized:
+                    pruned.add(sink.id)
+                    continue
+            kept_sinks.append(sink)
+        if pruned:
+            self.sinks = kept_sinks
+            self.sink_records = [r for r in self.sink_records if r.security_node.id not in pruned]
+            self.edges = [e for e in self.edges if e.target_id not in pruned]
+
+        def _scope_for(node: ast.AST, mod_name: str) -> str:
+            current = node
+            while current is not None:
+                scope = function_scopes.get(id(current))
+                if scope:
+                    return scope
+                current = getattr(current, "parent", None)
+            return f"{mod_name}:global"
+
+        def _resolve(expr: ast.AST, scope_id: str, lineno: int, visited=None):
+            if visited is None:
+                visited = set()
+            while isinstance(expr, ast.Name):
+                if expr.id in visited:
+                    return None
+                visited.add(expr.id)
+                records = self.assignments_by_scope.get((scope_id, expr.id), [])
+                fn = self.functions.get(scope_id)
+                fn_start = getattr(fn, "lineno", 0) if fn is not None else 0
+                prior = [record for record in records
+                         if record.lineno < lineno and record.lineno >= fn_start]
+                if prior:
+                    rec = prior[-1]
+                    expr, scope_id, lineno = rec.value_node, rec.scope_id, rec.lineno
+                else:
+                    break
+            return expr, scope_id, lineno
+
+        def _seg(func_expr: ast.AST) -> str:
+            if isinstance(func_expr, ast.Attribute):
+                return func_expr.attr
+            if isinstance(func_expr, ast.Name):
+                return func_expr.id
+            return ""
+
+        def _recv_text(expr: ast.AST) -> str:
+            parts = []
+            current = expr
+            while isinstance(current, ast.Attribute):
+                parts.append(current.attr)
+                current = current.value
+            if isinstance(current, ast.Name):
+                parts.append(current.id)
+            return ".".join(reversed(parts)).lower()
+
+        def _sup22(mod_name: str, lineno: int) -> bool:
+            source_lines = self._source_lines_by_file.get(self.file_paths.get(mod_name, ""), [])
+            if source_lines and 1 <= lineno <= len(source_lines):
+                # Check current line and up to 3 lines before for suppression marker
+                for offset in range(4):
+                    check_line = lineno - offset
+                    if check_line >= 1 and len(source_lines) >= check_line:
+                        if re.search(r"#\s*ok\b", source_lines[check_line - 1], re.IGNORECASE):
+                            return True
+            return False
+
+        emitted: set[tuple[str, int]] = set()
+
+        def _emit22(node: ast.AST, mod_name: str, scope_id: str, operation: str, cwe: str = "CWE-22", source_node=None) -> None:
+            line = getattr(node, "lineno", 1)
+            key = (mod_name, line)
+            if key in emitted:
+                return
+            if _sup22(mod_name, line):
+                return
+            emitted.add(key)
+            file_path = self.file_paths.get(mod_name, "unknown.py")
+            existing = next((
+                record for record in self.sink_records
+                if record.security_node.location.file == file_path
+                and record.security_node.location.line_start == line
+                and record.security_node.metadata.get("cwe") == cwe
+            ), None)
+            if existing is not None:
+                # Reuse existing sink but ensure it has an edge
+                sink_node = existing.security_node
+                # Add/update metadata
+                sink_node.metadata["p11_source_id"] = "UNTRUSTED_PATH_TRAVERSAL"
+                # Create edge if one doesn't exist
+                has_edge = any(e.target_id == sink_node.id for e in self.edges)
+                if not has_edge and source_node is not None:
+                    self.edges.append(DataFlowEdge(
+                        source_id=source_node.id,
+                        target_id=sink_node.id,
+                        kind="CONFIRMED_DATA_FLOW",
+                        confidence=0.95,
+                        transform=f"path_traversal:{operation}",
+                    ))
+                elif not has_edge:
+                    # Try to find any request source
+                    for src in self.sources:
+                        if src.location.file == file_path and src.lineno < line:
+                            self.edges.append(DataFlowEdge(
+                                source_id=src.id,
+                                target_id=sink_node.id,
+                                kind="CONFIRMED_DATA_FLOW",
+                                confidence=0.90,
+                                transform=f"path_traversal:{operation}",
+                            ))
+                            break
+                return
+            sink_node = SecurityNode(
+                id=self.next_sink_id(),
+                node_type=NodeType.SINK,
+                symbol=operation,
+                operation=operation,
+                location=CodeLocation(
+                    file=file_path, line_start=line, line_end=line,
+                    column_start=getattr(node, "col_offset", 0),
+                    column_end=getattr(node, "col_offset", 0),
+                ),
+                metadata={
+                    "sink_type": "PATH_TRAVERSAL",
+                    "category": "PATH_TRAVERSAL",
+                    "cwe": cwe,
+                    "p11_source_id": "UNTRUSTED_PATH_TRAVERSAL",
+                    "lineno": line,
+                },
+            )
+            self.sinks.append(sink_node)
+            self.sink_records.append(SinkRecord(
+                node=node,
+                security_node=sink_node,
+                lineno=line,
+                scope_id=scope_id,
+            ))
+            
+            # Create CONFIRMED_DATA_FLOW edge from source to sink
+            if source_node is not None:
+                self.edges.append(DataFlowEdge(
+                    source_id=source_node.id,
+                    target_id=sink_node.id,
+                    kind="CONFIRMED_DATA_FLOW",
+                    confidence=0.95,
+                    transform=f"path_traversal:{operation}",
+                ))
+            else:
+                # Try to find any request source in the same file before this line
+                for src in self.sources:
+                    if src.location.file == file_path and src.lineno < line:
+                        self.edges.append(DataFlowEdge(
+                            source_id=src.id,
+                            target_id=sink_node.id,
+                            kind="CONFIRMED_DATA_FLOW",
+                            confidence=0.90,
+                            transform=f"path_traversal:{operation}",
+                        ))
+                        break
+
+        # Core request roots that carry user input
+        requestish_roots = {"request", "req", "event", "environ", "flask", "django"}
+        getter_methods = {"get", "getlist", "getvalue", "read", "json", "values", "items", "pop"}
+
+        def _is_request_data(expr: ast.AST, scope_id: str, lineno: int, visited=None) -> bool:
+            """Check if expression carries user-controlled request data."""
+            if expr is None:
+                return False
+            if visited is None:
+                visited = set()
+            resolved = _resolve(expr, scope_id, lineno, set(visited))
+            if resolved is None:
+                return False
+            expr, scope_id, lineno = resolved
+
+            # Direct request access: request.GET.get(), flask.request.form['x']
+            if isinstance(expr, ast.Subscript):
+                if isinstance(expr.value, ast.Attribute):
+                    recv = _recv_text(expr.value.value)
+                    if any(root in recv for root in requestish_roots):
+                        return True
+                return _is_request_data(expr.value, scope_id, lineno, visited)
+            if isinstance(expr, ast.Call):
+                seg = _seg(expr.func)
+                if seg in getter_methods:
+                    recv = _recv_text(expr.func.value)
+                    if any(root in recv for root in requestish_roots):
+                        return True
+                # format() calls with request args
+                if seg == "format" and isinstance(expr.func, ast.Attribute):
+                    if any(_is_request_data(arg, scope_id, lineno, visited) for arg in expr.args):
+                        return True
+                    if any(_is_request_data(kw.value, scope_id, lineno, visited) for kw in expr.keywords):
+                        return True
+                if isinstance(expr.func, ast.Attribute):
+                    return _is_request_data(expr.func.value, scope_id, lineno, visited)
+                return _is_request_data(expr.func, scope_id, lineno, visited)
+            if isinstance(expr, ast.Name):
+                record = _assigned_before(expr.id, scope_id, lineno)
+                if record is not None:
+                    return _is_request_data(record.value_node, record.scope_id, record.lineno, visited)
+                return False
+            # String concatenation / formatting
+            if isinstance(expr, ast.JoinedStr):
+                return any(
+                    _is_request_data(part.value, scope_id, lineno, visited)
+                    for part in expr.values if isinstance(part, ast.FormattedValue)
+                )
+            if isinstance(expr, ast.BinOp) and isinstance(expr.op, (ast.Add, ast.Mod)):
+                return (_is_request_data(expr.left, scope_id, lineno, visited)
+                        or _is_request_data(expr.right, scope_id, lineno, visited))
+            if isinstance(expr, ast.Constant):
+                return False
+            return False
+
+        def _has_dynamic_path(expr: ast.AST, scope_id: str, lineno: int, visited=None) -> bool:
+            """Check if expression contains dynamic path construction from user input."""
+            if visited is None:
+                visited = set()
+            
+            # Pure literals are safe
+            if isinstance(expr, ast.Constant) and isinstance(expr.value, str):
+                return False
+            
+            # Cycle detection for Name nodes
+            if isinstance(expr, ast.Name):
+                key = (expr.id, scope_id, lineno)
+                if key in visited:
+                    return False  # Break cycle
+                visited.add(key)
+            
+            # f-strings with request data
+            if isinstance(expr, ast.JoinedStr):
+                return _is_request_data(expr, scope_id, lineno)
+            # String concatenation
+            if isinstance(expr, ast.BinOp) and isinstance(expr.op, (ast.Add, ast.Mod)):
+                return _is_request_data(expr, scope_id, lineno)
+            # .format() calls
+            if isinstance(expr, ast.Call) and isinstance(expr.func, ast.Attribute) and expr.func.attr == "format":
+                return _is_request_data(expr, scope_id, lineno)
+            # Direct request data
+            if _is_request_data(expr, scope_id, lineno):
+                return True
+            # Variable resolution
+            if isinstance(expr, ast.Name):
+                resolved = _resolve(expr, scope_id, lineno)
+                if resolved is not None:
+                    expr_resolved, scope_resolved, lineno_resolved = resolved
+                    # Only recurse if we got a different expression
+                    if expr_resolved is not expr:
+                        return _has_dynamic_path(expr_resolved, scope_resolved, lineno_resolved, visited)
+            return False
+
+        # Path traversal sinks to detect
+        file_sinks = {"open", "builtins.open"}
+        os_sinks = {"os.remove", "os.unlink", "os.chmod", "os.rename"}
+        shutil_sinks = {"shutil.copy", "shutil.copyfile", "shutil.move", "shutil.rmtree"}
+        framework_sinks = {"send_file", "FileResponse"}
+
+        for mod_name, tree in self.modules.items():
+            for node in self._reachable_nodes(tree):
+                if not isinstance(node, ast.Call):
+                    continue
+                scope_id = _scope_for(node, mod_name)
+                lineno = getattr(node, "lineno", 1)
+                callee_seg = _seg(node.func)
+                callee_name = dotted_name(node.func) or ""
+
+                # Determine if this is a path traversal sink
+                is_path_sink = False
+                if callee_seg in file_sinks or callee_name in file_sinks:
+                    is_path_sink = True
+                elif callee_name in os_sinks or callee_seg in {"remove", "unlink", "chmod", "rename"}:
+                    is_path_sink = True
+                elif callee_name in shutil_sinks or callee_seg in {"copy", "copyfile", "move", "rmtree"}:
+                    is_path_sink = True
+                elif callee_seg in framework_sinks or any(callee_name.endswith(suffix) for suffix in framework_sinks):
+                    is_path_sink = True
+
+                if not is_path_sink:
+                    continue
+
+                # Get the path argument (first positional arg for most sinks)
+                path_arg = node.args[0] if node.args else None
+                if path_arg is None:
+                    # Check keyword arguments for specific sinks
+                    path_arg = next(
+                        (kw.value for kw in node.keywords
+                         if kw.arg in {"filename", "path", "filepath", "directory"}),
+                        None
+                    )
+                if path_arg is None:
+                    continue
+
+                # Skip pure static literals
+                if isinstance(path_arg, ast.Constant) and isinstance(path_arg.value, str):
+                    continue
+
+                # Check for dynamic path construction from request data
+                if _has_dynamic_path(path_arg, scope_id, lineno):
+                    op_name = callee_seg.upper() if callee_seg else "FILE_OPERATION"
+                    # Find the nearest request source in this file before this line
+                    file_path = self.file_paths.get(mod_name, "unknown.py")
+                    source_node = None
+                    for src in self.sources:
+                        if src.location.file == file_path and src.lineno < lineno:
+                            source_node = src
+                            break
+                    _emit22(node, mod_name, scope_id, f"PATH_TRAVERSAL_{op_name}", source_node=source_node)
+
+                # Also check for os.path.join + open pattern
+                # If path_arg is a variable assigned from os.path.join(..., request_data, ...)
+                if isinstance(path_arg, ast.Name):
+                    record = _assigned_before(path_arg.id, scope_id, lineno)
+                    if record is not None:
+                        join_expr = record.value_node
+                        if (isinstance(join_expr, ast.Call)
+                                and isinstance(join_expr.func, ast.Attribute)
+                                and join_expr.func.attr == "join"
+                                and _recv_text(join_expr.func.value) in {"os.path", "posixpath", "ntpath"}):
+                            # Check if any join argument is request data
+                            for arg in join_expr.args:
+                                if _is_request_data(arg, record.scope_id, record.lineno):
+                                    file_path = self.file_paths.get(mod_name, "unknown.py")
+                                    source_node = None
+                                    for src in self.sources:
+                                        if src.location.file == file_path and src.lineno < lineno:
+                                            source_node = src
+                                            break
+                                    _emit22(node, mod_name, scope_id, "PATH_TRAVERSAL_JOIN_OPEN", source_node=source_node)
+                                    break
+
     def _collect_phase5_structural_findings(self) -> None:
         """Collect Phase 5 path traversal, archive extraction, and TLS findings."""
         function_scopes = {id(function): scope for scope, function in self.functions.items()}
@@ -13806,6 +14191,7 @@ class TaintTracker:
         self._collect_response_write_findings()
         self._collect_template_response_xss_findings()
         self._collect_cwe79_xss_recovery_findings()
+        self._collect_cwe22_path_traversal_findings()
         self._collect_cluster1_structural_findings()
         self._collect_cluster2_structural_findings()
         self._collect_cluster3_structural_findings()
