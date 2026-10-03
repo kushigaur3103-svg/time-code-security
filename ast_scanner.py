@@ -10528,6 +10528,419 @@ class TaintTracker:
                     _emit(node, mod_name, scope_id)
                     break
 
+    def _collect_cwe89_driver_querybuilder_findings(self) -> None:
+        """Phase 10.2: driver alias expansion, ORM query-builder sinks, and edge repair.
+
+        Three precision-bounded paths, all guarded by parameterized-query,
+        safe-builder, static-literal, and # ok:/# nosec suppression checks:
+        P1 edge-repair — registry-created CWE-89 sinks whose query argument is
+             dynamically constructed get the synthetic p6 source id so the
+             existing edge synthesizer emits a finding.
+        P2 driver aliases — execute/executemany/executescript plus run/fetch*/cursor
+             on DB-resolvable receivers with a dynamically constructed query argument.
+        P3 query builders — distinct/having/group_by/order_by/filter/where/join with a
+             dynamic string construction as arg0 (including non-literal text(...) after
+             unwrap); Django .objects raw/extra likewise, bare extra() always.
+        Findings are emitted on BOTH the call line and the argument-expression line so
+        multi-line sink calls match the semgrep annotation convention within tolerance.
+        """
+        function_scopes = {id(function): scope for scope, function in self.functions.items()}
+        execute_attrs = {"execute", "executemany", "executescript"}
+        driver_attrs = {"run", "fetch", "fetchall", "fetchrow", "fetchval", "cursor"}
+        builder_attrs = {"distinct", "having", "group_by", "order_by", "filter", "where", "join"}
+        django_attrs = {"raw", "extra"}
+        db_receiver_ids = {"conn", "con", "connection", "cur", "cursor", "pool",
+                           "session", "engine", "db", "database", "mydb", "dbsession",
+                           "mydbcursor", "dbcursor", "sqlalchemy.cursor"}
+        db_ctor_attrs = {"connect", "connect_async", "create_pool", "create_pool_async",
+                         "cursor", "Session", "sessionmaker", "Pool"}
+        sql_shape_re = re.compile(
+            r"\b(SELECT|INSERT\s+INTO|UPDATE|DELETE\s+FROM|DROP|ALTER|TRUNCATE|"
+            r"REPLACE\s+INTO|MERGE|WHERE|UNION)\b", re.IGNORECASE)
+        p12_seen: set[tuple[int, int]] = set()
+
+        def _scope_for(node: ast.AST, mod_name: str) -> str:
+            current = node
+            while current is not None:
+                scope = function_scopes.get(id(current))
+                if scope:
+                    return scope
+                current = getattr(current, "parent", None)
+            return f"{mod_name}:global"
+
+        def _call_names(call: ast.Call, scope_id: str) -> set[str]:
+            if not isinstance(call, ast.Call) or not isinstance(call.func, ast.AST):
+                return set()
+            name = dotted_name(call.func) or ""
+            canonical = self.resolve_canonical_name(call.func, scope_id) or ""
+            return {value for value in (name, canonical) if value}
+
+        def _assigned_value(name: str, scope_id: str, lineno: int):
+            current_scope = scope_id
+            mod_name = scope_id.split(":")[0]
+            _walk_seen = set()
+            while current_scope and current_scope not in _walk_seen:
+                _walk_seen.add(current_scope)
+                records = self.assignments_by_scope.get((current_scope, name), [])
+                prior = [record for record in records if record.lineno <= lineno]
+                if prior:
+                    return prior[-1]
+                if "." in current_scope and "function" in current_scope:
+                    current_scope = current_scope.rsplit(".", 1)[0]
+                elif ":function" in current_scope:
+                    current_scope = f"{mod_name}:global"
+                elif current_scope != f"{mod_name}:global":
+                    current_scope = f"{mod_name}:global"
+                else:
+                    break
+            return None
+
+        def _is_static(expr: ast.AST, scope_id: str, lineno: int) -> bool:
+            if expr is None:
+                return False
+            if isinstance(expr, ast.Constant):
+                return isinstance(expr.value, (str, bytes, int, float, bool, type(None)))
+            if isinstance(expr, (ast.Str, ast.Bytes, ast.Num)):
+                return True
+            if isinstance(expr, (ast.List, ast.Tuple)):
+                return all(_is_static(element, scope_id, lineno) for element in expr.elts)
+            if isinstance(expr, ast.JoinedStr):
+                return all(_is_static(value, scope_id, lineno) for value in expr.values)
+            if isinstance(expr, ast.BinOp) and isinstance(expr.op, (ast.Add, ast.Mod)):
+                return _is_static(expr.left, scope_id, lineno) and _is_static(expr.right, scope_id, lineno)
+            if isinstance(expr, ast.Call):
+                if isinstance(expr.func, ast.Attribute) and expr.func.attr == "format":
+                    if not _is_static(expr.func.value, scope_id, lineno):
+                        return False
+                    return all(_is_static(arg, scope_id, lineno) for arg in expr.args) and \
+                           all(_is_static(kw.value, scope_id, lineno) for kw in expr.keywords)
+            if isinstance(expr, ast.Name):
+                record = _assigned_value(expr.id, scope_id, lineno)
+                if record is not None and record.value_node is not None:
+                    return _is_static(record.value_node, record.scope_id, record.lineno)
+            return _eval_static_constant(expr, self.assignments_by_scope, scope_id, lineno) is not None
+
+        def _uses_safe_builder(expr: ast.AST, scope_id: str, lineno: int, visited=None) -> bool:
+            if expr is None:
+                return False
+            if visited is None:
+                visited = set()
+            if isinstance(expr, ast.Call) and isinstance(expr.func, ast.AST):
+                call_names = {
+                    dotted_name(expr.func) or "",
+                    self.resolve_canonical_name(expr.func, scope_id) or "",
+                }
+                safe_builders = {
+                    "psycopg2.sql.Identifier", "sql.Identifier", "Identifier",
+                    "psycopg2.sql.SQL", "sql.SQL", "sqlalchemy.sql.text",
+                }
+                if call_names & safe_builders:
+                    return True
+                if isinstance(expr.func, ast.Attribute):
+                    if expr.func.attr == "bindparams":
+                        return True
+                    for arg in expr.args:
+                        if _uses_safe_builder(arg, scope_id, lineno, visited.copy()):
+                            return True
+                    for kw in expr.keywords:
+                        if _uses_safe_builder(kw.value, scope_id, lineno, visited.copy()):
+                            return True
+                    if _uses_safe_builder(expr.func.value, scope_id, lineno, visited.copy()):
+                        return True
+            if isinstance(expr, ast.BinOp):
+                return _uses_safe_builder(expr.left, scope_id, lineno, visited.copy()) or \
+                       _uses_safe_builder(expr.right, scope_id, lineno, visited.copy())
+            if isinstance(expr, ast.JoinedStr):
+                return any(_uses_safe_builder(value, scope_id, lineno, visited.copy()) for value in expr.values)
+            if isinstance(expr, ast.Name):
+                key = (scope_id, expr.id)
+                if key in visited:
+                    return False
+                visited.add(key)
+                record = _assigned_value(expr.id, scope_id, lineno)
+                if record is not None and record.value_node is not None:
+                    return _uses_safe_builder(record.value_node, record.scope_id, record.lineno, visited.copy())
+            return False
+
+        def _is_line_suppressed(lineno: int, mod_name: str) -> bool:
+            source_lines = self._source_lines_by_file.get(self.file_paths.get(mod_name, ""), [])
+            if source_lines and 1 <= lineno <= len(source_lines):
+                line_text = source_lines[lineno - 1]
+                if CLUSTER3_NOSEC_RE.search(line_text):
+                    return True
+                if lineno >= 2:
+                    prev_line = source_lines[lineno - 2]
+                    if re.search(r"#\s*ok:", prev_line, re.IGNORECASE):
+                        return True
+            return False
+
+        def _resolve_arg(expr, scope_id, lineno, touched_lines, depth=0):
+            """Follow Name assignments and unwrap text()/literal_column() wrappers.
+
+            Collects every assignment line traversed (for suppression) and returns the
+            innermost expression plus its own scope/lineno.
+            """
+            while depth < 8:
+                if isinstance(expr, ast.Name):
+                    record = _assigned_value(expr.id, scope_id, lineno)
+                    if record is None or record.value_node is None:
+                        return expr, scope_id, lineno
+                    touched_lines.append(record.lineno)
+                    expr = record.value_node
+                    scope_id = record.scope_id
+                    lineno = record.lineno
+                    depth += 1
+                    continue
+                if isinstance(expr, ast.Call) and isinstance(expr.func, ast.AST):
+                    attr = expr.func.attr if isinstance(expr.func, ast.Attribute) else (
+                        expr.func.id if isinstance(expr.func, ast.Name) else "")
+                    unwrappers = {"text", "sqlalchemy.text", "sqlalchemy.sql.expression.text",
+                                  "literal_column"}
+                    names = {dotted_name(expr.func) or "",
+                             self.resolve_canonical_name(expr.func, scope_id) or ""}
+                    if attr in {"text", "literal_column"} or (names & unwrappers):
+                        if len(expr.args) == 1 and not expr.keywords:
+                            expr = expr.args[0]
+                            depth += 1
+                            continue
+                return expr, scope_id, lineno
+            return expr, scope_id, lineno
+
+        def _has_sql_shape(expr) -> bool:
+            for sub in ast.walk(expr):
+                if isinstance(sub, ast.Constant) and isinstance(sub.value, str):
+                    if sql_shape_re.search(sub.value):
+                        return True
+            return False
+
+        def _is_string_construction(expr, scope_id, lineno, depth=0) -> bool:
+            """Explicit dynamic string building around a literal template."""
+            if expr is None or depth > 6:
+                return False
+            if isinstance(expr, ast.JoinedStr):
+                return any(isinstance(part, ast.FormattedValue) for part in expr.values)
+            if isinstance(expr, ast.BinOp):
+                if isinstance(expr.op, ast.Mod):
+                    left_const = any(isinstance(sub, ast.Constant) and isinstance(sub.value, str)
+                                     for sub in ast.walk(expr.left))
+                    return left_const and not _is_static(expr, scope_id, lineno)
+                if isinstance(expr.op, ast.Add):
+                    sides = (_resolve_arg(expr.left, scope_id, lineno, [])[0],
+                             _resolve_arg(expr.right, scope_id, lineno, [])[0])
+                    has_const = any(
+                        isinstance(sub, ast.Constant) and isinstance(sub.value, str)
+                        for side in sides for sub in ast.walk(side))
+                    return has_const and not _is_static(expr, scope_id, lineno)
+                return False
+            if isinstance(expr, ast.Call) and isinstance(expr.func, ast.Attribute) \
+                    and expr.func.attr == "format":
+                if _uses_safe_builder(expr, scope_id, lineno):
+                    return False
+                if not expr.args and not expr.keywords:
+                    return False
+                return any(not _is_static(arg, scope_id, lineno)
+                           for arg in [a for a in expr.args] + [kw.value for kw in expr.keywords])
+            if isinstance(expr, ast.Name):
+                record = _assigned_value(expr.id, scope_id, lineno)
+                if record is not None and record.value_node is not None:
+                    return _is_string_construction(record.value_node, record.scope_id,
+                                                   record.lineno, depth + 1)
+                return False
+            return False
+
+        def _receiver_root(expr):
+            current = expr
+            while isinstance(current, ast.Attribute):
+                current = current.value
+            return current if isinstance(current, ast.Name) else None
+
+        def _db_like_receiver(call: ast.Call, scope_id: str, lineno: int) -> bool:
+            root = _receiver_root(call.func) if isinstance(call.func, ast.AST) else None
+            if root is None:
+                # Attribute on a constructor call, e.g. pg8000.connect(...).run
+                if isinstance(call.func, ast.Attribute) and isinstance(call.func.value, ast.Call):
+                    inner = call.func.value
+                    if isinstance(inner.func, ast.Attribute) and inner.func.attr in db_ctor_attrs:
+                        return True
+                return False
+            rid = root.id.lower()
+            if (rid in db_receiver_ids or rid.endswith(("conn", "cursor", "pool", "_db"))
+                    or rid.startswith(("conn", "cursor", "pool", "engine", "session",
+                                       "db", "asyncpg", "psycopg", "pg8000", "aiopg"))):
+                return True
+            record = _assigned_value(root.id, scope_id, lineno)
+            if record is not None and isinstance(record.value_node, ast.Call):
+                value_names = {dotted_name(record.value_node.func) or "",
+                               self.resolve_canonical_name(record.value_node.func, record.scope_id) or ""}
+                for name in value_names:
+                    tail = name.rsplit(".", 1)[-1]
+                    if tail in db_ctor_attrs:
+                        return True
+                if any(seg in {"objects", "dbsession"} for seg in (record.value_node.func and
+                                                                   (dotted_name(record.value_node.func) or "").split("."))):
+                    return True
+            enclosing = self.functions.get(scope_id)
+            if enclosing is not None and isinstance(enclosing, ast.AST):
+                for arg in list(enclosing.args.posonlyargs) + list(enclosing.args.args) + \
+                        list(enclosing.args.kwonlyargs):
+                    if arg.arg == root.id:
+                        if arg.annotation is not None:
+                            ann_text = ast.unparse(arg.annotation)
+                            if any(tok in ann_text for tok in ("Connection", "Cursor", "Pool",
+                                                               "asyncpg", "pg8000", "aiopg",
+                                                               "Engine", "Session")):
+                                return True
+                        if root.id.lower() in db_receiver_ids:
+                            return True
+            return False
+
+        def _has_objects_chain(call: ast.Call) -> bool:
+            func = call.func
+            try:
+                text_repr = ast.unparse(func)
+            except Exception:
+                return False
+            return ".objects" in text_repr or text_repr.startswith("objects")
+
+        def _query_argument(call: ast.Call):
+            for kw in call.keywords:
+                if kw.arg in {"query", "sql", "statement"}:
+                    return kw.value
+            if call.args:
+                return call.args[0]
+            return None
+
+        def _vulnerable_call(call: ast.Call, scope_id: str, mod_name: str,
+                             require_shape_or_db: bool, bare_extra_ok: bool = False) -> bool:
+            """Shared guard chain for P1/P2/P3. Returns True only when the query argument
+            survives every safety check and is dynamically constructed."""
+            # Parameterized preservation: any extra positional or ANY keyword arg => silent.
+            if len(call.args) > 1 or any(kw.arg for kw in call.keywords):
+                return False
+            if bare_extra_ok and not call.args and not call.keywords:
+                return True
+            query_expr = _query_argument(call)
+            if query_expr is None:
+                return False
+            touched = [getattr(call, "lineno", 1)]
+            resolved, res_scope, res_lineno = _resolve_arg(query_expr, scope_id,
+                                                           getattr(call, "lineno", 1), touched)
+            for line in touched:
+                if _is_line_suppressed(line, mod_name):
+                    return False
+            if _is_static(resolved, res_scope, res_lineno):
+                return False
+            if _uses_safe_builder(resolved, res_scope, res_lineno):
+                return False
+            if not _is_string_construction(resolved, res_scope, res_lineno):
+                return False
+            if require_shape_or_db:
+                if not (_has_sql_shape(resolved) or _db_like_receiver(call, scope_id,
+                                                                      getattr(call, "lineno", 1))):
+                    return False
+            return True
+
+        def _emit89(call: ast.Call, mod_name: str, scope_id: str) -> None:
+            file_path = self.file_paths.get(mod_name, "unknown.py")
+            lines_to_emit = {getattr(call, "lineno", 1)}
+            query_expr = _query_argument(call)
+            if isinstance(query_expr, ast.AST):
+                arg_line = getattr(query_expr, "lineno", 0)
+                if arg_line:
+                    lines_to_emit.add(arg_line)
+            existing_records = list(self.sink_records)
+            emitted = False
+            for line in sorted(lines_to_emit):
+                if _is_line_suppressed(line, mod_name):
+                    continue
+                node_location = CodeLocation(file_path, line, line, 0, 0)
+                match = next((
+                    record for record in existing_records
+                    if record.security_node.location.file == node_location.file
+                    and record.security_node.location.line_start == node_location.line_start
+                    and record.security_node.metadata.get("cwe") == "CWE-89"
+                ), None)
+                if match is not None:
+                    meta = match.security_node.metadata
+                    if not any(key.endswith("source_id") for key in meta):
+                        meta["p6_source_id"] = "SQL_INJECTION_VULNERABILITY"
+                    emitted = True
+                    continue
+                key = (line, getattr(call, "col_offset", 0))
+                if key in p12_seen:
+                    continue
+                p12_seen.add(key)
+                sink_node = SecurityNode(
+                    id=self.next_sink_id(),
+                    node_type=NodeType.SINK,
+                    symbol="SQL_DRIVER_QUERYBUILDER",
+                    operation="SQL_QUERY_EXECUTION",
+                    location=node_location,
+                    metadata={
+                        "sink_type": "SQL_INJECTION",
+                        "category": "SQL_INJECTION",
+                        "cwe": "CWE-89",
+                        "operation": "SQL_QUERY_EXECUTION",
+                        "p6_source_id": "SQL_INJECTION_VULNERABILITY",
+                    },
+                )
+                self.sinks.append(sink_node)
+                self.sink_records.append(SinkRecord(
+                    node=call,
+                    security_node=sink_node,
+                    lineno=line,
+                    scope_id=scope_id,
+                ))
+                emitted = True
+
+        for mod_name, tree in self.modules.items():
+            # P1 edge-repair: registry-created CWE-89 sinks that never earned a source id.
+            repair_candidates = [
+                record for record in list(self.sink_records)
+                if record.security_node.metadata.get("cwe") == "CWE-89"
+                and not any(key.endswith("source_id") for key in record.security_node.metadata)
+                and isinstance(record.node, ast.Call)
+            ]
+            for record in repair_candidates:
+                call = record.node
+                scope_id = record.scope_id
+                attr = call.func.attr if isinstance(call.func, ast.Attribute) else None
+                if attr not in execute_attrs and attr not in driver_attrs:
+                    continue
+                if _vulnerable_call(call, scope_id, mod_name, require_shape_or_db=True):
+                    _emit89(call, mod_name, scope_id)
+
+            for node in self._reachable_nodes(tree):
+                if not isinstance(node, ast.Call) or not isinstance(node.func, ast.AST):
+                    continue
+                scope_id = _scope_for(node, mod_name)
+                attr = node.func.attr if isinstance(node.func, ast.Attribute) else None
+                if attr is None:
+                    continue
+                call_line = getattr(node, "lineno", 1)
+                already = next((
+                    record for record in self.sink_records
+                    if record.security_node.location.file == self.file_paths.get(mod_name, "")
+                    and record.security_node.location.line_start == call_line
+                    and record.security_node.metadata.get("cwe") == "CWE-89"
+                ), None)
+                if already is not None and any(
+                        key.endswith("source_id") for key in already.security_node.metadata):
+                    continue  # already an established finding at this call
+
+                if attr in execute_attrs or attr in driver_attrs:
+                    if _vulnerable_call(node, scope_id, mod_name, require_shape_or_db=True):
+                        _emit89(node, mod_name, scope_id)
+                    continue
+                if attr in builder_attrs:
+                    if _vulnerable_call(node, scope_id, mod_name, require_shape_or_db=False):
+                        _emit89(node, mod_name, scope_id)
+                    continue
+                if attr in django_attrs and _has_objects_chain(node):
+                    if _vulnerable_call(node, scope_id, mod_name, require_shape_or_db=False,
+                                        bare_extra_ok=True):
+                        _emit89(node, mod_name, scope_id)
+
     def _collect_phase5_structural_findings(self) -> None:
         """Collect Phase 5 path traversal, archive extraction, and TLS findings."""
         function_scopes = {id(function): scope for scope, function in self.functions.items()}
@@ -12944,6 +13357,7 @@ class TaintTracker:
         self._collect_phase3_structural_findings()
         self._collect_phase4_structural_findings()
         self._collect_intra_file_call_bridge_findings()
+        self._collect_cwe89_driver_querybuilder_findings()
         self._collect_phase5_structural_findings()
         self._collect_phase6_structural_findings()
         self._collect_phase7_structural_findings()
