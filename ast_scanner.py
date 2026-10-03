@@ -1029,8 +1029,7 @@ CLUSTER2_SESSION_CONSTRUCTORS = {"Session"}
 CLUSTER2_CLEARTEXT_SCHEME = "http://"
 CLUSTER2_LOCAL_HOSTS = {"localhost", "127.0.0.1", "0.0.0.0", "::1"}
 # CWE-319 allowlists: XML namespaces, schema domains, and test/example domains
-CLUSTER2_SCHEMA_DOMAINS = {"w3.org", "schemas.xmlsoap.org", "json-schema.org", "schemas.microsoft.com", "xml.org"}
-CLUSTER2_TEST_DOMAINS = {"example.com", "example.org", "example.net", "test.org", "test.com"}
+CLUSTER2_SCHEMA_DOMAINS = {"w3.org", "schemas.microsoft.com", "xml.org", "docs.oasis-open.org", "schemas.xmlsoap.org", "json-schema.org"}
 CLUSTER2_HTTP_POOL_SEGMENT = "HTTPConnectionPool"
 # CWE-704: unvalidated numeric conversions on request-controlled values.
 CLUSTER2_NAN_CONVERSIONS = {"float", "bool", "complex"}
@@ -1174,8 +1173,7 @@ CWE3A_SALT_NAME_RE = re.compile(r"(?i)^(salt|pepper|nonce|iv)$")
 CWE3A_SENSITIVE_VALUE_RE = re.compile(r"(?i).*(password|passwd|pwd|secret|api_key|access_token|credential|token|secret_key).*")
 CWE3A_IDOR_MODELS = {"user", "account", "profile", "invoice", "order", "payment", "document", "token"}
 CWE3A_LOCALHOST_HOSTS = {"localhost", "127.0.0.1", "0.0.0.0", "::1"}
-CWE3A_SCHEMA_DOMAINS = {"w3.org", "schemas.xmlsoap.org", "json-schema.org"}
-CWE3A_TEST_DOMAINS = {"example.com", "example.org", "example.net", "test.org", "test.com"}
+CWE3A_SCHEMA_DOMAINS = {"w3.org", "schemas.microsoft.com", "xml.org", "docs.oasis-open.org", "schemas.xmlsoap.org", "json-schema.org"}
 CWE3A_NETWORK_SINKS = {
     "requests.get", "requests.post", "requests.put", "requests.delete",
     "urllib.request.urlopen", "urlopen", "httpx.get", "httpx.post",
@@ -7197,9 +7195,6 @@ class TaintTracker:
                 for schema_domain in CLUSTER2_SCHEMA_DOMAINS:
                     if schema_domain in url:
                         return False
-                # Allowlist: test/example domains (exact match only, no subdomains)
-                if host.lower() in CLUSTER2_TEST_DOMAINS:
-                    return False
                 return True
 
             def _contains_wildcard(expr, scope: str, lineno: int) -> bool:
@@ -8411,11 +8406,6 @@ class TaintTracker:
                                         break
                                 for schema in CWE3A_SCHEMA_DOMAINS:
                                     if schema in url_val:
-                                        is_whitelisted = True
-                                        break
-                                # Check test/example domains
-                                for domain in CWE3A_TEST_DOMAINS:
-                                    if domain in url_val:
                                         is_whitelisted = True
                                         break
                                 if not is_whitelisted:

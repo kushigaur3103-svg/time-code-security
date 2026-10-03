@@ -98,17 +98,17 @@ def safe():
         cwe319_findings = [f for f in findings if f.get("cwe") == "CWE-319"]
         assert len(cwe319_findings) == 0, "Should NOT flag w3.org URLs"
 
-    def test_example_domain_allowlist(self):
-        """Should NOT flag example.com URLs."""
+    def test_example_domain_flagged(self):
+        """Should flag example.com URLs — they are real vulnerable targets in rule corpora."""
         source = """
 import requests
 
-def safe():
+def vuln():
     requests.get("http://example.com/test")
 """
         findings = _scan_source(source)
         cwe319_findings = [f for f in findings if f.get("cwe") == "CWE-319"]
-        assert len(cwe319_findings) == 0, "Should NOT flag example.com URLs"
+        assert len(cwe319_findings) >= 1, "Should flag example.com URLs as CWE-319"
 
     def test_ftplib_ftp_insecure(self):
         """Should flag ftplib.FTP usage."""
