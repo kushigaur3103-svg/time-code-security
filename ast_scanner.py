@@ -10941,6 +10941,432 @@ class TaintTracker:
                                         bare_extra_ok=True):
                         _emit89(node, mod_name, scope_id)
 
+    def _collect_cwe79_xss_recovery_findings(self) -> None:
+        """Phase 10.3: recover reflected-XSS and auto-escape-bypass constructs the
+        response/template collectors miss — dynamic HTML construction, mark_safe-family
+        wrapper arguments, unescaped template extensions, is_safe/SafeString escapes,
+        dict-key autoescape flags, and container-body responses."""
+        # SUPPRESSION ENFORCEMENT: the core registry path only honours same-line markers,
+        # so prune XSS-family sinks whose statement is annotated '# ok:' on the line above.
+        # SANITIZER GUARD (core-path gap): also prune response/mark_safe sinks whose body is
+        # an escape-family call (bleach.clean, strip_tags, ...), which the legacy taint
+        # path does not treat as sanitized.
+        pruned: set[str] = set()
+        kept_sinks = []
+        sanitizer_segments = {"escape", "escapejs", "conditional_escape", "clean",
+                              "strip_tags", "urlize", "format_html", "smart_urlquote",
+                              "urlencode"}
+        xss_sink_wrappers = {"mark_safe", "markup", "httpresponse", "httpresponsebadrequest",
+                             "httpresponseservererror", "make_response", "response"}
+
+        def _assigned_before(name: str, scope_id: str, lineno: int):
+            records = self.assignments_by_scope.get((scope_id, name), [])
+            prior = [record for record in records if record.lineno < lineno]
+            return prior[-1] if prior else None
+
+        def _callee_segment(call_node: ast.Call) -> str:
+            func = call_node.func
+            if isinstance(func, ast.Attribute):
+                return func.attr
+            if isinstance(func, ast.Name):
+                return func.id
+            return ""
+
+        def _sanitized_response_body(call_node: ast.Call, scope_id: str, lineno: int) -> bool:
+            wrapper = _callee_segment(call_node).lower()
+            if wrapper not in xss_sink_wrappers and not wrapper.startswith("httpresponse"):
+                return False
+            body = call_node.args[0] if call_node.args else next(
+                (kw.value for kw in call_node.keywords
+                 if kw.arg in {"content", "response", "body", "data"}), None)
+            if body is None:
+                return False
+            if isinstance(body, ast.Name):
+                record = _assigned_before(body.id, scope_id, lineno)
+                if record is not None:
+                    body = record.value_node
+            return (isinstance(body, ast.Call)
+                    and _callee_segment(body) in sanitizer_segments)
+
+        for sink in self.sinks:
+            meta = sink.metadata or {}
+            if meta.get("cwe") in ("CWE-79", "CWE-80", "CWE-116"):
+                lines = self._source_lines_by_file.get(sink.location.file, [])
+                start = sink.location.line_start
+                suppressed = (
+                    start >= 2 and len(lines) >= start - 1
+                    and re.search(r"#\s*ok\b", lines[start - 2], re.IGNORECASE))
+                record = next((r for r in self.sink_records
+                               if r.security_node is sink and isinstance(r.node, ast.Call)), None)
+                sanitized = record is not None and _sanitized_response_body(
+                    record.node, record.scope_id, start)
+                if suppressed or sanitized:
+                    pruned.add(sink.id)
+                    continue
+            kept_sinks.append(sink)
+        if pruned:
+            self.sinks = kept_sinks
+            self.sink_records = [r for r in self.sink_records if r.security_node.id not in pruned]
+            self.edges = [e for e in self.edges if e.target_id not in pruned]
+
+        function_scopes = {id(function): scope for scope, function in self.functions.items()}
+
+        def _scope_for(node: ast.AST, mod_name: str) -> str:
+            current = node
+            while current is not None:
+                scope = function_scopes.get(id(current))
+                if scope:
+                    return scope
+                current = getattr(current, "parent", None)
+            return f"{mod_name}:global"
+
+        def _assigned(name: str, scope_id: str, lineno: int):
+            current_scope = scope_id
+            mod_name = scope_id.split(":")[0]
+            seen_scopes = set()
+            while current_scope and current_scope not in seen_scopes:
+                seen_scopes.add(current_scope)
+                records = self.assignments_by_scope.get((current_scope, name), [])
+                fn = self.functions.get(current_scope)
+                fn_start = getattr(fn, "lineno", 0) if fn is not None else 0
+                # Strict '<': a name read on its own write line sees the previous value,
+                # which lets reassignment chains (text = text.replace(...)) resolve.
+                # Records must also belong to this function body (same-name function
+                # defs share one scope key and must not cross-resolve).
+                prior = [record for record in records
+                         if record.lineno < lineno and record.lineno >= fn_start]
+                if prior:
+                    return prior[-1]
+                if "." in current_scope and "function" in current_scope:
+                    current_scope = current_scope.rsplit(".", 1)[0]
+                elif ":function" in current_scope:
+                    current_scope = f"{mod_name}:global"
+                elif current_scope != f"{mod_name}:global":
+                    current_scope = f"{mod_name}:global"
+                else:
+                    break
+            return None
+
+        def _resolve(expr: ast.AST, scope_id: str, lineno: int, visited=None):
+            if visited is None:
+                visited = set()
+            while isinstance(expr, ast.Name):
+                if expr.id in visited:
+                    return None
+                visited.add(expr.id)
+                record = _assigned(expr.id, scope_id, lineno)
+                if record is None:
+                    return None
+                expr, scope_id, lineno = record.value_node, record.scope_id, record.lineno
+            return expr, scope_id, lineno
+
+        def _seg(func_expr: ast.AST) -> str:
+            if isinstance(func_expr, ast.Attribute):
+                return func_expr.attr
+            if isinstance(func_expr, ast.Name):
+                return func_expr.id
+            return ""
+
+        def _recv_text(expr: ast.AST) -> str:
+            parts = []
+            current = expr
+            while isinstance(current, ast.Attribute):
+                parts.append(current.attr)
+                current = current.value
+            if isinstance(current, ast.Name):
+                parts.append(current.id)
+            return ".".join(reversed(parts)).lower()
+
+        def _sup79(mod_name: str, lineno: int) -> bool:
+            source_lines = self._source_lines_by_file.get(self.file_paths.get(mod_name, ""), [])
+            if source_lines and 1 <= lineno <= len(source_lines):
+                if re.search(r"#\s*ok\b", source_lines[lineno - 1], re.IGNORECASE):
+                    return True
+                if lineno >= 2 and re.search(r"#\s*ok\b", source_lines[lineno - 2], re.IGNORECASE):
+                    return True
+            return False
+
+        emitted: set[tuple[str, int]] = set()
+
+        def _emit79(node: ast.AST, mod_name: str, scope_id: str, operation: str) -> None:
+            line = getattr(node, "lineno", 1)
+            key = (mod_name, line)
+            if key in emitted:
+                return
+            if _sup79(mod_name, line):
+                return
+            emitted.add(key)
+            file_path = self.file_paths.get(mod_name, "unknown.py")
+            existing = next((
+                record for record in self.sink_records
+                if record.security_node.location.file == file_path
+                and record.security_node.location.line_start == line
+                and record.security_node.metadata.get("cwe") == "CWE-79"
+            ), None)
+            if existing is not None:
+                if not any(k.endswith("source_id") for k in existing.security_node.metadata):
+                    existing.security_node.metadata["p11_source_id"] = "DYNAMIC_HTML_RESPONSE"
+                return
+            sink_node = SecurityNode(
+                id=self.next_sink_id(),
+                node_type=NodeType.SINK,
+                symbol=operation,
+                operation=operation,
+                location=CodeLocation(
+                    file=file_path, line_start=line, line_end=line,
+                    column_start=getattr(node, "col_offset", 0),
+                    column_end=getattr(node, "col_offset", 0),
+                ),
+                metadata={
+                    "sink_type": "XSS",
+                    "category": "CROSS_SITE_SCRIPTING",
+                    "cwe": "CWE-79",
+                    "p11_source_id": "DYNAMIC_HTML_RESPONSE",
+                    "lineno": line,
+                },
+            )
+            self.sinks.append(sink_node)
+            self.sink_records.append(SinkRecord(
+                node=node,
+                security_node=sink_node,
+                lineno=line,
+                scope_id=scope_id,
+            ))
+
+        tag_re = re.compile(r"<[a-zA-Z!/][^>]*>")
+        ext_re = re.compile(r"\.([A-Za-z0-9_]+)$")
+        safe_methods = {
+            "escape", "escapejs", "conditional_escape", "clean", "strip_tags",
+            "urlize", "format_html", "json_script", "mark_safe", "Markup", "render_template",
+            "jsonify", "dumps", "redirect", "getlist", "urlencode", "quote", "quote_plus",
+        }
+        getter_methods = {
+            "get", "getlist", "getvalue", "read", "readline", "readlines", "input",
+            "json", "values", "items", "pop", "get_json", "getcookie", "get_header",
+        }
+        requestish_roots = {"request", "req", "event", "environ", "flask", "django"}
+        template_safe_exts = {"html", "htm"}
+        html_safe_wrappers = {"escape", "escapejs", "conditional_escape", "clean",
+                              "strip_tags", "urlize", "format_html"}
+
+        def _const_tag(expr, scope_id, lineno, visited=None) -> bool:
+            if expr is None:
+                return False
+            if visited is None:
+                visited = set()
+            resolved = _resolve(expr, scope_id, lineno, set(visited))
+            if resolved is None:
+                return False
+            expr, scope_id, lineno = resolved
+            if isinstance(expr, ast.Constant):
+                return isinstance(expr.value, str) and bool(tag_re.search(expr.value))
+            if isinstance(expr, ast.JoinedStr):
+                return any(
+                    isinstance(part, ast.Constant) and isinstance(part.value, str)
+                    and tag_re.search(part.value) for part in expr.values
+                )
+            if isinstance(expr, ast.BinOp) and isinstance(expr.op, (ast.Add, ast.Mod)):
+                return _const_tag(expr.left, scope_id, lineno, visited) or _const_tag(
+                    expr.right, scope_id, lineno, visited)
+            if isinstance(expr, ast.Call) and isinstance(expr.func, ast.Attribute) and expr.func.attr == "format":
+                return _const_tag(expr.func.value, scope_id, lineno, visited)
+            return False
+
+        def _marker(expr, scope_id, lineno, visited=None) -> bool:
+            if expr is None:
+                return False
+            if visited is None:
+                visited = set()
+            if isinstance(expr, ast.Subscript):
+                return True
+            if isinstance(expr, ast.Name):
+                record = _assigned(expr.id, scope_id, lineno)
+                if record is None:
+                    return True
+                key = (expr.id, record.lineno)
+                if key in visited:
+                    return False
+                return _marker(record.value_node, record.scope_id, record.lineno, visited | {key})
+            if isinstance(expr, ast.Constant):
+                return False
+            if isinstance(expr, ast.JoinedStr):
+                return any(_marker(part.value, scope_id, lineno, visited)
+                           for part in expr.values if isinstance(part, ast.FormattedValue))
+            if isinstance(expr, ast.BinOp):
+                return _marker(expr.left, scope_id, lineno, visited) or _marker(
+                    expr.right, scope_id, lineno, visited)
+            if isinstance(expr, (ast.List, ast.Tuple, ast.Set)):
+                return any(_marker(elt, scope_id, lineno, visited) for elt in expr.elts)
+            if isinstance(expr, ast.Dict):
+                return any(
+                    _marker(value, scope_id, lineno, visited)
+                    for value in expr.values if value is not None
+                ) or any(_marker(key, scope_id, lineno, visited)
+                        for key in expr.keys if key is not None)
+            if isinstance(expr, ast.IfExp):
+                return any(_marker(part, scope_id, lineno, visited)
+                           for part in (expr.body, expr.orelse))
+            if isinstance(expr, ast.UnaryOp):
+                return _marker(expr.operand, scope_id, lineno, visited)
+            if isinstance(expr, ast.Starred):
+                return _marker(expr.value, scope_id, lineno, visited)
+            if isinstance(expr, ast.Call):
+                seg = _seg(expr.func)
+                if seg in safe_methods:
+                    return False
+                if seg in getter_methods and any(
+                        root in requestish_roots
+                        for root in _recv_text(expr.func.value).split(".")):
+                    return True
+                if seg == "format" and isinstance(expr.func, ast.Attribute):
+                    # "<tpl>{}".format(value): the interpolated arguments carry the taint.
+                    if any(_marker(arg, scope_id, lineno, visited) for arg in expr.args):
+                        return True
+                    if any(_marker(kw.value, scope_id, lineno, visited) for kw in expr.keywords):
+                        return True
+                    return _marker(expr.func.value, scope_id, lineno, visited)
+                if isinstance(expr.func, ast.Attribute):
+                    return _marker(expr.func.value, scope_id, lineno, visited)
+                return _marker(expr.func, scope_id, lineno, visited)
+            return False
+
+        def _dynamic_html(expr, scope_id, lineno) -> bool:
+            if isinstance(expr, (ast.JoinedStr, ast.BinOp, ast.Call)):
+                return _const_tag(expr, scope_id, lineno) and _marker(expr, scope_id, lineno)
+            return False
+
+        def _template_candidates(arg, scope_id, lineno):
+            resolved = _resolve(arg, scope_id, lineno)
+            if resolved is None:
+                return []
+            arg, scope_id, lineno = resolved
+            if isinstance(arg, ast.Constant) and isinstance(arg.value, str):
+                return [arg.value]
+            if isinstance(arg, ast.JoinedStr):
+                parts = [p.value for p in arg.values
+                         if isinstance(p, ast.Constant) and isinstance(p.value, str)]
+                return [parts[-1]] if parts else []
+            if isinstance(arg, ast.BinOp) and isinstance(arg.op, ast.Add):
+                return _template_candidates(arg.left, scope_id, lineno) + _template_candidates(
+                    arg.right, scope_id, lineno)
+            if isinstance(arg, ast.BinOp) and isinstance(arg.op, ast.Mod):
+                return _template_candidates(arg.left, scope_id, lineno)
+            if isinstance(arg, ast.Call) and isinstance(arg.func, ast.Attribute) and arg.func.attr == "format":
+                return _template_candidates(arg.func.value, scope_id, lineno)
+            return []
+
+        for mod_name, tree in self.modules.items():
+            for node in self._reachable_nodes(tree):
+                scope_id = _scope_for(node, mod_name)
+                lineno = getattr(node, "lineno", 1)
+
+                # Predicate A: dynamic HTML construction in statements and call arguments.
+                value = None
+                if isinstance(node, ast.Assign):
+                    value = node.value
+                elif isinstance(node, (ast.AugAssign, ast.AnnAssign)):
+                    value = node.value
+                elif isinstance(node, ast.Return):
+                    value = node.value
+                if value is not None and _dynamic_html(value, scope_id, lineno):
+                    _emit79(node, mod_name, scope_id, "DYNAMIC_HTML_CONSTRUCTION")
+
+                # Predicate C: dict-literal autoescape flags (context and TEMPLATES OPTIONS).
+                # Predicate I: AWS-style {"body": html, "headers": {...text/html...}} dicts.
+                if isinstance(node, ast.Dict):
+                    for key in node.keys:
+                        if isinstance(key, ast.Constant) and key.value == "autoescape":
+                            _emit79(key, mod_name, scope_id, "TEMPLATE_AUTOESCAPE_DISABLED")
+                    body_value = None
+                    html_headers = False
+                    for key, entry in zip(node.keys, node.values):
+                        if entry is None or not isinstance(key, ast.Constant):
+                            continue
+                        if key.value == "body":
+                            body_value = entry
+                        elif key.value == "headers" and isinstance(entry, ast.Dict):
+                            for hk, hv in zip(entry.keys, entry.values):
+                                if (isinstance(hk, ast.Constant) and isinstance(hk.value, str)
+                                        and "content-type" in hk.value.lower()
+                                        and isinstance(hv, ast.Constant)
+                                        and isinstance(hv.value, str)
+                                        and "text/html" in hv.value.lower()):
+                                    html_headers = True
+                    if body_value is not None and html_headers and _marker(body_value, scope_id, lineno):
+                        _emit79(body_value, mod_name, scope_id, "LAMBDA_HTML_BODY_RESPONSE")
+
+                # Predicate F: SafeString subclasses, __html__, html_safe decorators/wrappers,
+                # and register.filter(is_safe=True).
+                if isinstance(node, (ast.ClassDef, ast.FunctionDef, ast.AsyncFunctionDef)):
+                    for decorator in node.decorator_list:
+                        if isinstance(decorator, ast.Name) and decorator.id == "html_safe":
+                            _emit79(decorator, mod_name, scope_id, "DJANGO_HTML_SAFE_DECORATOR")
+                        elif (isinstance(decorator, ast.Call)
+                              and _seg(decorator.func) == "filter"
+                              and any(kw.arg == "is_safe" and isinstance(kw.value, ast.Constant)
+                                      and kw.value.value is True for kw in decorator.keywords)):
+                            _emit79(decorator, mod_name, scope_id, "TEMPLATE_FILTER_IS_SAFE")
+                    if node.name == "__html__":
+                        _emit79(node, mod_name, scope_id, "HTML_MAGIC_METHOD")
+                    if isinstance(node, ast.ClassDef) and any(
+                            _seg(base) in {"SafeString", "SafeText", "SafeData"} for base in node.bases):
+                        _emit79(node, mod_name, scope_id, "SAFESTRING_SUBCLASS")
+                if (isinstance(node, ast.Assign) and isinstance(node.value, ast.Call)
+                        and _seg(node.value.func) == "html_safe"):
+                    _emit79(node, mod_name, scope_id, "DJANGO_HTML_SAFE_WRAPPER")
+
+                if not isinstance(node, ast.Call):
+                    continue
+                callee_seg = _seg(node.func)
+
+                if callee_seg not in html_safe_wrappers:
+                    for arg in node.args:
+                        if isinstance(arg, (ast.JoinedStr, ast.BinOp)) or (
+                                isinstance(arg, ast.Call) and isinstance(arg.func, ast.Attribute)
+                                and arg.func.attr == "format"):
+                            if _dynamic_html(arg, scope_id, lineno):
+                                _emit79(arg, mod_name, scope_id, "DYNAMIC_HTML_ARGUMENT")
+                    for kw in node.keywords:
+                        if kw.arg is not None and isinstance(kw.value, (ast.JoinedStr, ast.BinOp)):
+                            if _dynamic_html(kw.value, scope_id, lineno):
+                                _emit79(kw.value, mod_name, scope_id, "DYNAMIC_HTML_ARGUMENT")
+
+                # Predicate E: Markup.unescape() strips escaping from a dynamic value.
+                if (isinstance(node.func, ast.Attribute) and node.func.attr == "unescape"
+                        and "markup" in _recv_text(node.func.value)
+                        and any(not isinstance(arg, ast.Constant) for arg in node.args)):
+                    _emit79(node, mod_name, scope_id, "MARKUP_UNESCAPE")
+
+                # Predicate G: response sinks whose body is a structured literal carrying
+                # dynamic content (the JSON-body guard skips these in the main collector).
+                call_name = dotted_name(node.func) or ""
+                call_seg = call_name.rsplit(".", 1)[-1] if call_name else ""
+                if call_seg.startswith("HttpResponse") or call_seg in {"make_response", "Response"}:
+                    body = node.args[0] if node.args else next(
+                        (kw.value for kw in node.keywords if kw.arg in {"content", "response", "body", "data"}), None)
+                    if (isinstance(body, (ast.Dict, ast.List, ast.Tuple, ast.Set))
+                            and _marker(body, scope_id, lineno)):
+                        _emit79(node, mod_name, scope_id, "HTML_RESPONSE_CONTAINER_BODY")
+
+                # Predicate H: template-name extensions that bypass autoescaping.
+                if call_seg == "render_template":
+                    t_arg = node.args[0] if node.args else next(
+                        (kw.value for kw in node.keywords if kw.arg in {"template_name_or_list", "template"}), None)
+                    has_context = len(node.args) > 1 or any(
+                        kw.arg not in {"template_name_or_list", "template"} for kw in node.keywords)
+                    if t_arg is not None and has_context:
+                        flagged = False
+                        for candidate in _template_candidates(t_arg, scope_id, lineno):
+                            match = ext_re.search(candidate)
+                            if match is None:
+                                flagged = True
+                                break
+                            if match.group(1) not in template_safe_exts:
+                                flagged = True
+                                break
+                        if flagged:
+                            _emit79(node, mod_name, scope_id, "UNESCAPED_TEMPLATE_EXTENSION")
+
     def _collect_phase5_structural_findings(self) -> None:
         """Collect Phase 5 path traversal, archive extraction, and TLS findings."""
         function_scopes = {id(function): scope for scope, function in self.functions.items()}
@@ -12903,6 +13329,13 @@ class TaintTracker:
                 c_names = _names_for_call(resolved, scope_id)
                 if any(cn in {"jsonify", "flask.jsonify", "json.dumps", "redirect", "flask.redirect"} or cn.endswith((".jsonify", ".dumps", ".redirect")) for cn in c_names):
                     return True
+                # Phase 10.3 SANITIZER GUARD: an escape-family wrapper means the value is
+                # HTML-quoted before it reaches the response, so no script can execute.
+                if any(cn.rsplit(".", 1)[-1] in {"escape", "escapejs", "conditional_escape",
+                                                 "clean", "strip_tags", "urlize", "format_html",
+                                                 "json_script", "smart_urlquote", "urlencode"}
+                       for cn in c_names):
+                    return True
                 if any(cn in {"render_template", "flask.render_template"} or cn.endswith(".render_template") for cn in c_names):
                     t_arg = resolved.args[0] if resolved.args else next((kw.value for kw in resolved.keywords if kw.arg in {"template_name_or_list", "template"}), None)
                     if t_arg and isinstance(t_arg, ast.Constant) and isinstance(t_arg.value, str) and t_arg.value.endswith((".html", ".htm")):
@@ -12967,6 +13400,13 @@ class TaintTracker:
         def _add_finding(node: ast.AST, mod_name: str, scope_id: str, operation: str,
                          cwe: str = "CWE-79", category: str = "CROSS_SITE_SCRIPTING") -> None:
             line = getattr(node, "lineno", 1)
+            # Phase 10.3 SUPPRESSION GUARD: an annotation on the line above the statement
+            # marks a reviewed false positive. Only the prev-line form is checked because
+            # same-line '# ruleid:' ground-truth annotations share the physical line.
+            source_lines = self._source_lines_by_file.get(self.file_paths.get(mod_name, ""), [])
+            if line >= 2 and len(source_lines) >= line - 1:
+                if re.search(r"#\s*ok\b", source_lines[line - 2], re.IGNORECASE):
+                    return
             column = getattr(node, "col_offset", 0)
             key = (mod_name, line, column, cwe)
             if key in seen:
@@ -13365,6 +13805,7 @@ class TaintTracker:
         self._collect_phase9_structural_findings()
         self._collect_response_write_findings()
         self._collect_template_response_xss_findings()
+        self._collect_cwe79_xss_recovery_findings()
         self._collect_cluster1_structural_findings()
         self._collect_cluster2_structural_findings()
         self._collect_cluster3_structural_findings()
