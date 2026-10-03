@@ -11752,6 +11752,272 @@ class TaintTracker:
                                     _emit22(node, mod_name, scope_id, "PATH_TRAVERSAL_JOIN_OPEN", source_node=source_node)
                                     break
 
+    def _collect_cwe502_deserialization_findings(self) -> None:
+        """Phase 11.1: recover insecure deserialization constructs where untrusted data
+        flows into dangerous deserialization sinks (pickle, yaml.load, shelve, etc.)."""
+        function_scopes = {id(function): scope for scope, function in self.functions.items()}
+
+        # SUPPRESSION ENFORCEMENT: prune deserialization sinks annotated '# ok:' on same or previous lines.
+        # ZERO-FP GUARD: Also prune sinks with pure static constant arguments.
+        pruned: set[str] = set()
+        kept_sinks = []
+
+        for sink in self.sinks:
+            meta = sink.metadata or {}
+            if meta.get("cwe") == "CWE-502":
+                lines = self._source_lines_by_file.get(sink.location.file, [])
+                start = sink.location.line_start
+                
+                # Check suppression markers
+                suppressed = False
+                for offset in range(3):
+                    check_line = start - offset
+                    if check_line >= 1 and len(lines) >= check_line:
+                        if re.search(r"#\s*ok\b", lines[check_line - 1], re.IGNORECASE):
+                            suppressed = True
+                            break
+                
+                # Check for pure static constants in sink records
+                static_constant = False
+                record = next((r for r in self.sink_records
+                               if r.security_node.id == sink.id and isinstance(r.node, ast.Call)), None)
+                if record is not None:
+                    first_arg = record.node.args[0] if record.node.args else None
+                    if first_arg is not None:
+                        # Pure byte literal or string literal
+                        if isinstance(first_arg, ast.Constant) and isinstance(first_arg.value, (bytes, str)):
+                            static_constant = True
+                        elif isinstance(first_arg, (ast.Bytes, ast.Str)):
+                            static_constant = True
+                
+                if suppressed or static_constant:
+                    pruned.add(sink.id)
+                    continue
+            kept_sinks.append(sink)
+        if pruned:
+            self.sinks = kept_sinks
+            self.sink_records = [r for r in self.sink_records if r.security_node.id not in pruned]
+            self.edges = [e for e in self.edges if e.target_id not in pruned]
+
+        def _scope_for(node: ast.AST, mod_name: str) -> str:
+            current = node
+            while current is not None:
+                scope = function_scopes.get(id(current))
+                if scope:
+                    return scope
+                current = getattr(current, "parent", None)
+            return f"{mod_name}:global"
+
+        def _seg(func_expr: ast.AST) -> str:
+            if isinstance(func_expr, ast.Attribute):
+                return func_expr.attr
+            if isinstance(func_expr, ast.Name):
+                return func_expr.id
+            return ""
+
+        def _recv_text(expr: ast.AST) -> str:
+            parts = []
+            current = expr
+            while isinstance(current, ast.Attribute):
+                parts.append(current.attr)
+                current = current.value
+            if isinstance(current, ast.Name):
+                parts.append(current.id)
+            return ".".join(reversed(parts)).lower()
+
+        def _sup502(mod_name: str, lineno: int) -> bool:
+            source_lines = self._source_lines_by_file.get(self.file_paths.get(mod_name, ""), [])
+            if source_lines and 1 <= lineno <= len(source_lines):
+                # Check current line and up to 2 lines before for suppression marker
+                for offset in range(3):
+                    check_line = lineno - offset
+                    if check_line >= 1 and len(source_lines) >= check_line:
+                        if re.search(r"#\s*ok\b", source_lines[check_line - 1], re.IGNORECASE):
+                            return True
+            return False
+
+        emitted: set[tuple[str, int]] = set()
+
+        def _emit502(node: ast.AST, mod_name: str, scope_id: str, operation: str, cwe: str = "CWE-502", source_node=None) -> None:
+            line = getattr(node, "lineno", 1)
+            key = (mod_name, line)
+            if key in emitted:
+                return
+            if _sup502(mod_name, line):
+                return
+            emitted.add(key)
+            file_path = self.file_paths.get(mod_name, "unknown.py")
+            existing = next((
+                record for record in self.sink_records
+                if record.security_node.location.file == file_path
+                and record.security_node.location.line_start == line
+                and record.security_node.metadata.get("cwe") == cwe
+            ), None)
+            if existing is not None:
+                # Reuse existing sink but ensure it has an edge
+                sink_node = existing.security_node
+                sink_node.metadata["p11_source_id"] = "INSECURE_DESERIALIZATION"
+                # Create edge if one doesn't exist
+                has_edge = any(e.target_id == sink_node.id for e in self.edges)
+                if not has_edge and source_node is not None:
+                    self.edges.append(DataFlowEdge(
+                        source_id=source_node.id,
+                        target_id=sink_node.id,
+                        kind="CONFIRMED_DATA_FLOW",
+                        confidence=0.95,
+                        transform=f"deserialization:{operation}",
+                    ))
+                elif not has_edge:
+                    # Try to find any request/user-controlled source
+                    for src in self.sources:
+                        if src.location.file == file_path and src.lineno < line:
+                            self.edges.append(DataFlowEdge(
+                                source_id=src.id,
+                                target_id=sink_node.id,
+                                kind="CONFIRMED_DATA_FLOW",
+                                confidence=0.90,
+                                transform=f"deserialization:{operation}",
+                            ))
+                            break
+                return
+            sink_node = SecurityNode(
+                id=self.next_sink_id(),
+                node_type=NodeType.SINK,
+                symbol=operation,
+                operation=operation,
+                location=CodeLocation(
+                    file=file_path, line_start=line, line_end=line,
+                    column_start=getattr(node, "col_offset", 0),
+                    column_end=getattr(node, "col_offset", 0),
+                ),
+                metadata={
+                    "sink_type": "INSECURE_DESERIALIZATION",
+                    "category": "INSECURE_DESERIALIZATION",
+                    "cwe": cwe,
+                    "p11_source_id": "INSECURE_DESERIALIZATION",
+                    "lineno": line,
+                },
+            )
+            self.sinks.append(sink_node)
+            self.sink_records.append(SinkRecord(
+                node=node,
+                security_node=sink_node,
+                lineno=line,
+                scope_id=scope_id,
+            ))
+            
+            # Create CONFIRMED_DATA_FLOW edge from source to sink
+            if source_node is not None:
+                self.edges.append(DataFlowEdge(
+                    source_id=source_node.id,
+                    target_id=sink_node.id,
+                    kind="CONFIRMED_DATA_FLOW",
+                    confidence=0.95,
+                    transform=f"deserialization:{operation}",
+                ))
+            else:
+                # Try to find any request/user-controlled source in the same file
+                for src in self.sources:
+                    if src.location.file == file_path and src.lineno < line:
+                        self.edges.append(DataFlowEdge(
+                            source_id=src.id,
+                            target_id=sink_node.id,
+                            kind="CONFIRMED_DATA_FLOW",
+                            confidence=0.90,
+                            transform=f"deserialization:{operation}",
+                        ))
+                        break
+
+        # CWE-502 Sink Registry
+        pickle_sinks = {"loads", "load", "dumps", "dump"}
+        yaml_unsafe_funcs = {"load", "load_all", "dump", "dump_all"}
+        safe_yaml_loaders = {"safeloader", "yaml.safeloader", "csafeloader", "yaml.csafeloader"}
+        safe_yaml_dumpers = {"safedumper", "yaml.safedumper", "csafedumper", "yaml.csafedumper"}
+
+        for mod_name, tree in self.modules.items():
+            for node in self._reachable_nodes(tree):
+                if not isinstance(node, ast.Call):
+                    continue
+                scope_id = _scope_for(node, mod_name)
+                lineno = getattr(node, "lineno", 1)
+                callee_seg = _seg(node.func)
+                callee_name = dotted_name(node.func) or ""
+
+                # Determine if this is a CWE-502 sink
+                is_deser_sink = False
+                operation = ""
+
+                # Pickle family: pickle.loads, _pickle.load, cPickle.loads, dill.loads
+                if callee_seg in pickle_sinks:
+                    recv = _recv_text(node.func.value) if isinstance(node.func, ast.Attribute) else ""
+                    if any(lib in recv for lib in ["pickle", "_pickle", "cpickle", "dill"]):
+                        is_deser_sink = True
+                        operation = f"PICKLE_{callee_seg.upper()}"
+
+                # Shelve: shelve.open
+                elif callee_name in {"shelve.open"} or (callee_seg == "open" and isinstance(node.func, ast.Attribute) and _recv_text(node.func.value) == "shelve"):
+                    is_deser_sink = True
+                    operation = "SHELVE_OPEN"
+
+                # YAML: yaml.load (UNSAFE unless Loader=SafeLoader)
+                elif callee_name.startswith("yaml.") and callee_seg in yaml_unsafe_funcs:
+                    # Check if SafeLoader/SafeDumper is explicitly passed
+                    has_safe_loader = False
+                    for kw in node.keywords:
+                        if kw.arg == "Loader" and isinstance(kw.value, ast.AST):
+                            loader_name = dotted_name(kw.value) or ""
+                            loader_seg = _seg(kw.value).lower()
+                            if loader_name.lower() in safe_yaml_loaders or loader_seg in safe_yaml_loaders:
+                                has_safe_loader = True
+                                break
+                        elif kw.arg == "Dumper" and isinstance(kw.value, ast.AST):
+                            dumper_name = dotted_name(kw.value) or ""
+                            dumper_seg = _seg(kw.value).lower()
+                            if dumper_name.lower() in safe_yaml_dumpers or dumper_seg in safe_yaml_dumpers:
+                                has_safe_loader = True
+                                break
+                    
+                    # yaml.safe_load and yaml.safe_dump are ALWAYS safe (different function name)
+                    if callee_name in {"yaml.safe_load", "yaml.safe_dump"}:
+                        has_safe_loader = True
+
+                    if not has_safe_loader:
+                        is_deser_sink = True
+                        operation = f"YAML_{callee_seg.upper()}"
+
+                # jsonpickle.decode
+                elif callee_name in {"jsonpickle.decode", "jsonpickle.unpickler"} or callee_seg in {"decode", "unpickler"}:
+                    recv = _recv_text(node.func.value) if isinstance(node.func, ast.Attribute) else ""
+                    if "jsonpickle" in recv:
+                        is_deser_sink = True
+                        operation = f"JSONPICKLE_{callee_seg.upper()}"
+
+                if not is_deser_sink:
+                    continue
+
+                # ZERO-FP GUARD: Skip pure static constants (byte literals, hardcoded strings)
+                first_arg = node.args[0] if node.args else None
+                if first_arg is not None:
+                    # Pure byte literal: b"..." or b'...'
+                    if isinstance(first_arg, ast.Constant) and isinstance(first_arg.value, bytes):
+                        continue
+                    # Pure string literal: "..." or '...'
+                    if isinstance(first_arg, ast.Constant) and isinstance(first_arg.value, str):
+                        continue
+                    # Static Bytes/Str nodes (older AST)
+                    if isinstance(first_arg, (ast.Bytes, ast.Str)):
+                        continue
+
+                # Find source node for edge creation
+                file_path = self.file_paths.get(mod_name, "unknown.py")
+                source_node = None
+                for src in self.sources:
+                    if src.location.file == file_path and src.lineno < lineno:
+                        source_node = src
+                        break
+
+                _emit502(node, mod_name, scope_id, operation, source_node=source_node)
+
     def _collect_phase5_structural_findings(self) -> None:
         """Collect Phase 5 path traversal, archive extraction, and TLS findings."""
         function_scopes = {id(function): scope for scope, function in self.functions.items()}
@@ -14192,6 +14458,7 @@ class TaintTracker:
         self._collect_template_response_xss_findings()
         self._collect_cwe79_xss_recovery_findings()
         self._collect_cwe22_path_traversal_findings()
+        self._collect_cwe502_deserialization_findings()
         self._collect_cluster1_structural_findings()
         self._collect_cluster2_structural_findings()
         self._collect_cluster3_structural_findings()
