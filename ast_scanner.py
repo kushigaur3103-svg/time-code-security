@@ -9477,6 +9477,111 @@ class TaintTracker:
         def _is_dynamic(expr: ast.AST, scope_id: str, lineno: int) -> bool:
             return expr is not None and not _is_static(expr, scope_id, lineno)
 
+        def _is_pure_literal(expr: ast.AST, scope_id: str, lineno: int, visited=None) -> bool:
+            """Check if expression is purely static literals (no dynamic content at all).
+            
+            This is stricter than _is_static - it ensures concatenation/formatting 
+            only involves literal strings with no variables or function calls.
+            """
+            if expr is None:
+                return False
+            if visited is None:
+                visited = set()
+            # Pure literals: Constant strings/bytes
+            if isinstance(expr, ast.Constant):
+                return isinstance(expr.value, (str, bytes))
+            if isinstance(expr, (ast.Str, ast.Bytes)):
+                return True
+            # List/Tuple of pure literals
+            if isinstance(expr, (ast.List, ast.Tuple)):
+                return all(_is_pure_literal(element, scope_id, lineno, visited.copy()) for element in expr.elts)
+            # String concatenation with + must have both sides as pure literals
+            if isinstance(expr, ast.BinOp) and isinstance(expr.op, ast.Add):
+                return _is_pure_literal(expr.left, scope_id, lineno, visited.copy()) and \
+                       _is_pure_literal(expr.right, scope_id, lineno, visited.copy())
+            # Modulo formatting must have both sides as pure literals
+            if isinstance(expr, ast.BinOp) and isinstance(expr.op, ast.Mod):
+                return _is_pure_literal(expr.left, scope_id, lineno, visited.copy()) and \
+                       _is_pure_literal(expr.right, scope_id, lineno, visited.copy())
+            # F-strings are NEVER pure literals (they always interpolate something)
+            if isinstance(expr, ast.JoinedStr):
+                return False
+            # .format() calls are NEVER pure literals (method call implies potential dynamism)
+            if isinstance(expr, ast.Call):
+                return False
+            # Variable references: check assignment but still not pure literal
+            if isinstance(expr, ast.Name):
+                key = (scope_id, expr.id)
+                if key in visited:
+                    return False
+                visited.add(key)
+                record = _assigned_value(expr.id, scope_id, lineno)
+                if record is not None and record.value_node is not None:
+                    return _is_pure_literal(record.value_node, record.scope_id, record.lineno, visited.copy())
+                return False
+            return False
+
+        def _uses_safe_builder(expr: ast.AST, scope_id: str, lineno: int, visited=None) -> bool:
+            """Check if expression uses safe SQL builders like psycopg2.sql.Identifier or SQLAlchemy bindparams().
+            
+            Returns True if the expression or any of its parts use known-safe SQL construction methods.
+            """
+            if expr is None:
+                return False
+            if visited is None:
+                visited = set()
+            # Check direct calls
+            if isinstance(expr, ast.Call):
+                if isinstance(expr.func, ast.AST):
+                    call_names = {
+                        dotted_name(expr.func) or "",
+                        self.resolve_canonical_name(expr.func, scope_id) or "",
+                    }
+                    # Safe SQL builders
+                    safe_builders = {
+                        "psycopg2.sql.Identifier", "sql.Identifier", "Identifier",
+                        "psycopg2.sql.SQL", "sql.SQL",
+                        "sqlalchemy.text", "text",
+                    }
+                    if call_names & safe_builders:
+                        return True
+                    # Check for .format() method - look at args for safe builders
+                    if isinstance(expr.func, ast.Attribute) and expr.func.attr == "format":
+                        for arg in expr.args:
+                            if _uses_safe_builder(arg, scope_id, lineno, visited.copy()):
+                                return True
+                    # Check for bindparams() method calls
+                    if isinstance(expr.func, ast.Attribute) and expr.func.attr == "bindparams":
+                        return True
+                    # Recursively check arguments
+                    for arg in expr.args:
+                        if _uses_safe_builder(arg, scope_id, lineno, visited.copy()):
+                            return True
+                    for kw in expr.keywords:
+                        if _uses_safe_builder(kw.value, scope_id, lineno, visited.copy()):
+                            return True
+                # Also check the receiver of method calls (e.g., sql.SQL(...).format(...))
+                if isinstance(expr.func, ast.Attribute):
+                    if _uses_safe_builder(expr.func.value, scope_id, lineno, visited.copy()):
+                        return True
+            # Check binary operations
+            if isinstance(expr, ast.BinOp):
+                return _uses_safe_builder(expr.left, scope_id, lineno, visited.copy()) or \
+                       _uses_safe_builder(expr.right, scope_id, lineno, visited.copy())
+            # Check f-string values
+            if isinstance(expr, ast.JoinedStr):
+                return any(_uses_safe_builder(value, scope_id, lineno, visited.copy()) for value in expr.values)
+            # Check variable assignments
+            if isinstance(expr, ast.Name):
+                key = (scope_id, expr.id)
+                if key in visited:
+                    return False
+                visited.add(key)
+                record = _assigned_value(expr.id, scope_id, lineno)
+                if record is not None and record.value_node is not None:
+                    return _uses_safe_builder(record.value_node, record.scope_id, record.lineno, visited.copy())
+            return False
+
         def _is_fully_sanitized(expr: ast.AST, scope_id: str, lineno: int, visited=None) -> bool:
             if expr is None:
                 return False
@@ -9752,9 +9857,39 @@ class TaintTracker:
                     has_params = len(node.args) > 1 or any(kw.arg for kw in node.keywords)
                     
                     if query_expr and not has_params:
-                        # Only flag if query contains dynamic content
-                        if _is_dynamic(query_expr, scope_id, lineno) and not _is_fully_sanitized(query_expr, scope_id, lineno):
-                            _add_finding(node, mod_name, scope_id, "SQL_QUERY_EXECUTION", "SQL_INJECTION", "CWE-89")
+                        # Check for suppression on sink line
+                        if _is_line_suppressed(lineno, mod_name):
+                            pass  # Suppressed, skip
+                        # Case 1: Direct inline dynamic expression (f-string, format, concat)
+                        elif isinstance(query_expr, (ast.JoinedStr, ast.BinOp, ast.Call)):
+                            # Apply safety guards
+                            if not _is_pure_literal(query_expr, scope_id, lineno) and \
+                               not _uses_safe_builder(query_expr, scope_id, lineno) and \
+                               not _is_fully_sanitized(query_expr, scope_id, lineno):
+                                _add_finding(node, mod_name, scope_id, "SQL_QUERY_EXECUTION", "SQL_INJECTION", "CWE-89")
+                        # Case 2: Variable reference - trace back to assignment
+                        elif isinstance(query_expr, ast.Name):
+                            var_name = query_expr.id
+                            record = _assigned_value(var_name, scope_id, lineno)
+                            if record and record.value_node is not None:
+                                assigned_value = record.value_node
+                                assigned_lineno = record.lineno
+                                
+                                # Check suppression on assignment line
+                                if _is_line_suppressed(assigned_lineno, mod_name):
+                                    pass  # Suppressed at assignment, skip
+                                # Check if assigned value is dynamic (not a pure literal)
+                                elif _is_dynamic(assigned_value, record.scope_id, assigned_lineno):
+                                    # Apply all safety guards before flagging
+                                    if not _is_pure_literal(assigned_value, record.scope_id, assigned_lineno) and \
+                                       not _uses_safe_builder(assigned_value, record.scope_id, assigned_lineno) and \
+                                       not _is_fully_sanitized(assigned_value, record.scope_id, assigned_lineno):
+                                        _add_finding(node, mod_name, scope_id, "SQL_QUERY_EXECUTION", "SQL_INJECTION", "CWE-89")
+                        # Case 3: Other dynamic expressions
+                        elif _is_dynamic(query_expr, scope_id, lineno) and not _is_fully_sanitized(query_expr, scope_id, lineno):
+                            if not _is_pure_literal(query_expr, scope_id, lineno) and \
+                               not _uses_safe_builder(query_expr, scope_id, lineno):
+                                _add_finding(node, mod_name, scope_id, "SQL_QUERY_EXECUTION", "SQL_INJECTION", "CWE-89")
 
     def _collect_phase5_structural_findings(self) -> None:
         """Collect Phase 5 path traversal, archive extraction, and TLS findings."""
@@ -10102,7 +10237,7 @@ class TaintTracker:
                 return bool({source_name, canonical} & source_markers)
             return False
 
-        def _is_query_dynamic(expr: ast.AST, scope_id: str, lineno: int, visited=None) -> bool:
+        def _is_query_dynamic(expr: ast.AST, scope_id: str, lineno: int, visited=None, mod_name: str = "") -> bool:
             if expr is None:
                 return False
             if visited is None:
@@ -10118,8 +10253,11 @@ class TaintTracker:
                 visited.add(key)
                 record = _assigned_value(expr.id, scope_id, lineno)
                 if record is not None:
+                    # Check suppression on assignment line
+                    if mod_name and _is_line_suppressed(record.lineno, mod_name):
+                        return False
                     return _is_query_dynamic(
-                        record.value_node, record.scope_id, record.lineno, visited
+                        record.value_node, record.scope_id, record.lineno, visited, mod_name
                     )
                 return _is_function_parameter(expr.id, scope_id) or self.resolve_canonical_name(
                     expr, scope_id
@@ -10128,13 +10266,13 @@ class TaintTracker:
                 return True
             if isinstance(expr, ast.JoinedStr):
                 return any(
-                    _is_query_dynamic(part.value, scope_id, lineno, visited.copy())
+                    _is_query_dynamic(part.value, scope_id, lineno, visited.copy(), mod_name)
                     for part in expr.values
                     if isinstance(part, ast.FormattedValue)
                 )
             if isinstance(expr, ast.BinOp) and isinstance(expr.op, (ast.Mod, ast.Add)):
-                return _is_query_dynamic(expr.left, scope_id, lineno, visited.copy()) or _is_query_dynamic(
-                    expr.right, scope_id, lineno, visited.copy()
+                return _is_query_dynamic(expr.left, scope_id, lineno, visited.copy(), mod_name) or _is_query_dynamic(
+                    expr.right, scope_id, lineno, visited.copy(), mod_name
                 )
             if isinstance(expr, ast.Call):
                 if not isinstance(expr.func, ast.AST):
@@ -10144,7 +10282,7 @@ class TaintTracker:
                 if is_format:
                     format_values = [*expr.args, *(keyword.value for keyword in expr.keywords)]
                     return any(
-                        _is_query_dynamic(value, scope_id, lineno, visited.copy())
+                        _is_query_dynamic(value, scope_id, lineno, visited.copy(), mod_name)
                         for value in format_values
                     )
                 if names & query_wrappers:
@@ -10152,16 +10290,16 @@ class TaintTracker:
                         keyword.value for keyword in expr.keywords
                         if keyword.arg in {"statement", "sql", "query"}
                     ), expr.args[0] if expr.args else None)
-                    return _is_query_dynamic(nested_query, scope_id, lineno, visited)
+                    return _is_query_dynamic(nested_query, scope_id, lineno, visited, mod_name)
                 return False
             if isinstance(expr, (ast.Tuple, ast.List, ast.Set)):
                 return any(
-                    _is_query_dynamic(element, scope_id, lineno, visited.copy())
+                    _is_query_dynamic(element, scope_id, lineno, visited.copy(), mod_name)
                     for element in expr.elts
                 )
             if isinstance(expr, ast.Dict):
                 return any(
-                    _is_query_dynamic(value, scope_id, lineno, visited.copy())
+                    _is_query_dynamic(value, scope_id, lineno, visited.copy(), mod_name)
                     for value in expr.values
                 )
             return False
@@ -10174,8 +10312,80 @@ class TaintTracker:
 
         seen: set[tuple[int, int]] = set()
 
+        def _is_line_suppressed(lineno: int, mod_name: str) -> bool:
+            """Check if a line has # ok: or # nosec suppression comment."""
+            source_lines = self._source_lines_by_file.get(self.file_paths.get(mod_name, ""), [])
+            if source_lines and 1 <= lineno <= len(source_lines):
+                line_text = source_lines[lineno - 1]
+                if CLUSTER3_NOSEC_RE.search(line_text):
+                    return True
+                # Also check previous line for # ok: comments
+                if lineno >= 2:
+                    prev_line = source_lines[lineno - 2]
+                    if re.search(r"#\s*ok:", prev_line, re.IGNORECASE):
+                        return True
+            return False
+
+        def _uses_safe_builder_p6(expr: ast.AST, scope_id: str, lineno: int, visited=None) -> bool:
+            """Check if expression uses safe SQL builders like psycopg2.sql.Identifier or SQLAlchemy bindparams()."""
+            if expr is None:
+                return False
+            if visited is None:
+                visited = set()
+            if isinstance(expr, ast.Call):
+                if isinstance(expr.func, ast.AST):
+                    call_names = {
+                        dotted_name(expr.func) or "",
+                        self.resolve_canonical_name(expr.func, scope_id) or "",
+                    }
+                    # Check for safe builder functions
+                    safe_builders = {
+                        "psycopg2.sql.Identifier", "sql.Identifier", "Identifier",
+                        "psycopg2.sql.SQL", "sql.SQL",
+                        "sqlalchemy.text", "text",
+                    }
+                    if call_names & safe_builders:
+                        return True
+                    # Check for .format() method - look at args for safe builders
+                    if isinstance(expr.func, ast.Attribute) and expr.func.attr == "format":
+                        # Check if any argument to .format() is a safe builder
+                        for arg in expr.args:
+                            if _uses_safe_builder_p6(arg, scope_id, lineno, visited.copy()):
+                                return True
+                    # Check for .bindparams() method
+                    if isinstance(expr.func, ast.Attribute) and expr.func.attr == "bindparams":
+                        return True
+                    # Recursively check all arguments
+                    for arg in expr.args:
+                        if _uses_safe_builder_p6(arg, scope_id, lineno, visited.copy()):
+                            return True
+                    for kw in expr.keywords:
+                        if _uses_safe_builder_p6(kw.value, scope_id, lineno, visited.copy()):
+                            return True
+                # Also check the receiver of method calls (e.g., sql.SQL(...).format(...))
+                if isinstance(expr.func, ast.Attribute):
+                    if _uses_safe_builder_p6(expr.func.value, scope_id, lineno, visited.copy()):
+                        return True
+            if isinstance(expr, ast.BinOp):
+                return _uses_safe_builder_p6(expr.left, scope_id, lineno, visited.copy()) or \
+                       _uses_safe_builder_p6(expr.right, scope_id, lineno, visited.copy())
+            if isinstance(expr, ast.JoinedStr):
+                return any(_uses_safe_builder_p6(value, scope_id, lineno, visited.copy()) for value in expr.values)
+            if isinstance(expr, ast.Name):
+                key = (scope_id, expr.id)
+                if key in visited:
+                    return False
+                visited.add(key)
+                record = _assigned_value(expr.id, scope_id, lineno)
+                if record is not None and record.value_node is not None:
+                    return _uses_safe_builder_p6(record.value_node, record.scope_id, record.lineno, visited.copy())
+            return False
+
         def _add_finding(node: ast.Call, mod_name: str, scope_id: str) -> None:
             line = getattr(node, "lineno", 1)
+            # Check for suppression before adding finding
+            if _is_line_suppressed(line, mod_name):
+                return
             column = getattr(node, "col_offset", 0)
             key = (line, column)
             if key in seen:
@@ -10231,8 +10441,11 @@ class TaintTracker:
                 if not (is_execute or is_sqlite_chain or is_wrapper):
                     continue
                 query = _query_argument(node)
-                if query is not None and _is_query_dynamic(query, scope_id, getattr(node, "lineno", 1)):
-                    _add_finding(node, mod_name, scope_id)
+                node_lineno = getattr(node, "lineno", 1)
+                if query is not None and _is_query_dynamic(query, scope_id, node_lineno, mod_name=mod_name):
+                    # Apply safe builder guard
+                    if not _uses_safe_builder_p6(query, scope_id, node_lineno):
+                        _add_finding(node, mod_name, scope_id)
 
     def _collect_phase7_structural_findings(self) -> None:
         """Collect XXE and server-side template injection findings."""
