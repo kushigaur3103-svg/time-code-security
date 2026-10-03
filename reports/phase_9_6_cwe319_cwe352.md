@@ -1,7 +1,17 @@
 # Phase 9.6 Implementation Report: CWE-319 (Cleartext Transmission) & CWE-352 (CSRF)
 
+> **HOTFIX CORRECTION (commit cd9b8a0).** The original Phase 9.6 allowlist included
+> `example.com`, `example.org`, `example.net`, `test.org`, `test.com` — which suppressed
+> 10 valid True Positives in semgrep rule corpora (`requests/request-with-http.py`,
+> `urllib/insecure-urlopen.py`) where `http://example.com` is the intentionally vulnerable
+> `# ruleid:` target. Those entries were REMOVED. The allowlist now contains only
+> loopback hosts (localhost, 127.0.0.1, 0.0.0.0, ::1) and XML schema/namespace URIs
+> (w3.org, schemas.microsoft.com, xml.org, docs.oasis-open.org, schemas.xmlsoap.org,
+> json-schema.org). Post-hotfix Strict TP: **763 master / 719 semgrep_rules**
+> (baseline 761/717 recovered, net +2), FP ceilings held: 40 semgrep / 42 master.
+
 **Date:** 2026-10-03
-**Commit:** 5e00796
+**Commit:** 5e00796 (original) → 61c440d (9.6 feature) → cd9b8a0 (TP regression hotfix)
 **Phase:** 9.6 — Cleartext Transmission & CSRF Detection with Zero-FP Guarantee
 
 ## Executive Summary
