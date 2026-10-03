@@ -12,6 +12,8 @@ license = "MIT"
 dependencies = []
 
 [project.scripts]
+timecode = "cli:main"
+tcsec = "cli:main"
 tcs = "cli:main"
 
 [tool.setuptools]
@@ -21,12 +23,16 @@ py-modules = [
     "ci_reporter",
     "cli",
     "config_loader",
+    "cross_file_engine",
     "delivery_models",
     "delivery_repository",
     "durable_delivery_sink",
     "event_bus",
     "event_publisher",
     "event_taxonomy",
+    "function_summarizer",
+    "html_auditor",
+    "iac_auditor",
     "in_app_adapter",
     "manifest_parser",
     "master_rules_bank",
@@ -45,6 +51,7 @@ py-modules = [
     "ssrf_guard",
     "staged_scanner",
     "suppression_resolver",
+    "symbol_indexer",
     "tcs_cli",
     "tcs_gui",
     "version_matcher",
@@ -55,6 +62,8 @@ py-modules = [
 packages = [
     "remediation",
     "sca_reachability",
+    "tcs",
+    "tcs.analysis",
 ]
 
 [tool.setuptools.package-data]
