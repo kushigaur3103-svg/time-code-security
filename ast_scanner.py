@@ -10140,6 +10140,394 @@ class TaintTracker:
                 if names & csrf_exempt_names:
                     _add_finding(node, mod_name, scope_id, "CSRF_EXEMPT_DECORATOR", "CSRF_VULNERABILITY", "CWE-352")
 
+    def _collect_intra_file_call_bridge_findings(self) -> None:
+        """Phase 10.1: Intra-file function call resolver (parameter-to-argument bridge).
+
+        When a SQL sink argument inside a helper function is a bare parameter Name that
+        no local/global assignment resolves, bridge to call sites of that helper in the
+        same module, resolve the actual argument in the caller's scope, and flag only if
+        the bridged value is dynamic and survives every safety guard (parameterized
+        query, safe builder, sanitizer, pure literal, ok/nosec suppression, 2-hop cap,
+        visited-function cycle set).
+        """
+        function_scopes = {id(function): scope for scope, function in self.functions.items()}
+        sql_sinks = {
+            "cursor.execute", "cursor.executemany",
+            "connection.execute", "engine.execute", "session.execute",
+            "Model.objects.raw", "Model.objects.extra",
+            "RawSQL", "django.db.models.expressions.RawSQL",
+        }
+        bridge_seen: set[tuple[str, int, int]] = set()
+
+        def _scope_for(node: ast.AST, mod_name: str) -> str:
+            current = node
+            while current is not None:
+                scope = function_scopes.get(id(current))
+                if scope:
+                    return scope
+                current = getattr(current, "parent", None)
+            return f"{mod_name}:global"
+
+        def _call_names(call: ast.Call, scope_id: str) -> set[str]:
+            if not isinstance(call, ast.Call) or not isinstance(call.func, ast.AST):
+                return set()
+            name = dotted_name(call.func) or ""
+            canonical = self.resolve_canonical_name(call.func, scope_id) or ""
+            return {value for value in (name, canonical) if value}
+
+        def _assigned_value(name: str, scope_id: str, lineno: int):
+            current_scope = scope_id
+            mod_name = scope_id.split(":")[0]
+            _walk_seen = set()
+            while current_scope and current_scope not in _walk_seen:
+                _walk_seen.add(current_scope)
+                records = self.assignments_by_scope.get((current_scope, name), [])
+                prior = [record for record in records if record.lineno <= lineno]
+                if prior:
+                    return prior[-1]
+                if "." in current_scope and "function" in current_scope:
+                    current_scope = current_scope.rsplit(".", 1)[0]
+                elif ":function" in current_scope:
+                    current_scope = f"{mod_name}:global"
+                elif current_scope != f"{mod_name}:global":
+                    current_scope = f"{mod_name}:global"
+                else:
+                    break
+            return None
+
+        def _call_name_set(expr: ast.AST, scope_id: str) -> set[str]:
+            if isinstance(expr, ast.Call):
+                return _call_names(expr, scope_id)
+            return set()
+
+        def _is_static(expr: ast.AST, scope_id: str, lineno: int) -> bool:
+            if expr is None:
+                return False
+            if isinstance(expr, ast.Constant):
+                return isinstance(expr.value, (str, bytes, int, float, bool, type(None)))
+            if isinstance(expr, (ast.Str, ast.Bytes, ast.Num)):
+                return True
+            if isinstance(expr, (ast.List, ast.Tuple)):
+                return all(_is_static(element, scope_id, lineno) for element in expr.elts)
+            if isinstance(expr, ast.JoinedStr):
+                return all(_is_static(value, scope_id, lineno) for value in expr.values)
+            if isinstance(expr, ast.BinOp) and isinstance(expr.op, (ast.Add, ast.Mod)):
+                return _is_static(expr.left, scope_id, lineno) and _is_static(expr.right, scope_id, lineno)
+            if isinstance(expr, ast.Call):
+                call_names = _call_name_set(expr, scope_id)
+                if isinstance(expr.func, ast.Attribute) and expr.func.attr == "format":
+                    if not _is_static(expr.func.value, scope_id, lineno):
+                        return False
+                    return all(_is_static(arg, scope_id, lineno) for arg in expr.args) and \
+                           all(_is_static(kw.value, scope_id, lineno) for kw in expr.keywords)
+                _ = call_names
+            if isinstance(expr, ast.Name):
+                record = _assigned_value(expr.id, scope_id, lineno)
+                if record is not None and record.value_node is not None:
+                    return _is_static(record.value_node, record.scope_id, record.lineno)
+            return _eval_static_constant(expr, self.assignments_by_scope, scope_id, lineno) is not None
+
+        def _is_dynamic(expr: ast.AST, scope_id: str, lineno: int) -> bool:
+            return expr is not None and not _is_static(expr, scope_id, lineno)
+
+        def _is_pure_literal(expr: ast.AST, scope_id: str, lineno: int, visited=None) -> bool:
+            if expr is None:
+                return False
+            if visited is None:
+                visited = set()
+            if isinstance(expr, ast.Constant):
+                return isinstance(expr.value, (str, bytes))
+            if isinstance(expr, (ast.Str, ast.Bytes)):
+                return True
+            if isinstance(expr, (ast.List, ast.Tuple)):
+                return all(_is_pure_literal(element, scope_id, lineno, visited.copy()) for element in expr.elts)
+            if isinstance(expr, ast.BinOp) and isinstance(expr.op, (ast.Add, ast.Mod)):
+                return _is_pure_literal(expr.left, scope_id, lineno, visited.copy()) and \
+                       _is_pure_literal(expr.right, scope_id, lineno, visited.copy())
+            if isinstance(expr, ast.JoinedStr):
+                return False
+            if isinstance(expr, ast.Call):
+                return False
+            if isinstance(expr, ast.Name):
+                key = (scope_id, expr.id)
+                if key in visited:
+                    return False
+                visited.add(key)
+                record = _assigned_value(expr.id, scope_id, lineno)
+                if record is not None and record.value_node is not None:
+                    return _is_pure_literal(record.value_node, record.scope_id, record.lineno, visited.copy())
+                return False
+            return False
+
+        def _uses_safe_builder(expr: ast.AST, scope_id: str, lineno: int, visited=None) -> bool:
+            if expr is None:
+                return False
+            if visited is None:
+                visited = set()
+            if isinstance(expr, ast.Call) and isinstance(expr.func, ast.AST):
+                call_names = {
+                    dotted_name(expr.func) or "",
+                    self.resolve_canonical_name(expr.func, scope_id) or "",
+                }
+                safe_builders = {
+                    "psycopg2.sql.Identifier", "sql.Identifier", "Identifier",
+                    "psycopg2.sql.SQL", "sql.SQL",
+                    "sqlalchemy.text", "text",
+                }
+                if call_names & safe_builders:
+                    return True
+                if isinstance(expr.func, ast.Attribute) and expr.func.attr == "format":
+                    for arg in expr.args:
+                        if _uses_safe_builder(arg, scope_id, lineno, visited.copy()):
+                            return True
+                if isinstance(expr.func, ast.Attribute) and expr.func.attr == "bindparams":
+                    return True
+                for arg in expr.args:
+                    if _uses_safe_builder(arg, scope_id, lineno, visited.copy()):
+                        return True
+                for kw in expr.keywords:
+                    if _uses_safe_builder(kw.value, scope_id, lineno, visited.copy()):
+                        return True
+                if _uses_safe_builder(expr.func.value if isinstance(expr.func, ast.Attribute) else None,
+                                      scope_id, lineno, visited.copy()):
+                    return True
+            if isinstance(expr, ast.BinOp):
+                return _uses_safe_builder(expr.left, scope_id, lineno, visited.copy()) or \
+                       _uses_safe_builder(expr.right, scope_id, lineno, visited.copy())
+            if isinstance(expr, ast.JoinedStr):
+                return any(_uses_safe_builder(value, scope_id, lineno, visited.copy()) for value in expr.values)
+            if isinstance(expr, ast.Name):
+                key = (scope_id, expr.id)
+                if key in visited:
+                    return False
+                visited.add(key)
+                record = _assigned_value(expr.id, scope_id, lineno)
+                if record is not None and record.value_node is not None:
+                    return _uses_safe_builder(record.value_node, record.scope_id, record.lineno, visited.copy())
+            return False
+
+        def _is_fully_sanitized(expr: ast.AST, scope_id: str, lineno: int, visited=None) -> bool:
+            if expr is None:
+                return False
+            if _is_static(expr, scope_id, lineno):
+                return True
+            if visited is None:
+                visited = set()
+            if isinstance(expr, ast.Call) and isinstance(expr.func, ast.AST):
+                sanitizer_names = {
+                    dotted_name(expr.func) or "",
+                    self.resolve_canonical_name(expr.func, scope_id) or "",
+                }
+                return bool(sanitizer_names & SANITIZER_REGISTRY.get("CWE-78", set()))
+            if isinstance(expr, ast.Name):
+                key = (scope_id, expr.id)
+                if key in visited:
+                    return False
+                visited.add(key)
+                record = _assigned_value(expr.id, scope_id, lineno)
+                return record is not None and _is_fully_sanitized(
+                    record.value_node, record.scope_id, record.lineno, visited
+                )
+            return False
+
+        def _is_line_suppressed(lineno: int, mod_name: str) -> bool:
+            source_lines = self._source_lines_by_file.get(self.file_paths.get(mod_name, ""), [])
+            if source_lines and 1 <= lineno <= len(source_lines):
+                line_text = source_lines[lineno - 1]
+                if CLUSTER3_NOSEC_RE.search(line_text):
+                    return True
+                if lineno >= 2:
+                    prev_line = source_lines[lineno - 2]
+                    if re.search(r"#\s*ok:", prev_line, re.IGNORECASE):
+                        return True
+            return False
+
+        def _enclosing_function(node: ast.AST):
+            current = getattr(node, "parent", None)
+            while current is not None:
+                if isinstance(current, (ast.FunctionDef, ast.AsyncFunctionDef)):
+                    return current
+                current = getattr(current, "parent", None)
+            return None
+
+        def _param_spec(fn, name: str):
+            positional = list(getattr(fn.args, "posonlyargs", [])) + list(fn.args.args)
+            for index, arg in enumerate(positional):
+                if arg.arg == name:
+                    return ("pos", index)
+            for arg in fn.args.kwonlyargs:
+                if arg.arg == name:
+                    return ("kw", name)
+            return None
+
+        def _emit(sink_call: ast.Call, mod_name: str, scope_id: str) -> None:
+            line = getattr(sink_call, "lineno", 1)
+            column = getattr(sink_call, "col_offset", 0)
+            key = ("CWE-89", line, column)
+            if key in bridge_seen:
+                return
+            if _is_line_suppressed(line, mod_name):
+                return
+            file_path = self.file_paths.get(mod_name, "unknown.py")
+            node_location = location(sink_call, file_path)
+            existing = next((
+                record for record in self.sink_records
+                if record.security_node.location == node_location
+                and record.security_node.metadata.get("cwe") == "CWE-89"
+            ), None)
+            if existing is not None:
+                return
+            bridge_seen.add(key)
+            sink_node = SecurityNode(
+                id=self.next_sink_id(),
+                node_type=NodeType.SINK,
+                symbol="SQL_QUERY_EXECUTION",
+                operation="SQL_QUERY_EXECUTION_BRIDGED",
+                location=node_location,
+                metadata={
+                    "sink_type": "SQL_INJECTION",
+                    "category": "SQL_INJECTION",
+                    "cwe": "CWE-89",
+                    "operation": "SQL_QUERY_EXECUTION_BRIDGED",
+                    "p10_source_id": "SQL_QUERY_EXECUTION",
+                    "intra_file_bridge": True,
+                },
+            )
+            self.sinks.append(sink_node)
+            self.sink_records.append(SinkRecord(
+                node=sink_call,
+                security_node=sink_node,
+                lineno=line,
+                scope_id=scope_id,
+            ))
+
+        def _bridge_candidates(func_node, param_name: str, mod_name: str, hop: int, visited):
+            """Yield (expr, scope_id, lineno) candidates from same-file call sites of func_node.
+
+            Returns None (sentinel for 'remain silent') if any reachable call site line or
+            assignment line is suppressed via # ok:/# nosec.
+            """
+            candidates = []
+            for call_site, caller_fn_name in call_sites_by_name.get(func_node.name, []):
+                if caller_fn_name in visited and call_site is not None and hop > 0:
+                    continue
+                spec = _param_spec(func_node, param_name)
+                if spec is None:
+                    continue
+                kind, value = spec
+                if any(isinstance(a, ast.Starred) for a in call_site.args):
+                    continue
+                if any(kw.arg is None for kw in call_site.keywords):
+                    continue
+                arg = None
+                if kind == "pos":
+                    if value < len(call_site.args):
+                        arg = call_site.args[value]
+                    else:
+                        arg = next((kw.value for kw in call_site.keywords if kw.arg == param_name), None)
+                else:
+                    arg = next((kw.value for kw in call_site.keywords if kw.arg == value), None)
+                if arg is None:
+                    continue
+                caller_scope = _scope_for(call_site, mod_name)
+                if _is_line_suppressed(call_site.lineno, mod_name):
+                    continue
+                if isinstance(arg, ast.Name):
+                    record = _assigned_value(arg.id, caller_scope, call_site.lineno)
+                    if record is not None and record.value_node is not None:
+                        if _is_line_suppressed(record.lineno, mod_name):
+                            continue
+                        candidates.append((record.value_node, record.scope_id, record.lineno))
+                        continue
+                    caller_fn = _enclosing_function(call_site)
+                    if (caller_fn is not None and hop < 1
+                            and _param_spec(caller_fn, arg.id) is not None
+                            and caller_fn.name not in visited):
+                        candidates.extend(_bridge_candidates(
+                            caller_fn, arg.id, mod_name, hop + 1, visited | {caller_fn.name}))
+                    # Unresolvable parameter/global at the boundary: stay silent (zero-FP).
+                    continue
+                candidates.append((arg, caller_scope, call_site.lineno))
+            return candidates
+
+        for mod_name, tree in self.modules.items():
+            call_sites_by_name: dict[str, list[tuple[ast.Call, str]]] = {}
+            funcs_by_name: dict[str, list] = {}
+            for node in self._reachable_nodes(tree):
+                if isinstance(node, (ast.FunctionDef, ast.AsyncFunctionDef)):
+                    funcs_by_name.setdefault(node.name, []).append(node)
+            for node in self._reachable_nodes(tree):
+                if (isinstance(node, ast.Call) and isinstance(node.func, ast.Name)
+                        and node.func.id in funcs_by_name):
+                    owner = _enclosing_function(node)
+                    call_sites_by_name.setdefault(node.func.id, []).append(
+                        (node, owner.name if owner is not None else ""))
+
+            for node in self._reachable_nodes(tree):
+                if not isinstance(node, ast.Call) or not isinstance(node.func, ast.AST):
+                    continue
+                scope_id = _scope_for(node, mod_name)
+                names = _call_names(node, scope_id)
+                if not (names & sql_sinks):
+                    # Alias-tolerant cursor matching: any `<base>.execute(...)` call form,
+                    # mirroring Phase-6's method set but not requiring a known cursor name.
+                    attr = node.func.attr if isinstance(node.func, ast.Attribute) else None
+                    if attr in {"execute", "executemany", "executescript"}:
+                        dotted = dotted_name(node.func) or ""
+                        if dotted.startswith(("super",)):
+                            continue
+                    else:
+                        continue
+                # Parameterized-query preservation: extra args/keywords => SAFE, silent.
+                if len(node.args) > 1 or any(kw.arg for kw in node.keywords):
+                    continue
+                lineno = getattr(node, "lineno", 1)
+                query_kw_names = {"query", "sql", "statement"}
+                query_expr = None
+                for kw in node.keywords:
+                    if kw.arg in query_kw_names:
+                        query_expr = kw.value
+                if query_expr is None and node.args:
+                    query_expr = node.args[0]
+                if not isinstance(query_expr, ast.Name):
+                    continue
+                helper_fn = _enclosing_function(node)
+                if helper_fn is None:
+                    continue
+                if _param_spec(helper_fn, query_expr.id) is None:
+                    continue
+                # Only bridge when no local/global assignment shadows the parameter.
+                if _assigned_value(query_expr.id, scope_id, lineno) is not None:
+                    continue
+                if helper_fn.name not in call_sites_by_name:
+                    continue  # helper never invoked in this module — stay silent
+                candidates = _bridge_candidates(
+                    helper_fn, query_expr.id, mod_name, 0, {helper_fn.name})
+                for expr, cand_scope, cand_lineno in candidates:
+                    if _is_static(expr, cand_scope, cand_lineno):
+                        continue
+                    if _is_pure_literal(expr, cand_scope, cand_lineno):
+                        continue
+                    if _uses_safe_builder(expr, cand_scope, cand_lineno):
+                        continue
+                    if _is_fully_sanitized(expr, cand_scope, cand_lineno):
+                        continue
+                    # Sanitizer/safe-builder may live behind an assignment chain:
+                    record = None
+                    if isinstance(expr, ast.Name):
+                        record = _assigned_value(expr.id, cand_scope, cand_lineno)
+                    check_expr = record.value_node if record is not None and record.value_node is not None else expr
+                    check_scope = record.scope_id if record is not None else cand_scope
+                    check_lineno = record.lineno if record is not None else cand_lineno
+                    if _is_static(check_expr, check_scope, check_lineno):
+                        continue
+                    if _uses_safe_builder(check_expr, check_scope, check_lineno):
+                        continue
+                    if _is_fully_sanitized(check_expr, check_scope, check_lineno):
+                        continue
+                    _emit(node, mod_name, scope_id)
+                    break
+
     def _collect_phase5_structural_findings(self) -> None:
         """Collect Phase 5 path traversal, archive extraction, and TLS findings."""
         function_scopes = {id(function): scope for scope, function in self.functions.items()}
@@ -12555,6 +12943,7 @@ class TaintTracker:
         self._collect_batch4_structural_findings()
         self._collect_phase3_structural_findings()
         self._collect_phase4_structural_findings()
+        self._collect_intra_file_call_bridge_findings()
         self._collect_phase5_structural_findings()
         self._collect_phase6_structural_findings()
         self._collect_phase7_structural_findings()
