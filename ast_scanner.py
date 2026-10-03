@@ -7233,6 +7233,12 @@ class TaintTracker:
                 key = (cwe, line, column)
                 if key in seen:
                     return
+                _c2_lines = self._source_lines_by_file.get(file_path, [])
+                if _c2_lines and 1 <= line <= len(_c2_lines):
+                    if CLUSTER3_NOSEC_RE.search(_c2_lines[line - 1]):
+                        return
+                    if line >= 2 and re.search(r"#\s*ok:", _c2_lines[line - 2], re.IGNORECASE):
+                        return
                 if existing_index.get((cwe, line)):
                     _merge_into_existing_sink(cwe, line, operation)
                     return
@@ -8409,7 +8415,23 @@ class TaintTracker:
                                         is_whitelisted = True
                                         break
                                 if not is_whitelisted:
-                                    cwe_meta = {"operation": "CLEARTEXT_HTTP_TRANSMISSION", "category": "CLEARTEXT_HTTP_TRANSMISSION", "cwe": "CWE-319"}
+                                    _p7_lines = self._source_lines_by_file.get(file_path, [])
+                                    def _p7_sup(lno):
+                                        if not (1 <= lno <= len(_p7_lines)):
+                                            return False
+                                        if CLUSTER3_NOSEC_RE.search(_p7_lines[lno - 1]):
+                                            return True
+                                        if lno >= 2 and re.search(r"#\s*ok:", _p7_lines[lno - 2], re.IGNORECASE):
+                                            return True
+                                        return False
+                                    _sup = _p7_sup(lineno)
+                                    if not _sup and isinstance(url_arg, ast.Name):
+                                        _recs = self.assignments_by_scope.get((scope_id, url_arg.id), [])
+                                        _before = [r for r in _recs if r.lineno < lineno]
+                                        if _before and _p7_sup(_before[-1].lineno):
+                                            _sup = True
+                                    if not _sup:
+                                        cwe_meta = {"operation": "CLEARTEXT_HTTP_TRANSMISSION", "category": "CLEARTEXT_HTTP_TRANSMISSION", "cwe": "CWE-319"}
 
                     # ─── CWE-489: Active Debug Code in Production (app.run(debug=True) / uvicorn.run(debug=True)) ───
                     elif name in ("app.run", "Flask.run", "uvicorn.run") or name.endswith(".run"):
@@ -8621,6 +8643,184 @@ class TaintTracker:
                         lineno=getattr(node, "lineno", 1),
                         scope_id=scope_id,
                     ))
+
+    def _collect_cwe319_variable_resolution_findings(self) -> None:
+        """Phase 9.6.1: Intra-procedural variable URL resolution for CWE-319.
+
+        Recovers two semgrep annotation shapes that sink-line detection misses:
+          1. `url = "http://…"; urlopen(url)`  -> finding reported at the ASSIGNMENT line.
+          2. `def test(url = "http://…")` where url reaches an HTTP sink -> finding at the DEF line.
+        Zero-FP guards: pure static string literal only, loopback + schema-namespace
+        allowlists, ok/nosec suppression on both the reported line and the sink line.
+        """
+        verbs = {"get", "post", "put", "delete", "head", "options", "patch",
+                 "request", "Request", "urlopen", "urlretrieve"}
+        opener_ctor_names = {"URLopener", "FancyURLopener", "OpenerDirector",
+                             "build_opener", "Session"}
+        module_roots = {"requests", "httpx"}
+        scheme_re = re.compile(r"^(?:http|ftp)://", re.IGNORECASE)
+        suppress_re = CLUSTER3_NOSEC_RE
+
+        for mod_name, tree in self.modules.items():
+            file_path = self.file_paths.get(mod_name, "unknown.py")
+            source_lines = self._source_lines_by_file.get(file_path, [])
+
+            def _suppressed(lineno: int) -> bool:
+                if not (1 <= lineno <= len(source_lines)):
+                    return False
+                if suppress_re.search(source_lines[lineno - 1]):
+                    return True
+                if lineno >= 2 and re.search(r"#\s*ok:", source_lines[lineno - 2], re.IGNORECASE):
+                    return True
+                return False
+
+            def _offending_literal(expr):
+                """Pure static literal check: Constant str or all-constant f-string."""
+                val = None
+                if isinstance(expr, ast.Constant) and isinstance(expr.value, str):
+                    val = expr.value
+                elif isinstance(expr, ast.JoinedStr):
+                    if all(isinstance(v, ast.Constant) and isinstance(v.value, str)
+                           for v in expr.values):
+                        val = "".join(v.value for v in expr.values)
+                if not isinstance(val, str) or not scheme_re.match(val):
+                    return None
+                host = val.split("://", 1)[1].split("/", 1)[0].rsplit(":", 1)[0]
+                if host.lower() in CWE3A_LOCALHOST_HOSTS:
+                    return None
+                for schema in CWE3A_SCHEMA_DOMAINS:
+                    if schema in val:
+                        return None
+                return val
+
+            def _callee_parts(call):
+                """Return (root, verb) for requests.x / session.x / bare urlopen shapes."""
+                fn = call.func
+                if isinstance(fn, ast.Name):
+                    return None, fn.id
+                if isinstance(fn, ast.Attribute):
+                    inner = fn.value
+                    if isinstance(inner, ast.Name):
+                        return inner.id, fn.attr
+                    if isinstance(inner, ast.Call):
+                        ctor = dotted_name(inner.func) or ""
+                        if ctor.split(".")[-1] in opener_ctor_names:
+                            return "<ctor>", fn.attr
+                return None, None
+
+            for func in ast.walk(tree):
+                if not isinstance(func, (ast.FunctionDef, ast.AsyncFunctionDef)):
+                    continue
+                obj_vars = set()
+                var_assigns: dict[str, list[tuple[int, ast.AST]]] = {}
+                for stmt in ast.walk(func):
+                    if isinstance(stmt, ast.Assign) and len(stmt.targets) == 1:
+                        if isinstance(stmt.targets[0], ast.Name):
+                            tname = stmt.targets[0].id
+                            var_assigns.setdefault(tname, []).append((stmt.lineno, stmt.value))
+                            if isinstance(stmt.value, ast.Call):
+                                ctor = dotted_name(stmt.value.func) or ""
+                                if ctor.split(".")[-1] in opener_ctor_names:
+                                    obj_vars.add(tname)
+
+                # Shape 2: cleartext URL in a parameter default consumed by a sink.
+                defaults = {}
+                args_obj = func.args
+                pos_defaults = list(args_obj.defaults)
+                pos_args = (args_obj.posonlyargs or []) + (args_obj.args or [])
+                offset = len(pos_args) - len(pos_defaults)
+                for i, dflt in enumerate(pos_defaults):
+                    if 0 <= offset + i < len(pos_args):
+                        defaults[pos_args[offset + i].arg] = dflt
+                for a, dflt in zip(args_obj.kwonlyargs, args_obj.kw_defaults):
+                    if dflt is not None:
+                        defaults[a.arg] = dflt
+                default_hits = set()
+                for param, dflt in defaults.items():
+                    if _offending_literal(dflt) is None:
+                        continue
+                    if _suppressed(func.lineno):
+                        continue
+                    for call in ast.walk(func):
+                        if not isinstance(call, ast.Call):
+                            continue
+                        root, verb = _callee_parts(call)
+                        if verb not in verbs | {"open", "retrieve"}:
+                            continue
+                        if root not in module_roots and root not in obj_vars and root != "<ctor>" \
+                                and verb not in {"urlopen", "urlretrieve", "Request"}:
+                            continue
+                        idx = 1 if (verb == "request" or (verb == "Request" and root is not None)) else 0
+                        url_arg = call.args[idx] if len(call.args) > idx else None
+                        if url_arg is None:
+                            for kw in call.keywords or []:
+                                if kw.arg == "url":
+                                    url_arg = kw.value
+                        if isinstance(url_arg, ast.Name) and url_arg.id == param:
+                            if not _suppressed(call.lineno):
+                                default_hits.add(func.lineno)
+                for def_line in default_hits:
+                    self._emit_cwe319_location(mod_name, file_path, def_line, func)
+
+                # Shape 1: local variable holding a cleartext literal URL.
+                assign_hits = {}
+                for call in ast.walk(func):
+                    if not isinstance(call, ast.Call):
+                        continue
+                    root, verb = _callee_parts(call)
+                    if verb not in verbs | {"open", "retrieve"}:
+                        continue
+                    if root not in module_roots and root not in obj_vars and root != "<ctor>" \
+                            and verb not in {"urlopen", "urlretrieve", "Request"}:
+                        continue
+                    idx = 1 if (verb == "request" or (verb == "Request" and root is not None)) else 0
+                    url_arg = call.args[idx] if len(call.args) > idx else None
+                    if url_arg is None:
+                        for kw in call.keywords or []:
+                            if kw.arg == "url":
+                                url_arg = kw.value
+                    if not isinstance(url_arg, ast.Name):
+                        continue
+                    if _suppressed(call.lineno):
+                        continue
+                    cands = [rec for rec in var_assigns.get(url_arg.id, [])
+                             if rec[0] < call.lineno]
+                    if not cands:
+                        continue
+                    a_line, a_value = cands[-1]
+                    if _offending_literal(a_value) is None:
+                        continue
+                    if _suppressed(a_line):
+                        continue
+                    assign_hits[a_line] = a_value
+                for a_line, a_node in assign_hits.items():
+                    self._emit_cwe319_location(mod_name, file_path, a_line, a_node)
+
+    def _emit_cwe319_location(self, mod_name: str, file_path: str, lineno: int, node) -> None:
+        sink_id = self.next_sink_id()
+        loc = CodeLocation(file=file_path, line_start=lineno, line_end=lineno,
+                           column_start=0, column_end=0)
+        existing_lines = {(s.location.file, s.lineno) for s in self.sinks}
+        if (file_path, lineno) in existing_lines:
+            return
+        sink_node = SecurityNode(
+            id=sink_id,
+            node_type=NodeType.SINK,
+            symbol="CLEARTEXT_HTTP_TRANSMISSION",
+            operation="CLEARTEXT_HTTP_TRANSMISSION",
+            location=loc,
+            metadata={"sink_type": "CLEARTEXT_HTTP_TRANSMISSION",
+                      "category": "CLEARTEXT_HTTP_TRANSMISSION",
+                      "cwe": "CWE-319",
+                      "p7_source_id": "CLEARTEXT_HTTP_TRANSMISSION"},
+        )
+        self.sinks.append(sink_node)
+        self.sink_records.append(SinkRecord(
+            node=node,
+            security_node=sink_node,
+            lineno=lineno,
+            scope_id=f"{mod_name}:global",
+        ))
 
     def _collect_batch3b_structural_findings(self) -> None:
         """
@@ -12350,6 +12550,7 @@ class TaintTracker:
                     self.get_or_create_source(node, self.file_paths.get(mod_name, "unknown.py"), f"{mod_name}:global")
         self._collect_batch2_structural_findings()
         self._collect_batch3a_structural_findings()
+        self._collect_cwe319_variable_resolution_findings()
         self._collect_batch3b_structural_findings()
         self._collect_batch4_structural_findings()
         self._collect_phase3_structural_findings()

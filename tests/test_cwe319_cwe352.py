@@ -182,6 +182,95 @@ def vuln():
         # Session methods may not be directly detected - this is acceptable
         assert len(cwe319_findings) >= 0
 
+
+def _scan_source_with_lines(source: str) -> list:
+    """Scan source and return (lineno, metadata) pairs."""
+    tracker = TaintTracker(files={"test.py": source})
+    _, sinks, edges = tracker.analyze()
+    return [(s.lineno, s.metadata) for s in sinks]
+
+
+class TestCWE319VariableResolution:
+    """Phase 9.6.1: intra-procedural variable URL resolution."""
+
+    def test_variable_literal_must_flag(self):
+        """url = 'http://evil.com'; requests.get(url) -> MUST FLAG CWE-319."""
+        source = """
+import requests
+
+def vuln():
+    url = "http://evil.com"
+    requests.get(url)
+"""
+        results = _scan_source_with_lines(source)
+        cwe319_lines = {ln for ln, m in results if m.get("cwe") == "CWE-319"}
+        assert cwe319_lines, "Should flag http:// via variable resolution"
+        assert 5 in cwe319_lines, "Assignment line should carry a CWE-319 finding"
+
+    def test_variable_localhost_must_not_flag(self):
+        """url = 'http://localhost:8000'; requests.get(url) -> MUST NOT FLAG."""
+        source = """
+import requests
+
+def safe():
+    url = "http://localhost:8000"
+    requests.get(url)
+"""
+        results = _scan_source_with_lines(source)
+        cwe319_lines = [ln for ln, m in results if m.get("cwe") == "CWE-319"]
+        assert not cwe319_lines, "localhost loopback must never be flagged"
+
+    def test_variable_ok_suppression_must_not_flag(self):
+        """# ok: suppression on the assignment line -> MUST NOT FLAG."""
+        source = """
+import requests
+
+def safe():
+    url = "http://evil.com"  # ok: intentional test fixture
+    requests.get(url)
+"""
+        results = _scan_source_with_lines(source)
+        cwe319_lines = [ln for ln, m in results if m.get("cwe") == "CWE-319"]
+        assert not cwe319_lines, "ok: annotation must suppress CWE-319 finding"
+
+    def test_default_arg_def_line_must_flag(self):
+        """def test(url='http://evil.com'): urlopen(url) -> FLAG at def line."""
+        source = """
+from urllib.request import urlopen
+
+def test3(url = "http://evil.com"):
+    urlopen(url)
+"""
+        results = _scan_source_with_lines(source)
+        cwe319_lines = {ln for ln, m in results if m.get("cwe") == "CWE-319"}
+        assert 4 in cwe319_lines, "Def line with cleartext URL default must be flagged"
+
+    def test_default_arg_https_must_not_flag(self):
+        """def test(url='https://ok.com') -> MUST NOT FLAG."""
+        source = """
+from urllib.request import urlopen
+
+def test3_ok(url = "https://ok.com"):
+    urlopen(url)
+"""
+        results = _scan_source_with_lines(source)
+        cwe319_lines = [ln for ln, m in results if m.get("cwe") == "CWE-319"]
+        assert not cwe319_lines, "https default must not be flagged"
+
+    def test_ftp_variable_must_flag(self):
+        """url = 'ftp://evil.com'; opener.open(url) -> MUST FLAG."""
+        source = """
+from urllib.request import URLopener
+
+def vuln():
+    od = URLopener()
+    url = "ftp://evil.com"
+    od.open(url)
+"""
+        results = _scan_source_with_lines(source)
+        cwe319_lines = {ln for ln, m in results if m.get("cwe") == "CWE-319"}
+        assert 6 in cwe319_lines, "ftp:// cleartext via variable must be flagged"
+
     def test_variable_url_http(self):
         """Should handle variable URL assignment."""
         source = """
