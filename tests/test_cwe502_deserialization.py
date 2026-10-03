@@ -110,3 +110,19 @@ def view():
 '''
     findings = _scan(source)
     assert len(findings) == 0, f"Expected 0 findings for static bytes, got {len(findings)}: {findings}"
+
+
+def test_suppression_marker_works():
+    """Negative: # ok: suppression marker should silence finding."""
+    source = '''
+import pickle
+from flask import request
+
+def view():
+    user_data = request.cookies.get('data')
+    # ok:insecure-deserialization
+    obj = pickle.loads(user_data)
+    return str(obj)
+'''
+    findings = _scan(source)
+    assert len(findings) == 0, f"Expected 0 findings with # ok: marker, got {len(findings)}: {findings}"

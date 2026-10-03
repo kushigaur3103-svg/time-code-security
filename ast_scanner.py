@@ -1317,9 +1317,11 @@ def _eval_static_constant(node, assignments_by_scope, scope_id="", lineno=0, vis
     expression cannot be proven constant (no speculative findings)."""
     if visited is None:
         visited = set()
-    if isinstance(node, ast.Constant) and (node.value is None or isinstance(node.value, (int, str, bool))):
+    if isinstance(node, ast.Constant) and (node.value is None or isinstance(node.value, (int, str, bool, bytes))):
         return node.value
     if hasattr(ast, "Str") and isinstance(node, ast.Str):
+        return node.s
+    if hasattr(ast, "Bytes") and isinstance(node, ast.Bytes):
         return node.s
     if hasattr(ast, "Num") and isinstance(node, ast.Num):
         return node.n
@@ -7784,7 +7786,7 @@ class TaintTracker:
             def _add(node: ast.AST, operation: str, category: str, cwe: str) -> None:
                 line = getattr(node, "lineno", 1)
                 column = getattr(node, "col_offset", 0)
-                if line in nosec_lines:
+                if line in nosec_lines or (line - 1) in nosec_lines:
                     return
                 key = (cwe, line, column)
                 if key in seen:
