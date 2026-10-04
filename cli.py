@@ -760,7 +760,8 @@ def _scan(args):
 
     if args.fail_on_critical and any(item["severity"] in ("CRITICAL", "HIGH") for item in findings):
         return 1
-    return 0
+    # Semgrep-style contract, shared with tcs_cli.py: 0 clean, 1 findings, 2 internal error.
+    return 1 if findings else 0
 
 
 def _normalize_compare_path(value):

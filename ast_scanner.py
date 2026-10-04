@@ -1137,6 +1137,16 @@ CLUSTER3_PICKLE_ROOTS = {"pickle", "_pickle", "cPickle", "dill", "shelve", "mars
 CLUSTER3_PICKLE_METHOD_SEGS = {"loads", "dumps"}
 CLUSTER3_SHELVE_OPEN_SEG = "open"
 CLUSTER3_CSRF_EXEMPT_SEG = "csrf_exempt"
+# FastAPI, Starlette and python-ninja routers answer JSON over bearer/token auth. There is no
+# cookie-bound session a cross-site request could ride, so "this route lacks CSRF protection"
+# is noise on those frameworks — while Django views rendering HTML forms and traditional Flask
+# form routes keep reporting. `route` is deliberately NOT in the verb set: that is Flask's
+# decorator shape, which is exactly the case that must keep firing.
+JSON_API_MODULE_ROOTS = frozenset({"fastapi", "starlette", "ninja"})
+JSON_API_ROUTE_SEGS = frozenset({
+    "get", "post", "put", "patch", "delete", "head", "options", "trace", "api_route",
+    "websocket", "websockets",
+})
 CLUSTER3_WTF_CSRF_KEY = "WTF_CSRF_ENABLED"
 CLUSTER3_TESTING_KEY = "TESTING"
 CLUSTER3_STRUCTURAL_SOURCE_IDS = {
@@ -7645,6 +7655,29 @@ class TaintTracker:
                         _add(node, "PERMISSIVE_CORS_POLICY", "INSECURE_CONFIGURATION",
                              "CWE-942")
 
+    def _module_is_json_api(self, mod_name: str) -> bool:
+        """True when the module is built on a JSON-first router (FastAPI/Starlette/ninja)."""
+        for canonical in (self.imports.get(mod_name) or {}).values():
+            if str(canonical).split(".")[0] in JSON_API_MODULE_ROOTS:
+                return True
+        return False
+
+    def _csrf_is_json_api_noise(self, mod_name: str, dec_segments=None) -> bool:
+        """Suppress missing-CSRF findings on stateless JSON APIs.
+
+        Two independent signals, either sufficient: the module imports a JSON-first framework,
+        or the decorator's receiver (`@app.post`, `@router.get`) resolves through this module's
+        import map to one. Flask's `@app.get` shortcut is NOT enough on its own — the receiver
+        has to be a FastAPI/Starlette/ninja object, otherwise traditional form routes go quiet.
+        """
+        if self._module_is_json_api(mod_name):
+            return True
+        segments = [seg for seg in (dec_segments or []) if seg]
+        if len(segments) >= 2 and segments[-1] in JSON_API_ROUTE_SEGS:
+            canonical = (self.imports.get(mod_name) or {}).get(segments[-2], "")
+            return str(canonical).split(".")[0] in JSON_API_MODULE_ROOTS
+        return False
+
     def _collect_cluster3_structural_findings(self) -> None:
         """
         Phase 3 Cluster 3 PURE_STRUCTURAL visitors, the eighteen-rule grand finale:
@@ -7911,7 +7944,8 @@ class TaintTracker:
                     for decorator in node.decorator_list:
                         dec_chain = _segments(decorator.func) if isinstance(decorator, ast.Call) \
                             else _segments(decorator)
-                        if dec_chain and dec_chain[-1] == CLUSTER3_CSRF_EXEMPT_SEG:
+                        if dec_chain and dec_chain[-1] == CLUSTER3_CSRF_EXEMPT_SEG \
+                                and not self._csrf_is_json_api_noise(mod_name, dec_chain):
                             _add(decorator, "CSRF_EXEMPT_VIEW", "CSRF_MISSING_PROTECTION",
                                  "CWE-352")
                     # ---- CWE-798: password-named default arguments ----
@@ -8578,12 +8612,15 @@ class TaintTracker:
                                     if any(m in CWE3A_STATE_CHANGING_METHODS for m in m_vals):
                                         has_route_post_or_put = True
 
-                    if has_csrf_exempt_dec and (has_route_post_or_put or _view_accepts_state_change(node)):
+                    if has_csrf_exempt_dec and (has_route_post_or_put or _view_accepts_state_change(node)) \
+                            and not self._csrf_is_json_api_noise(mod_name):
                         # @csrf_exempt removes the only guard a state-changing request meets. When
                         # the view neither declares a state-changing route nor performs a state
                         # change, exemption has no security consequence and the report is noise.
                         cwe_meta = {"operation": "CSRF_MISSING_PROTECTION", "category": "CSRF_MISSING_PROTECTION", "cwe": "CWE-352"}
-                    elif has_route_post_or_put and not has_csrf_protect_dec and not has_csrf_form_validation and not module_csrf_enabled:
+                    elif has_route_post_or_put and not has_csrf_protect_dec \
+                            and not has_csrf_form_validation and not module_csrf_enabled \
+                            and not self._csrf_is_json_api_noise(mod_name):
                         cwe_meta = {"operation": "CSRF_MISSING_PROTECTION", "category": "CSRF_MISSING_PROTECTION", "cwe": "CWE-352"}
 
                 # ─── 4. Comparison Expressions (Hardcoded Authentication) ───
@@ -10345,7 +10382,7 @@ class TaintTracker:
 
                 # ---- CWE-352: CSRF vulnerability detection ----
                 csrf_exempt_names = {"csrf_exempt", "django.views.decorators.csrf.csrf_exempt"}
-                if names & csrf_exempt_names:
+                if names & csrf_exempt_names and not self._csrf_is_json_api_noise(mod_name):
                     _add_finding(node, mod_name, scope_id, "CSRF_EXEMPT_DECORATOR", "CSRF_VULNERABILITY", "CWE-352")
 
     def _collect_intra_file_call_bridge_findings(self) -> None:

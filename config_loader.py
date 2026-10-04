@@ -71,8 +71,15 @@ class TCSConfig:
         return base_set - self.rules.disabled
 
     def is_rule_enabled(self, cwe_id: str) -> bool:
-        """Check whether a specific CWE is active under this configuration."""
+        """Check whether a specific CWE is active under this configuration.
+
+        An unconfigured scan runs the FULL engine taxonomy, which is what `cli.py scan`
+        emits; SUPPORTED_RULES only ever narrows what a .tcs.yml may ask for. Once the
+        file names rules explicitly, the allow/deny lists gate the scan as before.
+        """
         norm_cwe = cwe_id.strip().upper()
+        if not self.rules.enabled and not self.rules.disabled:
+            return True
         return norm_cwe in self.effective_rules
 
 

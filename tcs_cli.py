@@ -232,6 +232,55 @@ def extract_remediation_advice(cwe: str, sink_symbol: str) -> str:
     return "Sanitize input parameters and enforce strict input validation against an explicit allow-list before passing to dangerous operations."
 
 
+def configured_rule_ids(config: Optional[TCSConfig]) -> Optional[Set[str]]:
+    """Rule ids narrowed by .tcs.yml, or None when the run uses the full engine taxonomy.
+
+    `None` means "do not filter": the SARIF driver then advertises every registered rule and
+    the JSON report lists the documented supported CWE set, instead of the six-rule subset
+    that previously made `tcs_cli.py` look narrower than `cli.py scan`.
+    """
+    if config is None or (not config.rules.enabled and not config.rules.disabled):
+        return None
+    return set(config.effective_rules)
+
+
+def advertised_rule_ids(config: Optional[TCSConfig]) -> List[str]:
+    narrowed = configured_rule_ids(config)
+    if narrowed is not None:
+        return sorted(narrowed)
+    return sorted({cwe for cwe, _ in ALL_44_CWES} | {r.cwe_id for r in GLOBAL_RULE_REGISTRY.all_rules()})
+
+
+def consolidate_with_cli_profile(findings: List[Dict[str, Any]]) -> List[Dict[str, Any]]:
+    """Collapse CWE families per (file, line) exactly the way `cli.py scan` does.
+
+    Both entry points read the same engine edges, so matching the emitted site set is
+    what makes finding counts and SARIF results comparable across the two CLIs. The
+    collapsed ids stay visible: `consolidated_from` is carried onto the surviving
+    finding rather than silently dropped.
+    """
+    if not findings:
+        return findings
+    from cli import consolidate_findings  # noqa: PLC0415 - shared consolidation rules
+
+    survivors = consolidate_findings([
+        {"file": f["file"], "line": f["line_number"], "cwe": f["cwe"],
+         "severity": f["severity"], "category": f["category"], "message": f["cwe"]}
+        for f in findings
+    ])
+    kept = {(s["file"], s["line"], s["cwe"]): s for s in survivors}
+    merged = []
+    for finding in findings:
+        site = kept.get((finding["file"], finding["line_number"], finding["cwe"]))
+        if site is None:
+            continue
+        finding["severity"] = site["severity"]
+        if site.get("consolidated_from"):
+            finding["consolidated_from"] = site["consolidated_from"]
+        merged.append(finding)
+    return merged
+
+
 def execute_tcs_scan(
     normalized_files: Dict[str, str],
     config: Optional[TCSConfig] = None,
@@ -269,23 +318,18 @@ def execute_tcs_scan(
             continue
         category = sink.metadata.get("sink_type", "UNKNOWN_VULNERABILITY")
         confidence_val = float(edge.confidence)
-        confidence_label = "CONFIRMED" if confidence_val >= 1.0 else "POTENTIAL"
+        # `cli.py scan` grades a flow CONFIRMED from the edge kind, not the numeric
+        # confidence; mirroring it here keeps severity identical across both CLIs.
+        confidence_label = "CONFIRMED" if edge.kind == "CONFIRMED_DATA_FLOW" else "POTENTIAL"
 
         rule = GLOBAL_RULE_REGISTRY.get_rule(cwe)
-        if rule:
-            severity = rule.get_severity(confidence_label)
-        elif cwe in ["CWE-95", "CWE-78", "CWE-502", "CWE-1336"]:
-            severity = "CRITICAL" if confidence_label == "CONFIRMED" else "HIGH"
-        elif cwe in ["CWE-89", "CWE-22"]:
-            severity = "HIGH" if confidence_label == "CONFIRMED" else "MEDIUM"
-        else:
-            severity = "MEDIUM" if confidence_label == "CONFIRMED" else "LOW"
+        severity = rule.get_severity(confidence_label).upper() if rule else "HIGH"
 
         source_node = sources_by_id.get(edge.source_id)
         sink_loc = sink.location
         source_loc = source_node.location if source_node else None
 
-        dedup_key = (sink_loc.file, sink_loc.line_start, cwe, confidence_label)
+        dedup_key = (sink_loc.file, sink_loc.line_start, cwe)
         if dedup_key in seen_vulns:
             continue
         seen_vulns.add(dedup_key)
@@ -410,6 +454,9 @@ def execute_tcs_scan(
         })
         vuln_idx += 1
 
+    findings = consolidate_with_cli_profile(findings)
+    vuln_idx = len(findings) + 1
+
     secret_findings_list = []
     if secrets:
         from secret_scanner import scan_text
@@ -494,7 +541,7 @@ def execute_tcs_scan(
     return {
         "status": "success",
         "syntax_errors": syntax_errors,
-        "enabled_rules": list(config.effective_rules) if config else [r.cwe_id for r in GLOBAL_RULE_REGISTRY.all_rules()],
+        "enabled_rules": advertised_rule_ids(config),
         "summary": {
             "total_files": total_files,
             "lines_scanned": lines_scanned,
@@ -528,6 +575,19 @@ def execute_tcs_scan(
 
 SECRET_EXTS = {".py", ".env", ".json", ".yaml", ".yml", ".toml", ".ini", ".conf", ".txt",
                ".js", ".jsx", ".ts", ".tsx", ".mjs", ".cjs"}
+
+
+def engine_file_key(path: Path) -> str:
+    """File identity handed to the AST engine.
+
+    `cli.py scan` keys modules by their path relative to the working directory, and the
+    tracker's cross-module resolution follows those keys, so both CLIs must key files the
+    same way or they can disagree on findings. SARIF URIs are resolved against %SRCROOT%
+    (the working directory), which makes the same spelling correct there too.
+    """
+    from cli import _file_key  # noqa: PLC0415 - single source of the keying rule
+
+    return _file_key(path, Path.cwd().resolve())
 
 
 
@@ -570,7 +630,7 @@ def discover_python_files(
             return normalized_files
 
         try:
-            normalized_files[rel_path] = target_path.read_text(encoding="utf-8")
+            normalized_files[engine_file_key(target_path)] = target_path.read_text(encoding="utf-8")
         except (OSError, UnicodeDecodeError, ValueError) as e:
             print(f"[WARN] Skipping unreadable file: {target_path} ({e})", file=sys.stderr)
             if skipped_files is not None:
@@ -614,7 +674,7 @@ def discover_python_files(
                     continue
 
                 try:
-                    normalized_files[rel_path] = full_file.read_text(encoding="utf-8")
+                    normalized_files[engine_file_key(full_file)] = full_file.read_text(encoding="utf-8")
                 except (OSError, UnicodeDecodeError, ValueError) as e:
                     print(f"[WARN] Skipping unreadable file: {full_file} ({e})", file=sys.stderr)
                     if skipped_files is not None:
@@ -1449,7 +1509,7 @@ def main(argv: Optional[List[str]] = None):
             results = {
                 "status": "success",
                 "syntax_errors": [],
-                "enabled_rules": list(config.effective_rules) if config else [r.cwe_id for r in GLOBAL_RULE_REGISTRY.all_rules()],
+                "enabled_rules": advertised_rule_ids(config),
                 "summary": {
                     "total_files": 0,
                     "lines_scanned": 0,
@@ -1476,7 +1536,7 @@ def main(argv: Optional[List[str]] = None):
                 results = {
                     "status": "success",
                     "syntax_errors": [],
-                    "enabled_rules": list(config.effective_rules) if config else [r.cwe_id for r in GLOBAL_RULE_REGISTRY.all_rules()],
+                    "enabled_rules": advertised_rule_ids(config),
                     "summary": {
                         "total_files": 0,
                         "lines_scanned": 0,
@@ -1822,7 +1882,7 @@ def main(argv: Optional[List[str]] = None):
 
     if args.format.lower() == "sarif":
         try:
-            sarif_doc = to_sarif(export_data, enabled_rule_ids=config.effective_rules if config else None)
+            sarif_doc = to_sarif(export_data, enabled_rule_ids=configured_rule_ids(config))
         except Exception as exc:
             print(f"[ERROR] SARIF conversion failed: {exc}", file=sys.stderr)
             sarif_doc = _minimal_sarif_document()

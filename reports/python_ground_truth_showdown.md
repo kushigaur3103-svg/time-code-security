@@ -53,7 +53,7 @@ Corpus mutation check (SHA-256 over each mirrored tree, before vs after the run)
 
 | Tool | Wall clock (all corpora) | Split |
 |---|---|---|
-| TCS | 659.2 s | semgrep_rules 173.8s, bandit 485.5s |
+| TCS | 218.0 s | semgrep_rules 174.9s, bandit 43.2s |
 | Semgrep | 124.6 s | semgrep_rules 62.5s, bandit 62.1s |
 | Bandit | 33.2 s | semgrep_rules 5.8s, bandit 27.3s |
 
@@ -502,8 +502,8 @@ Deliberately **not** folded, because they are distinct weakness classes rather t
 
 | Tool | Corpus | Mode | Invocations | Failed invocations | Exit | Median/file |
 |---|---|---|---|---|---|---|
-| TCS | semgrep_rules | cli-per-file | 368 | 0 | - | 445.6 ms |
-| TCS | bandit | cli-per-file | 98 | 0 | - | 589.9 ms |
+| TCS | semgrep_rules | cli-per-file | 368 | 0 | - | 455.0 ms |
+| TCS | bandit | cli-per-file | 98 | 0 | - | 385.3 ms |
 | Semgrep | semgrep_rules | single subprocess run | 1 | 0 | 0 | - |
 | Semgrep | bandit | single subprocess run | 1 | 0 | 0 | - |
 | Bandit | semgrep_rules | single subprocess run | 1 | 0 | 1 | - |
@@ -556,7 +556,7 @@ The first sweep of this harness ran against an unmodified engine; its artefacts 
 * Residual gap this section does not fix: with the `NameError` gone, `python/django/security/injection/mass-assignment.py` parses and analyses cleanly but still emits no CWE-915 finding, because the `**request.POST` kwargs-expansion edge is not wired to the mass-assignment sink even though the sinks at its two labelled lines are registered. That is a sink/edge-model change rather than a crash fix, and adding a matcher without a sound model is out of scope here.
 
 **Effect of the fixes on this benchmark.**
-* TCS wall clock over 466 CLI invocations: 350.7 s → 659.2 s (+88.0%). The saving is the killed timeouts; the per-file median moved the other way, partly because the guard runs on every scope walk of every file and partly because the two sweeps did not run under the same machine load.
+* TCS wall clock over 466 CLI invocations: 350.7 s → 218.0 s (-37.8%). The saving is the killed timeouts; the per-file median moved the other way, partly because the guard runs on every scope walk of every file and partly because the two sweeps did not run under the same machine load.
 * Findings: 831 → 1597 distinct sites, i.e. 1077 added and **311 removed on files the baseline sweep already scanned successfully** — the regression count this section exists to measure. 18 of the 1077 additions land on the 10 files that the baseline sweep lost.
 * Scores: 4 of 24 tool × metric cells in the merged CWE-strict table are identical across the two sweeps. The differences are TCS TP 354→939; TCS FP 87→35; TCS TN 869→921; TCS FN 1105→520; TCS Precision 80.27%→96.41%; TCS Recall 24.26%→64.36%; TCS F1 37.26%→77.19%; TCS Findings outside any label 292→387; Semgrep TP 939→947; Semgrep FN 520→512; Semgrep Precision 90.29%→90.36%; Semgrep Recall 64.36%→64.91%; Semgrep F1 75.15%→75.55%; Semgrep Findings outside any label 366→354; Bandit TP 404→447; Bandit FN 1055→1012; Bandit Precision 63.62%→65.93%; Bandit Recall 27.69%→30.64%; Bandit F1 38.59%→41.83%; Bandit Findings outside any label 592→548. What changed is that the files now returning nothing do so because the engine answered rather than because it was killed.
 
@@ -564,8 +564,8 @@ The first sweep of this harness ran against an unmodified engine; its artefacts 
 |---|---|---|---|---|---|
 | baseline/bandit | 98 | 5 | 6 | 171065 | 209.2 |
 | baseline/semgrep_rules | 368 | 3 | 4 | 179663 | 234.9 |
-| this sweep/bandit | 98 | 0 | 0 | 485462 | 589.9 |
-| this sweep/semgrep_rules | 368 | 0 | 0 | 173764 | 445.6 |
+| this sweep/bandit | 98 | 0 | 0 | 43152 | 385.3 |
+| this sweep/semgrep_rules | 368 | 0 | 0 | 174891 | 455.0 |
 
 ## 8. TCS missed positives: auto-cited evidence and AST root causes
 
