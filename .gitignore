@@ -34,3 +34,7 @@ external/pygoat/
 external/pygoat/
 
 external/
+
+# Generated SARIF scan artifacts (CLI / CI output, not source)
+tcs-results.sarif
+*.sarif
