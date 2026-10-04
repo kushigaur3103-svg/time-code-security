@@ -27,7 +27,7 @@ Corpus mutation check (SHA-256 over each mirrored tree, before vs after the run)
 
 | Tool | TP | TP via same-family cluster | FP | TN | FN | Precision | Recall | F1 | FN w/ line hit (CWE miss) | Findings outside any label |
 |---|---|---|---|---|---|---|---|---|---|---|
-| TCS | 900 | 43 | 35 | 921 | 559 | 96.26% | 61.69% | 75.19% | 10 | 376 |
+| TCS | 939 | 43 | 35 | 921 | 520 | 96.41% | 64.36% | 77.19% | 10 | 387 |
 | Semgrep | 947 | 8 | 101 | 855 | 512 | 90.36% | 64.91% | 75.55% | 8 | 354 |
 | Bandit | 447 | 43 | 231 | 725 | 1012 | 65.93% | 30.64% | 41.83% | 137 | 548 |
 
@@ -37,7 +37,7 @@ Corpus mutation check (SHA-256 over each mirrored tree, before vs after the run)
 
 | Tool | TP | TP via same-family cluster | FP | TN | FN | Precision | Recall | F1 | FN w/ line hit (CWE miss) | Findings outside any label |
 |---|---|---|---|---|---|---|---|---|---|---|
-| TCS | 856 | 43 | 33 | 896 | 527 | 96.29% | 61.89% | 75.35% | 10 | 354 |
+| TCS | 894 | 43 | 33 | 896 | 489 | 96.44% | 64.64% | 77.40% | 10 | 365 |
 | Semgrep | 901 | 8 | 95 | 834 | 482 | 90.46% | 65.15% | 75.75% | 8 | 327 |
 | Bandit | 371 | 43 | 218 | 711 | 1012 | 62.99% | 26.83% | 37.63% | 137 | 507 |
 
@@ -45,7 +45,7 @@ Corpus mutation check (SHA-256 over each mirrored tree, before vs after the run)
 
 | Tool | TP | TP via same-family cluster | FP | TN | FN | Precision | Recall | F1 | FN w/ line hit (CWE miss) | Findings outside any label |
 |---|---|---|---|---|---|---|---|---|---|---|
-| TCS | 44 | 0 | 2 | 25 | 32 | 95.65% | 57.89% | 72.13% | 0 | 22 |
+| TCS | 45 | 0 | 2 | 25 | 31 | 95.74% | 59.21% | 73.17% | 0 | 22 |
 | Semgrep | 46 | 0 | 6 | 21 | 30 | 88.46% | 60.53% | 71.88% | 0 | 27 |
 | Bandit | 76 | 0 | 13 | 14 | 0 | 85.39% | 100.00% | 92.12% | 0 | 41 |
 
@@ -53,7 +53,7 @@ Corpus mutation check (SHA-256 over each mirrored tree, before vs after the run)
 
 | Tool | Wall clock (all corpora) | Split |
 |---|---|---|
-| TCS | 171.2 s | semgrep_rules 128.2s, bandit 43.0s |
+| TCS | 659.2 s | semgrep_rules 173.8s, bandit 485.5s |
 | Semgrep | 124.6 s | semgrep_rules 62.5s, bandit 62.1s |
 | Bandit | 33.2 s | semgrep_rules 5.8s, bandit 27.3s |
 
@@ -61,7 +61,7 @@ Corpus mutation check (SHA-256 over each mirrored tree, before vs after the run)
 
 | Tool | TP | TP via same-family cluster | FP | TN | FN | Precision | Recall | F1 | FN w/ line hit (CWE miss) | Findings outside any label |
 |---|---|---|---|---|---|---|---|---|---|---|
-| TCS | 910 | 0 | 35 | 921 | 549 | 96.30% | 62.37% | 75.71% | 0 | 325 |
+| TCS | 949 | 0 | 35 | 921 | 510 | 96.44% | 65.04% | 77.69% | 0 | 336 |
 | Semgrep | 955 | 0 | 101 | 855 | 504 | 90.44% | 65.46% | 75.94% | 0 | 259 |
 | Bandit | 584 | 0 | 231 | 725 | 875 | 71.66% | 40.03% | 51.36% | 0 | 399 |
 
@@ -159,7 +159,7 @@ Deliberately **not** folded, because they are distinct weakness classes rather t
 
 | Tool | Findings | Carrying a CWE | Coverage |
 |---|---|---|---|
-| TCS | 1536 | 1536 | 100.00% |
+| TCS | 1597 | 1597 | 100.00% |
 | Semgrep | 1866 | 1842 | 98.71% |
 | Bandit | 1765 | 1765 | 100.00% |
 
@@ -173,12 +173,12 @@ Deliberately **not** folded, because they are distinct weakness classes rather t
 | CWE-22 | 23 | 7 | 16 | 7 | 0 | 7 | 69.57% | 100.00% |
 | CWE-73 | 1 | 1 | 1 | 0 | 0 | 1 | 100.00% | 100.00% |
 | CWE-74 | 2 | 2 | 0 | 2 | 0 | 2 | 0.00% | 0.00% |
-| CWE-78 | 189 | 100 | 145 | 44 | 6 | 94 | 76.72% | 96.03% |
+| CWE-78 | 189 | 100 | 181 | 8 | 6 | 94 | 95.77% | 96.79% |
 | CWE-79 | 95 | 56 | 92 | 3 | 2 | 54 | 96.84% | 97.87% |
 | CWE-89 | 150 | 87 | 122 | 28 | 0 | 87 | 81.33% | 100.00% |
 | CWE-91 | 5 | 4 | 5 | 0 | 0 | 4 | 100.00% | 100.00% |
 | CWE-93 | 1 | 1 | 0 | 1 | 1 | 0 | 0.00% | 0.00% |
-| CWE-95 | 64 | 35 | 50 | 14 | 0 | 35 | 78.12% | 100.00% |
+| CWE-95 | 64 | 35 | 52 | 12 | 0 | 35 | 81.25% | 100.00% |
 | CWE-96 | 17 | 7 | 16 | 1 | 0 | 7 | 94.12% | 100.00% |
 | CWE-116 | 10 | 24 | 1 | 9 | 4 | 20 | 10.00% | 20.00% |
 | CWE-134 | 2 | 2 | 0 | 2 | 0 | 2 | 0.00% | 0.00% |
@@ -390,7 +390,7 @@ Deliberately **not** folded, because they are distinct weakness classes rather t
 
 ### 4.2 Positive labels each tool does not report at all
 
-**TCS** — 549 missed positives over 216 sites.
+**TCS** — 510 missed positives over 197 sites.
 
 | corpus:rule | missed lines |
 |---|---|
@@ -486,7 +486,7 @@ Deliberately **not** folded, because they are distinct weakness classes rather t
 
 | Tool | Silent on the whole file | Spoke about the file, wrong line | Right line, wrong CWE | Class/rule never reported by this tool anywhere | Class/rule reported elsewhere |
 |---|---|---|---|---|---|
-| TCS | 438 | 111 | 10 | 378 | 181 |
+| TCS | 412 | 98 | 10 | 377 | 143 |
 | Semgrep | 478 | 26 | 8 | 361 | 151 |
 | Bandit | 612 | 263 | 137 | 625 | 387 |
 
@@ -502,8 +502,8 @@ Deliberately **not** folded, because they are distinct weakness classes rather t
 
 | Tool | Corpus | Mode | Invocations | Failed invocations | Exit | Median/file |
 |---|---|---|---|---|---|---|
-| TCS | semgrep_rules | cli-per-file | 368 | 0 | - | 322.6 ms |
-| TCS | bandit | cli-per-file | 98 | 0 | - | 373.8 ms |
+| TCS | semgrep_rules | cli-per-file | 368 | 0 | - | 445.6 ms |
+| TCS | bandit | cli-per-file | 98 | 0 | - | 589.9 ms |
 | Semgrep | semgrep_rules | single subprocess run | 1 | 0 | 0 | - |
 | Semgrep | bandit | single subprocess run | 1 | 0 | 0 | - |
 | Bandit | semgrep_rules | single subprocess run | 1 | 0 | 1 | - |
@@ -556,16 +556,16 @@ The first sweep of this harness ran against an unmodified engine; its artefacts 
 * Residual gap this section does not fix: with the `NameError` gone, `python/django/security/injection/mass-assignment.py` parses and analyses cleanly but still emits no CWE-915 finding, because the `**request.POST` kwargs-expansion edge is not wired to the mass-assignment sink even though the sinks at its two labelled lines are registered. That is a sink/edge-model change rather than a crash fix, and adding a matcher without a sound model is out of scope here.
 
 **Effect of the fixes on this benchmark.**
-* TCS wall clock over 466 CLI invocations: 350.7 s → 171.2 s (-51.2%). The saving is the killed timeouts; the per-file median moved the other way, partly because the guard runs on every scope walk of every file and partly because the two sweeps did not run under the same machine load.
-* Findings: 831 → 1536 distinct sites, i.e. 1016 added and **311 removed on files the baseline sweep already scanned successfully** — the regression count this section exists to measure. 18 of the 1016 additions land on the 10 files that the baseline sweep lost.
-* Scores: 4 of 24 tool × metric cells in the merged CWE-strict table are identical across the two sweeps. The differences are TCS TP 354→900; TCS FP 87→35; TCS TN 869→921; TCS FN 1105→559; TCS Precision 80.27%→96.26%; TCS Recall 24.26%→61.69%; TCS F1 37.26%→75.19%; TCS Findings outside any label 292→376; Semgrep TP 939→947; Semgrep FN 520→512; Semgrep Precision 90.29%→90.36%; Semgrep Recall 64.36%→64.91%; Semgrep F1 75.15%→75.55%; Semgrep Findings outside any label 366→354; Bandit TP 404→447; Bandit FN 1055→1012; Bandit Precision 63.62%→65.93%; Bandit Recall 27.69%→30.64%; Bandit F1 38.59%→41.83%; Bandit Findings outside any label 592→548. What changed is that the files now returning nothing do so because the engine answered rather than because it was killed.
+* TCS wall clock over 466 CLI invocations: 350.7 s → 659.2 s (+88.0%). The saving is the killed timeouts; the per-file median moved the other way, partly because the guard runs on every scope walk of every file and partly because the two sweeps did not run under the same machine load.
+* Findings: 831 → 1597 distinct sites, i.e. 1077 added and **311 removed on files the baseline sweep already scanned successfully** — the regression count this section exists to measure. 18 of the 1077 additions land on the 10 files that the baseline sweep lost.
+* Scores: 4 of 24 tool × metric cells in the merged CWE-strict table are identical across the two sweeps. The differences are TCS TP 354→939; TCS FP 87→35; TCS TN 869→921; TCS FN 1105→520; TCS Precision 80.27%→96.41%; TCS Recall 24.26%→64.36%; TCS F1 37.26%→77.19%; TCS Findings outside any label 292→387; Semgrep TP 939→947; Semgrep FN 520→512; Semgrep Precision 90.29%→90.36%; Semgrep Recall 64.36%→64.91%; Semgrep F1 75.15%→75.55%; Semgrep Findings outside any label 366→354; Bandit TP 404→447; Bandit FN 1055→1012; Bandit Precision 63.62%→65.93%; Bandit Recall 27.69%→30.64%; Bandit F1 38.59%→41.83%; Bandit Findings outside any label 592→548. What changed is that the files now returning nothing do so because the engine answered rather than because it was killed.
 
 | corpus | invocations | killed by timeout | aborted | ms total | median ms/file |
 |---|---|---|---|---|---|
 | baseline/bandit | 98 | 5 | 6 | 171065 | 209.2 |
 | baseline/semgrep_rules | 368 | 3 | 4 | 179663 | 234.9 |
-| this sweep/bandit | 98 | 0 | 0 | 42970 | 373.8 |
-| this sweep/semgrep_rules | 368 | 0 | 0 | 128188 | 322.6 |
+| this sweep/bandit | 98 | 0 | 0 | 485462 | 589.9 |
+| this sweep/semgrep_rules | 368 | 0 | 0 | 173764 | 445.6 |
 
 ## 8. TCS missed positives: auto-cited evidence and AST root causes
 
@@ -588,8 +588,8 @@ Table is generated from the scoring artefacts (no hand-picked examples). `misses
 
 Analyst commentary on the shapes above (every count in this section is computed from the scoring artefacts, and each claim is checkable at the cited site):
 
-1. **Pattern-present, value-not-tainted.** `dangerous-system-call` (0 missed labelled lines) misses are `os.system(f"ls -la {event['dir']}")` style calls: the sink exists and the argument is an f-string, but the interpolated expression is a plain dict subscript on a locally-built mapping. TCS's CWE-78 path is taint-edge driven, so with no reachable `TAINT_SOURCE_PATTERNS` producer for `event` it emits nothing, whereas the upstream rule is a pure syntactic pattern (any interpolation into an `os.system` argument). This is the single largest structural reason TCS trails a pattern matcher on this corpus: 438 of the 559 CWE-strict missed positives (78.35%) are `no_output_on_file`, i.e. the engine produced no finding anywhere in that file, while only 10 are `line_hit_wrong_cwe`.
-2. **15 of the 53 labelled weakness classes TCS never emits at all** (measured: the CWE string appears on zero TCS findings across both corpora), accounting for 35 labelled positive lines. Largest: CWE-523 (7 labelled lines), CWE-1236 (3 labelled lines), CWE-200 (3 labelled lines), CWE-553 (3 labelled lines), CWE-776 (3 labelled lines), CWE-134 (2 labelled lines). Two of the shapes in the table above sit here: `nan-injection` is CWE-704 (type coercion) and `insecure-file-permissions` is CWE-276 (incorrect permission assignment) — both need new sink/check definitions, not better taint propagation. `default-mutable-dict`, `default-mutable-list` and `attr-mutable-initializer` are a different gap: their upstream rules declare **no CWE at all**, so they are scored line-only and never appear in the CWE coverage tables. (The §4.4 taxonomy's `class never reported` figure is larger — 378 — because it also counts those CWE-less rules, which cannot appear in the CWE list above by definition.)
+1. **Pattern-present, value-not-tainted.** `dangerous-system-call` (0 missed labelled lines) misses are `os.system(f"ls -la {event['dir']}")` style calls: the sink exists and the argument is an f-string, but the interpolated expression is a plain dict subscript on a locally-built mapping. TCS's CWE-78 path is taint-edge driven, so with no reachable `TAINT_SOURCE_PATTERNS` producer for `event` it emits nothing, whereas the upstream rule is a pure syntactic pattern (any interpolation into an `os.system` argument). This is the single largest structural reason TCS trails a pattern matcher on this corpus: 412 of the 520 CWE-strict missed positives (79.23%) are `no_output_on_file`, i.e. the engine produced no finding anywhere in that file, while only 10 are `line_hit_wrong_cwe`.
+2. **15 of the 53 labelled weakness classes TCS never emits at all** (measured: the CWE string appears on zero TCS findings across both corpora), accounting for 35 labelled positive lines. Largest: CWE-523 (7 labelled lines), CWE-1236 (3 labelled lines), CWE-200 (3 labelled lines), CWE-553 (3 labelled lines), CWE-776 (3 labelled lines), CWE-134 (2 labelled lines). Two of the shapes in the table above sit here: `nan-injection` is CWE-704 (type coercion) and `insecure-file-permissions` is CWE-276 (incorrect permission assignment) — both need new sink/check definitions, not better taint propagation. `default-mutable-dict`, `default-mutable-list` and `attr-mutable-initializer` are a different gap: their upstream rules declare **no CWE at all**, so they are scored line-only and never appear in the CWE coverage tables. (The §4.4 taxonomy's `class never reported` figure is larger — 377 — because it also counts those CWE-less rules, which cannot appear in the CWE list above by definition.)
    * Not to be confused with `weak-ssl-version` (0 missed lines, CWE-326), which is **not** an unimplemented class: TCS does emit CWE-326, at `insufficient-rsa-key-size.py:23/28` and `weak_cryptographic_key_sizes.py:29/46/55/59`, i.e. on weak *key-size* comparisons. The missed lines are weak *protocol-version* argument values — `ssl.wrap_socket(ssl_version=ssl.PROTOCOL_SSLv2)`, `SSL.Context(method=SSL.SSLv2_METHOD)`, the same two keywords passed to arbitrary callees, and a default parameter value `def open_ssl_socket(version=ssl.PROTOCOL_SSLv2)`. The gap is an unsafe-constant argument-value model for `ssl_version`/`method`, not a missing CWE.
 3. **Context-of-use sinks without a model.** `raw-html-format` (0 missed lines) flags a value being concatenated/formatted into something later rendered as HTML (`context['html'] = link % text`). TCS's CWE-79 sinks are response/render call sites; it has no HTML-context taint for assignments into a template context mapping, so the `BinOp`/`str.format` results are tainted-but-unsunk.
 4. **Configuration-value defects.** `flask-wtf-csrf-disabled` (7 missed lines) flags the config-mapping write `app.config['WTF_CSRF_ENABLED'] = False` (and the attribute form `app.config.WTF_CSRF_ENABLED = False`) in `wtf-csrf-disabled.py`, while the labelled line in the retained autofix variant `wtf-csrf-disabled.fixed.py:6` reads `= True` — the same annotation-vs-source staleness recorded in §6. Either way TCS's CSRF work (view decorators, `@csrf.exempt`) does not cover config-mapping writes, and the subscript-store path is exactly where M3 (nested subscript key taint) has reach but no sink is registered.
@@ -597,6 +597,6 @@ Analyst commentary on the shapes above (every count in this section is computed 
 
 ## 9. Verdict
 
-* On independent labels the ranking by F1 is Semgrep 75.55% > TCS 75.19% > Bandit 41.83%.
-* By precision: TCS 96.26% > Semgrep 90.36% > Bandit 65.93% — TCS is first of 3 (96.26%), behind TCS's 96.26%. By recall: Semgrep 64.91% > TCS 61.69% > Bandit 30.64% — TCS is second of 3 (61.69%). TCS is therefore first on precision and second on recall, the expected signature of a taint-engine scored on a corpus of syntactic patterns: it reports few findings and most of them are right, and it simply does not have checks for 15 of the 53 labelled classes (see §8).
-* TCS's own benchmark reports 100% precision and recall on 552 cases; those labels are authored in this repository and describe the cases the engine was built to solve. On this benchmark the labels are written by the two competitors and cover 53 weakness classes, of which TCS implements a subset — the 61.69% recall figure is the honest measure of that gap, and the two numbers are not in conflict.
+* On independent labels the ranking by F1 is TCS 77.19% > Semgrep 75.55% > Bandit 41.83%.
+* By precision: TCS 96.41% > Semgrep 90.36% > Bandit 65.93% — TCS is first of 3 (96.41%), behind TCS's 96.41%. By recall: Semgrep 64.91% > TCS 64.36% > Bandit 30.64% — TCS is second of 3 (64.36%). TCS is therefore first on precision and second on recall, the expected signature of a taint-engine scored on a corpus of syntactic patterns: it reports few findings and most of them are right, and it simply does not have checks for 15 of the 53 labelled classes (see §8).
+* TCS's own benchmark reports 100% precision and recall on 552 cases; those labels are authored in this repository and describe the cases the engine was built to solve. On this benchmark the labels are written by the two competitors and cover 53 weakness classes, of which TCS implements a subset — the 64.36% recall figure is the honest measure of that gap, and the two numbers are not in conflict.

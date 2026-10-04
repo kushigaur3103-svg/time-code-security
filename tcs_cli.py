@@ -16,7 +16,14 @@ from typing import Dict, List, Any, Optional, Set
 
 from ast_scanner import TaintTracker, render_proof_graph_ascii, ProofNodeType
 from suppression_resolver import resolve_suppressions
-from sarif_adapter import to_sarif
+from sarif_adapter import (
+    SARIF_SCHEMA_URI,
+    SARIF_VERSION,
+    TOOL_INFORMATION_URI,
+    TOOL_NAME,
+    TOOL_VERSION,
+    to_sarif,
+)
 from rule_engine import GLOBAL_RULE_REGISTRY, get_active_cwe_count
 from benchmark.manifest import ALL_44_CWES
 from manifest_parser import parse_manifest, DependencyRecord
@@ -111,6 +118,49 @@ def check_file_resilience(file_path: Path, display_path: str) -> Optional[str]:
         return f"Skipping unreadable file: {display_path} ({e})"
 
     return None
+
+
+# Recorded as soon as the CLI knows its SARIF destination, so that a crash anywhere in
+# the scan still leaves Code Scanning a valid artifact to upload instead of failing
+# with "Path does not exist".
+SARIF_OUTPUT_TARGET: Dict[str, str] = {}
+
+
+def _minimal_sarif_document() -> Dict[str, Any]:
+    """A structurally valid SARIF 2.1.0 run carrying zero results."""
+    return {
+        "$schema": SARIF_SCHEMA_URI,
+        "version": SARIF_VERSION,
+        "runs": [
+            {
+                "tool": {
+                    "driver": {
+                        "name": TOOL_NAME,
+                        "version": TOOL_VERSION,
+                        "informationUri": TOOL_INFORMATION_URI,
+                        "rules": [],
+                    }
+                },
+                "results": [],
+            }
+        ],
+    }
+
+
+def ensure_sarif_artifact(reason: str) -> None:
+    """Write the fallback SARIF document if the real one never made it to disk."""
+    target = SARIF_OUTPUT_TARGET.get("path")
+    if not target:
+        return
+    out_path = Path(os.path.expanduser(target)).resolve()
+    if out_path.exists():
+        return
+    try:
+        out_path.parent.mkdir(parents=True, exist_ok=True)
+        out_path.write_text(json.dumps(_minimal_sarif_document(), indent=2) + "\n", encoding="utf-8")
+        print(f"[WARN] Wrote fallback SARIF artifact to {target} ({reason})", file=sys.stderr)
+    except OSError as exc:
+        print(f"[ERROR] Could not write fallback SARIF artifact '{target}': {exc}", file=sys.stderr)
 
 
 def format_confidence(conf_val: Any = None, conf_label: Optional[str] = None) -> str:
@@ -521,9 +571,10 @@ def discover_python_files(
 
         try:
             normalized_files[rel_path] = target_path.read_text(encoding="utf-8")
-        except Exception as e:
-            print(f"[ERROR] Unable to read file '{target_path}': {e}", file=sys.stderr)
-            sys.exit(2)
+        except (OSError, UnicodeDecodeError, ValueError) as e:
+            print(f"[WARN] Skipping unreadable file: {target_path} ({e})", file=sys.stderr)
+            if skipped_files is not None:
+                skipped_files.append(f"Skipping unreadable file: {rel_path} ({e})")
         return normalized_files
 
     visited_dirs: Set[str] = set()
@@ -564,9 +615,10 @@ def discover_python_files(
 
                 try:
                     normalized_files[rel_path] = full_file.read_text(encoding="utf-8")
-                except Exception as e:
-                    print(f"[ERROR] Unable to read file '{full_file}': {e}", file=sys.stderr)
-                    sys.exit(2)
+                except (OSError, UnicodeDecodeError, ValueError) as e:
+                    print(f"[WARN] Skipping unreadable file: {full_file} ({e})", file=sys.stderr)
+                    if skipped_files is not None:
+                        skipped_files.append(f"Skipping unreadable file: {rel_path} ({e})")
 
     return normalized_files
 
@@ -1321,6 +1373,9 @@ def main(argv: Optional[List[str]] = None):
     args.fix = fix_active
     args.remediate = fix_active
 
+    if getattr(args, "format", "").lower() == "sarif" and args.output:
+        SARIF_OUTPUT_TARGET["path"] = str(args.output)
+
     if args.dry_run and args.write:
         print("[ERROR] Cannot specify both --dry-run and --write.", file=sys.stderr)
         sys.exit(2)
@@ -1766,7 +1821,11 @@ def main(argv: Optional[List[str]] = None):
         findings_by_file = getattr(remediation_res, "findings_by_file", findings_by_file)
 
     if args.format.lower() == "sarif":
-        sarif_doc = to_sarif(export_data, enabled_rule_ids=config.effective_rules if config else None)
+        try:
+            sarif_doc = to_sarif(export_data, enabled_rule_ids=config.effective_rules if config else None)
+        except Exception as exc:
+            print(f"[ERROR] SARIF conversion failed: {exc}", file=sys.stderr)
+            sarif_doc = _minimal_sarif_document()
         output_text = json.dumps(sarif_doc, indent=2)
     elif args.format.lower() == "json":
         output_text = json.dumps(export_data, indent=2)
@@ -1904,4 +1963,5 @@ if __name__ == "__main__":
         sys.exit(se.code)
     except Exception as exc:
         print(f"[ERROR] Internal unhandled exception: {exc}", file=sys.stderr)
+        ensure_sarif_artifact(f"unhandled exception: {exc}")
         sys.exit(2)

@@ -9673,38 +9673,45 @@ class TaintTracker:
                     break
             return None
 
-        def _is_static(expr: ast.AST, scope_id: str, lineno: int) -> bool:
-            if expr is None:
+        def _is_static(expr: ast.AST, scope_id: str, lineno: int,
+                       visited: set = None, depth: int = 0) -> bool:
+            if expr is None or depth > 25:
                 return False
+            if visited is None:
+                visited = set()
+            if id(expr) in visited:
+                return False
+            visited.add(id(expr))
             if isinstance(expr, ast.Constant):
                 return isinstance(expr.value, (str, bytes, int, float, bool, type(None)))
             if isinstance(expr, (ast.Str, ast.Bytes, ast.Num)):
                 return True
             if isinstance(expr, (ast.List, ast.Tuple)):
-                return all(_is_static(element, scope_id, lineno) for element in expr.elts)
+                return all(_is_static(element, scope_id, lineno, visited, depth + 1) for element in expr.elts)
             # F-strings (JoinedStr) are static only if all interpolated values are static
             if isinstance(expr, ast.JoinedStr):
-                return all(_is_static(value, scope_id, lineno) for value in expr.values)
+                return all(_is_static(value, scope_id, lineno, visited, depth + 1) for value in expr.values)
             # String concatenation (BinOp with + or %) is static only if both operands are static
             if isinstance(expr, ast.BinOp) and isinstance(expr.op, (ast.Add, ast.Mod)):
-                return _is_static(expr.left, scope_id, lineno) and _is_static(expr.right, scope_id, lineno)
+                return _is_static(expr.left, scope_id, lineno, visited, depth + 1) and \
+                       _is_static(expr.right, scope_id, lineno, visited, depth + 1)
             if isinstance(expr, ast.Call):
                 call_names = _call_names(expr, scope_id)
                 if call_names & {"compile", "builtins.compile", "code.compile_command", "compile_command"}:
                     if expr.args:
-                        return _is_static(expr.args[0], scope_id, lineno)
+                        return _is_static(expr.args[0], scope_id, lineno, visited, depth + 1)
                 # .format() calls are dynamic if the receiver is dynamic
                 if isinstance(expr.func, ast.Attribute) and expr.func.attr == "format":
                     # Check if the receiver (expr.func.value) is static
-                    if not _is_static(expr.func.value, scope_id, lineno):
+                    if not _is_static(expr.func.value, scope_id, lineno, visited, depth + 1):
                         return False
                     # If receiver is static, check if all format args are static
-                    return all(_is_static(arg, scope_id, lineno) for arg in expr.args) and \
-                           all(_is_static(kw.value, scope_id, lineno) for kw in expr.keywords)
+                    return all(_is_static(arg, scope_id, lineno, visited, depth + 1) for arg in expr.args) and \
+                           all(_is_static(kw.value, scope_id, lineno, visited, depth + 1) for kw in expr.keywords)
             if isinstance(expr, ast.Name):
                 record = _assigned_value(expr.id, scope_id, lineno)
                 if record is not None and record.value_node is not None:
-                    return _is_static(record.value_node, record.scope_id, record.lineno)
+                    return _is_static(record.value_node, record.scope_id, record.lineno, visited, depth + 1)
             return _eval_static_constant(expr, self.assignments_by_scope, scope_id, lineno) is not None
 
         def _is_dynamic(expr: ast.AST, scope_id: str, lineno: int) -> bool:
@@ -9973,6 +9980,39 @@ class TaintTracker:
                 scope_id=scope_id,
             ))
 
+        def _phase12_suppressed(line_no: int, mod_name: str) -> bool:
+            """`# ok:` / `# nosec` on this line or the one immediately above it.
+
+            `_is_line_suppressed` only recognises `# ok:` on a preceding line, so a `# nosec`
+            placed above a tainted assignment would otherwise be ignored.
+            """
+            if _is_line_suppressed(line_no, mod_name):
+                return True
+            source_lines = self._source_lines_by_file.get(self.file_paths.get(mod_name, ""), [])
+            if 2 <= line_no <= len(source_lines) and CLUSTER3_NOSEC_RE.search(source_lines[line_no - 2]):
+                return True
+            return False
+
+        def _phase12_dynamic_payload(exprs: list, scope_id: str, lineno: int) -> bool:
+            """True when a command/process argument carries constructed (non-literal) text.
+
+            Pure literals, literal-only lists and shlex-sanitized values never qualify. When an
+            argument resolves to a local assignment, a `# ok:` / `# nosec` on that assignment line
+            suppresses the whole call.
+            """
+            mod_name = scope_id.split(":")[0]
+            for expr in exprs:
+                if expr is None or not _is_dynamic(expr, scope_id, lineno):
+                    continue
+                if _is_fully_sanitized(expr, scope_id, lineno):
+                    continue
+                if isinstance(expr, ast.Name):
+                    record = _assigned_value(expr.id, scope_id, lineno)
+                    if record is not None and _phase12_suppressed(record.lineno, mod_name):
+                        return False
+                return True
+            return False
+
         for mod_name, tree in self.modules.items():
             seen.clear()
             for node in self._reachable_nodes(tree):
@@ -10081,7 +10121,15 @@ class TaintTracker:
 
                 if names & code_sinks:
                     code_expr = _argument(node, 0, {"source", "code", "line"})
-                    if _is_dynamic(code_expr, scope_id, lineno):
+                    # `dynamic.format("literal")` still builds program text at runtime, so a
+                    # format call is constructed code even when every argument is a literal
+                    # (python/lang/security/audit/eval-detected.py:13).
+                    format_constructed = (
+                        isinstance(code_expr, ast.Call)
+                        and isinstance(code_expr.func, ast.Attribute)
+                        and code_expr.func.attr == "format"
+                    )
+                    if _is_dynamic(code_expr, scope_id, lineno) or format_constructed:
                         _add_finding(node, mod_name, scope_id, "DYNAMIC_CODE_EXECUTION", "CODE_EXECUTION", "CWE-95")
                 elif names & subinterp_sinks:
                     code_expr = _argument(node, 1, {"code", "source"})
@@ -10141,6 +10189,95 @@ class TaintTracker:
                         elif not shell_enabled and not is_os_system:
                             if _dynamic_executable(command, scope_id, lineno):
                                 _add_finding(node, mod_name, scope_id, "OS_COMMAND_EXECUTION", "COMMAND_INJECTION", "CWE-78")
+
+                # ---- Phase 12: CWE-78 exec/spawn command-payload dynamism ----
+                # The executable-position check above misses `os.spawnl(os.P_WAIT, "/bin/bash",
+                # "-c", cmd)`: the path is a literal and only the payload is user-controlled.
+                # `os.P_*` mode handles and the trailing `os.environ` argument are neither command
+                # text nor input, so `os.`-rooted attributes are skipped entirely.
+                spawn_exec_sinks = {
+                    "os.execl", "os.execle", "os.execlp", "os.execlpe",
+                    "os.execv", "os.execve", "os.execvp", "os.execvpe",
+                    "os.spawnl", "os.spawnle", "os.spawnlp", "os.spawnlpe",
+                    "os.spawnv", "os.spawnve", "os.spawnvp", "os.spawnvpe",
+                }
+                if names & spawn_exec_sinks:
+                    payload = [
+                        argument for argument in node.args[1:]
+                        if not (
+                            isinstance(argument, ast.Attribute)
+                            and isinstance(argument.value, ast.Name)
+                            and argument.value.id == "os"
+                        )
+                    ]
+                    if _phase12_dynamic_payload(payload, scope_id, lineno):
+                        _add_finding(
+                            node, mod_name, scope_id, "OS_COMMAND_EXECUTION",
+                            "COMMAND_INJECTION", "CWE-78",
+                        )
+
+                # ---- Phase 12: CWE-78 asyncio event-loop exec/shell sinks ----
+                # `loop.subprocess_exec`/`subprocess_shell` take the protocol factory first, so
+                # only the arguments after it are command text; the factory is a lambda and would
+                # otherwise read as dynamic on every call.
+                asyncio_payload_offset = {
+                    "subprocess_exec": 1,
+                    "subprocess_shell": 1,
+                    "create_subprocess_exec": 0,
+                }
+                call_attr = node.func.attr if isinstance(node.func, ast.Attribute) else None
+                if call_attr in asyncio_payload_offset:
+                    receiver = node.func.value
+                    receiver_root = (
+                        receiver.id if isinstance(receiver, ast.Name)
+                        else getattr(receiver, "attr", "") if isinstance(receiver, ast.Attribute)
+                        else ""
+                    )
+                    is_asyncio_call = (
+                        any(name.startswith("asyncio") for name in names)
+                        or receiver_root == "loop"
+                        or receiver_root.endswith("_loop")
+                    )
+                    if is_asyncio_call:
+                        payload = list(node.args[asyncio_payload_offset[call_attr]:])
+                        if _phase12_dynamic_payload(payload, scope_id, lineno):
+                            _add_finding(
+                                node, mod_name, scope_id, "OS_COMMAND_EXECUTION",
+                                "COMMAND_INJECTION", "CWE-78",
+                            )
+
+                # ---- Phase 12: CWE-78 `sh` command-wrapper string construction ----
+                # `sh.ls("-a" + long)` shells out; `sh.semgrep(*args)` and literal-only calls do
+                # not, so Starred arguments are excluded from the payload entirely.
+                sh_command_call = any(name.startswith("sh.") for name in names) or (
+                    isinstance(node.func, ast.Attribute)
+                    and isinstance(node.func.value, ast.Name)
+                    and node.func.value.id == "sh"
+                )
+                if sh_command_call:
+                    payload = [argument for argument in node.args if not isinstance(argument, ast.Starred)]
+                    if _phase12_dynamic_payload(payload, scope_id, lineno):
+                        _add_finding(
+                            node, mod_name, scope_id, "OS_COMMAND_EXECUTION",
+                            "COMMAND_INJECTION", "CWE-78",
+                        )
+
+                # ---- Phase 12: CWE-78 airflow BashOperator dynamic bash_command ----
+                if any(name.endswith("BashOperator") for name in names):
+                    bash_command = _argument(node, 1, {"bash_command"})
+                    if _phase12_dynamic_payload([bash_command], scope_id, lineno):
+                        _add_finding(
+                            node, mod_name, scope_id, "OS_COMMAND_EXECUTION",
+                            "COMMAND_INJECTION", "CWE-78",
+                        )
+
+                # ---- Phase 12: CWE-78 paramiko SSHClient.exec_command dynamic payload ----
+                if isinstance(node.func, ast.Attribute) and node.func.attr == "exec_command":
+                    if _phase12_dynamic_payload(list(node.args), scope_id, lineno):
+                        _add_finding(
+                            node, mod_name, scope_id, "OS_COMMAND_EXECUTION",
+                            "COMMAND_INJECTION", "CWE-78",
+                        )
 
                 # ---- CWE-89: SQL Injection detection ----
                 sql_sinks = {
@@ -10271,31 +10408,38 @@ class TaintTracker:
                 return _call_names(expr, scope_id)
             return set()
 
-        def _is_static(expr: ast.AST, scope_id: str, lineno: int) -> bool:
-            if expr is None:
+        def _is_static(expr: ast.AST, scope_id: str, lineno: int,
+                       visited: set = None, depth: int = 0) -> bool:
+            if expr is None or depth > 25:
                 return False
+            if visited is None:
+                visited = set()
+            if id(expr) in visited:
+                return False
+            visited.add(id(expr))
             if isinstance(expr, ast.Constant):
                 return isinstance(expr.value, (str, bytes, int, float, bool, type(None)))
             if isinstance(expr, (ast.Str, ast.Bytes, ast.Num)):
                 return True
             if isinstance(expr, (ast.List, ast.Tuple)):
-                return all(_is_static(element, scope_id, lineno) for element in expr.elts)
+                return all(_is_static(element, scope_id, lineno, visited, depth + 1) for element in expr.elts)
             if isinstance(expr, ast.JoinedStr):
-                return all(_is_static(value, scope_id, lineno) for value in expr.values)
+                return all(_is_static(value, scope_id, lineno, visited, depth + 1) for value in expr.values)
             if isinstance(expr, ast.BinOp) and isinstance(expr.op, (ast.Add, ast.Mod)):
-                return _is_static(expr.left, scope_id, lineno) and _is_static(expr.right, scope_id, lineno)
+                return _is_static(expr.left, scope_id, lineno, visited, depth + 1) and \
+                       _is_static(expr.right, scope_id, lineno, visited, depth + 1)
             if isinstance(expr, ast.Call):
                 call_names = _call_name_set(expr, scope_id)
                 if isinstance(expr.func, ast.Attribute) and expr.func.attr == "format":
-                    if not _is_static(expr.func.value, scope_id, lineno):
+                    if not _is_static(expr.func.value, scope_id, lineno, visited, depth + 1):
                         return False
-                    return all(_is_static(arg, scope_id, lineno) for arg in expr.args) and \
-                           all(_is_static(kw.value, scope_id, lineno) for kw in expr.keywords)
+                    return all(_is_static(arg, scope_id, lineno, visited, depth + 1) for arg in expr.args) and \
+                           all(_is_static(kw.value, scope_id, lineno, visited, depth + 1) for kw in expr.keywords)
                 _ = call_names
             if isinstance(expr, ast.Name):
                 record = _assigned_value(expr.id, scope_id, lineno)
                 if record is not None and record.value_node is not None:
-                    return _is_static(record.value_node, record.scope_id, record.lineno)
+                    return _is_static(record.value_node, record.scope_id, record.lineno, visited, depth + 1)
             return _eval_static_constant(expr, self.assignments_by_scope, scope_id, lineno) is not None
 
         def _is_dynamic(expr: ast.AST, scope_id: str, lineno: int) -> bool:
@@ -10666,29 +10810,36 @@ class TaintTracker:
                     break
             return None
 
-        def _is_static(expr: ast.AST, scope_id: str, lineno: int) -> bool:
-            if expr is None:
+        def _is_static(expr: ast.AST, scope_id: str, lineno: int,
+                       visited: set = None, depth: int = 0) -> bool:
+            if expr is None or depth > 25:
                 return False
+            if visited is None:
+                visited = set()
+            if id(expr) in visited:
+                return False
+            visited.add(id(expr))
             if isinstance(expr, ast.Constant):
                 return isinstance(expr.value, (str, bytes, int, float, bool, type(None)))
             if isinstance(expr, (ast.Str, ast.Bytes, ast.Num)):
                 return True
             if isinstance(expr, (ast.List, ast.Tuple)):
-                return all(_is_static(element, scope_id, lineno) for element in expr.elts)
+                return all(_is_static(element, scope_id, lineno, visited, depth + 1) for element in expr.elts)
             if isinstance(expr, ast.JoinedStr):
-                return all(_is_static(value, scope_id, lineno) for value in expr.values)
+                return all(_is_static(value, scope_id, lineno, visited, depth + 1) for value in expr.values)
             if isinstance(expr, ast.BinOp) and isinstance(expr.op, (ast.Add, ast.Mod)):
-                return _is_static(expr.left, scope_id, lineno) and _is_static(expr.right, scope_id, lineno)
+                return _is_static(expr.left, scope_id, lineno, visited, depth + 1) and \
+                       _is_static(expr.right, scope_id, lineno, visited, depth + 1)
             if isinstance(expr, ast.Call):
                 if isinstance(expr.func, ast.Attribute) and expr.func.attr == "format":
-                    if not _is_static(expr.func.value, scope_id, lineno):
+                    if not _is_static(expr.func.value, scope_id, lineno, visited, depth + 1):
                         return False
-                    return all(_is_static(arg, scope_id, lineno) for arg in expr.args) and \
-                           all(_is_static(kw.value, scope_id, lineno) for kw in expr.keywords)
+                    return all(_is_static(arg, scope_id, lineno, visited, depth + 1) for arg in expr.args) and \
+                           all(_is_static(kw.value, scope_id, lineno, visited, depth + 1) for kw in expr.keywords)
             if isinstance(expr, ast.Name):
                 record = _assigned_value(expr.id, scope_id, lineno)
                 if record is not None and record.value_node is not None:
-                    return _is_static(record.value_node, record.scope_id, record.lineno)
+                    return _is_static(record.value_node, record.scope_id, record.lineno, visited, depth + 1)
             return _eval_static_constant(expr, self.assignments_by_scope, scope_id, lineno) is not None
 
         def _uses_safe_builder(expr: ast.AST, scope_id: str, lineno: int, visited=None) -> bool:
@@ -12154,36 +12305,43 @@ class TaintTracker:
                     break
             return None
 
-        def _is_static(expr: ast.AST, scope_id: str, lineno: int) -> bool:
-            if expr is None:
+        def _is_static(expr: ast.AST, scope_id: str, lineno: int,
+                       visited: set = None, depth: int = 0) -> bool:
+            if expr is None or depth > 25:
                 return False
+            if visited is None:
+                visited = set()
+            if id(expr) in visited:
+                return False
+            visited.add(id(expr))
             if isinstance(expr, ast.Constant):
                 return isinstance(expr.value, (str, bytes, int, float, bool, type(None)))
             if isinstance(expr, (ast.Str, ast.Bytes, ast.Num)):
                 return True
             if isinstance(expr, (ast.List, ast.Tuple)):
-                return all(_is_static(element, scope_id, lineno) for element in expr.elts)
+                return all(_is_static(element, scope_id, lineno, visited, depth + 1) for element in expr.elts)
             # F-strings (JoinedStr) are static only if all interpolated values are static
             if isinstance(expr, ast.JoinedStr):
-                return all(_is_static(value, scope_id, lineno) for value in expr.values)
+                return all(_is_static(value, scope_id, lineno, visited, depth + 1) for value in expr.values)
             # String concatenation (BinOp with + or %) is static only if both operands are static
             if isinstance(expr, ast.BinOp) and isinstance(expr.op, (ast.Add, ast.Mod)):
-                return _is_static(expr.left, scope_id, lineno) and _is_static(expr.right, scope_id, lineno)
+                return _is_static(expr.left, scope_id, lineno, visited, depth + 1) and \
+                       _is_static(expr.right, scope_id, lineno, visited, depth + 1)
             if isinstance(expr, ast.Call):
                 call_names = _names_for_call(expr, scope_id)
                 if call_names & {"compile", "builtins.compile"}:
                     if expr.args:
-                        return _is_static(expr.args[0], scope_id, lineno)
+                        return _is_static(expr.args[0], scope_id, lineno, visited, depth + 1)
                 # .format() calls are dynamic if the receiver is dynamic
                 if isinstance(expr.func, ast.Attribute) and expr.func.attr == "format":
-                    if not _is_static(expr.func.value, scope_id, lineno):
+                    if not _is_static(expr.func.value, scope_id, lineno, visited, depth + 1):
                         return False
-                    return all(_is_static(arg, scope_id, lineno) for arg in expr.args) and \
-                           all(_is_static(kw.value, scope_id, lineno) for kw in expr.keywords)
+                    return all(_is_static(arg, scope_id, lineno, visited, depth + 1) for arg in expr.args) and \
+                           all(_is_static(kw.value, scope_id, lineno, visited, depth + 1) for kw in expr.keywords)
             if isinstance(expr, ast.Name):
                 record = _assigned_value(expr.id, scope_id, lineno)
                 if record is not None and record.value_node is not None:
-                    return _is_static(record.value_node, record.scope_id, record.lineno)
+                    return _is_static(record.value_node, record.scope_id, record.lineno, visited, depth + 1)
             return _eval_static_constant(expr, self.assignments_by_scope, scope_id, lineno) is not None
 
         def _is_safe_path(expr: ast.AST, scope_id: str, lineno: int, visited=None) -> bool:
