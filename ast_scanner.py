@@ -1147,6 +1147,22 @@ JSON_API_ROUTE_SEGS = frozenset({
     "get", "post", "put", "patch", "delete", "head", "options", "trace", "api_route",
     "websocket", "websockets",
 })
+# SSRF needs a request handler that lets an outsider move the URL. A client library's own
+# transport layer already received the URL the application authorised, so outbound fetches in
+# those modules are plumbing, not a forgery surface. Only modules living *inside* an HTTP
+# client package qualify — an application's own sessions.py is still an SSRF surface.
+HTTP_TRANSPORT_MODULE_STEMS = frozenset({
+    "adapters", "sessions", "connectionpool", "connectionpool2", "poolmanager", "poolproxy",
+})
+HTTP_CLIENT_PACKAGE_DIRS = frozenset({"requests", "httpx", "urllib3", "aiohttp", "httplib2", "treq"})
+# pytest parametrises modules under test through `request.param` / fixture arguments. Those names
+# are chosen by the suite itself, so a dynamic import built from them is not code injection.
+# Reads of a live web request keep reporting even inside a test module.
+PYTEST_TEST_DIR_NAMES = frozenset({"tests", "test"})
+WEB_REQUEST_INPUT_ATTRS = frozenset({
+    "args", "form", "json", "data", "files", "headers", "GET", "POST", "body", "values",
+    "query_params",
+})
 CLUSTER3_WTF_CSRF_KEY = "WTF_CSRF_ENABLED"
 CLUSTER3_TESTING_KEY = "TESTING"
 CLUSTER3_STRUCTURAL_SOURCE_IDS = {
@@ -2581,6 +2597,114 @@ class TaintTracker:
                     break
         return algo
 
+    def _usedforsecurity_false(self, node: ast.Call, scope_id: str = "", lineno: int = 0) -> bool:
+        """True when the call passes usedforsecurity=False, declaring a non-security digest."""
+        lno = lineno or getattr(node, "lineno", 0)
+        for kw in getattr(node, "keywords", []):
+            if kw.arg == "usedforsecurity":
+                return _eval_static_constant(kw.value, self.assignments_by_scope, scope_id, lno) is False
+        return False
+
+    def _scope_module(self, scope_id: str) -> str:
+        return scope_id.split(":")[0] if scope_id else ""
+
+    def _module_source_path(self, mod_name_or_path: str) -> str:
+        return str(self.file_paths.get(mod_name_or_path) or mod_name_or_path).replace("\\", "/")
+
+    def _module_stem_and_dirs(self, mod_name_or_path: str) -> tuple[str, list[str]]:
+        parts = self._module_source_path(mod_name_or_path).split("/")
+        stem = parts[-1]
+        if stem.endswith(".py"):
+            stem = stem[:-3]
+        return stem, parts[:-1]
+
+    def _registry_sink_cwe(self, name: str, canon: str) -> str:
+        """CWE of the registry sink this call resolves to, '' when it is not a registry sink."""
+        for candidate in (canon, name):
+            entry = SINK_REGISTRY.get(candidate) if candidate else None
+            if entry:
+                return entry.get("cwe") or ""
+        return ""
+
+    def _enclosing_def(self, node: ast.AST):
+        curr = getattr(node, "parent", None)
+        while curr is not None:
+            if isinstance(curr, (ast.FunctionDef, ast.AsyncFunctionDef)):
+                return curr
+            curr = getattr(curr, "parent", None)
+        return None
+
+    def _function_parameter_names(self, func) -> set:
+        a = getattr(func, "args", None)
+        if a is None:
+            return set()
+        return {p.arg for p in (*getattr(a, "posonlyargs", []), *a.args, *getattr(a, "kwonlyargs", []))}
+
+    def _is_pytest_test_module(self, mod_name: str) -> bool:
+        """A pytest test module: tests/ package or test_*.py / *_test.py / conftest.py, using pytest."""
+        stem, dirs = self._module_stem_and_dirs(mod_name)
+        if not (stem.startswith("test_") or stem.endswith("_test") or stem == "conftest"
+                or any(d in PYTEST_TEST_DIR_NAMES for d in dirs)):
+            return False
+        roots = {str(c).split(".")[0] for c in (self.imports.get(mod_name) or {}).values()}
+        return "pytest" in roots
+
+    def _is_pytest_case_function(self, func) -> bool:
+        """A function pytest drives itself: a `test_*` body or a fixture/parametrize decorator."""
+        if func.name.startswith("test_"):
+            return True
+        for decorator in func.decorator_list:
+            target = decorator.func if isinstance(decorator, ast.Call) else decorator
+            dotted = dotted_name(target) or ""
+            if dotted.split(".")[0] in ("pytest", "fixture", "parametrize") or "fixture" in dotted:
+                return True
+        return False
+
+    def _is_pytest_fixture_dynamic_import(self, node: ast.Call, mod_name: str) -> bool:
+        """Suppress CWE-94 when a pytest suite imports the module name it parametrises with.
+
+        The dynamic value must come from the fixture machinery — `request.param`, a parameter of
+        the enclosing test/fixture, or a local assigned from a `.param` expression in that scope.
+        A read of a live web request (`request.args[...]`, `request.json`) stays reportable.
+        """
+        if not node.args or not self._is_pytest_test_module(mod_name):
+            return False
+        func = self._enclosing_def(node)
+        if func is None or not self._is_pytest_case_function(func):
+            return False
+        attrs = [a for a in ast.walk(node.args[0]) if isinstance(a, ast.Attribute)]
+        if any(a.attr == "param" for a in attrs):
+            return True
+        if any(a.attr in WEB_REQUEST_INPUT_ATTRS for a in attrs):
+            return False
+        supplied = self._function_parameter_names(func) - {"self", "cls"}
+        for stmt in ast.walk(func):
+            if not isinstance(stmt, (ast.Assign, ast.AnnAssign)) or stmt.value is None:
+                continue
+            if not any(isinstance(a, ast.Attribute) and a.attr == "param" for a in ast.walk(stmt.value)):
+                continue
+            targets = stmt.targets if isinstance(stmt, ast.Assign) else [stmt.target]
+            for t in targets:
+                if isinstance(t, ast.Name):
+                    supplied.add(t.id)
+        arg_names = {n.id for n in ast.walk(node.args[0]) if isinstance(n, ast.Name)}
+        return bool(arg_names & supplied)
+
+    def _is_http_transport_module(self, mod_name_or_path: str) -> bool:
+        """True for the transport/session/pool layer inside an HTTP client package."""
+        stem, dirs = self._module_stem_and_dirs(mod_name_or_path)
+        return stem in HTTP_TRANSPORT_MODULE_STEMS and any(d in HTTP_CLIENT_PACKAGE_DIRS for d in dirs)
+
+    def _sink_context_exempt(self, cwe_id: str, node: ast.Call, scope_id: str) -> bool:
+        mod_name = self._scope_module(scope_id)
+        if not mod_name:
+            return False
+        if cwe_id == "CWE-94":
+            return self._is_pytest_fixture_dynamic_import(node, mod_name)
+        if cwe_id == "CWE-918":
+            return self._is_http_transport_module(mod_name)
+        return False
+
     def _is_exempt_cwe327(self, node: ast.Call, scope_id: str = "", lineno: int = 0) -> bool:
         call_lineno = lineno or getattr(node, "lineno", 0)
 
@@ -2885,6 +3009,12 @@ class TaintTracker:
         if (canon and canon.startswith("defusedxml.")) or (name and name.startswith("defusedxml.")):
             return False
         if canon in SANITIZER_REGISTRY or name in SANITIZER_REGISTRY:
+            return False
+
+        # Registry sinks still need their call-site context: a pytest fixture importing a
+        # parametrised module, or a client library's own transport layer, are not exploitable.
+        _sink_cwe = self._registry_sink_cwe(name, canon)
+        if _sink_cwe and self._sink_context_exempt(_sink_cwe, node, scope_id):
             return False
 
         # Phase 4.3: Check if this call matches a registered function contract
@@ -7248,6 +7378,8 @@ class TaintTracker:
                 key = (cwe, line, column)
                 if key in seen:
                     return
+                if cwe == "CWE-918" and self._is_http_transport_module(file_path):
+                    return
                 _c2_lines = self._source_lines_by_file.get(file_path, [])
                 if _c2_lines and 1 <= line <= len(_c2_lines):
                     if CLUSTER3_NOSEC_RE.search(_c2_lines[line - 1]):
@@ -8372,7 +8504,11 @@ class TaintTracker:
 
                     # ─── CWE-916 & CWE-759: Weak Password Hash & Unsalted Hash ───
                     elif names & CWE3A_WEAK_HASH_NAMES:
-                        if node.args:
+                        # usedforsecurity=False declares a protocol digest (e.g. HTTP
+                        # digest-auth), not a password hash — CWE-916/759 do not apply.
+                        if self._usedforsecurity_false(node, scope_id, lineno):
+                            cwe_meta = None
+                        elif node.args:
                             arg0 = node.args[0]
                             names_in_arg = {n.id for n in ast.walk(arg0) if isinstance(n, ast.Name)}
                             is_pw_hash = any(CWE3A_PASSWORD_NAME_RE.match(n) for n in names_in_arg)
