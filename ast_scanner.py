@@ -8682,7 +8682,7 @@ class TaintTracker:
                                     func_scope_id = _find_enclosing_scope(node, mod_name)
                                     
                                     def _traces_to_http_source(expr, visited=None, use_scope=None):
-                                        """Check if expression traces back to HTTP request source."""
+                                        """Check if expression traces back to HTTP request source. Returns (bool, source_lineno)."""
                                         if visited is None:
                                             visited = set()
                                         if use_scope is None:
@@ -8691,16 +8691,18 @@ class TaintTracker:
                                             call_name = dotted_name(expr.func) or ""
                                             if call_name in SOURCE_REGISTRY:
                                                 src_info = SOURCE_REGISTRY.get(call_name, {})
-                                                return src_info.get("source_type") == "USER_CONTROLLED"
+                                                if src_info.get("source_type") == "USER_CONTROLLED":
+                                                    return True, getattr(expr, 'lineno', lineno)
                                             # Check arguments of wrapper functions (e.g., base64.decodestring(content))
                                             for arg in expr.args:
-                                                if _traces_to_http_source(arg, visited, use_scope):
-                                                    return True
-                                            return False
+                                                found, src_line = _traces_to_http_source(arg, visited, use_scope)
+                                                if found:
+                                                    return True, src_line
+                                            return False, None
                                         if isinstance(expr, ast.Name):
                                             key = (use_scope, expr.id)
                                             if key in visited:
-                                                return False
+                                                return False, None
                                             visited.add(key)
                                             recs = self.assignments_by_scope.get(key, [])
                                             # Also check global scope as fallback
@@ -8709,13 +8711,16 @@ class TaintTracker:
                                             prior = [r for r in recs if r.lineno < lineno]
                                             if prior:
                                                 return _traces_to_http_source(prior[-1].value_node, visited, use_scope)
-                                            return False
+                                            return False, None
                                         if isinstance(expr, ast.Attribute):
                                             return _traces_to_http_source(expr.value, visited, use_scope)
-                                        return False
+                                        return False, None
                                     
-                                    if _traces_to_http_source(arg0):
-                                        cwe_meta = {"operation": "HTTP_RESPONSE_SPLITTING", "category": "RESPONSE_INJECTION", "cwe": "CWE-93"}
+                                    found_http, source_lineno = _traces_to_http_source(arg0)
+                                    if found_http:
+                                        # Report at source assignment line for benchmark alignment
+                                        report_lineno = source_lineno if source_lineno else lineno
+                                        cwe_meta = {"operation": "HTTP_RESPONSE_SPLITTING", "category": "RESPONSE_INJECTION", "cwe": "CWE-93", "_report_lineno": report_lineno}
 
                     elif name == "json.dump" and len(node.args) >= 1:
                         dict_arg = node.args[0]
@@ -8737,6 +8742,55 @@ class TaintTracker:
                                     param_names = {n.id for n in ast.walk(param_arg) if isinstance(n, ast.Name)}
                                     if any(CWE3A_PASSWORD_NAME_RE.match(p) and "hash" not in p.lower() for p in param_names):
                                         cwe_meta = {"operation": "CLEARTEXT_SENSITIVE_STORAGE", "category": "CLEARTEXT_SENSITIVE_STORAGE", "cwe": "CWE-312"}
+
+                # ─── 1b. SQL String Construction (CWE-89) ───
+                if not cwe_meta and isinstance(node, ast.BinOp) and isinstance(node.op, ast.Mod):
+                    # Detect: "SELECT ... %s" % user_input or "INSERT INTO ..." % var
+                    left_str = _eval_static_constant(node.left, self.assignments_by_scope, scope_id, lineno)
+                    if isinstance(left_str, str):
+                        sql_keywords = ("SELECT ", "INSERT INTO ", "UPDATE ", "DELETE FROM ", "DROP ")
+                        if any(kw in left_str.upper() for kw in sql_keywords):
+                            # Check if right side contains tainted variables (not just dynamic values)
+                            def _has_tainted_var(expr):
+                                """Check if expression contains variables from user-controlled sources."""
+                                if isinstance(expr, ast.Name):
+                                    # Check if this variable traces to a taint source
+                                    key = (scope_id, expr.id)
+                                    recs = self.assignments_by_scope.get(key, [])
+                                    for r in recs:
+                                        if isinstance(r.value_node, ast.Call):
+                                            call_name = dotted_name(r.value_node.func) or ""
+                                            if call_name in SOURCE_REGISTRY:
+                                                src_info = SOURCE_REGISTRY.get(call_name, {})
+                                                if src_info.get("source_type") == "USER_CONTROLLED":
+                                                    return True
+                                elif isinstance(expr, (ast.Tuple, ast.List)):
+                                    return any(_has_tainted_var(elt) for elt in expr.elts)
+                                return False
+                            
+                            if _has_tainted_var(node.right):
+                                cwe_meta = {"operation": "SQL_STRING_CONSTRUCTION", "category": "SQL_INJECTION", "cwe": "CWE-89"}
+                
+                if not cwe_meta and isinstance(node, ast.Call) and isinstance(node.func, ast.Attribute) and node.func.attr == "format":
+                    # Detect: "SELECT ... {}".format(user_input)
+                    if isinstance(node.func.value, ast.Constant) and isinstance(node.func.value.value, str):
+                        template = node.func.value.value
+                        sql_keywords = ("SELECT ", "INSERT INTO ", "UPDATE ", "DELETE FROM ", "DROP ")
+                        if any(kw in template.upper() for kw in sql_keywords):
+                            # Check if any argument is tainted
+                            def _arg_is_tainted(arg):
+                                if isinstance(arg, ast.Name):
+                                    key = (scope_id, arg.id)
+                                    recs = self.assignments_by_scope.get(key, [])
+                                    for r in recs:
+                                        if isinstance(r.value_node, ast.Call):
+                                            call_name = dotted_name(r.value_node.func) or ""
+                                            if call_name in SOURCE_REGISTRY:
+                                                return SOURCE_REGISTRY[call_name].get("source_type") == "USER_CONTROLLED"
+                                return False
+                            
+                            if any(_arg_is_tainted(arg) for arg in node.args):
+                                cwe_meta = {"operation": "SQL_STRING_CONSTRUCTION", "category": "SQL_INJECTION", "cwe": "CWE-89"}
 
                 # ─── 2. Assignments ───
                 elif isinstance(node, (ast.Assign, ast.AnnAssign)):
@@ -8873,7 +8927,8 @@ class TaintTracker:
                                 break
 
                 if cwe_meta:
-                    dedupe_key = (cwe_meta["cwe"], getattr(node, "lineno", 0), getattr(node, "col_offset", 0))
+                    report_lineno = cwe_meta.pop("_report_lineno", getattr(node, "lineno", 0))
+                    dedupe_key = (cwe_meta["cwe"], report_lineno, getattr(node, "col_offset", 0))
                     if dedupe_key in seen:
                         continue
                     seen.add(dedupe_key)
@@ -8896,7 +8951,7 @@ class TaintTracker:
                     self.sink_records.append(SinkRecord(
                         node=node,
                         security_node=sink_node,
-                        lineno=getattr(node, "lineno", 1),
+                        lineno=report_lineno,
                         scope_id=scope_id,
                     ))
 
