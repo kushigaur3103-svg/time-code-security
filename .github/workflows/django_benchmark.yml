@@ -1,12 +1,12 @@
 name: Level 2 Django Benchmark Showdown
 
 on:
-  workflow_dispatch: # Button dabate hi run hoga
+  workflow_dispatch:
 
 jobs:
   benchmark:
     runs-on: ubuntu-latest
-    timeout-minutes: 20
+    timeout-minutes: 15
 
     steps:
       - name: Checkout TimeCodeSecurity
@@ -20,39 +20,45 @@ jobs:
 
       - name: Install Dependencies
         run: |
-          pip install psutil semgrep
+          pip install semgrep
 
       - name: Clone Django Core
         run: |
           git clone --depth 1 https://github.com/django/django.git django_target
 
-      - name: Run Level 2 Benchmark Script
+      - name: Run Level 2 Benchmark
         run: |
-          python -c "
-          import os, subprocess, time, json
-          from pathlib import Path
+          mkdir -p reports
 
-          print('=== 1. RUNNING TIMECODESECURITY (TCS) ON CLOUD LINUX ===')
-          t0 = time.time()
-          tcs_res = subprocess.run(
-              ['python', 'cli.py', 'scan', 'django_target', '--format', 'json', '--sarif', 'reports/django_tcs.sarif'],
-              capture_output=True, text=True
-          )
-          tcs_time = time.time() - t0
-          print(f'TCS Completed in {tcs_time:.2f}s | Exit: {tcs_res.returncode}')
+          echo "=========================================================="
+          echo " 1. RUNNING TIMECODESECURITY (TCS) ON DJANGO CORE"
+          echo "=========================================================="
+          start_tcs=$(date +%s)
+          python cli.py scan django_target/django --format json --sarif reports/django_tcs.sarif
+          end_tcs=$(date +%s)
+          tcs_time=$((end_tcs - start_tcs))
+          echo ">> TCS Completed in ${tcs_time}s"
 
-          print('\n=== 2. RUNNING SEMGREP ON CLOUD LINUX ===')
-          t1 = time.time()
-          sem_res = subprocess.run(
-              ['semgrep', 'scan', '--config=p/python', '--json', '-o', 'reports/django_semgrep.json', 'django_target'],
-              capture_output=True, text=True
-          )
-          sem_time = time.time() - t1
-          print(f'Semgrep Completed in {sem_time:.2f}s | Exit: {sem_res.returncode}')
-          "
+          echo ""
+          echo "=========================================================="
+          echo " 2. RUNNING SEMGREP ON DJANGO CORE"
+          echo "=========================================================="
+          start_sem=$(date +%s)
+          semgrep scan --config=p/python --json -o reports/django_semgrep.json django_target/django || true
+          end_sem=$(date +%s)
+          sem_time=$((end_sem - start_sem))
+          echo ">> Semgrep Completed in ${sem_time}s"
+
+          echo ""
+          echo "=========================================================="
+          echo " SUMMARY"
+          echo " TCS Time: ${tcs_time}s"
+          echo " Semgrep Time: ${sem_time}s"
+          echo "=========================================================="
 
       - name: Upload Scan Reports
         uses: actions/upload-artifact@v4
+        if: always()
         with:
           name: django-benchmark-reports
           path: reports/
