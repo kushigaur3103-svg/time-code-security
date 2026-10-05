@@ -60,7 +60,15 @@ def _file_key(path, cwd):
         return path.resolve().as_posix()
 
 
-def _collect_files(scan_path):
+def _collect_files(scan_path, exclude_patterns=None):
+    """Collect Python files from scan path, optionally excluding by glob patterns.
+    
+    Args:
+        scan_path: Path object (file or directory)
+        exclude_patterns: List of glob patterns to exclude (e.g., ['tests', 'test_*'])
+    """
+    import fnmatch
+    
     cwd = Path.cwd().resolve()
     if not scan_path.exists():
         raise FileNotFoundError(f"Path does not exist: {scan_path}")
@@ -69,10 +77,33 @@ def _collect_files(scan_path):
             raise ValueError(f"Expected a Python file: {scan_path}")
         paths = [scan_path]
     elif scan_path.is_dir():
-        paths = sorted(
+        all_paths = sorted(
             path for path in scan_path.rglob("*.py")
             if not any(part in IGNORED_DIRS for part in path.parts)
         )
+        
+        # Apply exclusion filters if provided
+        if exclude_patterns:
+            paths = []
+            for path in all_paths:
+                rel_path = str(path.relative_to(scan_path)) if scan_path.is_dir() else str(path)
+                excluded = False
+                for pattern in exclude_patterns:
+                    # Check if pattern matches any part of the path or the filename
+                    if fnmatch.fnmatch(rel_path, pattern) or fnmatch.fnmatch(path.name, pattern):
+                        excluded = True
+                        break
+                    # Also check each path component
+                    for part in path.parts:
+                        if fnmatch.fnmatch(part, pattern):
+                            excluded = True
+                            break
+                    if excluded:
+                        break
+                if not excluded:
+                    paths.append(path)
+        else:
+            paths = all_paths
     else:
         raise ValueError(f"Path is not a regular file or directory: {scan_path}")
 
@@ -782,8 +813,13 @@ def _scan(args):
         tracker = None
         files = {}
         if scope in ("all", "python"):
+            # Parse exclude patterns from CLI argument
+            exclude_patterns = None
+            if getattr(args, "exclude", None):
+                exclude_patterns = [p.strip() for p in args.exclude.split(",") if p.strip()]
+            
             try:
-                files = _collect_files(args.path)
+                files = _collect_files(args.path, exclude_patterns=exclude_patterns)
             except ValueError:
                 if not templates and not iac:
                     raise
@@ -1057,8 +1093,14 @@ def _print_compare_scoreboard(tool, tcs_ms, competitor_ms, matched, tcs_only, co
 def _compare(args):
     try:
         templates, iac = _collect_auxiliary_files(args.path)
+        
+        # Parse exclude patterns from CLI argument (if provided for compare mode)
+        exclude_patterns = None
+        if getattr(args, "exclude", None):
+            exclude_patterns = [p.strip() for p in args.exclude.split(",") if p.strip()]
+        
         try:
-            files = _collect_files(args.path)
+            files = _collect_files(args.path, exclude_patterns=exclude_patterns)
         except ValueError:
             if not templates and not iac:
                 raise
@@ -1133,6 +1175,10 @@ def main(argv=None):
     scan_parser.add_argument(
         "--workers", type=str, default="auto",
         help="Number of parallel worker processes for scanning. Use integer (1-64) or 'auto' (default: auto = all available CPU cores via os.cpu_count())",
+    )
+    scan_parser.add_argument(
+        "--exclude", type=str, default=None,
+        help="Comma-separated glob patterns to exclude from scanning (e.g., tests,test_*,*_test.py,migrations)",
     )
     compare_parser = commands.add_parser("compare", help="Compare TimeCodeSecurity findings with Semgrep or Bandit")
     compare_parser.add_argument("path", type=Path, help="Python file or directory to compare")
