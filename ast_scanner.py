@@ -9746,9 +9746,11 @@ class TaintTracker:
                             node.args[0] if node.args else None,
                         )
                         if _url_scheme(url_expr, scope_id, lineno):
+                            # TimeCodeSecurity: SSRF via URL schemes (urllib.urlretrieve, requests, etc.)
+                            # Previously misclassified as CWE-73 (path traversal); corrected to CWE-939/CWE-918 family
                             _add_finding(
                                 node, mod_name, scope_id, "PROTOCOL_RESOURCE_ACCESS",
-                                "UNAUTHORIZED_RESOURCE_ACCESS", "CWE-73",
+                                "UNAUTHORIZED_RESOURCE_ACCESS", "CWE-939",
                             )
 
                     if _matches_registry(names, P3_SVG_RESPONSE_SINKS):
