@@ -1,5 +1,5 @@
 """
-TimeCodeSecurity (TCS) - Vector D CWE-377 Insecure Temporary File Transformer.
+TimeCodeSecurity - Vector D CWE-377 Insecure Temporary File Transformer.
 Implements deterministic AST-guided remediation replacing tempfile.mktemp() with NamedTemporaryFile().
 """
 

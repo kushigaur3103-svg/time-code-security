@@ -1,5 +1,5 @@
 """
-TimeCodeSecurity (TCS) - Vector D Closed-Loop Re-Scan Verification Engine.
+TimeCodeSecurity - Vector D Closed-Loop Re-Scan Verification Engine.
 Performs authoritative re-scan of patched code using the Vector B SAST engine (execute_tcs_scan)
 to prove that:
 1. The specific target vulnerability finding disappears.
@@ -48,7 +48,7 @@ def scan_source_for_verification(file_path: str, source_code: str) -> List[Dict[
         pg_dict = edge.proof_graph.to_dict() if edge.proof_graph else None
 
         findings.append({
-            "id": f"TCS-VULN-{vuln_idx:03d}",
+            "id": f"TimeCodeSecurity-VULN-{vuln_idx:03d}",
             "cwe": cwe,
             "category": sink.metadata.get("sink_type", "UNKNOWN_VULNERABILITY"),
             "file": sink_loc.file,

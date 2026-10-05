@@ -1,5 +1,5 @@
 """
-TimeCodeSecurity (TCS) - Production Authentication & Session Persistence Layer
+TimeCodeSecurity - Production Authentication & Session Persistence Layer
 Database: data/tcs_users.db (SQLite with WAL mode, busy_timeout=30s)
 """
 

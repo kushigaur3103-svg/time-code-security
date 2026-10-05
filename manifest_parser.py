@@ -1,5 +1,5 @@
 """
-TimeCodeSecurity (TCS) Manifest Parser.
+TimeCodeSecurity Manifest Parser.
 Extracts normalized Python dependency records from:
   - requirements.txt (PEP 508 / pip format)
   - Pipfile.lock (Pipenv JSON lockfile)

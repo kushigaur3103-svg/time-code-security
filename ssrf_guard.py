@@ -1,5 +1,5 @@
 """
-TimeCodeSecurity (TCS) Server-Side Request Forgery (SSRF) Guard.
+TimeCodeSecurity Server-Side Request Forgery (SSRF) Guard.
 
 Defines the 9-stage validation gate for outbound webhook URLs.
 Strictly standard library only (socket, ipaddress, urllib.parse).

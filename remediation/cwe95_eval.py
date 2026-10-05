@@ -1,5 +1,5 @@
 """
-TimeCodeSecurity (TCS) - Vector D CWE-95 Dynamic Code Execution Transformer.
+TimeCodeSecurity - Vector D CWE-95 Dynamic Code Execution Transformer.
 Implements deterministic AST-guided remediation replacing eval() with ast.literal_eval().
 """
 

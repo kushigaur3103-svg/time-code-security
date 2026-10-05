@@ -1,5 +1,5 @@
 """
-TimeCodeSecurity (TCS) Durable Delivery Result Sink.
+TimeCodeSecurity Durable Delivery Result Sink.
 
 Bridges Phase 15C webhook execution to persistent relational storage (delivery_audit_logs)
 while preserving live diagnostic telemetry in InMemoryDeliveryResultSink.

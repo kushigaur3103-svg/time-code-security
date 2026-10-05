@@ -1,5 +1,5 @@
 """
-TimeCodeSecurity (TCS) - Vector D Remediation Engine Contracts.
+TimeCodeSecurity - Vector D Remediation Engine Contracts.
 Defines immutable data models, state invariant validation, and semantic
 remediation schemas for automated vulnerability patching and verification.
 """

@@ -17,6 +17,20 @@ from html_auditor import audit_templates, is_template_path
 from iac_auditor import audit_iac_files, is_iac_path
 from rule_engine import get_rule
 from remediation.patch_engine import RemediationEngine
+from sarif_adapter import bound_sarif_document
+from sarif_exporter import atomic_write_text
+
+try:
+    from js_scanner import js_ts_available, run_js_ts_scan_isolated
+    _JS_TS_SCANNER_AVAILABLE = True
+except ImportError:
+    _JS_TS_SCANNER_AVAILABLE = False
+
+    def js_ts_available() -> bool:
+        return False
+
+    def run_js_ts_scan_isolated(target, base_dir=None, skipped_files=None):
+        return []
 
 
 SARIF_SCHEMA = "https://raw.githubusercontent.com/oasis-tcs/sarif-spec/master/Schemata/sarif-schema-2.1.0.json"
@@ -336,7 +350,7 @@ def _generate_autofix(finding, source_code, file_path, engine=None):
     
     # Map CLI finding to remediation engine format
     remediation_finding = {
-        "id": f"TCS-{finding['cwe'].replace('-', '')}-{finding['line']}",
+        "id": f"TimeCodeSecurity-{finding['cwe'].replace('-', '')}-{finding['line']}",
         "cwe": finding["cwe"],
         "line_number": finding["line"],
         "file": finding["file"],
@@ -559,7 +573,7 @@ def _cross_trace_report(findings, cwd):
         return ""
 
     rule = "-" * 80
-    lines = ["", rule, "        TIMECODESECURITY (TCS) - CROSS-FILE EXPLOIT CHAINS", rule]
+    lines = ["", rule, "        TIMECODESECURITY - CROSS-FILE EXPLOIT CHAINS", rule]
     for index, finding in traced:
         rule_meta = get_rule(finding["cwe"])
         label = (rule_meta.category if rule_meta else finding.get("category", "")).replace("_", " ").upper()
@@ -669,6 +683,47 @@ def _suppress_cross_file_sanitized(findings, engine):
         kept.append(finding)
     return kept
 
+def _js_ts_findings(path):
+    """Map the isolated tree-sitter JS/TS findings onto this module's finding shape."""
+    mapped = []
+    for finding in run_js_ts_scan_isolated(path, base_dir=Path.cwd().resolve()):
+        mapped.append({
+            "file": str(finding.get("file", "")).replace("\\", "/"),
+            "line": finding.get("line_number") or 1,
+            "cwe": finding.get("cwe") or "UNKNOWN_CWE",
+            "severity": str(finding.get("severity") or "HIGH").upper(),
+            "category": finding.get("category") or "Security",
+            "message": finding.get("message") or "",
+        })
+    return sorted(mapped, key=lambda item: (item["file"], item["line"], item["cwe"]))
+
+
+def _scan_failure(args, exc):
+    """A crashed scan still owes CI parsable artefacts, then reports exit 2.
+
+    Without this the process dies on a traceback: stdout JSON stays empty (0-byte file
+    after redirection) and the SARIF target never exists, which GitHub's uploader
+    reports as an unrelated failure.
+    """
+    message = f"{type(exc).__name__}: {exc}"
+    print(f"[FATAL] TimeCodeSecurity scan aborted: {message}", file=sys.stderr)
+    if getattr(args, "format", "") == "json":
+        print(json.dumps({
+            "scope": getattr(args, "scope", "all"),
+            "status": "incomplete",
+            "error": message,
+            "scanned_files": 0,
+            "findings": [],
+        }, indent=2))
+    if getattr(args, "sarif", None):
+        try:
+            document = bound_sarif_document(_sarif_document([], Path.cwd().resolve()))
+            atomic_write_text(Path(args.sarif), json.dumps(document, indent=2) + "\n")
+        except OSError as write_exc:
+            print(f"Error writing fallback SARIF file: {write_exc}", file=sys.stderr)
+    return 2
+
+
 def _scan(args):
     scope = args.scope
     try:
@@ -686,6 +741,17 @@ def _scan(args):
             except ValueError:
                 if not templates and not iac:
                     raise
+        
+        # TimeCodeSecurity: Capture pre-scan memory stats
+        try:
+            import psutil
+            mem_before = psutil.virtual_memory()
+            available_ram_before_gb = mem_before.available / (1024 ** 3)
+            rss_before_mb = psutil.Process().memory_info().rss / (1024 ** 2)
+        except ImportError:
+            available_ram_before_gb = 0
+            rss_before_mb = 0
+        
         started = time.perf_counter()
         if files:
             tracker = TaintTracker(files=files)
@@ -712,6 +778,11 @@ def _scan(args):
         # Applied before autofix generation so patching work is scoped too.
         findings = _scope_findings_to_lines(findings, line_ranges)
 
+        # Opt-in tree-sitter JS/TS pass. Off by default: the grammar is a native
+        # extension whose access violation takes the whole process down.
+        if getattr(args, "include_js", False) and _JS_TS_SCANNER_AVAILABLE and js_ts_available():
+            findings = _merge_findings(findings, _js_ts_findings(args.path))
+
         # Generate autofix suggestions if requested (JSON only)
         if args.with_autofix and args.format == "json" and files:
             # Build source cache from scanned files
@@ -728,9 +799,20 @@ def _scan(args):
             findings = _attach_autofixes(findings, source_cache, autofix_engine)
         
         duration_ms = (time.perf_counter() - started) * 1000
+        
+        # TimeCodeSecurity: Capture post-scan memory stats
+        try:
+            import psutil
+            mem_after = psutil.virtual_memory()
+            available_ram_after_gb = mem_after.available / (1024 ** 3)
+            rss_after_mb = psutil.Process().memory_info().rss / (1024 ** 2)
+            peak_rss_mb = rss_after_mb
+            available_ram_gb = min(available_ram_before_gb, available_ram_after_gb)
+        except ImportError:
+            peak_rss_mb = 0
+            available_ram_gb = 0
     except (OSError, ValueError) as exc:
-        print(f"Error: {exc}", file=sys.stderr)
-        return 2
+        return _scan_failure(args, exc)
 
     if args.format == "json":
         print(json.dumps({
@@ -751,12 +833,38 @@ def _scan(args):
 
     if args.sarif:
         try:
-            output_path = Path(args.sarif)
-            output_path.parent.mkdir(parents=True, exist_ok=True)
-            output_path.write_text(json.dumps(_sarif_document(findings, Path.cwd().resolve()), indent=2) + "\n", encoding="utf-8")
+            document = bound_sarif_document(_sarif_document(findings, Path.cwd().resolve()))
+            sarif_path = Path(args.sarif)
+            atomic_write_text(sarif_path, json.dumps(document, indent=2) + "\n")
+            sarif_size_mb = sarif_path.stat().st_size / (1024 ** 2) if sarif_path.exists() else 0
         except OSError as exc:
             print(f"Error writing SARIF file: {exc}", file=sys.stderr)
             return 2
+    else:
+        sarif_size_mb = 0
+    
+    # TimeCodeSecurity: Print performance metrics to stderr
+    if files and tracker:
+        try:
+            from tcs.parallel_scanner import compute_safe_workers, get_memory_stats
+            worker_count = compute_safe_workers()
+            mem_stats = get_memory_stats()
+            
+            print("\n" + "="*70, file=sys.stderr)
+            print("TimeCodeSecurity - Performance Metrics", file=sys.stderr)
+            print("="*70, file=sys.stderr)
+            print(f"Wall-Clock Scan Time:     {duration_ms/1000:.2f}s ({duration_ms:.0f}ms)", file=sys.stderr)
+            print(f"Worker Count Utilized:    {worker_count}", file=sys.stderr)
+            print(f"Peak Memory RSS:          {peak_rss_mb:.1f} MB", file=sys.stderr)
+            print(f"Available RAM (min):      {available_ram_gb:.2f} GB", file=sys.stderr)
+            print(f"Total Findings:           {len(findings)}", file=sys.stderr)
+            if args.sarif:
+                print(f"SARIF File Size:          {sarif_size_mb:.2f} MB {'✓' if sarif_size_mb < 10 else '⚠ EXCEEDS 10 MB'}", file=sys.stderr)
+            print(f"Files Scanned:            {scanned_files} Python", file=sys.stderr)
+            print(f"Zero-Risk Fast-Path Skip: {len(tracker.skipped_files)} skipped", file=sys.stderr)
+            print("="*70, file=sys.stderr)
+        except ImportError:
+            pass  # Parallel scanner not available, skip metrics
 
     if args.fail_on_critical and any(item["severity"] in ("CRITICAL", "HIGH") for item in findings):
         return 1
@@ -872,9 +980,9 @@ def _cwe_breakdown(matched, tcs_only, competitor_only):
 
 def _print_compare_scoreboard(tool, tcs_ms, competitor_ms, matched, tcs_only, competitor_only, breakdown):
     summary_rows = [
-        ("Execution speed", f"TCS {tcs_ms:.2f} ms vs {tool.title()} {competitor_ms:.2f} ms"),
+        ("Execution speed", f"TimeCodeSecurity {tcs_ms:.2f} ms vs {tool.title()} {competitor_ms:.2f} ms"),
         ("Matched Findings (both)", str(len(matched))),
-        ("TCS Exclusive Findings", str(len(tcs_only))),
+        ("TimeCodeSecurity Exclusive Findings", str(len(tcs_only))),
         (f"{tool.title()} Only Findings", str(len(competitor_only))),
     ]
     summary_headers = ("Metric", "Result")
@@ -888,7 +996,7 @@ def _print_compare_scoreboard(tool, tcs_ms, competitor_ms, matched, tcs_only, co
         print("| " + " | ".join(row[index].ljust(summary_widths[index]) for index in range(len(summary_headers))) + " |")
     print(summary_border)
     rows = [(item["cwe"], str(item["both"]), str(item["tcs_only"]), str(item["competitor_only"])) for item in breakdown]
-    headers = ("CWE", "Both", "TCS only", f"{tool.title()} only")
+    headers = ("CWE", "Both", "TimeCodeSecurity only", f"{tool.title()} only")
     widths = [max(len(headers[index]), *(len(row[index]) for row in rows)) for index in range(len(headers))]
     border = "+" + "+".join("-" * (width + 2) for width in widths) + "+"
     print("\nCWE Breakdown")
@@ -944,9 +1052,7 @@ def _compare(args):
     }
     if args.output_json:
         try:
-            output_path = Path(args.output_json)
-            output_path.parent.mkdir(parents=True, exist_ok=True)
-            output_path.write_text(json.dumps(report, indent=2) + "\n", encoding="utf-8")
+            atomic_write_text(Path(args.output_json), json.dumps(report, indent=2) + "\n")
         except OSError as exc:
             print(f"Error writing comparison report: {exc}", file=sys.stderr)
             return 2
@@ -973,14 +1079,25 @@ def main(argv=None):
         "--lines", metavar="START[-END][,START[-END]...]", default=None,
         help="Incremental scan: restrict findings to the given 1-indexed line ranges, e.g. --lines 4-5",
     )
-    compare_parser = commands.add_parser("compare", help="Compare TCS findings with Semgrep or Bandit")
+    scan_parser.add_argument(
+        "--include-js", dest="include_js", action="store_true", default=False,
+        help="Also run the tree-sitter JS/TS scanner (CWE-79/CWE-95 in .js/.jsx/.ts/.tsx). "
+             "Off by default so the analysis stays scoped to Python",
+    )
+    compare_parser = commands.add_parser("compare", help="Compare TimeCodeSecurity findings with Semgrep or Bandit")
     compare_parser.add_argument("path", type=Path, help="Python file or directory to compare")
     compare_parser.add_argument("--vs", choices=("semgrep", "bandit"), default="semgrep", help="Competitor scanner (default: semgrep)")
     compare_parser.add_argument("--tolerance", type=int, default=5, help="Maximum line distance for a match (default: 5)")
     compare_parser.add_argument("--output-json", metavar="REPORT_PATH", help="Write detailed comparison report as JSON")
     args = parser.parse_args(argv)
     if args.command == "scan":
-        return _scan(args)
+        try:
+            return _scan(args)
+        except Exception as exc:
+            # Anything unhandled is an internal error: emit the fallback artefacts and
+            # exit 2 instead of dying on a traceback with an empty report.
+            traceback.print_exc()
+            return _scan_failure(args, exc)
     if args.tolerance < 0:
         parser.error("--tolerance must be zero or greater")
     return _compare(args)

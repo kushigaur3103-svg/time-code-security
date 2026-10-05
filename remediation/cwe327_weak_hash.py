@@ -1,5 +1,5 @@
 """
-TimeCodeSecurity (TCS) - Vector D CWE-327 Weak Cryptographic Hash Transformer.
+TimeCodeSecurity - Vector D CWE-327 Weak Cryptographic Hash Transformer.
 Implements deterministic AST-guided remediation replacing md5/sha1 with sha256.
 """
 

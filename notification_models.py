@@ -1,5 +1,5 @@
 """
-TimeCodeSecurity (TCS) Notification Data Models & Schema.
+TimeCodeSecurity Notification Data Models & Schema.
 
 Defines the persisted Notification entity, Pydantic DTOs,
 recipient ownership scopes, and validation invariants for Phase 15B.
@@ -49,7 +49,7 @@ class RecipientScope(str, Enum):
 
 
 class NotificationSeverity(str, Enum):
-    """Severity classification matching TCS domain levels."""
+    """Severity classification matching TimeCodeSecurity domain levels."""
     CRITICAL = "CRITICAL"
     HIGH = "HIGH"
     MEDIUM = "MEDIUM"

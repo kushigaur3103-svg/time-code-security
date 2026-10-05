@@ -1,5 +1,5 @@
 """
-TimeCodeSecurity (TCS) - Phase 4: Function Summary Extractor
+TimeCodeSecurity - Phase 4: Function Summary Extractor
 Extracts deterministic taint contracts (Param -> Return, Param -> Sink) per function.
 """
 

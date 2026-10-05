@@ -9,6 +9,13 @@ from rule_engine import match_sink_rule, check_sink_safety_rules, get_rule
 from tcs.analysis.def_use import LocalDefUseTracker
 from tcs.analysis.function_contracts import FunctionContractExtractor, FunctionSinkContract, KNOWN_SINKS
 
+# TimeCodeSecurity: Safe parallel parsing with hardware governance
+try:
+    from tcs.parallel_scanner import parse_files_parallel
+    PARALLEL_PARSING_AVAILABLE = True
+except ImportError:
+    PARALLEL_PARSING_AVAILABLE = False
+
 class NodeType(str, Enum):
     SOURCE = "source"
     TRANSFORM = "transform"
@@ -1591,23 +1598,30 @@ class TaintTracker:
     def __init__(self, files: dict[str, str] = None, source: str = None, file_path: str = "target.py", audit_all: bool = False):
         self.files = files if files is not None else {file_path: source}
         self.audit_all = audit_all
-        self.modules: dict[str, ast.AST] = {}
-        self.file_paths: dict[str, str] = {}
-        self.skipped_files: dict[str, str] = {}
-        for fpath, code in self.files.items():
-            mod_name = fpath.replace("\\\\", "/").replace(".py", "").replace("/", ".")
-            if mod_name.endswith(".__init__"): mod_name = mod_name[:-9]
-            try:
-                tree = ast.parse(code, filename=fpath)
-                for p in ast.walk(tree):
-                    for child in ast.iter_child_nodes(p):
-                        child.parent = p
-                self.modules[mod_name] = tree
-                self.file_paths[mod_name] = fpath
-            except (SyntaxError, ValueError, UnicodeDecodeError) as exc:
-                # One malformed file must not remove every other module from the scan:
-                # ast.parse raises ValueError on embedded NUL bytes, which is not a SyntaxError.
-                self.skipped_files[fpath] = f"{type(exc).__name__}: {exc}"[:200]
+        
+        # TimeCodeSecurity: Use safe parallel parsing with hardware governance
+        if PARALLEL_PARSING_AVAILABLE and len(self.files) > 10:
+            # Only use parallel parsing for larger workloads (>10 files)
+            self.modules, self.file_paths, self.skipped_files = parse_files_parallel(self.files)
+        else:
+            # Fallback to sequential parsing for small workloads or if parallel unavailable
+            self.modules: dict[str, ast.AST] = {}
+            self.file_paths: dict[str, str] = {}
+            self.skipped_files: dict[str, str] = {}
+            for fpath, code in self.files.items():
+                mod_name = fpath.replace("\\\\", "/").replace(".py", "").replace("/", ".")
+                if mod_name.endswith(".__init__"): mod_name = mod_name[:-9]
+                try:
+                    tree = ast.parse(code, filename=fpath)
+                    for p in ast.walk(tree):
+                        for child in ast.iter_child_nodes(p):
+                            child.parent = p
+                    self.modules[mod_name] = tree
+                    self.file_paths[mod_name] = fpath
+                except (SyntaxError, ValueError, UnicodeDecodeError) as exc:
+                    # One malformed file must not remove every other module from the scan:
+                    # ast.parse raises ValueError on embedded NUL bytes, which is not a SyntaxError.
+                    self.skipped_files[fpath] = f"{type(exc).__name__}: {exc}"[:200]
         self.dead_node_ids: set = self._compute_dead_node_ids()
         self.imports = {m: {} for m in self.modules}
         self.sources: list[SecurityNode] = []
@@ -3076,7 +3090,13 @@ class TaintTracker:
             # Exclude calls on SystemRandom instances: random.SystemRandom().randint()
             if isinstance(node.func, ast.Attribute):
                 receiver_name = dotted_name(node.func.value) or ""
-                receiver_canon = self.resolve_canonical_name(node.func.value, scope_id) if (scope_id and hasattr(self, "resolve_canonical_name")) else receiver_name
+                if not receiver_name and isinstance(node.func.value, ast.Call):
+                    receiver_name = dotted_name(node.func.value.func) or ""
+                # resolve_canonical_name returns None for receivers it cannot fold
+                # (e.g. get_random().randint()); it must never feed a membership test.
+                receiver_canon = (self.resolve_canonical_name(node.func.value, scope_id)
+                                  if (scope_id and hasattr(self, "resolve_canonical_name"))
+                                  else receiver_name) or receiver_name
                 if "SystemRandom" in receiver_name or "SystemRandom" in receiver_canon:
                     return False  # CSPRNG instance method - safe
             # Flag ALL other random.* calls unconditionally - no security context gate
@@ -3774,8 +3794,15 @@ class TaintTracker:
         return id(node) in self.dead_node_ids
 
     def _reachable_nodes(self, tree: ast.AST) -> list:
-        """Module nodes excluding statically unreachable if-branches (dead-code pruning)."""
-        return [node for node in ast.walk(tree) if not self._in_dead_code(node)]
+        """Module nodes excluding statically unreachable if-branches (dead-code pruning).
+        
+        TimeCodeSecurity Optimization: Cache results to eliminate redundant AST walks
+        across 14 structural finding collection methods.
+        """
+        # Check for cached result first
+        if not hasattr(tree, '_cached_reachable_nodes'):
+            tree._cached_reachable_nodes = [node for node in ast.walk(tree) if not self._in_dead_code(node)]
+        return tree._cached_reachable_nodes
 
     def collect_statements(self, statements: list[ast.stmt], scope_id: str, is_conditional: bool = False):
         for stmt in statements:
@@ -14672,6 +14699,14 @@ class TaintTracker:
                         )
 
     def analyze(self):
+        """Analyze all modules for security vulnerabilities with phase-level profiling."""
+        import time as _time
+        import sys as _sys
+        
+        _phase_start = _time.perf_counter()
+        
+        # Phase 1: Import resolution (per-module, parallelizable)
+        _t0 = _time.perf_counter()
         for mod_name, tree in self.modules.items():
             for node in self._reachable_nodes(tree):
                 if isinstance(node, ast.Import):
@@ -14683,13 +14718,24 @@ class TaintTracker:
                         base = ".".join(parts[:-node.level]) if len(parts) > node.level else ""
                         module = f"{base}.{module}" if base and module else base or module
                     for alias in node.names: self.imports[mod_name][alias.asname or alias.name] = f"{module}.{alias.name}" if module else alias.name
+        _t1 = _time.perf_counter()
+        print(f"TimeCodeSecurity [PROFILE] Phase 1 (Import resolution): {_t1 - _t0:.2f}s", file=_sys.stderr)
+        
+        # Phase 2: Statement collection (per-module, parallelizable)
+        _t0 = _time.perf_counter()
         for mod_name, tree in self.modules.items():
             self.collect_statements(tree.body, scope_id=f"{mod_name}:global", is_conditional=False)
+        _t1 = _time.perf_counter()
+        print(f"TimeCodeSecurity [PROFILE] Phase 2 (Statement collection): {_t1 - _t0:.2f}s", file=_sys.stderr)
 
         # Phase 4.3: Extract function contracts after statement collection
+        _t0 = _time.perf_counter()
         self._extract_function_contracts()
+        _t1 = _time.perf_counter()
+        print(f"TimeCodeSecurity [PROFILE] Phase 4.3 (Function contracts): {_t1 - _t0:.2f}s", file=_sys.stderr)
 
         # Index call sites by target function scope
+        _t0 = _time.perf_counter()
         for call_node, caller_scope, lineno in self.raw_calls:
             canon_name = self.resolve_canonical_name(call_node.func, caller_scope)
             fname = canon_name or dotted_name(call_node.func)
@@ -14697,8 +14743,12 @@ class TaintTracker:
                 func_scope = self._resolve_function_scope(fname, caller_scope)
                 if func_scope:
                     self.call_sites_by_target.setdefault(func_scope, []).append((call_node, caller_scope, lineno))
+        _t1 = _time.perf_counter()
+        print(f"TimeCodeSecurity [PROFILE] Call site indexing: {_t1 - _t0:.2f}s ({len(self.raw_calls)} calls)", file=_sys.stderr)
 
         # Re-scan raw_calls for any sinks resolved after call-site indexing (higher-order callbacks)
+        _t0 = _time.perf_counter()
+        _sink_count_before = len(self.sink_records)
         for call_node, caller_scope, lineno in self.raw_calls:
             # Check if this call is a parameter callback (higher-order function invocation)
             func_def = self.functions.get(caller_scope)
@@ -14837,11 +14887,21 @@ class TaintTracker:
                         if sink_node.metadata.get("cwe") != "CWE-295" and self._has_disabled_ssl(call_node, caller_scope):
                             ssl_sink = self.get_or_create_sink(call_node, file_path, caller_scope, force_cwe="CWE-295")
                             self.sink_records.append(SinkRecord(node=call_node, security_node=ssl_sink, lineno=lineno, scope_id=caller_scope))
+        _t1 = _time.perf_counter()
+        _new_sinks = len(self.sink_records) - _sink_count_before
+        print(f"TimeCodeSecurity [PROFILE] Sink detection (callbacks+direct): {_t1 - _t0:.2f}s ({_new_sinks} new sinks)", file=_sys.stderr)
 
+        # Source detection
+        _t0 = _time.perf_counter()
         for mod_name, tree in self.modules.items():
             for node in self._reachable_nodes(tree):
                 if isinstance(node, ast.Call) and self.is_source_call(node, f"{mod_name}:global"):
                     self.get_or_create_source(node, self.file_paths.get(mod_name, "unknown.py"), f"{mod_name}:global")
+        _t1 = _time.perf_counter()
+        print(f"TimeCodeSecurity [PROFILE] Source detection: {_t1 - _t0:.2f}s", file=_sys.stderr)
+        
+        # Structural finding collection phases (batched for profiling)
+        _t0 = _time.perf_counter()
         self._collect_batch2_structural_findings()
         self._collect_batch3a_structural_findings()
         self._collect_cwe319_variable_resolution_findings()
@@ -14864,6 +14924,8 @@ class TaintTracker:
         self._collect_cluster1_structural_findings()
         self._collect_cluster2_structural_findings()
         self._collect_cluster3_structural_findings()
+        _t1 = _time.perf_counter()
+        print(f"TimeCodeSecurity [PROFILE] Structural findings (all batches): {_t1 - _t0:.2f}s", file=_sys.stderr)
         for assign_stmt, scope_id, lineno in self.ssl_attr_assigns:
             mod_name = scope_id.split(":")[0]
             file_path = self.file_paths.get(mod_name, "unknown.py")
@@ -15131,6 +15193,11 @@ class TaintTracker:
                 elif taint.state == TaintState.UNKNOWN:
                     self.edges.append(DataFlowEdge(source_id=taint.source_id or "UNKNOWN", target_id=sink.id, kind="POTENTIAL_DATA_FLOW", confidence=0.50, transform=full_path_str, proof_graph=pg))
 
+        _t_end = _time.perf_counter()
+        _total_elapsed = _t_end - _phase_start
+        print(f"TimeCodeSecurity [PROFILE] Total analyze() elapsed: {_total_elapsed:.2f}s", file=_sys.stderr)
+        print(f"TimeCodeSecurity [PROFILE] Summary: {len(self.modules)} modules, {len(self.sources)} sources, {len(self.sinks)} sinks, {len(self.edges)} edges", file=_sys.stderr)
+        
         return self.sources, self.sinks, self.edges
 
     def _build_proof_graph(self, taint: TaintValue, sink: SecurityNode, record: SinkRecord, cwe: str) -> ProofGraphIR:
@@ -15250,7 +15317,7 @@ class TaintTracker:
                 ))
 
         return ProofGraphIR(
-            finding_id=f"TCS-IR-{sink.id}",
+            finding_id=f"TimeCodeSecurity-IR-{sink.id}",
             cwe=cwe or "UNKNOWN_CWE",
             confidence=taint.confidence,
             nodes=reindexed_nodes,
@@ -15386,7 +15453,7 @@ class TaintTracker:
             ))
 
         return ProofGraphIR(
-            finding_id=f"TCS-IR-{sink.id}",
+            finding_id=f"TimeCodeSecurity-IR-{sink.id}",
             cwe="CWE-22",
             confidence=prov.confidence,
             nodes=reindexed_nodes,

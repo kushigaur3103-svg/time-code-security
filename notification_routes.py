@@ -1,5 +1,5 @@
 """
-TimeCodeSecurity (TCS) Notification & Delivery REST API Routes.
+TimeCodeSecurity Notification & Delivery REST API Routes.
 
 Exposes authenticated multi-tenant endpoints for:
 - Listing in-app notifications

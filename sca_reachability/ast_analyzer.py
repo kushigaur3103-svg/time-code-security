@@ -1,5 +1,5 @@
 """
-TimeCodeSecurity (TCS) - Vector C AST Analyzer.
+TimeCodeSecurity - Vector C AST Analyzer.
 Implements lexical-scope-aware AST analysis for imports, local instance bindings,
 and call sites with strict PEP 227 scope boundaries and zero cross-function leakage.
 """

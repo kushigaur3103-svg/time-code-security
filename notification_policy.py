@@ -1,5 +1,5 @@
 """
-TimeCodeSecurity (TCS) Notification Policy & Intent Framework.
+TimeCodeSecurity Notification Policy & Intent Framework.
 
 Defines:
 - PolicyConfig: Immutable tenant-level notification preferences.
@@ -238,11 +238,11 @@ class NotificationPolicy:
         repo_name = event.repository or "repository"
         if is_clean_scan:
             notif_type = "SCAN_SUMMARY"
-            title = f"TCS Scan Passed: {repo_name}"
+            title = f"TimeCodeSecurity Scan Passed: {repo_name}"
             msg = f"Security scan completed with 0 findings for {repo_name}."
         else:
             notif_type = "SECURITY_ALERT"
-            title = f"TCS Alert: {summary.total_findings} findings in {repo_name}"
+            title = f"TimeCodeSecurity Alert: {summary.total_findings} findings in {repo_name}"
             msg = (
                 f"Security scan detected {summary.critical_count} critical, {summary.high_count} high, "
                 f"and {summary.medium_count} medium findings in {repo_name}."

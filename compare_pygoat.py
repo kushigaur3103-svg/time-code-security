@@ -1,7 +1,7 @@
 """
 scripts/compare_pygoat.py
 Precise CWE + Line-level differential comparison on OWASP PyGoat:
-TimeCodeSecurity (TCS) vs Semgrep.
+TimeCodeSecurity vs Semgrep.
 """
 
 import json
@@ -29,7 +29,7 @@ def norm_path(p: str | Path) -> str:
 
 
 def extract_sink_line(sink) -> int:
-    """Robustly extract the line number from TCS Sink or AST Node."""
+    """Robustly extract the line number from TimeCodeSecurity Sink or AST Node."""
     for attr in ("lineno", "line", "line_number"):
         val = getattr(sink, attr, None)
         if val and isinstance(val, int) and val > 0:
@@ -126,7 +126,7 @@ def run_semgrep() -> dict[str, list[dict]]:
 
 
 def run_tcs(py_files: list[Path]) -> dict[str, list[dict]]:
-    print(f"[*] 2/2: Running TCS engine across {len(py_files)} files...")
+    print(f"[*] 2/2: Running TimeCodeSecurity engine across {len(py_files)} files...")
     findings: dict[str, list[dict]] = {}
 
     for py_file in py_files:
@@ -220,20 +220,20 @@ def main():
     print("      REAL-WORLD DIFFERENTIAL MATRIX (CWE + LINE ACCURACY)")
     print("=" * 70)
     print(f"Agreement (Both Flagged Same CWE & Area) : {len(both_caught)}")
-    print(f"Semgrep ONLY (Real Deviations Missed by TCS): {len(sg_only)}")
-    print(f"TCS Engine ONLY (Caught by TCS, Missed by Semgrep): {len(tcs_only)}")
+    print(f"Semgrep ONLY (Real Deviations Missed by TimeCodeSecurity): {len(sg_only)}")
+    print(f"TimeCodeSecurity Engine ONLY (Caught by TimeCodeSecurity, Missed by Semgrep): {len(tcs_only)}")
     print("-" * 70)
-    print(f"Performance: Semgrep={sg_time:.2f}s | TCS={tcs_time:.2f}s (Speedup: {sg_time / max(tcs_time, 0.001):.1f}x)")
+    print(f"Performance: Semgrep={sg_time:.2f}s | TimeCodeSecurity={tcs_time:.2f}s (Speedup: {sg_time / max(tcs_time, 0.001):.1f}x)")
     print("=" * 70)
 
     if sg_only:
-        print("\n[!] TOP 10 REAL DEVIATIONS MISSED BY TCS (Actionable Gaps):")
+        print("\n[!] TOP 10 REAL DEVIATIONS MISSED BY TimeCodeSecurity (Actionable Gaps):")
         for item in sg_only[:10]:
             print(f" - [{item['cwe']}] {item['file']}:{item['line']} -> {item['rule']}")
             print(f"   Context: {item['message']}")
 
     if tcs_only:
-        print("\n[*] TOP 5 TCS EXCLUSIVE FINDINGS:")
+        print("\n[*] TOP 5 TimeCodeSecurity EXCLUSIVE FINDINGS:")
         for item in tcs_only[:5]:
             print(f" - [{item['cwe']}] {item['file']}:{item['line']} -> Sink: {item['sink']}")
 

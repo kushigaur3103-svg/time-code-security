@@ -1,5 +1,5 @@
 """
-TimeCodeSecurity (TCS) Webhook Delivery Adapter & Queue Infrastructure.
+TimeCodeSecurity Webhook Delivery Adapter & Queue Infrastructure.
 
 Defines:
 - WebhookDestinationConfig: Immutable tenant destination configuration.

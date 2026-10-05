@@ -139,3 +139,19 @@ class TestCorpusPatterns:
         _fires('import random\nbad = random.randbytes()\n', 2, "CWE-338")
         _fires('import random\nbad = random.sample()\n', 2, "CWE-338")
         _fires('import random\nbad = random.getrandbits()\n', 2, "CWE-338")
+
+
+# ─── 4. Crash resilience: receivers whose canonical name cannot be folded ────
+
+class TestUnresolvableReceiver:
+    def test_call_receiver_does_not_raise(self):
+        _fires(
+            'import random\n\n\ndef handler():\n    return get_random().randint(1, 10)\n',
+            5, "CWE-338"
+        )
+
+    def test_inline_systemrandom_chain_stays_silent(self):
+        _silent('import random\nx = random.SystemRandom().randint(1, 10)\n', 2, "CWE-338")
+
+    def test_subscript_receiver_does_not_raise(self):
+        _fires('import random\nrngs = load_rngs()\nx = rngs[0].randint(1, 10)\n', 3, "CWE-338")

@@ -1,5 +1,5 @@
 """
-TimeCodeSecurity (TCS) - Vector D CWE-916 Weak Password Hash Transformer.
+TimeCodeSecurity - Vector D CWE-916 Weak Password Hash Transformer.
 Implements deterministic AST-guided remediation replacing fast password hashes
 (md5/sha1/sha256/sha512) with the memory-hard hashlib.scrypt KDF.
 

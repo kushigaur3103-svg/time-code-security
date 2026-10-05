@@ -1,5 +1,5 @@
 """
-TimeCodeSecurity (TCS) Version Matcher & SCA Findings Engine.
+TimeCodeSecurity Version Matcher & SCA Findings Engine.
 Deterministically evaluates dependency records against OSV vulnerability advisories
 using PEP 440 semantics and emits structured SCA findings.
 

@@ -1,5 +1,5 @@
 """
-TimeCodeSecurity (TCS) - Vector D CWE-798 Hardcoded Credentials Transformer.
+TimeCodeSecurity - Vector D CWE-798 Hardcoded Credentials Transformer.
 Implements deterministic AST-guided remediation replacing hardcoded credentials with os.environ.get().
 """
 

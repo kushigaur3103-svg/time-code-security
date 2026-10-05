@@ -9,7 +9,7 @@ import re
 import ast
 import time
 
-# Ensure TCS core engine is discoverable
+# Ensure TimeCodeSecurity core engine is discoverable
 TCS_CORE_DIR = Path(__file__).resolve().parent
 if str(TCS_CORE_DIR) not in sys.path:
     sys.path.insert(0, str(TCS_CORE_DIR))
@@ -21,7 +21,7 @@ try:
 except Exception as e:
     TCS_LOCAL_AVAILABLE = False
     __version__ = "2.0.0"
-    print(f"[!] Warning: Could not import local TCS engine: {e}")
+    print(f"[!] Warning: Could not import local TimeCodeSecurity engine: {e}")
 
 try:
     from js_scanner import JsTsScanner, js_ts_available
@@ -635,7 +635,7 @@ def build_clean_scan_view():
                         ft.Column(
                             [
                                 ft.Text(
-                                    f"NO VULNERABILITIES DETECTED within current TCS analysis scope ({get_active_cwe_count()} supported CWE classes).",
+                                    f"NO VULNERABILITIES DETECTED within current TimeCodeSecurity analysis scope ({get_active_cwe_count()} supported CWE classes).",
                                     size=12,
                                     weight=ft.FontWeight.BOLD,
                                     color=COLOR_GREEN,
@@ -715,7 +715,7 @@ def load_rules_catalog():
 
 
 def build_rules_catalog_container():
-    """Builds the interactive 44 CWE Rules Catalog view for TCS Desktop."""
+    """Builds the interactive 44 CWE Rules Catalog view for TimeCodeSecurity Desktop."""
     rules_cat = load_rules_catalog()
     cards = []
     for cwe_id, cwe_name in ALL_46_CWES:
@@ -795,7 +795,7 @@ def build_rules_catalog_container():
                         ft.Row(
                             [
                                 ft.Icon(ICON_SECURITY, color="#00ffcc", size=18),
-                                ft.Text(f"TIME CODE SECURITY (TCS) RULES CATALOG — {len(ALL_46_CWES)} SUPPORTED CWES", size=12, weight=ft.FontWeight.BOLD, color="white"),
+                                ft.Text(f"TIME CODE SECURITY (TimeCodeSecurity) RULES CATALOG — {len(ALL_46_CWES)} SUPPORTED CWES", size=12, weight=ft.FontWeight.BOLD, color="white"),
                             ],
                             spacing=6,
                         ),
@@ -1002,7 +1002,7 @@ def generate_markdown_report(findings, code_snippet=""):
 
         for idx, f in enumerate(findings, 1):
             f_type = f.get("type", "SAST")
-            f_id = f.get("id", f"TCS-FINDING-{idx:03d}")
+            f_id = f.get("id", f"TimeCodeSecurity-FINDING-{idx:03d}")
             cwe = f.get("cwe", "UNKNOWN")
             category = f.get("category", "Vulnerability")
             severity = f.get("severity", "HIGH")
@@ -1886,7 +1886,7 @@ def main(page: ft.Page):
                                 ]
                                 findings_state.append({
                                     "type": "JS/TS",
-                                    "id": jf.get("id", f"TCS-JS-{i:03d}"),
+                                    "id": jf.get("id", f"TimeCodeSecurity-JS-{i:03d}"),
                                     "cwe": jf.get("cwe", "UNKNOWN"),
                                     "category": jf.get("category", "Vulnerability"),
                                     "severity": jf.get("severity", "HIGH"),
@@ -1910,7 +1910,7 @@ def main(page: ft.Page):
                             for s in secret_res:
                                 findings_state.append({
                                     "type": "SECRET",
-                                    "id": s.get("id", f"TCS-SEC-{sec_idx:03d}"),
+                                    "id": s.get("id", f"TimeCodeSecurity-SEC-{sec_idx:03d}"),
                                     "cwe": "CWE-798",
                                     "category": s.get("category", "Hardcoded Credential / Secret Leak"),
                                     "severity": s.get("severity", "HIGH"),
@@ -1963,7 +1963,7 @@ def main(page: ft.Page):
                                 nodes = pg.get("nodes", [])
                                 findings_state.append({
                                     "type": "SAST",
-                                    "id": f.get("id", f"TCS-VULN-{sast_idx:03d}"),
+                                    "id": f.get("id", f"TimeCodeSecurity-VULN-{sast_idx:03d}"),
                                     "cwe": f.get("cwe", "UNKNOWN"),
                                     "category": f.get("category", "Vulnerability"),
                                     "severity": f.get("severity", "HIGH"),
@@ -1988,7 +1988,7 @@ def main(page: ft.Page):
                             for s in secret_findings:
                                 findings_state.append({
                                     "type": "SECRET",
-                                    "id": s.get("id", f"TCS-SEC-{sec_idx:03d}"),
+                                    "id": s.get("id", f"TimeCodeSecurity-SEC-{sec_idx:03d}"),
                                     "cwe": "CWE-798",
                                     "category": s.get("category", "Hardcoded Credential / Secret Leak"),
                                     "severity": s.get("severity", "HIGH"),

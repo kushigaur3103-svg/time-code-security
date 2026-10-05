@@ -1,5 +1,5 @@
 """
-TimeCodeSecurity (TCS) Webhook Payload Formatters & Sanitization.
+TimeCodeSecurity Webhook Payload Formatters & Sanitization.
 
 Defines:
 - MAX_WEBHOOK_PAYLOAD_BYTES = 65536 (Universal 64 KB ceiling).

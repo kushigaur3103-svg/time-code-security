@@ -1,4 +1,4 @@
-name: 4-way showdown (TCS vs Semgrep vs Bandit vs SonarQube)
+name: 4-way showdown (TimeCodeSecurity vs Semgrep vs Bandit vs SonarQube)
 
 # Manual dispatch only — never triggers on push/PR. All four analyzers run on the
 # GitHub runner; the laptop is only used to read the printed scorecard.
@@ -9,7 +9,7 @@ on:
   workflow_dispatch:
     inputs:
       tcs_mode:
-        description: "TCS execution mode in the harness"
+        description: "TimeCodeSecurity execution mode in the harness"
         type: choice
         required: false
         default: api

@@ -1,5 +1,5 @@
 """
-TimeCodeSecurity (TCS) - Vector D CWE-614/CWE-1275 Cookie Security Transformer.
+TimeCodeSecurity - Vector D CWE-614/CWE-1275 Cookie Security Transformer.
 Implements deterministic AST-guided remediation for insecure cookie configurations:
 Ensures response.set_cookie() calls include secure=True, httponly=True, samesite='Lax'.
 """

@@ -1,5 +1,5 @@
 """
-TimeCodeSecurity (TCS) - Vector D CWE-502 Unsafe YAML Deserialization Transformer.
+TimeCodeSecurity - Vector D CWE-502 Unsafe YAML Deserialization Transformer.
 Implements deterministic AST-guided remediation replacing yaml.load() with yaml.safe_load().
 """
 

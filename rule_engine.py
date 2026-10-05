@@ -1,5 +1,5 @@
 """
-TimeCodeSecurity (TCS) Rule Engine.
+TimeCodeSecurity Rule Engine.
 Defines typed SecurityRule representations and provides declarative rule matching,
 safety evaluation, remediation, and severity mappings.
 """

@@ -1,5 +1,5 @@
 """
-TimeCodeSecurity (TCS) - Vector D Remediation Orchestrator.
+TimeCodeSecurity - Vector D Remediation Orchestrator.
 Orchestrates multi-finding bottom-up sequencing, closed-loop verification,
 filesystem safety validation, and atomic per-file replacement.
 """
@@ -50,7 +50,7 @@ def format_remediation_section(
     written_set = set(written_files or [])
     lines = [
         "=" * 80,
-        "TIME CODE SECURITY (TCS) - AUTOMATED REMEDIATION (APPLIED)" if is_write else "TIME CODE SECURITY (TCS) - AUTOMATED REMEDIATION PREVIEW",
+        "TIMECODESECURITY - AUTOMATED REMEDIATION (APPLIED)" if is_write else "TIMECODESECURITY - AUTOMATED REMEDIATION PREVIEW",
         "=" * 80,
     ]
 

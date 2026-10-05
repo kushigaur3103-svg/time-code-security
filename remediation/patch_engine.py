@@ -1,5 +1,5 @@
 """
-TimeCodeSecurity (TCS) - Vector D Deterministic AST Remediation Engine.
+TimeCodeSecurity - Vector D Deterministic AST Remediation Engine.
 Orchestrates:
 1. Finding intake
 2. AST parse & rule dispatch
@@ -47,7 +47,7 @@ class RemediationEngine:
         Executes the end-to-end deterministic remediation pipeline for a given finding.
         Never mutates the input source_code in place.
         """
-        finding_id = str(finding.get("id", "TCS-REM-000"))
+        finding_id = str(finding.get("id", "TimeCodeSecurity-REM-000"))
         cwe = str(finding.get("cwe", "UNKNOWN_CWE"))
         line_number = int(finding.get("line_number", 0))
         original_file = str(file_path or finding.get("file", "source.py"))

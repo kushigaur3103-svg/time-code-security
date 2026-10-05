@@ -1,4 +1,4 @@
-"""Infrastructure-as-Code security auditor for TimeCodeSecurity (TCS).
+"""Infrastructure-as-Code security auditor for TimeCodeSecurity.
 
 Zero-dependency, deterministic analysis of two IaC artefact families:
 

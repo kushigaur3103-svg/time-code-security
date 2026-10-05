@@ -1,5 +1,5 @@
 """
-Inline Suppression Resolver for TimeCodeSecurity (TCS).
+Inline Suppression Resolver for TimeCodeSecurity.
 Deterministically parses in-source suppression directives and applies
 non-destructive suppression flags to AST scan findings.
 

@@ -1,5 +1,5 @@
 """
-TimeCodeSecurity (TCS) - Phase 4: Inter-Procedural / Cross-File Taint Engine
+TimeCodeSecurity - Phase 4: Inter-Procedural / Cross-File Taint Engine
 Stitches global symbol index and function taint contracts to detect multi-file exploit paths.
 """
 
@@ -1046,7 +1046,7 @@ if __name__ == "__main__":
     elapsed = (time.perf_counter() - t0) * 1000
 
     print("\n=================================================================")
-    print("        TIMECODESECURITY (TCS) - CROSS-FILE ANALYSIS REPORT       ")
+    print("        TIMECODESECURITY - CROSS-FILE ANALYSIS REPORT       ")
     print("=================================================================")
     print(f"Execution Time:              {elapsed:.2f} ms")
     print(f"Total Cross-File Exploits:   {len(findings)}")

@@ -1,6 +1,6 @@
 #!/usr/bin/env python3
 """
-TimeCodeSecurity (TCS) Git-Staged Scanner Module.
+TimeCodeSecurity Git-Staged Scanner Module.
 
 Provides pre-commit and staged scanning capabilities with full cross-file
 semantic equivalence.
@@ -459,7 +459,7 @@ def recompute_summary_metrics(
 
     if active_vulnerabilities == 0:
         risk_level = "CLEAN"
-        risk_message = f"NO VULNERABILITIES DETECTED within current TCS analysis scope ({get_active_cwe_count()} supported CWE classes)."
+        risk_message = f"NO VULNERABILITIES DETECTED within current TimeCodeSecurity analysis scope ({get_active_cwe_count()} supported CWE classes)."
     elif critical_count > 0:
         risk_level = "CRITICAL"
         risk_message = "CRITICAL RISK: Arbitrary code execution or high-impact injection detected."

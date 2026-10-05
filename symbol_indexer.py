@@ -1,5 +1,5 @@
 """
-TimeCodeSecurity (TCS) - Phase 4: Global Symbol & Export Indexer
+TimeCodeSecurity - Phase 4: Global Symbol & Export Indexer
 Deterministic AST-based multi-file symbol and import resolver.
 """
 

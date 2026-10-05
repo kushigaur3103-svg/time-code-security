@@ -1,5 +1,5 @@
 """
-TimeCodeSecurity (TCS) - Vector C SCA Reachability Analysis Engine.
+TimeCodeSecurity - Vector C SCA Reachability Analysis Engine.
 Orchestrates manifest ingestion, advisory correlation, lexical-scope AST analysis,
 and bounded call-graph evaluation to produce VectorCFinding results.
 """
@@ -34,7 +34,7 @@ from sca_reachability.resolver import resolve_import_to_distributions
 
 def _parse_manifest_dependencies(manifest_path: Path) -> Tuple[Dict[str, Dict[str, Any]], Dict[str, List[str]]]:
     """
-    Parses manifest (poetry.lock or requirements.txt) using TCS manifest_parser.
+    Parses manifest (poetry.lock or requirements.txt) using TimeCodeSecurity manifest_parser.
     Returns:
       (declared_packages, transitive_map)
       declared_packages: {pkg_name: {"version": ver, "specifier": spec, "line": line}}
@@ -246,7 +246,7 @@ def analyze_dependency_reachability(
 
         # Default synthetic advisory fallback
         default_adv = {
-            "id": "TCS-VEC-C-001",
+            "id": "TimeCodeSecurity-VEC-C-001",
             "aliases": ["CVE-2026-0001", "GHSA-vc01-test-0001"],
             "summary": "Synthetic advisory: vulnlib.dangerous() execution vulnerability in versions <= 1.5.0",
             "severity": "HIGH",

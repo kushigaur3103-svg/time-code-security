@@ -1,9 +1,10 @@
 """
-SARIF v2.1.0 Export Adapter for TimeCodeSecurity (TCS).
-Translates TCS AST scan results into the OASIS SARIF v2.1.0 JSON format
+SARIF v2.1.0 Export Adapter for TimeCodeSecurity.
+Translates TimeCodeSecurity AST scan results into the OASIS SARIF v2.1.0 JSON format
 compatible with GitHub Advanced Security / Code Scanning.
 """
 
+import json
 import re
 from typing import Dict, Any, List, Optional, Set, FrozenSet, Union
 from rule_engine import GLOBAL_RULE_REGISTRY, get_rule
@@ -13,6 +14,119 @@ SARIF_VERSION = "2.1.0"
 TOOL_NAME = "TimeCodeSecurity"
 TOOL_VERSION = "1.0.0"
 TOOL_INFORMATION_URI = "https://time-code-security.onrender.com"
+
+# GitHub Code Scanning rejects a SARIF file above 10 MiB, and shows at most 5 000
+# results per run. Everything above that ceiling has to be trimmed by us, otherwise
+# the whole upload is dropped instead of the least interesting findings.
+GH_MAX_SARIF_BYTES = 10 * 1024 * 1024
+GH_MAX_SHOWN_RESULTS = 5_000
+_LEVEL_RANK = {"error": 0, "warning": 1, "note": 2, "none": 3}
+
+
+def sarif_byte_size(sarif_doc: Dict[str, Any], indent: int = 2) -> int:
+    return len(json.dumps(sarif_doc, indent=indent).encode("utf-8"))
+
+
+def _result_identity(result: Dict[str, Any]):
+    locations = result.get("locations") or []
+    first = locations[0] if locations and isinstance(locations[0], dict) else {}
+    physical = first.get("physicalLocation") or {}
+    return (
+        result.get("ruleId"),
+        (physical.get("artifactLocation") or {}).get("uri") or "",
+        (physical.get("region") or {}).get("startLine") or 0,
+    )
+
+
+def _strip_snippets(node: Any) -> int:
+    """Drop every region snippet in place; snippets are the bulk of a large SARIF."""
+    removed = 0
+    if isinstance(node, dict):
+        for key, value in node.items():
+            if key == "region" and isinstance(value, dict) and "snippet" in value:
+                value.pop("snippet")
+                removed += 1
+            else:
+                removed += _strip_snippets(value)
+    elif isinstance(node, list):
+        for item in node:
+            removed += _strip_snippets(item)
+    return removed
+
+
+def _note_truncation(run: Dict[str, Any], **facts: int) -> None:
+    properties = run.setdefault("properties", {})
+    for key, value in facts.items():
+        if value:
+            properties[key] = int(value)
+    invocation = (run.setdefault("invocations", [{}])[0])
+    invocation.setdefault("toolExecutionNotifications", []).append({
+        "level": "warning",
+        "message": {"text": (
+            "TimeCodeSecurity SARIF was trimmed to stay inside GitHub Code Scanning limits: "
+            + ", ".join(f"{k}={v}" for k, v in facts.items() if v)
+        )},
+    })
+
+
+def bound_sarif_document(
+    sarif_doc: Dict[str, Any],
+    max_bytes: int = GH_MAX_SARIF_BYTES,
+    max_results: int = GH_MAX_SHOWN_RESULTS,
+    indent: int = 2,
+) -> Dict[str, Any]:
+    """Dedupe, severity-rank and byte-budget a SARIF document without breaking its schema.
+
+    CRITICAL/HIGH (level=error) results are always kept ahead of MEDIUM/LOW ones, so a
+    trimmed upload still carries every exploitable finding GitHub would act on.
+    """
+    for run in sarif_doc.get("runs") or []:
+        if not isinstance(run, dict):
+            continue
+        results = run.get("results") or []
+        seen = set()
+        deduped = []
+        for result in results:
+            identity = _result_identity(result)
+            if identity in seen:
+                continue
+            seen.add(identity)
+            deduped.append(result)
+        duplicates = len(results) - len(deduped)
+
+        overflow = 0
+        if max_results is not None and len(deduped) > max_results:
+            ranked = sorted(
+                deduped,
+                key=lambda r: _LEVEL_RANK.get(str(r.get("level", "warning")).lower(), 1),
+            )
+            deduped = ranked[:max_results]
+            overflow = len(ranked) - max_results
+
+        run["results"] = deduped
+        if duplicates or overflow:
+            _note_truncation(run, sarif_duplicate_results_dropped=duplicates,
+                             sarif_results_over_display_cap=overflow)
+
+    dropped_for_size = 0
+    if sarif_byte_size(sarif_doc, indent) > max_bytes:
+        _strip_snippets(sarif_doc)
+    while sarif_byte_size(sarif_doc, indent) > max_bytes:
+        runs = [r for r in (sarif_doc.get("runs") or []) if isinstance(r, dict) and r.get("results")]
+        if not runs:
+            break
+        # Shed from the lowest-priority run tail: severity order is already applied.
+        target = max(runs, key=lambda r: len(r["results"]))
+        results = target["results"]
+        keep = max(1, (len(results) * 3) // 4)
+        dropped_for_size += len(results) - keep
+        target["results"] = results[:keep]
+    if dropped_for_size:
+        for run in sarif_doc.get("runs") or []:
+            if isinstance(run, dict):
+                _note_truncation(run, sarif_results_dropped_for_size=dropped_for_size)
+                break
+    return sarif_doc
 
 
 def get_supported_rules(enabled_rule_ids=None):
@@ -63,9 +177,9 @@ def to_sarif(
     enabled_rule_ids: Optional[Union[Set[str], FrozenSet[str], List[str]]] = None
 ) -> Dict[str, Any]:
     """
-    Translates a TCS scan result dictionary into a valid OASIS SARIF v2.1.0 document.
+    Translates a TimeCodeSecurity scan result dictionary into a valid OASIS SARIF v2.1.0 document.
 
-    :param tcs_scan_result: Standard dictionary returned by TCS AST scan.
+    :param tcs_scan_result: Standard dictionary returned by TimeCodeSecurity AST scan.
     :param enabled_rule_ids: Optional collection of enabled rule IDs to include in driver.rules.
                              If omitted, uses tcs_scan_result.get("enabled_rules") if present,
                              or defaults to all rules in GLOBAL_RULE_REGISTRY.
@@ -543,4 +657,4 @@ def to_sarif(
         "runs": [run_obj]
     }
 
-    return sarif_doc
+    return bound_sarif_document(sarif_doc)

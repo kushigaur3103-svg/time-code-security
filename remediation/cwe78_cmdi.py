@@ -1,5 +1,5 @@
 """
-TimeCodeSecurity (TCS) - Vector D CWE-78 Command Injection Transformer.
+TimeCodeSecurity - Vector D CWE-78 Command Injection Transformer.
 Implements deterministic, AST-guided remediation for command injection flaws:
 Transforms subprocess calls (e.g. call, run, Popen, check_output) with shell=True
 into tokenized argument lists (cmd_list) with shell=False.

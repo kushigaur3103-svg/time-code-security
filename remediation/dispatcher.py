@@ -1,5 +1,5 @@
 """
-TimeCodeSecurity (TCS) - Vector D Remediation Rule Dispatcher.
+TimeCodeSecurity - Vector D Remediation Rule Dispatcher.
 Deterministically maps CWE identifiers and RemediationRules to corresponding
 AST transformers.
 """

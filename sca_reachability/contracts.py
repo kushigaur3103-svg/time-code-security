@@ -1,5 +1,5 @@
 """
-TimeCodeSecurity (TCS) - Vector C SCA Reachability Analysis Contracts.
+TimeCodeSecurity - Vector C SCA Reachability Analysis Contracts.
 Defines typed, immutable data models, enums, and serialization contracts.
 """
 

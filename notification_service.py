@@ -1,5 +1,5 @@
 """
-TimeCodeSecurity (TCS) Notification Orchestration Service.
+TimeCodeSecurity Notification Orchestration Service.
 
 Orchestrates:
 - Phase 15A EventPublisher & InMemoryEventBus

@@ -1,5 +1,5 @@
 """
-TimeCodeSecurity (TCS) - Vector C Curated Distribution to Import Namespace Mappings.
+TimeCodeSecurity - Vector C Curated Distribution to Import Namespace Mappings.
 Provides compile-time, zero-IO bidirectional lookup tables for well-known
 Python distribution packages whose import namespaces differ from their PyPI distribution names.
 """

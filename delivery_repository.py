@@ -1,5 +1,5 @@
 """
-TimeCodeSecurity (TCS) Delivery Repository Interface.
+TimeCodeSecurity Delivery Repository Interface.
 
 Defines the abstract multi-tenant contract for delivery audit log persistence,
 querying, and telemetry.

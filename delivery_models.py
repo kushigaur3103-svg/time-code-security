@@ -1,5 +1,5 @@
 """
-TimeCodeSecurity (TCS) Delivery Audit Models & Schema.
+TimeCodeSecurity Delivery Audit Models & Schema.
 
 Defines the persisted DeliveryAuditLog entity and Pydantic DTOs for Phase 15D.
 Audit records are application-level append-only records.

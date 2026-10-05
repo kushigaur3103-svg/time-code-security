@@ -1,6 +1,6 @@
 #!/usr/bin/env python3
 """
-TimeCodeSecurity (TCS) Master Automated Verification Suite.
+TimeCodeSecurity Master Automated Verification Suite.
 
 Executes end-to-end post-commit sanity and compliance checks in one shot:
 1. Ground-Truth Benchmark Suite:
@@ -376,7 +376,7 @@ def check_cross_file_benchmark() -> bool:
 def main() -> int:
     total_start = time.perf_counter()
     print("=" * 75)
-    print("  TimeCodeSecurity (TCS) - Master Automated Verification Engine")
+    print("  TimeCodeSecurity - Master Automated Verification Engine")
     print("=" * 75)
 
     try:

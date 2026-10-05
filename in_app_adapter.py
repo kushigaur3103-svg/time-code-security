@@ -1,5 +1,5 @@
 """
-TimeCodeSecurity (TCS) In-App Notification Delivery Adapter.
+TimeCodeSecurity In-App Notification Delivery Adapter.
 
 Consumes NotificationIntent objects produced by NotificationPolicy,
 translates them to NotificationCreate DTOs, and persists them via

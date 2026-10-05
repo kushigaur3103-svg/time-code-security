@@ -1968,7 +1968,7 @@ def detect_safe_patterns(files: Dict[str, str]) -> List[Dict[str, Any]]:
                     cwes = ", ".join(sorted(rule.get("protected_cwes", [])))
                     safe_patterns.append({
                         'pattern': f'Scanner-Registered Sanitizer ({func_name})',
-                        'detail': f'Call in {fname}:{line_no} matches TCS engine SANITIZER_REGISTRY ({cwes}).',
+                        'detail': f'Call in {fname}:{line_no} matches TimeCodeSecurity engine SANITIZER_REGISTRY ({cwes}).',
                         'classification': 'Informational Syntax Pattern',
                         'is_authoritative': False
                     })
@@ -1976,7 +1976,7 @@ def detect_safe_patterns(files: Dict[str, str]) -> List[Dict[str, Any]]:
                 elif func_name.endswith('.execute') and (len(node.args) > 1 or getattr(node, 'keywords', [])):
                     safe_patterns.append({
                         'pattern': 'Parameterized Database Query Call',
-                        'detail': f'Query execution in {fname}:{line_no} supplies parameter bindings (exempted by TCS sink safety rule).',
+                        'detail': f'Query execution in {fname}:{line_no} supplies parameter bindings (exempted by TimeCodeSecurity sink safety rule).',
                         'classification': 'Informational Syntax Pattern',
                         'is_authoritative': False
                     })
@@ -1986,7 +1986,7 @@ def detect_safe_patterns(files: Dict[str, str]) -> List[Dict[str, Any]]:
                     if shell_kw is False or (shell_kw is None and node.args and isinstance(node.args[0], ast.List)):
                         safe_patterns.append({
                             'pattern': 'Argument-List Subprocess Call',
-                            'detail': f'Subprocess invocation in {fname}:{line_no} uses list arguments/shell=False (exempted by TCS sink safety rule).',
+                            'detail': f'Subprocess invocation in {fname}:{line_no} uses list arguments/shell=False (exempted by TimeCodeSecurity sink safety rule).',
                             'classification': 'Informational Syntax Pattern',
                             'is_authoritative': False
                         })
@@ -1994,7 +1994,7 @@ def detect_safe_patterns(files: Dict[str, str]) -> List[Dict[str, Any]]:
                 elif func_name == 'json.loads':
                     safe_patterns.append({
                         'pattern': 'Structured Deserialization (json.loads)',
-                        'detail': f'Parsing in {fname}:{line_no} uses standard json.loads (non-sink in TCS SINK_REGISTRY).',
+                        'detail': f'Parsing in {fname}:{line_no} uses standard json.loads (non-sink in TimeCodeSecurity SINK_REGISTRY).',
                         'classification': 'Informational Syntax Pattern',
                         'is_authoritative': False
                     })
@@ -2163,7 +2163,7 @@ def execute_tcs_ast_scan(
         remediation = extract_remediation_advice(cwe, sink.symbol)
 
         findings.append({
-            "id": f"TCS-VULN-{vuln_idx:03d}",
+            "id": f"TimeCodeSecurity-VULN-{vuln_idx:03d}",
             "category": category,
             "cwe": cwe,
             "severity": severity,
@@ -2199,8 +2199,8 @@ def execute_tcs_ast_scan(
                 # Full masked source line (e.g. 'STRIPE_KEY = "sk_l***6655"')
                 full_line_snippet = sec.context or sec.masked_value
                 sec_dict = {
-                    "id": f"TCS-SEC-{sec_idx:03d}",
-                    "vuln_id": f"TCS-SEC-{sec_idx:03d}",
+                    "id": f"TimeCodeSecurity-SEC-{sec_idx:03d}",
+                    "vuln_id": f"TimeCodeSecurity-SEC-{sec_idx:03d}",
                     "category": "HARDCODED CREDENTIAL / SECRET LEAK",
                     "title": "HARDCODED CREDENTIAL / SECRET LEAK",
                     "severity": "CRITICAL",
@@ -2264,7 +2264,7 @@ def execute_tcs_ast_scan(
     
     if active_vulnerabilities == 0:
         risk_level = "CLEAN"
-        risk_message = f"NO VULNERABILITIES DETECTED within current TCS analysis scope ({_active_supported_cwe_count()} supported CWE classes)."
+        risk_message = f"NO VULNERABILITIES DETECTED within current TimeCodeSecurity analysis scope ({_active_supported_cwe_count()} supported CWE classes)."
     elif critical_count > 0:
         risk_level = "CRITICAL"
         risk_message = "CRITICAL RISK: Arbitrary code execution, injection, or hardcoded credential leak detected."
@@ -2453,7 +2453,7 @@ async def scan_code(request: Request, authorization: str = Header(None)):
     except Exception as scan_err:
         import traceback
         logger.error(
-            "TCS scan engine fault [exception_shield]: %s\n%s",
+            "TimeCodeSecurity scan engine fault [exception_shield]: %s\n%s",
             scan_err,
             traceback.format_exc()
         )

@@ -1,5 +1,5 @@
 """
-TimeCodeSecurity (TCS) OSV API Client & Cache Layer.
+TimeCodeSecurity OSV API Client & Cache Layer.
 Queries Open Source Vulnerabilities (osv.dev) for Python packages via /v1/querybatch.
 Includes local caching, batch chunking, bounded retries, and offline fallback.
 """

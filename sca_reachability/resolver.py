@@ -1,5 +1,5 @@
 """
-TimeCodeSecurity (TCS) - Vector C Import & Distribution Directional Resolvers.
+TimeCodeSecurity - Vector C Import & Distribution Directional Resolvers.
 Provides explicit forward and reverse resolution between distribution package names
 and AST import root namespaces.
 """

@@ -1,5 +1,5 @@
 """
-TimeCodeSecurity (TCS) Configuration Loader.
+TimeCodeSecurity Configuration Loader.
 Loads, validates, and manages .tcs.yml configuration objects with strict schema
 validation, deterministic error handling, and immutable configuration structures.
 """

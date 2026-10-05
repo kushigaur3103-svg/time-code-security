@@ -199,7 +199,7 @@ class BenchmarkRunner:
         thin_bar = "-" * width
 
         lines.append(bar)
-        lines.append("            TIME CODE SECURITY (TCS) GROUND-TRUTH BENCHMARK HARNESS            ".center(width))
+        lines.append("            TIMECODESECURITY GROUND-TRUTH BENCHMARK HARNESS            ".center(width))
         lines.append("                 NIST Juliet / OWASP Evaluation Suite & Confusion Matrix                ".center(width))
         lines.append(bar)
 

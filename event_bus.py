@@ -1,5 +1,5 @@
 """
-TimeCodeSecurity (TCS) In-Memory Synchronous Event Bus.
+TimeCodeSecurity In-Memory Synchronous Event Bus.
 
 Provides deterministic, insertion-ordered FIFO event dispatch with
 strict subscriber failure isolation.

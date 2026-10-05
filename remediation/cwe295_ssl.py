@@ -1,5 +1,5 @@
 """
-TimeCodeSecurity (TCS) - Vector D CWE-295 Disabled SSL Verification Transformer.
+TimeCodeSecurity - Vector D CWE-295 Disabled SSL Verification Transformer.
 Implements deterministic AST-guided remediation for verify=False in requests.
 """
 

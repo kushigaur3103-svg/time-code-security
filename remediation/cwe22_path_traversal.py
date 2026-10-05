@@ -1,5 +1,5 @@
 """
-TimeCodeSecurity (TCS) - Vector D CWE-22 Path Traversal Transformer.
+TimeCodeSecurity - Vector D CWE-22 Path Traversal Transformer.
 Implements deterministic, AST-guided remediation for path traversal flaws:
 Resolves trusted base directory via Path(base_dir).resolve(),
 resolves target path via (safe_base / filename).resolve(),

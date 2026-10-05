@@ -2,7 +2,7 @@
 """
 scripts/fetch_code_cwe_catalog.py
 =============================================================================
-TimeCodeSecurity (TCS) - Code-Only Python CWE Rules Catalog Aggregator
+TimeCodeSecurity - Code-Only Python CWE Rules Catalog Aggregator
 
 MISSION:
 Aggregates strictly code-auditable, AST- and SAST-detectable Python CWEs into
@@ -2172,7 +2172,7 @@ def build_catalog():
     thin_sep = "-" * 80
 
     print(sep_line)
-    print("      TIMECODESECURITY (TCS) - CODE-ONLY PYTHON CWE RULES CATALOG")
+    print("      TIMECODESECURITY - CODE-ONLY PYTHON CWE RULES CATALOG")
     print("      Strict SAST / AST-Detectable Weaknesses (Zero Business-Logic Bloat)")
     print(sep_line)
     print(f" Output Location : {catalog_path}")

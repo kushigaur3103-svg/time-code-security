@@ -1,5 +1,5 @@
 """
-TimeCodeSecurity (TCS) - Vector D CWE-89 SQL Injection Transformer.
+TimeCodeSecurity - Vector D CWE-89 SQL Injection Transformer.
 Implements deterministic, AST-guided SQL query parameterization for:
 1. f-string interpolated queries (cursor.execute(f"SELECT ... '{val}'"))
 2. Concatenated queries (query = "SELECT ... " + str(val); cursor.execute(query))

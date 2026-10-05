@@ -1,5 +1,5 @@
 """
-TimeCodeSecurity (TCS) SQLite/SQLAlchemy Delivery Repository.
+TimeCodeSecurity SQLite/SQLAlchemy Delivery Repository.
 
 Concrete implementation of DeliveryRepository using SQLAlchemy and SQLite/PostgreSQL.
 Enforces multi-tenant isolation, deterministic ordering, and append-only audit retention.

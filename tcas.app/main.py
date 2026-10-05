@@ -7,7 +7,7 @@ import flet as ft
 import requests
 import time
 
-# Ensure TCS core engine is discoverable
+# Ensure TimeCodeSecurity core engine is discoverable
 TCS_CORE_DIR = Path(__file__).resolve().parent.parent / "time code security"
 if str(TCS_CORE_DIR) not in sys.path:
     sys.path.insert(0, str(TCS_CORE_DIR))
@@ -19,7 +19,7 @@ try:
 except Exception as e:
     TCS_LOCAL_AVAILABLE = False
     __version__ = "2.0.0"
-    print(f"[!] Warning: Could not import local TCS engine: {e}")
+    print(f"[!] Warning: Could not import local TimeCodeSecurity engine: {e}")
 
 # Flet Compatibility Helpers
 def get_icon(name, fallback=""):
@@ -596,7 +596,7 @@ def generate_markdown_report(findings, code_snippet=""):
 
         for idx, f in enumerate(findings, 1):
             f_type = f.get("type", "SAST")
-            f_id = f.get("id", f"TCS-FINDING-{idx:03d}")
+            f_id = f.get("id", f"TimeCodeSecurity-FINDING-{idx:03d}")
             cwe = f.get("cwe", "UNKNOWN")
             category = f.get("category", "Vulnerability")
             severity = f.get("severity", "HIGH")
@@ -1211,7 +1211,7 @@ def main(page: ft.Page):
                             nodes = pg.get("nodes", [])
                             findings_state.append({
                                 "type": "SAST",
-                                "id": f.get("id", f"TCS-VULN-{sast_idx:03d}"),
+                                "id": f.get("id", f"TimeCodeSecurity-VULN-{sast_idx:03d}"),
                                 "cwe": f.get("cwe", "UNKNOWN"),
                                 "category": f.get("category", "Vulnerability"),
                                 "severity": f.get("severity", "HIGH"),
@@ -1233,7 +1233,7 @@ def main(page: ft.Page):
                         for s in secret_findings:
                             findings_state.append({
                                 "type": "SECRET",
-                                "id": s.get("id", f"TCS-SEC-{sec_idx:03d}"),
+                                "id": s.get("id", f"TimeCodeSecurity-SEC-{sec_idx:03d}"),
                                 "cwe": "CWE-798",
                                 "category": s.get("category", "Hardcoded Credential / Secret Leak"),
                                 "severity": s.get("severity", "HIGH"),

@@ -1,4 +1,4 @@
-"""HTML / Jinja / Django template security auditor for TimeCodeSecurity (TCS).
+"""HTML / Jinja / Django template security auditor for TimeCodeSecurity.
 
 Performs concrete HTML-node analysis over server-side templates using the standard
 library ``html.parser``. Two rules are implemented:

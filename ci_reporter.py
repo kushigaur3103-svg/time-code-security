@@ -1,6 +1,6 @@
 """
-TimeCodeSecurity (TCS) CI/CD Reporter & GitHub Step Summary Engine.
-Converts unified TCS scan results (SAST, SCA, Secrets) into safe, deterministic
+TimeCodeSecurity CI/CD Reporter & GitHub Step Summary Engine.
+Converts unified TimeCodeSecurity scan results (SAST, SCA, Secrets) into safe, deterministic
 GitHub Actions workflow commands (::error, ::warning) and Markdown step summaries.
 
 Invariants:
@@ -279,7 +279,7 @@ def _format_secret_annotation(finding: Any) -> Tuple[Tuple[str, int, int, int, s
 
 def format_github_annotations(scan_result: Dict[str, Any]) -> List[str]:
     """
-    Converts unified TCS scan results into a deterministically ordered list of
+    Converts unified TimeCodeSecurity scan results into a deterministically ordered list of
     GitHub Actions workflow command annotations (::error, ::warning).
 
     Sort order: (file, line, col, engine, rule/vuln/secret_type).

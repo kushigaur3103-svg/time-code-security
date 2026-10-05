@@ -1,5 +1,5 @@
 """
-TimeCodeSecurity (TCS) - Vector C Call Graph & Reachability Traversal.
+TimeCodeSecurity - Vector C Call Graph & Reachability Traversal.
 Builds a function-level adjacency graph from AST visitor outputs,
 computes bounded call paths, and strictly enforces Phase 1 depth guarantees.
 """

@@ -1,5 +1,5 @@
 """
-TimeCodeSecurity (TCS) Domain Event Taxonomy & Immutability Framework.
+TimeCodeSecurity Domain Event Taxonomy & Immutability Framework.
 
 Defines the immutable SecurityDomainEvent, EventType, EventSummary,
 and canonical deduplication key generation for Phase 15A.

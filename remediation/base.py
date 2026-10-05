@@ -1,5 +1,5 @@
 """
-TimeCodeSecurity (TCS) - Vector D Base Remediation Transformer Interface.
+TimeCodeSecurity - Vector D Base Remediation Transformer Interface.
 Defines the abstract base contract for deterministic, AST-guided vulnerability
 remediation transformers.
 """

@@ -1,5 +1,5 @@
 """
-TimeCodeSecurity (TCS) - Vector D Remediation Engine Package.
+TimeCodeSecurity - Vector D Remediation Engine Package.
 """
 
 from remediation.contracts import (

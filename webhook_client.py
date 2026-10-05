@@ -1,5 +1,5 @@
 """
-TimeCodeSecurity (TCS) Pinned-IP HTTPS Webhook Client.
+TimeCodeSecurity Pinned-IP HTTPS Webhook Client.
 
 Defines:
 - DeliveryStatus: 16 discrete delivery outcome classifications.
@@ -243,7 +243,7 @@ class WebhookClient:
 
         headers: Dict[str, str] = {
             "Content-Type": "application/json; charset=utf-8",
-            "User-Agent": "TCS-Webhook-Delivery/1.0",
+            "User-Agent": "TimeCodeSecurity-Webhook-Delivery/1.0",
             "Content-Length": str(len(payload_bytes)),
         }
         if idempotency_key:
@@ -251,7 +251,7 @@ class WebhookClient:
 
         if auth_config and auth_config.secret_token:
             sig = compute_webhook_signature(auth_config.secret_token, payload_bytes)
-            headers["X-TCS-Signature"] = f"sha256={sig}"
+            headers["X-TIMECODESECURITY-Signature"] = f"sha256={sig}"
 
         attempts = 0
         max_attempts = 2

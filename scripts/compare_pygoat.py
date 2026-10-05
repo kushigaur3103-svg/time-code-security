@@ -1,7 +1,7 @@
 """
 scripts/compare_pygoat.py
 Precise CWE + Line-level differential comparison on OWASP PyGoat:
-TimeCodeSecurity (TCS) vs Semgrep.
+TimeCodeSecurity vs Semgrep.
 """
 
 import ast

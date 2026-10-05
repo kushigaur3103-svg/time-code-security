@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""External battlefield: head-to-head TCS vs Semgrep on third-party targets.
+"""External battlefield: head-to-head TimeCodeSecurity vs Semgrep on third-party targets.
 
 The internal benchmark scores both tools on labels the competitors themselves wrote.
 This harness moves the comparison onto neutral ground - real repositories neither vendor
@@ -14,7 +14,7 @@ Two kinds of ground are covered:
   metric inverts: fewer findings is better and the table measures false-positive
   resistance.
 
-Every run also re-checks that the two TCS entry points (`cli.py scan --scope python` and
+Every run also re-checks that the two TimeCodeSecurity entry points (`cli.py scan --scope python` and
 `tcs_cli.py`) agree site-for-site, SARIF-for-SARIF, and on the exit code - the unification
 contract.
 
@@ -73,26 +73,90 @@ TARGETS = {
         "clean": True,
         "blurb": "fastapi/fastapi - JSON-API framework, exercises the CWE-352 API guard",
     },
+    "django": {
+        "path": "scratch/external_targets/django",
+        "url": "https://github.com/django/django.git",
+        # p/django is Semgrep's framework pack; the monorepo also carries a test suite of
+        # its own scale, so both rulesets are given to the competitor.
+        "rulesets": ["p/security-audit", "p/django"],
+        "pkg": "django",
+        # Audited framework code: findings here are noise candidates, and the ~500k-line
+        # tree is the scalability/memory stress this level is really about.
+        "clean": True,
+        "blurb": "django/django - large-scale framework monorepo (wall-clock, memory and "
+                 "crash-resilience stress)",
+    },
 }
+
+
+def best_payload(runs: list[dict], tool: str, name: str) -> dict | None:
+    """Parse the newest run that left a readable payload.
+
+    A run killed mid-scan truncates its own file, so the completed run's evidence is
+    preferred over the last attempt, and the failed attempt is reported instead of
+    crashing the whole benchmark.
+    """
+    for run in reversed(runs):
+        try:
+            return load_json(Path(run["stdout_path"]))
+        except (OSError, ValueError) as exc:
+            print(f"[battlefield] {name}: {tool} {run['label']} left no parsable payload "
+                  f"(exit={run['exit_code']}, wall={run['seconds']:.1f}s): {exc}",
+                  file=sys.stderr)
+            print(f"[battlefield] {name}: stderr tail: "
+                  f"{(run['stderr'] or '')[-600:]}", file=sys.stderr)
+    return None
 
 
 def run_to_file(argv: list[str], label: str, out_path: Path) -> dict:
     """Run one scanner redirecting stdout to a file, so a large JSON payload never has to
-    live twice in memory (and so `-o`-less CLIs still leave a re-analysable artefact)."""
+    live twice in memory (and so `-o`-less CLIs still leave a re-analysable artefact).
+
+    Wall clock and peak resident set are sampled from the *same* child process: a second
+    run to measure memory would double the cost of a 500k-line scan and time a different
+    execution than the one being reported.
+    """
     out_path.parent.mkdir(parents=True, exist_ok=True)
     env = dict(os.environ, PYTHONUTF8="1")
+    try:
+        import psutil
+    except ImportError:
+        psutil = None
+
     started = time.perf_counter()
-    with out_path.open("wb") as handle:
-        completed = subprocess.run(argv, cwd=ROOT, env=env, stdout=handle,
-                                   stderr=subprocess.PIPE, text=True, encoding="utf-8",
-                                   errors="replace")
+    stderr_path = out_path.with_name(out_path.name + ".stderr")
+    # stderr goes straight to a file, never a pipe: a scanner that prints thousands of
+    # warnings would fill the pipe buffer, block in write(), and hang this poll loop.
+    with out_path.open("wb") as handle, stderr_path.open("w", encoding="utf-8",
+                                                          errors="replace") as err_handle:
+        proc = subprocess.Popen(argv, cwd=ROOT, env=env, stdout=handle,
+                                stderr=err_handle, text=True, encoding="utf-8",
+                                errors="replace")
+        samples: list[float] = []
+        if psutil is not None:
+            watcher = psutil.Process(proc.pid)
+            while proc.poll() is None:
+                total = 0
+                try:
+                    for live in [watcher, *watcher.children(recursive=True)]:
+                        total += live.memory_info().rss
+                except psutil.Error:
+                    total = 0
+                if total:
+                    samples.append(total / (1024 * 1024))
+                time.sleep(0.05)
+        proc.wait()
     duration = time.perf_counter() - started
-    print(f"[battlefield] {label}: exit={completed.returncode} wall={duration:.1f}s",
-          file=sys.stderr)
-    return {"label": label, "argv": argv, "exit_code": completed.returncode,
+    peak = max(samples) if samples else None
+    mean = statistics.fmean(samples) if samples else None
+    stderr = stderr_path.read_text(encoding="utf-8", errors="replace")
+    print(f"[battlefield] {label}: exit={proc.returncode} wall={duration:.1f}s "
+          f"peakRss={peak if peak else 0:.0f}MB", file=sys.stderr)
+    return {"label": label, "argv": argv, "exit_code": proc.returncode,
             "seconds": duration, "stdout": out_path.read_text(encoding="utf-8",
                                                                errors="replace"),
-            "stderr": completed.stderr}
+            "stdout_path": str(out_path), "stderr_path": str(stderr_path),
+            "stderr": stderr, "peak_rss_mb": peak, "mean_rss_mb": mean}
 
 
 def cwes_of(*values) -> set[str]:
@@ -174,7 +238,7 @@ def parse_tcs(payload: dict) -> dict:
 
 
 def tcs_site(finding: dict) -> tuple:
-    """Identity of one TCS finding: file, line, CWE, severity."""
+    """Identity of one TimeCodeSecurity finding: file, line, CWE, severity."""
     return (str(finding.get("file")), int(finding.get("line") or finding.get("line_number") or 0),
             str(finding.get("cwe")), str(finding.get("severity", "")).upper())
 
@@ -223,7 +287,18 @@ def crashed(run: dict) -> bool:
 
 
 def fmt(number: float) -> str:
+    if number is None:
+        return "n/a"
     return f"{number:,.2f}"
+
+
+def memory_note(m: dict) -> str:
+    """Which scanner held less resident memory while scanning the same tree."""
+    t, s = m.get("tcs_peak_mb"), m.get("semgrep_peak_mb")
+    if not t or not s:
+        return "psutil unavailable; memory not sampled"
+    lighter = "TimeCodeSecurity" if t < s else "Semgrep"
+    return f"**{lighter}** ({fmt(abs(t - s))} MB lower)"
 
 
 def markdown_table(header: list[str], rows: list[list[str]]) -> str:
@@ -257,7 +332,7 @@ def measure(name: str, cfg: dict, args) -> dict | None:
 
     semgrep_cmd = (["semgrep", "scan", "--metrics=off", "--json", "--quiet"]
                    + sum([["--config", r] for r in cfg["rulesets"]], []) + [target])
-    # Primary TCS profile: the full engine, the same entry point the scored showdown uses.
+    # Primary TimeCodeSecurity profile: the full engine, the same entry point the scored showdown uses.
     tcs_cmd = [sys.executable, "cli.py", "scan", target, "--scope", "python",
                "--format", "json", "--sarif", str(cli_sarif.relative_to(ROOT))]
     # Second entry point under the unification contract: tcs_cli.py, JSON + SARIF.
@@ -270,23 +345,29 @@ def measure(name: str, cfg: dict, args) -> dict | None:
                       "-o", str(core_sarif)]
 
     semgrep_runs, tcs_runs = [], []
-    for _ in range(max(1, args.runs)):
-        semgrep_runs.append(run_to_file(semgrep_cmd, f"Semgrep[{name}]", semgrep_json))
-        tcs_runs.append(run_to_file(tcs_cmd, f"TCS[{name}]", tcs_json))
+    # One artefact path per run: a second run that dies mid-scan truncates its own file,
+    # not the evidence from the run that already completed.
+    for index in range(max(1, args.runs)):
+        semgrep_runs.append(run_to_file(semgrep_cmd, f"Semgrep[{name}] #{index + 1}",
+                                        out_dir / f"semgrep.r{index + 1}.json"))
+        tcs_runs.append(run_to_file(tcs_cmd, f"TimeCodeSecurity[{name}] #{index + 1}",
+                                    out_dir / f"tcs.r{index + 1}.json"))
+    semgrep_json = Path(semgrep_runs[-1]["stdout_path"])
+    tcs_json = Path(tcs_runs[-1]["stdout_path"])
 
-    core_runs = [run_to_file(core_cmd, f"TCS tcs_cli[{name}]", core_stdout)]
-    core_sarif_run = run_to_file(core_sarif_cmd, f"TCS tcs_cli sarif[{name}]",
+    core_runs = [run_to_file(core_cmd, f"TimeCodeSecurity tcs_cli[{name}]", core_stdout)]
+    core_sarif_run = run_to_file(core_sarif_cmd, f"TimeCodeSecurity tcs_cli sarif[{name}]",
                                  core_sarif_stdout)
 
-    usable = [r for r in semgrep_runs if r["exit_code"] in (0, 1) and semgrep_json.is_file()]
-    if not usable:
-        print(f"[battlefield] {name}: Semgrep produced no usable JSON; aborting target.",
-              file=sys.stderr)
-        print(semgrep_runs[-1]["stderr"][-1500:], file=sys.stderr)
+    semgrep_doc = best_payload(semgrep_runs, "Semgrep", name)
+    tcs_doc = best_payload(tcs_runs, "TimeCodeSecurity", name)
+    if semgrep_doc is None or tcs_doc is None:
+        print(f"[battlefield] {name}: skipping target — no scanner pair produced parsable "
+              f"output.", file=sys.stderr)
         return None
 
-    semgrep = parse_semgrep(load_json(semgrep_json))
-    tcs = parse_tcs(load_json(tcs_json))
+    semgrep = parse_semgrep(semgrep_doc)
+    tcs = parse_tcs(tcs_doc)
     try:
         core = parse_tcs(load_json(core_json))
     except (OSError, ValueError) as exc:
@@ -307,25 +388,34 @@ def measure(name: str, cfg: dict, args) -> dict | None:
         pass
 
     seconds = lambda runs: statistics.median(r["seconds"] for r in runs)  # noqa: E731
-    semgrep_seconds, tcs_seconds = seconds(usable), seconds(tcs_runs)
+    semgrep_seconds, tcs_seconds = seconds(semgrep_runs), seconds(tcs_runs)
     core_seconds = core_runs[0]["seconds"]
 
     tcs_speed = tcs["files_scanned"] / tcs_seconds if tcs_seconds else 0.0
     semgrep_speed = semgrep["python_files_scanned"] / semgrep_seconds if semgrep_seconds else 0.0
     core_speed = core["files_scanned"] / core_seconds if core_seconds else 0.0
 
+    def med_peak(runs):
+        values = [r["peak_rss_mb"] for r in runs if r.get("peak_rss_mb")]
+        return statistics.median(values) if values else None
+
+    tcs_peak = med_peak(tcs_runs)
+    semgrep_peak = med_peak(semgrep_runs)
+    core_peak = med_peak(core_runs)
+
     return {
         "name": name, "cfg": cfg, "commit": commit, "out_dir": out_dir,
         "semgrep_cmd": semgrep_cmd, "tcs_cmd": tcs_cmd, "core_cmd": core_cmd,
         "semgrep": semgrep, "tcs": tcs, "core": core,
-        "semgrep_runs": usable, "tcs_runs": tcs_runs, "core_runs": core_runs,
+        "semgrep_runs": semgrep_runs, "tcs_runs": tcs_runs, "core_runs": core_runs,
         "semgrep_seconds": semgrep_seconds, "tcs_seconds": tcs_seconds,
         "core_seconds": core_seconds,
+        "tcs_peak_mb": tcs_peak, "semgrep_peak_mb": semgrep_peak, "core_peak_mb": core_peak,
         "tcs_speed": tcs_speed, "semgrep_speed": semgrep_speed, "core_speed": core_speed,
-        "tcs_exit": tcs_runs[-1]["exit_code"], "semgrep_exit": usable[-1]["exit_code"],
+        "tcs_exit": tcs_runs[-1]["exit_code"], "semgrep_exit": semgrep_runs[-1]["exit_code"],
         "core_exit": core_runs[-1]["exit_code"],
         "tcs_crashed": any(crashed(r) for r in tcs_runs),
-        "semgrep_crashed": any(crashed(r) for r in usable),
+        "semgrep_crashed": any(crashed(r) for r in semgrep_runs),
         "core_crashed": crashed(core_runs[0]) or crashed(core_sarif_run),
         "sarif_cli_sites": sarif_a, "sarif_core_sites": sarif_b,
         "sarif_cli_raw": sarif_a_raw, "sarif_core_raw": sarif_b_raw,
@@ -335,7 +425,7 @@ def measure(name: str, cfg: dict, args) -> dict | None:
 
 
 def parity(m: dict) -> dict:
-    """Compare the two TCS entry points on findings, severities, SARIF sites, exit codes."""
+    """Compare the two TimeCodeSecurity entry points on findings, severities, SARIF sites, exit codes."""
     tcs, core = m["tcs"], m["core"]
     a, b = tcs["sites"], core["sites"]
     sa, sb = m["sarif_cli_sites"], m["sarif_core_sites"]
@@ -371,29 +461,29 @@ def report(m: dict) -> None:
             ["Semgrep version", semgrep["semgrep_version"] or "n/a"],
             ["Semgrep ruleset(s)", ", ".join(f"`{r}`" for r in cfg["rulesets"])],
             ["Semgrep command", "`" + " ".join(m["semgrep_cmd"]) + "`"],
-            ["TCS command (primary)", "`" + " ".join(m["tcs_cmd"]) + "`"],
-            ["TCS command (2nd entry)", "`" + " ".join(m["core_cmd"]) + "`"],
+            ["TimeCodeSecurity command (primary)", "`" + " ".join(m["tcs_cmd"]) + "`"],
+            ["TimeCodeSecurity command (2nd entry)", "`" + " ".join(m["core_cmd"]) + "`"],
             ["Timed runs per tool", f"{len(m['tcs_runs'])} (median reported)"],
         ],
     ))
 
     print("\n## Headline comparison\n")
-    speed_leader = "TCS" if m["tcs_seconds"] < m["semgrep_seconds"] else "Semgrep"
+    speed_leader = "TimeCodeSecurity" if m["tcs_seconds"] < m["semgrep_seconds"] else "Semgrep"
     if clean:
         def findings_note(a: int, b: int) -> str:
-            leader = "TCS" if a < b else ("Semgrep" if b < a else "tie")
+            leader = "TimeCodeSecurity" if a < b else ("Semgrep" if b < a else "tie")
             return (f"**{leader}** — fewer on audited code (delta {abs(a - b)})"
                     if leader != "tie" else "tie")
         find_note = findings_note(tcs["total"], semgrep["total"])
         find_note_py = findings_note(tcs["total"], semgrep["total_python_only"])
     else:
-        more_tool = "Semgrep" if semgrep["total"] > tcs["total"] else "TCS"
+        more_tool = "Semgrep" if semgrep["total"] > tcs["total"] else "TimeCodeSecurity"
         find_note = f"**{more_tool}** — more coverage on a vulnerable target"
         find_note_py = find_note
 
     t_density = 100 * tcs["total"] / max(1, tcs["files_scanned"])
     s_density = 100 * semgrep["total_python_only"] / max(1, semgrep["python_files_scanned"])
-    density_leader = "TCS" if (t_density < s_density) == clean else "Semgrep"
+    density_leader = "TimeCodeSecurity" if (t_density < s_density) == clean else "Semgrep"
     density_note = (f"**{density_leader}** — quieter per file on audited code" if clean
                     else f"**{density_leader}** — denser coverage per file")
     rows = [
@@ -401,14 +491,16 @@ def report(m: dict) -> None:
          f"**{speed_leader}** ({fmt(abs(m['semgrep_seconds'] - m['tcs_seconds']))}s)"],
         ["Speed-up", f"{fmt(m['semgrep_seconds'] / m['tcs_seconds'])}x vs Semgrep"
          if m["tcs_seconds"] else "n/a",
-         f"{fmt(m['tcs_seconds'] / m['semgrep_seconds'])}x vs TCS"
+         f"{fmt(m['tcs_seconds'] / m['semgrep_seconds'])}x vs TimeCodeSecurity"
          if m["semgrep_seconds"] else "n/a", f"**{speed_leader}**"],
         ["Files scanned (all types)", str(tcs["files_scanned"]), str(semgrep["files_scanned"]),
          "Semgrep (sees non-Python files too)"],
         ["Python files scanned", str(tcs["files_scanned"]),
-         str(semgrep["python_files_scanned"]), "even (TCS is Python-only by design)"],
+         str(semgrep["python_files_scanned"]), "even (TimeCodeSecurity is Python-only by design)"],
         ["Python files / second", fmt(m["tcs_speed"]), fmt(m["semgrep_speed"]),
-         "**TCS**" if m["tcs_speed"] > m["semgrep_speed"] else "**Semgrep**"],
+         "**TimeCodeSecurity**" if m["tcs_speed"] > m["semgrep_speed"] else "**Semgrep**"],
+        ["Peak RSS (MB, median)", fmt(m["tcs_peak_mb"]), fmt(m["semgrep_peak_mb"]),
+         memory_note(m)],
         ["Total findings", str(tcs["total"]), str(semgrep["total"]), find_note],
         ["Total findings (Python only)", str(tcs["total"]), str(semgrep["total_python_only"]),
          find_note_py],
@@ -416,15 +508,15 @@ def report(m: dict) -> None:
         ["Distinct CWE classes", str(len(tcs["by_cwe"])), str(len(semgrep["by_cwe"])),
          "informational on a clean target"],
         ["Execution exit code", str(m["tcs_exit"]), str(m["semgrep_exit"]),
-         "0=clean, 1=findings (contract shared by both TCS CLIs)"],
+         "0=clean, 1=findings (contract shared by both TimeCodeSecurity CLIs)"],
         ["Unhandled exceptions", "YES" if m["tcs_crashed"] else "0",
          "YES" if m["semgrep_crashed"] else "0",
          "both clean" if not (m["tcs_crashed"] or m["semgrep_crashed"]) else "check logs"],
         ["Tool-reported internal errors",
          str(tcs["syntax_errors"] + tcs["skipped_files"]), str(semgrep["tool_errors"]),
-         "TCS: files skipped/unparseable, not crashes"],
+         "TimeCodeSecurity: files skipped/unparseable, not crashes"],
     ]
-    print(markdown_table(["Metric", "TCS Engine (v4.3.0)", "Semgrep", "Advantage"], rows))
+    print(markdown_table(["Metric", "TimeCodeSecurity Engine (v4.3.0)", "Semgrep", "Advantage"], rows))
 
     par = parity(m)
     print("\n## CLI entry-point parity (`cli.py scan` vs `tcs_cli.py`)\n")
@@ -466,12 +558,12 @@ def report(m: dict) -> None:
                                         + semgrep["python_by_cwe"].get(c, 0)), c))
         for cwe in union:
             t, s = tcs["by_cwe"].get(cwe, 0), semgrep["python_by_cwe"].get(cwe, 0)
-            rows.append([cwe, str(t), str(s), "both" if t and s else ("TCS only" if t else "Semgrep only")])
-        print(markdown_table(["CWE", "TCS", "Semgrep (Python)", "Coverage"], rows))
+            rows.append([cwe, str(t), str(s), "both" if t and s else ("TimeCodeSecurity only" if t else "Semgrep only")])
+        print(markdown_table(["CWE", "TimeCodeSecurity", "Semgrep (Python)", "Coverage"], rows))
         score = core["security_score"] if core["security_score"] is not None \
             else tcs["security_score"]
         risk = core["risk_level"] or tcs["risk_level"]
-        print(f"\n- TCS self-reported health score for the target: {score}/100, risk {risk}")
+        print(f"\n- TimeCodeSecurity self-reported health score for the target: {score}/100, risk {risk}")
 
         pkg = cfg["pkg"]
         t_zones = Counter(zone_of(p, pkg) for p in tcs["paths"])
@@ -481,32 +573,32 @@ def report(m: dict) -> None:
             t, s = t_zones.get(zone, 0), s_zones.get(zone, 0)
             if not t and not s:
                 continue
-            leader = "TCS" if t < s else ("Semgrep" if s < t else "tie")
+            leader = "TimeCodeSecurity" if t < s else ("Semgrep" if s < t else "tie")
             rows.append([zone, str(t), str(s),
                          f"**{leader}** — quieter" if leader != "tie" else "tie"])
         print("\n## Where the findings actually land\n")
         print("Only the `shipped package` row is code a downstream user runs; `tests` and "
               "`scripts/docs` are repo scaffolding, so the headline count overstates the "
               "surface a maintainer must triage.\n")
-        print(markdown_table(["Zone", "TCS", "Semgrep (Python)", "Quieter"], rows))
+        print(markdown_table(["Zone", "TimeCodeSecurity", "Semgrep (Python)", "Quieter"], rows))
         ship = t_zones.get("shipped package", 0)
-        print(f"\n- TCS shipped-package findings: **{ship}** of {tcs['total']} "
+        print(f"\n- TimeCodeSecurity shipped-package findings: **{ship}** of {tcs['total']} "
               f"({100 * ship / max(1, tcs['total']):.1f}%); "
               f"{tcs['total'] - ship} sit in scaffolding")
     else:
         print("\n## Mission CWE coverage\n")
         print("Semgrep is shown twice: all files it scanned (includes Django/Flask `.html` "
-              "templates) and Python-only, which is TCS's scope.\n")
+              "templates) and Python-only, which is TimeCodeSecurity's scope.\n")
         rows = []
         for cwe, label in HEADLINE_CWES.items():
             t = tcs["by_cwe"].get(cwe, 0)
             s_all = semgrep["by_cwe"].get(cwe, 0)
             s_py = semgrep["python_by_cwe"].get(cwe, 0)
             best = max(t, s_py)
-            winner = "TCS" if t > s_py else ("Semgrep" if s_py > t else "tie")
+            winner = "TimeCodeSecurity" if t > s_py else ("Semgrep" if s_py > t else "tie")
             rows.append([f"{label} ({cwe})", str(t), str(s_all), str(s_py),
                          f"**{winner}**" if winner != "tie" else f"tie ({best})"])
-        print(markdown_table(["Weakness family", "TCS", "Semgrep (all files)",
+        print(markdown_table(["Weakness family", "TimeCodeSecurity", "Semgrep (all files)",
                               "Semgrep (Python only)", "Leader (Python scope)"], rows))
 
         print("\n## Full CWE-by-CWE ledger\n")
@@ -516,21 +608,26 @@ def report(m: dict) -> None:
         for cwe in union:
             t, s = tcs["by_cwe"].get(cwe, 0), semgrep["by_cwe"].get(cwe, 0)
             rows.append([cwe, str(t), str(s),
-                         "both" if t and s else ("TCS only" if t else "Semgrep only")])
-        print(markdown_table(["CWE", "TCS", "Semgrep", "Coverage"], rows))
+                         "both" if t and s else ("TimeCodeSecurity only" if t else "Semgrep only")])
+        print(markdown_table(["CWE", "TimeCodeSecurity", "Semgrep", "Coverage"], rows))
 
         common = sorted(set(tcs["by_cwe"]) & set(semgrep["by_cwe"]))
         tcs_only = sorted(set(tcs["by_cwe"]) - set(semgrep["by_cwe"]))
         sem_only = sorted(set(semgrep["by_cwe"]) - set(tcs["by_cwe"]))
         print("\n## Overlap\n")
         print(f"- CWE classes found by both: **{len(common)}** → {', '.join(common) or 'none'}")
-        print(f"- TCS-only CWE classes: **{len(tcs_only)}** → {', '.join(tcs_only) or 'none'}")
+        print(f"- TimeCodeSecurity-only CWE classes: **{len(tcs_only)}** → {', '.join(tcs_only) or 'none'}")
         print(f"- Semgrep-only CWE classes: **{len(sem_only)}** → {', '.join(sem_only) or 'none'}")
 
     print("\n## Raw measurement series (seconds)\n")
     print(f"- Semgrep:        {', '.join(fmt(r['seconds']) for r in m['semgrep_runs'])}")
-    print(f"- TCS (cli.py):   {', '.join(fmt(r['seconds']) for r in m['tcs_runs'])}")
-    print(f"- TCS (tcs_cli):  {fmt(m['core_seconds'])}")
+    print(f"- TimeCodeSecurity (cli.py):   {', '.join(fmt(r['seconds']) for r in m['tcs_runs'])}")
+    print(f"- TimeCodeSecurity (tcs_cli):  {fmt(m['core_seconds'])}")
+
+    print("\n## Raw memory series (peak RSS of the scanner process tree, MB)\n")
+    print(f"- Semgrep:        {', '.join(fmt(r.get('peak_rss_mb')) for r in m['semgrep_runs'])}")
+    print(f"- TimeCodeSecurity (cli.py):   {', '.join(fmt(r.get('peak_rss_mb')) for r in m['tcs_runs'])}")
+    print(f"- TimeCodeSecurity (tcs_cli):  {fmt(m.get('core_peak_mb'))}")
 
     print("\n## Semgrep top rules\n")
     print(markdown_table(["Rule", "Hits"], [[rule, str(n)] for rule, n in semgrep["top_rules"]]))
@@ -541,7 +638,7 @@ def report(m: dict) -> None:
                         if tcs["by_severity"].get(k)) or "none"
     sem_sev = ", ".join(f"{k} {v}" for k, v in semgrep["severities"].most_common()) or "none"
     print(markdown_table(["Tool", "Severity distribution"],
-                         [["TCS Engine (v4.3.0)", tcs_sev], ["Semgrep", sem_sev]]))
+                         [["TimeCodeSecurity Engine (v4.3.0)", tcs_sev], ["Semgrep", sem_sev]]))
 
 
 def summary(results: list[dict]) -> None:
@@ -556,12 +653,13 @@ def summary(results: list[dict]) -> None:
             f"{fmt(m['tcs_speed'])}", f"{fmt(m['semgrep_speed'])}",
             f"{m['tcs_exit']}/{m['core_exit']}/{m['semgrep_exit']}",
             "0" if not (m["tcs_crashed"] or m["core_crashed"] or m["semgrep_crashed"]) else "CRASH",
+            f"{fmt(m.get('tcs_peak_mb'))}", f"{fmt(m.get('semgrep_peak_mb'))}",
             "IDENTICAL" if par["json_identical"] and par["sarif_identical"] else "DIFFERS",
         ])
     print(markdown_table(
-        ["Target", "Py files", "TCS findings", "Semgrep findings (Py)",
-         "TCS time", "Semgrep time", "TCS files/s", "Semgrep files/s",
-         "Exit TCS/TCS-core/SG", "Crashes", "CLI parity"],
+        ["Target", "Py files", "TimeCodeSecurity findings", "Semgrep findings (Py)",
+         "TimeCodeSecurity time", "Semgrep time", "TimeCodeSecurity files/s", "Semgrep files/s",
+         "Exit TimeCodeSecurity/TimeCodeSecurity-core/SG", "Crashes", "TimeCodeSecurity peak MB", "Semgrep peak MB", "CLI parity"],
         rows))
 
     print("\n## Per-target winner\n")
@@ -569,13 +667,13 @@ def summary(results: list[dict]) -> None:
     for m in results:
         t, s = m["tcs"]["total"], m["semgrep"]["total_python_only"]
         if m["cfg"]["clean"]:
-            find = "TCS" if t < s else ("Semgrep" if s < t else "tie")
+            find = "TimeCodeSecurity" if t < s else ("Semgrep" if s < t else "tie")
             why = "fewer findings on audited code"
         else:
-            find = "TCS" if t > s else ("Semgrep" if s > t else "tie")
+            find = "TimeCodeSecurity" if t > s else ("Semgrep" if s > t else "tie")
             why = "more coverage on vulnerable code"
         ratio = (m["semgrep_seconds"] / m["tcs_seconds"]) if m["tcs_seconds"] else 0.0
-        speed = "TCS" if ratio > 1 else "Semgrep"
+        speed = "TimeCodeSecurity" if ratio > 1 else "Semgrep"
         rows.append([m["name"], f"**{find}** ({why})",
                      f"**{speed}** ({fmt(max(ratio, 1 / ratio) if ratio else 0)}x faster)",
                      "yes" if m["tcs_exit"] in (0, 1) and m["semgrep_exit"] in (0, 1)

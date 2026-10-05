@@ -13,7 +13,7 @@ inputs:
   sarif-file:
     description: "Output file path for SARIF report"
     required: false
-    default: "tcs-results.sarif"
+    default: "timecodesecurity-results.sarif"
 
 runs:
   using: "composite"
@@ -23,21 +23,43 @@ runs:
       with:
         python-version: "3.11"
 
-    - name: Run TCS scan
+    - name: Run TimeCodeSecurity scan
       shell: bash
       env:
-        TCS_SCAN_PATH: ${{ inputs.path }}
-        TCS_FAIL_ON_CRITICAL: ${{ inputs.fail-on-critical }}
-        TCS_SARIF_FILE: ${{ inputs.sarif-file }}
+        TIMECODESECURITY_SCAN_PATH: ${{ inputs.path }}
+        TIMECODESECURITY_FAIL_ON_CRITICAL: ${{ inputs.fail-on-critical }}
+        TIMECODESECURITY_SARIF_FILE: ${{ inputs.sarif-file }}
       run: |
-        args=(scan "$TCS_SCAN_PATH" --sarif "$TCS_SARIF_FILE")
-        if [[ "$TCS_FAIL_ON_CRITICAL" == "true" ]]; then
+        args=(scan "$TIMECODESECURITY_SCAN_PATH" --sarif "$TIMECODESECURITY_SARIF_FILE")
+        if [[ "$TIMECODESECURITY_FAIL_ON_CRITICAL" == "true" ]]; then
           args+=(--fail-on-critical)
         fi
-        python cli.py "${args[@]}"
+        # `|| rc=$?` because Actions runs this with bash -e: a bare non-zero exit would
+        # abort the step before the contract could be interpreted.
+        rc=0
+        python cli.py "${args[@]}" || rc=$?
+        # The CLI follows Semgrep's exit contract (0 clean, 1 findings, 2 internal error).
+        # Without --fail-on-critical the caller only wants the SARIF, so "findings exist"
+        # must not read as a build failure; an internal error always does.
+        if [[ "$TIMECODESECURITY_FAIL_ON_CRITICAL" != "true" && "$rc" == "1" ]]; then
+          echo "::notice::TimeCodeSecurity reported findings without --fail-on-critical; continuing."
+          rc=0
+        fi
+        exit "$rc"
 
     - name: Upload SARIF report
       if: always()
+      # GitHub rejects an oversized or malformed SARIF at ingest; that must not fail the
+      # consumer's build when they only asked for a scan. upload-artifact below keeps the file.
+      continue-on-error: true
       uses: github/codeql-action/upload-sarif@v4
       with:
         sarif_file: ${{ inputs.sarif-file }}
+
+    - name: Store SARIF artifact
+      if: always()
+      uses: actions/upload-artifact@v4
+      with:
+        name: timecodesecurity-sarif
+        path: ${{ inputs.sarif-file }}
+        if-no-files-found: warn

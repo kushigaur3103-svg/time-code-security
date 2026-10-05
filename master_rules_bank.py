@@ -1,5 +1,5 @@
 """
-Master Security Rules & Signatures Bank for TimeCodeSecurity (TCS).
+Master Security Rules & Signatures Bank for TimeCodeSecurity.
 Consolidated Registry:
 - Full Gitleaks Ruleset (120+ Cloud, AI, VCS, Finance, & SaaS Signatures)
 - Gitleaks Official Allowlists & Stopwords (False-Positive Suppression)

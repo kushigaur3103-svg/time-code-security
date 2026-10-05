@@ -1,5 +1,5 @@
 """
-TimeCodeSecurity (TCS) Application-Level Event Publisher.
+TimeCodeSecurity Application-Level Event Publisher.
 
 Translates deterministic scanner output (ScanResult) into typed,
 immutable SecurityDomainEvent instances and publishes them to the event bus.

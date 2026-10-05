@@ -1,5 +1,5 @@
 """
-TimeCodeSecurity (TCS) Notification Repository Interface.
+TimeCodeSecurity Notification Repository Interface.
 
 Defines the abstract multi-tenant contract for notification persistence,
 querying, deduplication, and read-state management.

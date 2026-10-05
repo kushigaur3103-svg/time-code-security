@@ -23,4 +23,4 @@ jobs:
         with:
           path: '.'
           fail-on-critical: 'false'
-          sarif-file: 'tcs-results.sarif'
+          sarif-file: 'timecodesecurity-results.sarif'

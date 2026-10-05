@@ -1,4 +1,4 @@
-name: "TCS SARIF Scan (CLI)"
+name: "TimeCodeSecurity SARIF Scan"
 
 on:
   push:
@@ -13,7 +13,7 @@ permissions:
 
 jobs:
   tcs-sarif-scan:
-    name: "TCS CLI SARIF Scan"
+    name: "TimeCodeSecurity CLI Scan"
     runs-on: ubuntu-latest
     steps:
       - name: Checkout Code
@@ -27,20 +27,46 @@ jobs:
       - name: Install dependencies
         run: |
           python -m pip install --upgrade pip
-          # The TCS engine core is stdlib-only; requirements.txt is best-effort
+          # The TimeCodeSecurity engine core is stdlib-only; requirements.txt is best-effort
           # so a heavy or unavailable dependency never blocks the scan.
           if [ -f requirements.txt ]; then
             pip install -r requirements.txt || echo "::warning::requirements.txt install failed; continuing with stdlib-only engine"
           fi
 
-      - name: Run TCS CLI scan (SARIF)
-        continue-on-error: true
+      - name: Run TimeCodeSecurity CLI scan (SARIF)
+        id: scan
         run: |
-          python tcs_cli.py . --format sarif -o tcs-results.sarif
+          # Exit contract: 0 clean, 1 findings, 2 internal error. Actions runs this with
+          # bash -e, so capture the code instead of letting a non-zero exit abort the step.
+          rc=0
+          python tcs_cli.py . --format sarif -o timecodesecurity-results.sarif || rc=$?
+          echo "scan_exit=$rc" >> "$GITHUB_OUTPUT"
+          if [ "$rc" -gt 1 ]; then
+            echo "::warning::TimeCodeSecurity exited $rc (internal error); the fallback artifact is uploaded instead"
+          fi
+
+      - name: Report SARIF size
+        if: always()
+        run: |
+          if [ -f timecodesecurity-results.sarif ]; then
+            bytes=$(wc -c < timecodesecurity-results.sarif)
+            echo "timecodesecurity-results.sarif: $bytes bytes ($(( bytes / 1024 / 1024 )) MiB of GitHub's 10 MiB ceiling)"
+          else
+            echo "::error::timecodesecurity-results.sarif was not produced"
+          fi
+
+      - name: Store SARIF artifact
+        uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: timecodesecurity-sarif
+          path: timecodesecurity-results.sarif
+          if-no-files-found: warn
 
       - name: Upload SARIF to GitHub Code Scanning
         uses: github/codeql-action/upload-sarif@v4
         if: always()
+        continue-on-error: true
         with:
-          sarif_file: tcs-results.sarif
+          sarif_file: timecodesecurity-results.sarif
           category: timecodesecurity

@@ -1,12 +1,12 @@
 """
-js_scanner.py – Tree-sitter–based JS/TS/React Security Scanner for TCS.
+js_scanner.py – Tree-sitter–based JS/TS/React Security Scanner for TimeCodeSecurity.
 
 Supports: .js, .jsx, .ts, .tsx, .mjs, .cjs
 Detects:
   - CWE-79:  dangerouslySetInnerHTML, innerHTML, outerHTML assignments
   - CWE-95:  eval(), Function(), new Function(), setTimeout (string), setInterval (string)
 
-Returns standardized TCS finding dictionaries fully compatible with:
+Returns standardized TimeCodeSecurity finding dictionaries fully compatible with:
   - SARIF adapter (sarif_adapter.py)
   - CLI table formatter (tcs_cli.py format_table)
 
@@ -48,7 +48,7 @@ try:
     _TS_AVAILABLE = True
 except Exception as _e:
     print(
-        f"[TCS-JS] WARNING: tree-sitter or JS/TS grammar not available ({_e}). "
+        f"[TimeCodeSecurity-JS] WARNING: tree-sitter or JS/TS grammar not available ({_e}). "
         "JS/TS scanning is disabled. Run: pip install tree-sitter tree-sitter-javascript tree-sitter-typescript",
         file=sys.stderr,
     )
@@ -218,7 +218,7 @@ class JsTsScanner:
 
         Returns
         -------
-        List of standardized TCS finding dicts.
+        List of standardized TimeCodeSecurity finding dicts.
         """
         if not self.available:
             return []
@@ -241,7 +241,7 @@ class JsTsScanner:
 
             file_findings = self._scan_file(file_path, rel_path, counter)
             for ff in file_findings:
-                ff["id"] = f"TCS-JS-{counter:03d}"
+                ff["id"] = f"TimeCodeSecurity-JS-{counter:03d}"
                 counter += 1
             findings.extend(file_findings)
 
@@ -273,7 +273,7 @@ class JsTsScanner:
             findings.extend(self._extract_jsx_xss(root, source_bytes, filename))
             findings.extend(self._extract_innerhtml(root, source_bytes, filename))
         for i, ff in enumerate(findings):
-            ff["id"] = f"TCS-JS-{start_counter + i:03d}"
+            ff["id"] = f"TimeCodeSecurity-JS-{start_counter + i:03d}"
         return findings
 
     def scan_files(
@@ -300,7 +300,7 @@ class JsTsScanner:
 
             file_findings = self._scan_file(file_path, rel_path, counter)
             for ff in file_findings:
-                ff["id"] = f"TCS-JS-{counter:03d}"
+                ff["id"] = f"TimeCodeSecurity-JS-{counter:03d}"
                 counter += 1
             findings.extend(file_findings)
 
@@ -656,7 +656,7 @@ class JsTsScanner:
         sink_node,
         args_node,
     ) -> Dict[str, Any]:
-        """Build a standardized TCS finding dict."""
+        """Build a standardized TimeCodeSecurity finding dict."""
         # Build snippet: prefer argument text; fall back to full node line
         if args_node is not None:
             raw_snippet = _snippet(source_bytes, args_node)
@@ -697,7 +697,7 @@ class JsTsScanner:
 
         return {
             # NOTE: id is assigned by the caller after counter is known
-            "id": "TCS-JS-000",
+            "id": "TimeCodeSecurity-JS-000",
             "category": category,
             "cwe": cwe,
             "severity": severity,
@@ -759,3 +759,97 @@ def run_js_ts_scan(
 def js_ts_available() -> bool:
     """Returns True if tree-sitter JS/TS scanning is available."""
     return _TS_AVAILABLE
+
+
+# ---------------------------------------------------------------------------
+# Crash-isolated runner
+# ---------------------------------------------------------------------------
+# py-tree-sitter can take a native access violation on some grammars/files. That
+# is not a Python exception: it kills the interpreter process, so the whole scan
+# dies and no artefact is written. Running the grammar in a child process turns
+# an unrecoverable crash into a recoverable per-file loss.
+_JS_WORKER_TIMEOUT_SECONDS = 900
+
+
+def _scan_batch_in_child(files: List[str], base_dir: str) -> Optional[List[Dict[str, Any]]]:
+    """Scan one batch of JS/TS files in a child process; None when the child died."""
+    import json
+    import subprocess
+
+    try:
+        proc = subprocess.run(
+            [sys.executable, os.path.abspath(__file__), "--tcs-js-worker"],
+            input=json.dumps({"files": files, "base_dir": base_dir}),
+            cwd=os.getcwd(), capture_output=True, text=True,
+            encoding="utf-8", errors="replace",
+            timeout=_JS_WORKER_TIMEOUT_SECONDS,
+        )
+    except (OSError, subprocess.TimeoutExpired):
+        return None
+    if proc.returncode != 0:
+        print(f"[TimeCodeSecurity-JS] worker exited {proc.returncode}: {(proc.stderr or '')[-300:]}",
+              file=sys.stderr)
+        return None
+    try:
+        payload = json.loads(proc.stdout)
+    except ValueError:
+        return None
+    return payload if isinstance(payload, list) else None
+
+
+def _scan_files_isolated(files: List[Path], base_dir: str,
+                         dropped: List[str]) -> List[Dict[str, Any]]:
+    """Bisect around a crashing file so only the files that break the grammar are lost."""
+    if not files:
+        return []
+    batch = _scan_batch_in_child([str(f) for f in files], base_dir)
+    if batch is not None:
+        return batch
+    if len(files) == 1:
+        dropped.append(str(files[0]))
+        return []
+    mid = len(files) // 2
+    return (_scan_files_isolated(files[:mid], base_dir, dropped)
+            + _scan_files_isolated(files[mid:], base_dir, dropped))
+
+
+def run_js_ts_scan_isolated(
+    target_path: Path,
+    base_dir: Optional[Path] = None,
+    skipped_files: Optional[List[str]] = None,
+) -> List[Dict[str, Any]]:
+    """JS/TS scan that cannot take the caller down with a native crash."""
+    if not _TS_AVAILABLE:
+        return []
+    base = str(Path(base_dir) if base_dir else Path.cwd())
+    files = JsTsScanner()._discover_js_files(Path(target_path), skipped_files)
+    if not files:
+        return []
+    dropped: List[str] = []
+    findings = _scan_files_isolated(files, base, dropped)
+    for path in dropped:
+        print(f"[TimeCodeSecurity-JS] WARNING: tree-sitter crashed on {path}; file skipped.",
+              file=sys.stderr)
+    for index, finding in enumerate(findings, start=1):
+        finding["id"] = f"TimeCodeSecurity-JS-{index:03d}"
+    return findings
+
+
+def _worker_main() -> int:
+    import json
+
+    request = json.loads(sys.stdin.read() or "{}")
+    findings = JsTsScanner().scan_files(
+        [Path(f) for f in request.get("files", [])],
+        base_dir=Path(request.get("base_dir") or os.getcwd()),
+    )
+    sys.stdout.write(json.dumps(findings))
+    return 0
+
+
+if __name__ == "__main__":
+    if "--tcs-js-worker" in sys.argv:
+        sys.exit(_worker_main())
+    print("js_scanner.py is a library; use tcs_cli.py --include-js to scan JS/TS.",
+          file=sys.stderr)
+    sys.exit(2)

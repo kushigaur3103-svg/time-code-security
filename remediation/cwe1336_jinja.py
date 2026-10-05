@@ -1,5 +1,5 @@
 """
-TimeCodeSecurity (TCS) - Vector D CWE-1336 Jinja2 Template Injection Transformer.
+TimeCodeSecurity - Vector D CWE-1336 Jinja2 Template Injection Transformer.
 Implements deterministic AST-guided remediation for missing autoescape in Jinja2 environments.
 """
 

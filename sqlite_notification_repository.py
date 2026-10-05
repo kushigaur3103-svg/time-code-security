@@ -1,5 +1,5 @@
 """
-TimeCodeSecurity (TCS) SQLite/SQLAlchemy Notification Repository.
+TimeCodeSecurity SQLite/SQLAlchemy Notification Repository.
 
 Concrete implementation of NotificationRepository using SQLAlchemy and SQLite.
 Enforces multi-tenant isolation, SQLite pragmas (WAL mode, busy timeout, foreign keys),

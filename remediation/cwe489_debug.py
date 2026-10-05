@@ -1,5 +1,5 @@
 """
-TimeCodeSecurity (TCS) - Vector D CWE-489 Debug Flag Transformer.
+TimeCodeSecurity - Vector D CWE-489 Debug Flag Transformer.
 Implements deterministic AST-guided remediation for debug mode in production.
 """
 

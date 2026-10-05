@@ -1,5 +1,5 @@
 """
-TimeCodeSecurity (TCS) - Vector D CWE-1188 Insecure Network Binding Transformer.
+TimeCodeSecurity - Vector D CWE-1188 Insecure Network Binding Transformer.
 Implements deterministic AST-guided remediation changing host="0.0.0.0" to host="127.0.0.1".
 """
 

@@ -1,6 +1,6 @@
 #!/usr/bin/env python3
 """
-TimeCodeSecurity (TCS) Standalone CLI Scanner.
+TimeCodeSecurity Standalone CLI Scanner.
 Recursively analyzes Python source code for security vulnerabilities,
 applies deterministic inline suppressions, and outputs standard JSON or OASIS SARIF v2.1.0.
 """
@@ -24,6 +24,7 @@ from sarif_adapter import (
     TOOL_VERSION,
     to_sarif,
 )
+from sarif_exporter import atomic_write_text
 from rule_engine import GLOBAL_RULE_REGISTRY, get_active_cwe_count
 from benchmark.manifest import ALL_44_CWES
 from manifest_parser import parse_manifest, DependencyRecord
@@ -43,7 +44,12 @@ from staged_scanner import (
 from sca_reachability.engine import analyze_dependency_reachability
 
 try:
-    from js_scanner import JsTsScanner, JS_TS_EXTENSIONS, js_ts_available
+    from js_scanner import (
+        JsTsScanner,
+        JS_TS_EXTENSIONS,
+        js_ts_available,
+        run_js_ts_scan_isolated,
+    )
     _JS_TS_SCANNER_AVAILABLE = True
 except ImportError:
     _JS_TS_SCANNER_AVAILABLE = False
@@ -51,6 +57,9 @@ except ImportError:
 
     def js_ts_available() -> bool:
         return False
+
+    def run_js_ts_scan_isolated(target, base_dir=None, skipped_files=None):
+        return []
 
 
 try:
@@ -120,10 +129,12 @@ def check_file_resilience(file_path: Path, display_path: str) -> Optional[str]:
     return None
 
 
-# Recorded as soon as the CLI knows its SARIF destination, so that a crash anywhere in
+# Recorded as soon as the CLI knows its artifact destination, so that a crash anywhere in
 # the scan still leaves Code Scanning a valid artifact to upload instead of failing
 # with "Path does not exist".
-SARIF_OUTPUT_TARGET: Dict[str, str] = {}
+OUTPUT_TARGET: Dict[str, str] = {}
+# Kept as an alias: the SARIF destination is the one CI gates on.
+SARIF_OUTPUT_TARGET = OUTPUT_TARGET
 
 
 def _minimal_sarif_document() -> Dict[str, Any]:
@@ -147,20 +158,46 @@ def _minimal_sarif_document() -> Dict[str, Any]:
     }
 
 
-def ensure_sarif_artifact(reason: str) -> None:
-    """Write the fallback SARIF document if the real one never made it to disk."""
-    target = SARIF_OUTPUT_TARGET.get("path")
+def ensure_output_artifact(reason: str) -> None:
+    """Write the fallback document for the requested format if the real one never landed.
+
+    A missing or 0-byte artifact is worse than an empty one: the SARIF uploader fails with
+    "Path does not exist" and JSON consumers die on JSONDecodeError, hiding the real error.
+    """
+    target = OUTPUT_TARGET.get("path")
     if not target:
         return
-    out_path = Path(os.path.expanduser(target)).resolve()
-    if out_path.exists():
+    out_path = Path(os.path.expanduser(str(target))).resolve()
+    if out_path.is_file() and out_path.stat().st_size > 0:
         return
+    if OUTPUT_TARGET.get("format") == "json":
+        document: Dict[str, Any] = {
+            "status": "incomplete",
+            "error": reason,
+            "findings": [],
+            "summary": {
+                "total_files": 0,
+                "lines_scanned": 0,
+                "total_findings": 0,
+                "security_score": None,
+                "risk_level": "UNKNOWN",
+            },
+            "syntax_errors": [],
+            "skipped_files": [],
+        }
+        label = "JSON"
+    else:
+        document = _minimal_sarif_document()
+        label = "SARIF"
     try:
-        out_path.parent.mkdir(parents=True, exist_ok=True)
-        out_path.write_text(json.dumps(_minimal_sarif_document(), indent=2) + "\n", encoding="utf-8")
-        print(f"[WARN] Wrote fallback SARIF artifact to {target} ({reason})", file=sys.stderr)
+        atomic_write_text(out_path, json.dumps(document, indent=2) + "\n")
+        print(f"[WARN] Wrote fallback {label} artifact to {target} ({reason})", file=sys.stderr)
     except OSError as exc:
-        print(f"[ERROR] Could not write fallback SARIF artifact '{target}': {exc}", file=sys.stderr)
+        print(f"[ERROR] Could not write fallback {label} artifact '{target}': {exc}", file=sys.stderr)
+
+
+def ensure_sarif_artifact(reason: str) -> None:
+    ensure_output_artifact(reason)
 
 
 def format_confidence(conf_val: Any = None, conf_label: Optional[str] = None) -> str:
@@ -432,7 +469,7 @@ def execute_tcs_scan(
         remediation = extract_remediation_advice(cwe, sink.symbol)
 
         findings.append({
-            "id": f"TCS-VULN-{vuln_idx:03d}",
+            "id": f"TimeCodeSecurity-VULN-{vuln_idx:03d}",
             "category": category,
             "cwe": cwe,
             "severity": severity,
@@ -467,7 +504,7 @@ def execute_tcs_scan(
             passed_sec = filter_findings(raw_sec, file_path=fpath, config=filter_cfg)
             for sf in passed_sec:
                 sec_dict = {
-                    "id": f"TCS-SEC-{vuln_idx:03d}",
+                    "id": f"TimeCodeSecurity-SEC-{vuln_idx:03d}",
                     "category": "HARDCODED_SECRET",
                     "cwe": "CWE-798",
                     "severity": "HIGH",
@@ -522,7 +559,7 @@ def execute_tcs_scan(
 
     if active_vulnerabilities == 0:
         risk_level = "CLEAN"
-        risk_message = f"NO VULNERABILITIES DETECTED within current TCS analysis scope ({get_active_cwe_count()} supported CWE classes)."
+        risk_message = f"NO VULNERABILITIES DETECTED within current TimeCodeSecurity analysis scope ({get_active_cwe_count()} supported CWE classes)."
     elif critical_count > 0:
         risk_level = "CRITICAL"
         risk_message = "CRITICAL RISK: Arbitrary code execution or high-impact injection detected."
@@ -890,7 +927,7 @@ def format_table(
     if not sca_enabled and not secrets_enabled:
         lines = [
             "=" * 88,
-            "TimeCodeSecurity (TCS) AST Security Scan Report",
+            "TimeCodeSecurity AST Security Scan Report",
             "=" * 88,
             f"Scanned Files: {total_files} | Total Lines: {lines_scanned} | Security Score: {score}/100 ({risk_level})",
             f"Total Findings Displayed: {len(findings)}",
@@ -985,7 +1022,7 @@ def format_table(
 
     lines = [
         sep,
-        f"TimeCodeSecurity (TCS) Security Scan Report ({title_str})",
+        f"TimeCodeSecurity Security Scan Report ({title_str})",
         sep,
         f"Scanned Files: {total_files} | Total Lines: {lines_scanned} | Security Score: {score}/100 ({risk_level})",
         count_str,
@@ -1297,7 +1334,7 @@ def discover_remediation_findings(
 
         if rec.patch_status == PatchStatus.SUCCESS and rec.verification_passed and rec.patched_source:
             admitted_finding = dict(cf)
-            admitted_finding["id"] = f"TCS-VULN-{vuln_idx:03d}"
+            admitted_finding["id"] = f"TimeCodeSecurity-VULN-{vuln_idx:03d}"
             admitted_finding["discovery_mode"] = "REMEDIATION_DISCOVERY"
             admitted_finding["confidence"] = cf.get("confidence", 0.50)
             admitted_finding["confidence_label"] = conf_label
@@ -1309,7 +1346,7 @@ def discover_remediation_findings(
 
 def main(argv: Optional[List[str]] = None):
     parser = argparse.ArgumentParser(
-        description="TimeCodeSecurity (TCS) SAST & SCA Scanner CLI",
+        description="TimeCodeSecurity SAST & SCA Scanner CLI",
         prog="tcs"
     )
     parser.add_argument(
@@ -1393,6 +1430,14 @@ def main(argv: Optional[List[str]] = None):
         help="Path to Step Summary Markdown output file (defaults to $GITHUB_STEP_SUMMARY)"
     )
     parser.add_argument(
+        "--include-js",
+        dest="include_js",
+        action="store_true",
+        default=False,
+        help="Also run the tree-sitter JS/TS scanner (CWE-79/CWE-95 in .js/.jsx/.ts/.tsx). "
+             "Off by default so this entry point stays identical to cli.py scan"
+    )
+    parser.add_argument(
         "--strict",
         action="store_true",
         help="Treat syntax errors as fatal (exit code 2)"
@@ -1433,8 +1478,9 @@ def main(argv: Optional[List[str]] = None):
     args.fix = fix_active
     args.remediate = fix_active
 
-    if getattr(args, "format", "").lower() == "sarif" and args.output:
-        SARIF_OUTPUT_TARGET["path"] = str(args.output)
+    if args.output:
+        OUTPUT_TARGET["path"] = str(args.output)
+        OUTPUT_TARGET["format"] = getattr(args, "format", "").lower()
 
     if args.dry_run and args.write:
         print("[ERROR] Cannot specify both --dry-run and --write.", file=sys.stderr)
@@ -1523,7 +1569,7 @@ def main(argv: Optional[List[str]] = None):
                     "security_score": 100,
                     "score_label": "Security Health Score",
                     "risk_level": "CLEAN",
-                    "risk_message": f"NO VULNERABILITIES DETECTED within current TCS analysis scope ({get_active_cwe_count()} supported CWE classes)."
+                    "risk_message": f"NO VULNERABILITIES DETECTED within current TimeCodeSecurity analysis scope ({get_active_cwe_count()} supported CWE classes)."
                 },
                 "findings": [],
                 "skipped_files": []
@@ -1550,7 +1596,7 @@ def main(argv: Optional[List[str]] = None):
                         "security_score": 100,
                         "score_label": "Security Health Score",
                         "risk_level": "CLEAN",
-                        "risk_message": f"NO VULNERABILITIES DETECTED within current TCS analysis scope ({get_active_cwe_count()} supported CWE classes)."
+                        "risk_message": f"NO VULNERABILITIES DETECTED within current TimeCodeSecurity analysis scope ({get_active_cwe_count()} supported CWE classes)."
                     },
                     "findings": [],
                     "skipped_files": []
@@ -1612,17 +1658,17 @@ def main(argv: Optional[List[str]] = None):
         # ---------------------------------------------------------
         # JS/TS Tree-sitter Security Scanner (Vector E)
         # ---------------------------------------------------------
-        if _JS_TS_SCANNER_AVAILABLE and js_ts_available():
+        if _JS_TS_SCANNER_AVAILABLE and js_ts_available() and getattr(args, "include_js", False):
             try:
                 _js_scanner_inst = JsTsScanner()
-                _js_findings = _js_scanner_inst.scan_directory(
+                _js_findings = run_js_ts_scan_isolated(
                     target, base_dir=base_dir, skipped_files=all_skipped_files
                 )
                 if _js_findings:
                     # Re-number IDs to continue from where Python scan left off
                     _py_count = len(results.get("findings", []))
                     for _i, _jf in enumerate(_js_findings):
-                        _jf["id"] = f"TCS-JS-{_py_count + _i + 1:03d}"
+                        _jf["id"] = f"TimeCodeSecurity-JS-{_py_count + _i + 1:03d}"
                     results["findings"] = results.get("findings", []) + _js_findings
                     # Recompute summary metrics to include JS findings
                     _js_lines = sum(
@@ -1639,11 +1685,11 @@ def main(argv: Optional[List[str]] = None):
                         lines_scanned=results["summary"].get("lines_scanned", 0) + _js_lines,
                     )
                     print(
-                        f"[TCS-JS] Tree-sitter JS/TS scan: {len(_js_findings)} finding(s) in {target}",
+                        f"[TimeCodeSecurity-JS] Tree-sitter JS/TS scan: {len(_js_findings)} finding(s) in {target}",
                         file=sys.stderr,
                     )
             except Exception as _js_err:
-                print(f"[TCS-JS] WARNING: JS/TS scan failed: {_js_err}", file=sys.stderr)
+                print(f"[TimeCodeSecurity-JS] WARNING: JS/TS scan failed: {_js_err}", file=sys.stderr)
 
     results["skipped_files"] = all_skipped_files
 
@@ -1909,9 +1955,8 @@ def main(argv: Optional[List[str]] = None):
 
     if args.output:
         out_path = Path(os.path.expanduser(str(args.output))).resolve()
-        out_path.parent.mkdir(parents=True, exist_ok=True)
-        out_path.write_text(output_text, encoding="utf-8")
-        print(f"[TCS CLI] Results written to: {args.output} (Format: {args.format})", file=sys.stderr)
+        atomic_write_text(out_path, output_text)
+        print(f"[TimeCodeSecurity CLI] Results written to: {args.output} (Format: {args.format})", file=sys.stderr)
     else:
         print(output_text)
 
@@ -1945,7 +1990,7 @@ def main(argv: Optional[List[str]] = None):
 
     if not args.sca and not args.secrets:
         print(
-            f"[TCS CLI] Scanned {len(files)} files | Findings: {total} (Active: {active}, Suppressed: {suppressed}) | Score: {score}/100 ({risk})",
+            f"[TimeCodeSecurity CLI] Scanned {len(files)} files | Findings: {total} (Active: {active}, Suppressed: {suppressed}) | Score: {score}/100 ({risk})",
             file=sys.stderr
         )
     elif args.sca and not args.secrets:
@@ -1954,7 +1999,7 @@ def main(argv: Optional[List[str]] = None):
         sca_potential = sum(1 for f in sca_findings if (getattr(f, "status", None) or f.get("status")) == "POTENTIAL")
         sca_unresolved = sum(1 for f in sca_findings if (getattr(f, "status", None) or f.get("status")) == "UNRESOLVED")
         print(
-            f"[TCS CLI] Scanned {len(files)} files, {len(manifest_files)} manifests | SAST: {total} (Active: {active}, Suppressed: {suppressed}) | SCA: {sca_count} (Confirmed: {sca_confirmed}, Potential: {sca_potential}, Unresolved: {sca_unresolved}) | Score: {score}/100 ({risk})",
+            f"[TimeCodeSecurity CLI] Scanned {len(files)} files, {len(manifest_files)} manifests | SAST: {total} (Active: {active}, Suppressed: {suppressed}) | SCA: {sca_count} (Confirmed: {sca_confirmed}, Potential: {sca_potential}, Unresolved: {sca_unresolved}) | Score: {score}/100 ({risk})",
             file=sys.stderr
         )
     else:
@@ -1975,17 +2020,17 @@ def main(argv: Optional[List[str]] = None):
             findings_items.append(f"Secrets: {len(secret_findings)} (CWE-798)")
 
         print(
-            f"[TCS CLI] Scanned {', '.join(status_items)} | {' | '.join(findings_items)} | Score: {score}/100 ({risk})",
+            f"[TimeCodeSecurity CLI] Scanned {', '.join(status_items)} | {' | '.join(findings_items)} | Score: {score}/100 ({risk})",
             file=sys.stderr
         )
 
     if args.fix:
         if args.write:
             success_rems = sum(1 for r in remediation_records if r.patch_status == PatchStatus.SUCCESS and r.original_file in written_files)
-            print(f"[TCS REMEDIATION] Wrote {len(written_files)} verified file(s) ({success_rems} patch(es) applied).", file=sys.stderr)
+            print(f"[TimeCodeSecurity REMEDIATION] Wrote {len(written_files)} verified file(s) ({success_rems} patch(es) applied).", file=sys.stderr)
         else:
             success_rems = sum(1 for r in remediation_records if r.patch_status == PatchStatus.SUCCESS)
-            print(f"[TCS REMEDIATION] Dry-run preview: {success_rems} verified patch(es) available. Run with --write to apply.", file=sys.stderr)
+            print(f"[TimeCodeSecurity REMEDIATION] Dry-run preview: {success_rems} verified patch(es) available. Run with --write to apply.", file=sys.stderr)
 
     has_sast_failure = len(effective_findings) > 0
     has_sca_failure = (len(sca_findings) > 0) if args.sca else False
