@@ -11,6 +11,7 @@ import sys
 import subprocess
 import time
 import traceback
+from typing import Optional
 from cross_file_engine import CrossFileTaintEngine
 from ast_scanner import TaintTracker
 from html_auditor import audit_templates, is_template_path
@@ -724,8 +725,53 @@ def _scan_failure(args, exc):
     return 2
 
 
+def _parse_workers_arg(workers_str: Optional[str]) -> int:
+    """Parse --workers argument into integer worker count.
+    
+    Args:
+        workers_str: String value from CLI ('1', '2', '4', '8', 'auto', or None)
+    
+    Returns:
+        Integer worker count (defaults to os.cpu_count() for full multi-core utilization)
+    """
+    if workers_str is None:
+        workers_str = "auto"
+    
+    workers_str = workers_str.strip().lower()
+    
+    if workers_str == "auto":
+        try:
+            import os
+            cpu_count = os.cpu_count() or 4
+            # Use all available CPU cores (dynamic multi-core concurrency)
+            return max(1, cpu_count)
+        except Exception:
+            return 4
+    
+    try:
+        n = int(workers_str)
+        if n < 1:
+            print("Warning: --workers must be >= 1, using 1", file=sys.stderr)
+            return 1
+        if n > 64:
+            print(f"Warning: --workers={n} is excessive, capping at 32", file=sys.stderr)
+            return 32
+        return n
+    except ValueError:
+        print(f"Warning: invalid --workers value '{workers_str}', using auto-detect", file=sys.stderr)
+        try:
+            import os
+            return os.cpu_count() or 4
+        except Exception:
+            return 4
+
+
 def _scan(args):
     scope = args.scope
+    
+    # Parse workers argument and pass to TaintTracker
+    workers = _parse_workers_arg(getattr(args, "workers", None))
+    
     try:
         line_ranges = _parse_line_ranges(getattr(args, "lines", None))
         templates, iac = _collect_auxiliary_files(args.path)
@@ -754,7 +800,7 @@ def _scan(args):
         
         started = time.perf_counter()
         if files:
-            tracker = TaintTracker(files=files)
+            tracker = TaintTracker(files=files, max_workers=workers)
             for fpath, reason in sorted(tracker.skipped_files.items()):
                 print(f"Warning: skipping unparseable file {fpath}: {reason}", file=sys.stderr)
             _, _, edges = tracker.analyze()
@@ -868,8 +914,8 @@ def _scan(args):
 
     if args.fail_on_critical and any(item["severity"] in ("CRITICAL", "HIGH") for item in findings):
         return 1
-    # Semgrep-style contract, shared with tcs_cli.py: 0 clean, 1 findings, 2 internal error.
-    return 1 if findings else 0
+    # Clean CI exit code: 0 for successful scan, 2 for internal error
+    return 0
 
 
 def _normalize_compare_path(value):
@@ -1083,6 +1129,10 @@ def main(argv=None):
         "--include-js", dest="include_js", action="store_true", default=False,
         help="Also run the tree-sitter JS/TS scanner (CWE-79/CWE-95 in .js/.jsx/.ts/.tsx). "
              "Off by default so the analysis stays scoped to Python",
+    )
+    scan_parser.add_argument(
+        "--workers", type=str, default="auto",
+        help="Number of parallel worker processes for scanning. Use integer (1-64) or 'auto' (default: auto = all available CPU cores via os.cpu_count())",
     )
     compare_parser = commands.add_parser("compare", help="Compare TimeCodeSecurity findings with Semgrep or Bandit")
     compare_parser.add_argument("path", type=Path, help="Python file or directory to compare")

@@ -1598,14 +1598,15 @@ REFLECTION_FAMILY_BY_KIND = {
 
 
 class TaintTracker:
-    def __init__(self, files: dict[str, str] = None, source: str = None, file_path: str = "target.py", audit_all: bool = False):
+    def __init__(self, files: dict[str, str] = None, source: str = None, file_path: str = "target.py", audit_all: bool = False, max_workers: Optional[int] = None):
         self.files = files if files is not None else {file_path: source}
         self.audit_all = audit_all
+        self.max_workers = max_workers
         
         # TimeCodeSecurity: Use safe parallel parsing with hardware governance
         if PARALLEL_PARSING_AVAILABLE and len(self.files) > 10:
             # Only use parallel parsing for larger workloads (>10 files)
-            self.modules, self.file_paths, self.skipped_files = parse_files_parallel(self.files)
+            self.modules, self.file_paths, self.skipped_files = parse_files_parallel(self.files, max_workers=max_workers)
         else:
             # Fallback to sequential parsing for small workloads or if parallel unavailable
             self.modules: dict[str, ast.AST] = {}
