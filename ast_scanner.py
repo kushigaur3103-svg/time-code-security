@@ -8665,6 +8665,57 @@ class TaintTracker:
                                                 is_sanitized = True
                                 if is_sensitive and not is_sanitized:
                                     cwe_meta = {"operation": "CLEARTEXT_SENSITIVE_STORAGE", "category": "CLEARTEXT_SENSITIVE_STORAGE", "cwe": "CWE-312"}
+                                
+                                # TimeCodeSecurity: CWE-93 - HTTP Response Splitting via file write
+                                # When HTTP request data flows into a file write operation, flag as CWE-93
+                                if not cwe_meta:
+                                    # Find the correct scope (function-local or global)
+                                    def _find_enclosing_scope(node, mod_name):
+                                        """Find the scope ID for the node's enclosing function."""
+                                        current = node
+                                        while hasattr(current, 'parent'):
+                                            current = current.parent
+                                            if isinstance(current, (ast.FunctionDef, ast.AsyncFunctionDef)):
+                                                return f"{mod_name}:function:{current.name}"
+                                        return f"{mod_name}:global"
+                                    
+                                    func_scope_id = _find_enclosing_scope(node, mod_name)
+                                    
+                                    def _traces_to_http_source(expr, visited=None, use_scope=None):
+                                        """Check if expression traces back to HTTP request source."""
+                                        if visited is None:
+                                            visited = set()
+                                        if use_scope is None:
+                                            use_scope = func_scope_id
+                                        if isinstance(expr, ast.Call):
+                                            call_name = dotted_name(expr.func) or ""
+                                            if call_name in SOURCE_REGISTRY:
+                                                src_info = SOURCE_REGISTRY.get(call_name, {})
+                                                return src_info.get("source_type") == "USER_CONTROLLED"
+                                            # Check arguments of wrapper functions (e.g., base64.decodestring(content))
+                                            for arg in expr.args:
+                                                if _traces_to_http_source(arg, visited, use_scope):
+                                                    return True
+                                            return False
+                                        if isinstance(expr, ast.Name):
+                                            key = (use_scope, expr.id)
+                                            if key in visited:
+                                                return False
+                                            visited.add(key)
+                                            recs = self.assignments_by_scope.get(key, [])
+                                            # Also check global scope as fallback
+                                            if not recs and use_scope != scope_id:
+                                                recs = self.assignments_by_scope.get((scope_id, expr.id), [])
+                                            prior = [r for r in recs if r.lineno < lineno]
+                                            if prior:
+                                                return _traces_to_http_source(prior[-1].value_node, visited, use_scope)
+                                            return False
+                                        if isinstance(expr, ast.Attribute):
+                                            return _traces_to_http_source(expr.value, visited, use_scope)
+                                        return False
+                                    
+                                    if _traces_to_http_source(arg0):
+                                        cwe_meta = {"operation": "HTTP_RESPONSE_SPLITTING", "category": "RESPONSE_INJECTION", "cwe": "CWE-93"}
 
                     elif name == "json.dump" and len(node.args) >= 1:
                         dict_arg = node.args[0]

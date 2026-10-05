@@ -542,6 +542,7 @@ CWE_EQUIVALENCE_CLUSTERS: tuple[frozenset[str], ...] = (
     frozenset({"CWE-918", "CWE-20"}),                                    # SSRF vs improper input validation
     frozenset({"CWE-79", "CWE-96"}),                                     # XSS vs template injection
     frozenset({"CWE-116", "CWE-1336"}),                                  # output encoding vs template evaluation
+    frozenset({"CWE-93", "CWE-116"}),                                    # HTTP response splitting vs improper output encoding
     frozenset({"CWE-200", "CWE-605"}),                                   # information exposure vs socket binding leak
 )
 
