@@ -34,7 +34,7 @@ jobs:
           echo " 1. RUNNING TIMECODESECURITY (TCS) ON DJANGO CORE"
           echo "=========================================================="
           start_tcs=$(date +%s)
-          python cli.py scan django_target/django --format json --sarif reports/django_tcs.sarif
+          python cli.py scan django_target/django --format json --sarif reports/django_tcs.sarif || true
           end_tcs=$(date +%s)
           tcs_time=$((end_tcs - start_tcs))
           echo ">> TCS Completed in ${tcs_time}s"
