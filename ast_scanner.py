@@ -326,6 +326,9 @@ SOURCE_REGISTRY = {
     "request.POST.get": {"operation": "HTTP_BODY_PARAMETER_ACCESS", "source_type": "USER_CONTROLLED"},
     "request.POST.getlist": {"operation": "HTTP_BODY_PARAMETER_ACCESS", "source_type": "USER_CONTROLLED"},
     "request.query_params.get": {"operation": "HTTP_QUERY_PARAMETER_ACCESS", "source_type": "USER_CONTROLLED"},
+    # TimeCodeSecurity: Server-side session is trusted application state, NOT user-controlled input
+    # "request.session.get": {"operation": "SESSION_ACCESS", "source_type": "USER_CONTROLLED"},  # REMOVED - FP source
+    # "request.session": {"operation": "SESSION_ACCESS", "source_type": "USER_CONTROLLED"},      # REMOVED - FP source
     "sys.argv": {"operation": "CLI_ARGUMENT_ACCESS", "source_type": "USER_CONTROLLED"},
     "os.environ.get": {"operation": "ENVIRONMENT_VARIABLE_ACCESS", "source_type": "USER_CONTROLLED"},
     "os.environ": {"operation": "ENVIRONMENT_VARIABLE_ACCESS", "source_type": "USER_CONTROLLED"},
@@ -6827,8 +6830,20 @@ class TaintTracker:
                             mode_node = node.args[1]
                         if mode_node is not None:
                             mode_val = _eval_static_constant(mode_node, self.assignments_by_scope, scope_id, getattr(node, "lineno", 0))
-                            if isinstance(mode_val, int) and (mode_val & 0o077) != 0:
-                                cwe_meta = {"operation": "INSECURE_FILE_PERMISSIONS", "category": "INSECURE_FILE_PERMISSIONS", "cwe": "CWE-732"}
+                            if isinstance(mode_val, int):
+                                # TimeCodeSecurity GUARD B: Whitelist industry-standard safe permission modes
+                                # Only owner-only or read-for-all modes; no group/other execute bits
+                                SAFE_FILE_MODES = frozenset({
+                                    0o600,  # Owner read/write only
+                                    0o640,  # Owner RW, group read
+                                    0o644,  # Owner RW, others read (standard web files)
+                                    0o400,  # Owner read only
+                                    0o440,  # Owner + group read
+                                    0o444,  # All read only (read-only files)
+                                    0o700,  # Owner full access (scripts/dirs)
+                                })
+                                if mode_val not in SAFE_FILE_MODES and (mode_val & 0o077) != 0:
+                                    cwe_meta = {"operation": "INSECURE_FILE_PERMISSIONS", "category": "INSECURE_FILE_PERMISSIONS", "cwe": "CWE-732"}
 
                     # CWE-326: RSA key generation below 2048 bits
                     elif names & CWE326_SINK_NAMES:
@@ -6849,12 +6864,15 @@ class TaintTracker:
                         states = self._cookie_flag_states(node, scope_id,
                                                           getattr(node, "lineno", 0))
                         enabled = ("safe", "configured", "unknown")
-                        if not states.get("_skip") and not (
-                                states["httponly"] in enabled
-                                and states["secure"] in enabled):
-                            cwe_meta = {"operation": "INSECURE_COOKIE_FLAGS",
-                                        "category": "INSECURE_COOKIE_CONFIGURATION",
-                                        "cwe": "CWE-1004"}
+                        # TimeCodeSecurity GUARD A: Skip if BOTH secure AND httponly are explicitly safe
+                        if not states.get("_skip"):
+                            both_explicitly_safe = (states["httponly"] == "safe" and states["secure"] == "safe")
+                            if not both_explicitly_safe and not (
+                                    states["httponly"] in enabled
+                                    and states["secure"] in enabled):
+                                cwe_meta = {"operation": "INSECURE_COOKIE_FLAGS",
+                                            "category": "INSECURE_COOKIE_CONFIGURATION",
+                                            "cwe": "CWE-1004"}
 
                 elif isinstance(node, (ast.Assign, ast.AnnAssign)):
                     # CWE-798: hardcoded credential literal assigned to a sensitive target
@@ -8524,7 +8542,9 @@ class TaintTracker:
                     # ─── CWE-614: set_cookie without secure=True ───
                     if name == "set_cookie" or name.endswith(".set_cookie") or canon == "set_cookie" or (canon and canon.endswith(".set_cookie")):
                         states = self._cookie_flag_states(node, scope_id, lineno)
-                        if self._cookie_flag_missing(states, "secure"):
+                        # TimeCodeSecurity GUARD A: Skip if BOTH secure AND httponly are explicitly safe
+                        both_explicitly_safe = (states.get("httponly") == "safe" and states.get("secure") == "safe")
+                        if not both_explicitly_safe and self._cookie_flag_missing(states, "secure"):
                             cwe_meta = {"operation": "INSECURE_COOKIE_SECURE_FLAG",
                                         "category": "INSECURE_COOKIE_CONFIGURATION",
                                         "cwe": "CWE-614"}
