@@ -924,6 +924,15 @@ SINK_REGISTRY = {
     "collection.update_many": {"operation": "NOSQL_QUERY", "category": "NOSQL_INJECTION", "cwe": "CWE-943"},
 }
 
+# ─── Pre-indexed sink leaf names for O(1) fast-path filtering ──────────────
+# Extract the last component (leaf name) from every registry sink key.
+# This allows skipping expensive canonical resolution for non-sink calls.
+SINK_LEAF_NAMES = frozenset(
+    key.rsplit(".", 1)[-1] if "." in key else key
+    for key in SINK_REGISTRY.keys()
+)
+
+
 # ─── Batch 2 structural synthetic edge sources (PURE_STRUCTURAL CWEs) ───
 STRUCTURAL_SYNTHETIC_SOURCES = {
     "CWE-377": "INSECURE_TEMP_FILE",
@@ -3020,6 +3029,26 @@ class TaintTracker:
             line_text = source_lines[call_lineno - 1]
             if CLUSTER3_NOSEC_RE.search(line_text):
                 return False
+        
+        # TimeCodeSecurity OPTIMIZATION (DISABLED - causes 7 FN in CWE-1336):
+        # O(1) fast-path pre-filter using leaf name frozenset was attempted but caused
+        # false negatives in test_v03_bad.py where jinja2.Template(parts["tmpl"]) calls
+        # were not being registered despite passing all checks. Root cause under investigation.
+        # TODO: Re-enable after fixing sink registration pipeline (Task #25)
+        # 
+        # func_node = node.func
+        # leaf_name = None
+        # if isinstance(func_node, ast.Name):
+        #     leaf_name = func_node.id
+        # elif isinstance(func_node, ast.Attribute):
+        #     leaf_name = func_node.attr
+        # 
+        # if leaf_name and leaf_name not in SINK_LEAF_NAMES:
+        #     is_contract_candidate = (self.function_contracts and 
+        #                              isinstance(func_node, ast.Name) and 
+        #                              func_node.id in self.function_contracts)
+        #     if not is_contract_candidate and not self._has_disabled_ssl(node, scope_id):
+        #         return False
         
         name = dotted_name(node.func) or ""
         canon = self.resolve_canonical_name(node.func, scope_id) if scope_id else name
