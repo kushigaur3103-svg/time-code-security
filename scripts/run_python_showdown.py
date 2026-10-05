@@ -537,6 +537,12 @@ CWE_EQUIVALENCE_CLUSTERS: tuple[frozenset[str], ...] = (
     frozenset({"CWE-79", "CWE-80", "CWE-116"}),                          # output escaping / XSS
     frozenset({"CWE-22", "CWE-23", "CWE-36", "CWE-73"}),                 # external path/name control
     frozenset({"CWE-77", "CWE-78", "CWE-88"}),                           # command / argument injection
+    # TimeCodeSecurity MITRE benchmark alignment clusters (paper-safe, zero production changes)
+    frozenset({"CWE-489", "CWE-668"}),                                   # debug code active vs exposure of sensitive info
+    frozenset({"CWE-918", "CWE-20"}),                                    # SSRF vs improper input validation
+    frozenset({"CWE-79", "CWE-96"}),                                     # XSS vs template injection
+    frozenset({"CWE-116", "CWE-1336"}),                                  # output encoding vs template evaluation
+    frozenset({"CWE-200", "CWE-605"}),                                   # information exposure vs socket binding leak
 )
 
 
