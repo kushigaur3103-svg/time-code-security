@@ -1,0 +1,58 @@
+name: Level 2 Django Benchmark Showdown
+
+on:
+  workflow_dispatch: # Button dabate hi run hoga
+
+jobs:
+  benchmark:
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+
+    steps:
+      - name: Checkout TimeCodeSecurity
+        uses: actions/checkout@v4
+
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: '3.11'
+          cache: 'pip'
+
+      - name: Install Dependencies
+        run: |
+          pip install psutil semgrep
+
+      - name: Clone Django Core
+        run: |
+          git clone --depth 1 https://github.com/django/django.git django_target
+
+      - name: Run Level 2 Benchmark Script
+        run: |
+          python -c "
+          import os, subprocess, time, json
+          from pathlib import Path
+
+          print('=== 1. RUNNING TIMECODESECURITY (TCS) ON CLOUD LINUX ===')
+          t0 = time.time()
+          tcs_res = subprocess.run(
+              ['python', 'cli.py', 'scan', 'django_target', '--format', 'json', '--sarif', 'reports/django_tcs.sarif'],
+              capture_output=True, text=True
+          )
+          tcs_time = time.time() - t0
+          print(f'TCS Completed in {tcs_time:.2f}s | Exit: {tcs_res.returncode}')
+
+          print('\n=== 2. RUNNING SEMGREP ON CLOUD LINUX ===')
+          t1 = time.time()
+          sem_res = subprocess.run(
+              ['semgrep', 'scan', '--config=p/python', '--json', '-o', 'reports/django_semgrep.json', 'django_target'],
+              capture_output=True, text=True
+          )
+          sem_time = time.time() - t1
+          print(f'Semgrep Completed in {sem_time:.2f}s | Exit: {sem_res.returncode}')
+          "
+
+      - name: Upload Scan Reports
+        uses: actions/upload-artifact@v4
+        with:
+          name: django-benchmark-reports
+          path: reports/
