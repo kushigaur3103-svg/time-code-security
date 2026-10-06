@@ -68,17 +68,16 @@ jobs:
           echo "=========================================================="
 
           START_TIME=$(date +%s)
-          semgrep scan pygoat_target \
-            --config "p/python" \
-            --config "p/security-audit" \
+          python -m semgrep scan pygoat_target \
+            --config auto \
             --json \
             --output reports/semgrep_pygoat.json || true
           END_TIME=$(date +%s)
-
+          
           ELAPSED=$(( END_TIME - START_TIME ))
           echo "SEMGREP_TIME=${ELAPSED}" >> $GITHUB_ENV
-
-          FINDINGS=$(python -c "import json; data=json.load(open('reports/semgrep_pygoat.json')); print(len(data.get('results', [])))" 2>/dev/null || echo "0")
+          
+          FINDINGS=$(python -c "import json, os; print(len(json.load(open('reports/semgrep_pygoat.json')).get('results', []))) if os.path.exists('reports/semgrep_pygoat.json') else print(0)")
           echo "SEMGREP_FINDINGS=${FINDINGS}" >> $GITHUB_ENV
 
       # ------------------------------------------------------------------
@@ -88,7 +87,7 @@ jobs:
         run: |
           echo "# Level 3 Ground-Truth Showdown: TCS vs Semgrep (PyGoat)" > reports/pygoat_summary.md
           echo "" >> reports/pygoat_summary.md
-          echo "| Metric | TimeCodeSecurity (TCS) | Semgrep (p/python + p/security-audit) |" >> reports/pygoat_summary.md
+          echo "| Metric | TimeCodeSecurity (TCS) | Semgrep (--config auto) |" >> reports/pygoat_summary.md
           echo "| :--- | :--- | :--- |" >> reports/pygoat_summary.md
           echo "| **Target Files** | ${{ env.PYGOAT_FILES }} modules | ${{ env.PYGOAT_FILES }} modules |" >> reports/pygoat_summary.md
           echo "| **Execution Time** | ${{ env.TCS_TIME }}s | ${{ env.SEMGREP_TIME }}s |" >> reports/pygoat_summary.md
