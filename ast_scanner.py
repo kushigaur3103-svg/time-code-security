@@ -7040,11 +7040,7 @@ class TaintTracker:
             file_path = self.file_paths.get(mod_name, "unknown.py")
             scope_id = f"{mod_name}:global"
             seen: set[tuple[str, int, int]] = set()
-            # Node-type fast-skip guard: batch2 only inspects these AST node types.
-            _BATCH2_TYPES = (ast.Assign, ast.Attribute, ast.Call, ast.Constant, ast.ExceptHandler, ast.Name)
             for node in self._reachable_nodes(tree):
-                if not isinstance(node, _BATCH2_TYPES):
-                    continue
                 cwe_meta = None
                 if isinstance(node, ast.Call):
                     name = dotted_name(node.func) or ""
@@ -7518,11 +7514,7 @@ class TaintTracker:
 
             # 1. Scope-aware import bindings (function-local imports shadow module imports).
             bindings: dict[str, list[tuple[int, str, str]]] = {}
-            # Node-type fast-skip guard: cluster2 only inspects these AST node types.
-            _CLUSTER2_TYPES = (ast.Assign, ast.AugAssign, ast.BinOp, ast.Call, ast.Compare, ast.FunctionDef, ast.If, ast.Import, ast.ImportFrom)
             for node in reachable:
-                if not isinstance(node, _CLUSTER2_TYPES):
-                    continue
                 scope = _scope_for(node, mod_name)
                 if isinstance(node, ast.Import):
                     for alias in node.names:
@@ -7702,10 +7694,7 @@ class TaintTracker:
             validated: dict[str, set[str]] = {}
             nan_guarded: dict[str, set[str]] = {}
 
-            # Second pass over reachable nodes (same type guard)
             for node in reachable:
-                if not isinstance(node, _CLUSTER2_TYPES):
-                    continue
                 scope = _scope_for(node, mod_name)
 
                 if isinstance(node, ast.FunctionDef):
@@ -7878,10 +7867,8 @@ class TaintTracker:
                                 running_prefix = ""
                 return False
 
-            # 5. Node-local predicates (third pass, same type guard).
+            # 5. Node-local predicates.
             for node in reachable:
-                if not isinstance(node, _CLUSTER2_TYPES):
-                    continue
                 scope = _scope_for(node, mod_name)
                 fn_node = _enclosing_function(node)
                 fn_scope = (function_scopes.get(id(fn_node)) if fn_node else mod_scope)
@@ -8743,11 +8730,7 @@ class TaintTracker:
             module_csrf_disabled = False
             module_csrf_enabled = False
 
-            # Node-type fast-skip guard: batch3a only inspects these AST node types.
-            _BATCH3A_TYPES = (ast.Assign, ast.AugAssign, ast.BinOp, ast.Call, ast.ClassDef, ast.Compare, ast.FunctionDef, ast.If, ast.ImportFrom, ast.Return)
             for node in self._reachable_nodes(tree):
-                if not isinstance(node, _BATCH3A_TYPES):
-                    continue
                 if isinstance(node, ast.Compare):
                     names_comp = {n.id for n in ast.walk(node) if isinstance(n, ast.Name)}
                     attrs_comp = {n.attr for n in ast.walk(node) if isinstance(n, ast.Attribute)}
@@ -8778,10 +8761,7 @@ class TaintTracker:
                             elif val_c is True:
                                 module_csrf_enabled = True
 
-            # Second pass: same node-type guard as above
             for node in self._reachable_nodes(tree):
-                if not isinstance(node, _BATCH3A_TYPES):
-                    continue
                 cwe_meta = None
                 lineno = getattr(node, "lineno", 0)
 
@@ -9812,11 +9792,7 @@ class TaintTracker:
             scope_id = f"{mod_name}:global"
             seen: set[tuple[str, int, int]] = set()
 
-            # Node-type fast-skip guard: batch4 only inspects these AST node types.
-            _BATCH4_TYPES = (ast.Assign, ast.Call, ast.ClassDef, ast.Compare, ast.Dict, ast.Return, ast.With)
             for node in self._reachable_nodes(tree):
-                if not isinstance(node, _BATCH4_TYPES):
-                    continue
                 # CWE-1275: Insecure SameSite cookie configuration
                 if isinstance(node, ast.Call):
                     is_set_cookie = False
