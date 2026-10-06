@@ -988,6 +988,24 @@ def _may_disable_ssl(node: ast.Call) -> bool:
     return False
 
 
+def scope_module(scope_id: str) -> str:
+    """Return the module prefix of a "<module>:<scope>" identifier.
+
+    Module names are derived from file paths, so a Windows scan root embeds a
+    second colon *inside* the module ("C:.Users.repo.app.views"). Splitting on the
+    first colon returns the bare drive letter instead, which makes every
+    ``file_paths`` lookup miss and reports findings against "unknown.py". A POSIX
+    module never matches the drive rule, so those paths keep resolving exactly as
+    before.
+    """
+    if not scope_id:
+        return ""
+    parts = scope_id.split(":")
+    if len(parts) >= 2 and len(parts[0]) == 1 and parts[0].isalpha() and parts[1].startswith("."):
+        return f"{parts[0]}:{parts[1]}"
+    return parts[0]
+
+
 class AssignmentNameTable(dict):
     """`dict` of (scope_id, target) -> records that also indexes targets per module.
 
@@ -1014,7 +1032,7 @@ class AssignmentNameTable(dict):
         scope, name = key
         if not isinstance(scope, str) or not isinstance(name, str):
             return
-        self.names_by_module.setdefault(scope.split(":")[0] if scope else "", set()).add(name)
+        self.names_by_module.setdefault(scope_module(scope) if scope else "", set()).add(name)
 
     def setdefault(self, key, default=None):
         if key not in self:
@@ -1503,7 +1521,7 @@ def _eval_static_constant(node, assignments_by_scope, scope_id="", lineno=0, vis
         if var_key in visited:
             return None
         visited.add(var_key)
-        mod_name = scope_id.split(":")[0] if scope_id else ""
+        mod_name = scope_module(scope_id) if scope_id else ""
         curr = scope_id
         _walk_seen = set()
         while curr and curr not in _walk_seen:
@@ -1541,7 +1559,7 @@ def _eval_static_constant(node, assignments_by_scope, scope_id="", lineno=0, vis
 def _assignment_records(assignments_by_scope, name: str, scope_id: str, lineno: int):
     """Writes to `name` visible from `scope_id`, oldest first, walking out to the
     enclosing function scopes and the module scope like `_eval_static_constant` does."""
-    mod_name = scope_id.split(":")[0] if scope_id else ""
+    mod_name = scope_module(scope_id) if scope_id else ""
     current = scope_id
     walked = set()
     while current and current not in walked:
@@ -1808,7 +1826,7 @@ class TaintTracker:
         STRICT: Only intra-procedural, only within same FunctionDef.
         """
         # Find the enclosing function for this scope
-        mod_name = scope_id.split(":")[0] if ":" in scope_id else scope_id
+        mod_name = scope_module(scope_id) if ":" in scope_id else scope_id
         func_node = None
         func_scope = None
 
@@ -1919,7 +1937,7 @@ class TaintTracker:
             curr = curr.value
         if isinstance(curr, ast.Name) and scope_id:
             current_scope = scope_id
-            mod_name = scope_id.split(":")[0] if scope_id else ""
+            mod_name = scope_module(scope_id) if scope_id else ""
             _walk_seen = set()
             while current_scope and current_scope not in _walk_seen:
                 _walk_seen.add(current_scope)
@@ -1985,7 +2003,7 @@ class TaintTracker:
             return None
         if isinstance(node, ast.Name) and scope_id:
             curr = scope_id
-            mod_name = scope_id.split(":")[0] if ":" in scope_id else scope_id
+            mod_name = scope_module(scope_id) if ":" in scope_id else scope_id
             var_key = f"{scope_id}:{node.id}"
             if var_key in visited:
                 return None
@@ -2049,7 +2067,7 @@ class TaintTracker:
     def resolve_canonical_name(self, node: ast.AST, scope_id: str = "", visited: Optional[set[str]] = None) -> Optional[str]:
         if visited is None:
             visited = set()
-        mod_name = scope_id.split(":")[0] if scope_id else ""
+        mod_name = scope_module(scope_id) if scope_id else ""
 
         if isinstance(node, ast.Name):
             if node.id == "__builtins__":
@@ -2369,7 +2387,7 @@ class TaintTracker:
         if name not in ("exec", "eval", "open"):
             return False
 
-        mod_name = scope_id.split(":")[0] if scope_id else ""
+        mod_name = scope_module(scope_id) if scope_id else ""
         curr_scope = scope_id
         _walk_seen = set()
         while curr_scope and curr_scope not in _walk_seen:
@@ -2694,7 +2712,7 @@ class TaintTracker:
             val_canon = self.resolve_canonical_name(node.func.value, scope_id) if (scope_id and hasattr(self, "resolve_canonical_name")) else val_name
             if val_name in ("hashlib", "_hashlib") or val_canon in ("hashlib", "_hashlib"):
                 is_hashlib_new = True
-        elif fn_name == "new" and (canon in ("hashlib.new", "_hashlib.new") or (scope_id and "hashlib" in str(self.imports.get(scope_id.split(":")[0], {})))):
+        elif fn_name == "new" and (canon in ("hashlib.new", "_hashlib.new") or (scope_id and "hashlib" in str(self.imports.get(scope_module(scope_id), {})))):
             is_hashlib_new = True
 
         if not is_hashlib_new:
@@ -2726,7 +2744,7 @@ class TaintTracker:
         return False
 
     def _scope_module(self, scope_id: str) -> str:
-        return scope_id.split(":")[0] if scope_id else ""
+        return scope_module(scope_id) if scope_id else ""
 
     def _module_source_path(self, mod_name_or_path: str) -> str:
         return str(self.file_paths.get(mod_name_or_path) or mod_name_or_path).replace("\\", "/")
@@ -3002,7 +3020,7 @@ class TaintTracker:
                 if "." in curr:
                     curr = curr.rsplit(".", 1)[0]
                 elif ":function" in curr:
-                    curr = f"{curr.split(':')[0]}:global"
+                    curr = f"{scope_module(curr)}:global"
                 else:
                     break
 
@@ -3049,7 +3067,7 @@ class TaintTracker:
     def _latest_assignment(self, name: str, scope_id: str, before_lineno: int = 0) -> Optional[AssignmentRecord]:
         """Most recent (preferably unconditional) assignment of `name` in the scope chain."""
         current = scope_id
-        mod_name = scope_id.split(":")[0] if scope_id else ""
+        mod_name = scope_module(scope_id) if scope_id else ""
         _walk_seen = set()
         while current and current not in _walk_seen:
             _walk_seen.add(current)
@@ -3075,7 +3093,7 @@ class TaintTracker:
         root = dotted.split(".")[0] if dotted else ""
         if not root:
             return None
-        imports = self.imports.get(scope_id.split(":")[0] if scope_id else "", {})
+        imports = self.imports.get(scope_module(scope_id) if scope_id else "", {})
         if root in imports:
             return imports[root]
         return root if root in set(imports.values()) else None
@@ -3163,7 +3181,7 @@ class TaintTracker:
                 and func_node.id in self.function_contracts):
             return False
 
-        mod = scope_id.split(":")[0] if scope_id else ""
+        mod = scope_module(scope_id) if scope_id else ""
         if leaf_name in self._module_alias_names(mod):
             return False
         assigned = self._module_assigned_names(mod)
@@ -3715,7 +3733,7 @@ class TaintTracker:
             visited = set()
         if depth > 5:
             return None
-        mod_name = current_scope.split(":")[0]
+        mod_name = scope_module(current_scope)
         if "function:" in current_scope:
             nested = f"{current_scope}.{call_name}"
             if nested in self.functions: return nested
@@ -3814,7 +3832,7 @@ class TaintTracker:
 
     def _resolve_instance_class_scope(self, var_name: str, scope_id: str) -> Optional[str]:
         curr = scope_id
-        mod_name = scope_id.split(":")[0] if scope_id else ""
+        mod_name = scope_module(scope_id) if scope_id else ""
         _walk_seen = set()
         while curr and curr not in _walk_seen:
             _walk_seen.add(curr)
@@ -3898,7 +3916,7 @@ class TaintTracker:
         return TaintValue(state=TaintState.UNKNOWN, source_id=first_tainted.source_id, confidence=0.50, path=combined_path, last_operation=f"path_dependent:{node_id}", proof_nodes=merged_nodes, proof_edges=merged_edges)
 
     def _collect_calls_in_expr(self, expr: ast.AST, scope_id: str, lineno: int):
-        mod_name = scope_id.split(":")[0] if scope_id else ""
+        mod_name = scope_module(scope_id) if scope_id else ""
         file_path = self.file_paths.get(mod_name, "unknown.py")
         call_lineno = lineno
         for subnode in ast.walk(expr):
@@ -4042,11 +4060,11 @@ class TaintTracker:
     def collect_statements(self, statements: list[ast.stmt], scope_id: str, is_conditional: bool = False):
         for stmt in statements:
             if isinstance(stmt, (ast.FunctionDef, ast.AsyncFunctionDef)):
-                child_scope = f"{scope_id}.{stmt.name}" if ":global" not in scope_id else f"{scope_id.split(':')[0]}:function:{stmt.name}"
+                child_scope = f"{scope_id}.{stmt.name}" if ":global" not in scope_id else f"{scope_module(scope_id)}:function:{stmt.name}"
                 self.functions[child_scope] = stmt
                 self.collect_statements(stmt.body, scope_id=child_scope, is_conditional=False)
             elif isinstance(stmt, ast.ClassDef):
-                mod_name = scope_id.split(":")[0]
+                mod_name = scope_module(scope_id)
                 class_scope = f"{scope_id}.{stmt.name}" if ":global" not in scope_id else f"{mod_name}:function:{stmt.name}"
                 self.classes.add(class_scope)
                 for item in stmt.body:
@@ -4341,7 +4359,7 @@ class TaintTracker:
                 self.returns_by_scope.setdefault(scope_id, []).append(stmt)
                 if stmt.value:
                     if self._is_html_construction_expr(stmt.value, scope_id):
-                        mod_name = scope_id.split(":")[0]
+                        mod_name = scope_module(scope_id)
                         file_path = self.file_paths.get(mod_name, "unknown.py")
                         sink_id = self.next_sink_id()
                         sink_node = SecurityNode(
@@ -4392,7 +4410,7 @@ class TaintTracker:
         if not isinstance(container_node, ast.Name):
             return None
         var_name = container_node.id
-        mod_name = scope_id.split(":")[0] if scope_id else ""
+        mod_name = scope_module(scope_id) if scope_id else ""
         muts = self.list_mutations.get((scope_id, var_name))
         if not muts:
             curr = scope_id
@@ -4458,7 +4476,7 @@ class TaintTracker:
         return self.merge_taints(results, f"{cls_scope}:{attr}:field_writes")
 
     def scan_for_sinks(self, expr: ast.AST, scope_id: str, lineno: int):
-        mod_name = scope_id.split(":")[0]
+        mod_name = scope_module(scope_id)
         file_path = self.file_paths.get(mod_name, "unknown.py")
         for subnode in ast.walk(expr):
             if self._in_dead_code(subnode):
@@ -4480,7 +4498,7 @@ class TaintTracker:
             return True
         if isinstance(expr_node, ast.Name):
             curr = scope_id
-            mod_name = scope_id.split(":")[0]
+            mod_name = scope_module(scope_id)
             _walk_seen = set()
             while curr and curr not in _walk_seen:
                 _walk_seen.add(curr)
@@ -4514,7 +4532,7 @@ class TaintTracker:
             return self._is_path_expr(expr_node.left, scope_id) or self._is_path_expr(expr_node.right, scope_id)
         if isinstance(expr_node, ast.Name):
             curr = scope_id
-            mod_name = scope_id.split(":")[0]
+            mod_name = scope_module(scope_id)
             _walk_seen = set()
             while curr and curr not in _walk_seen:
                 _walk_seen.add(curr)
@@ -4537,7 +4555,7 @@ class TaintTracker:
 
     def _is_jinja_env_expr(self, expr_node: ast.AST, scope_id: str, visited: Optional[set[str]] = None) -> bool:
         if visited is None: visited = set()
-        mod_name = scope_id.split(":")[0] if scope_id else ""
+        mod_name = scope_module(scope_id) if scope_id else ""
 
         if isinstance(expr_node, ast.Call):
             fname = self.resolve_canonical_name(expr_node.func, scope_id) or dotted_name(expr_node.func) or ""
@@ -4576,7 +4594,7 @@ class TaintTracker:
 
     def _is_jinja_template_expr(self, expr_node: ast.AST, scope_id: str, visited: Optional[set[str]] = None) -> bool:
         if visited is None: visited = set()
-        mod_name = scope_id.split(":")[0] if scope_id else ""
+        mod_name = scope_module(scope_id) if scope_id else ""
 
         if isinstance(expr_node, ast.Call):
             fname = self.resolve_canonical_name(expr_node.func, scope_id) or dotted_name(expr_node.func) or ""
@@ -4626,7 +4644,7 @@ class TaintTracker:
     def resolve_expression(self, node: ast.AST, sink: SecurityNode, scope_id: str, current_lineno: int, visited: Optional[set[str]] = None, call_context: Optional[dict[str, TaintValue]] = None) -> TaintValue:
         if visited is None: visited = set()
         if call_context is None: call_context = {}
-        mod_name = scope_id.split(":")[0]
+        mod_name = scope_module(scope_id)
         file_name = self.file_paths.get(mod_name, f"{mod_name}.py")
 
         # Handle Python f-strings (ast.JoinedStr)
@@ -5665,7 +5683,7 @@ class TaintTracker:
                 returns = self.returns_by_scope.get(func_scope, [])
                 if not returns: return TaintValue(state=TaintState.CLEAN, confidence=1.0, last_operation=f"void_return:{function_name}")
 
-                callee_mod = func_scope.split(":")[0]
+                callee_mod = scope_module(func_scope)
                 callee_file = self.file_paths.get(callee_mod, "unknown.py")
                 callee_func = func_scope.split(":")[-1]
 
@@ -6186,7 +6204,7 @@ class TaintTracker:
     ) -> ProvenanceValue:
         if visited is None: visited = set()
         if call_context is None: call_context = {}
-        mod_name = scope_id.split(":")[0]
+        mod_name = scope_module(scope_id)
         file_name = self.file_paths.get(mod_name, f"{mod_name}.py")
 
         # 1. Path containment check
@@ -9890,7 +9908,7 @@ class TaintTracker:
 
         def _assigned_value(name: str, scope_id: str, lineno: int):
             current_scope = scope_id
-            mod_name = scope_id.split(":")[0]
+            mod_name = scope_module(scope_id)
             _walk_seen = set()
             while current_scope and current_scope not in _walk_seen:
                 _walk_seen.add(current_scope)
@@ -10215,7 +10233,7 @@ class TaintTracker:
 
         def _assigned_value(name: str, scope_id: str, lineno: int):
             current_scope = scope_id
-            mod_name = scope_id.split(":")[0]
+            mod_name = scope_module(scope_id)
             _walk_seen = set()
             while current_scope and current_scope not in _walk_seen:
                 _walk_seen.add(current_scope)
@@ -10560,7 +10578,7 @@ class TaintTracker:
             argument resolves to a local assignment, a `# ok:` / `# nosec` on that assignment line
             suppresses the whole call.
             """
-            mod_name = scope_id.split(":")[0]
+            mod_name = scope_module(scope_id)
             for expr in exprs:
                 if expr is None or not _is_dynamic(expr, scope_id, lineno):
                     continue
@@ -10945,7 +10963,7 @@ class TaintTracker:
 
         def _assigned_value(name: str, scope_id: str, lineno: int):
             current_scope = scope_id
-            mod_name = scope_id.split(":")[0]
+            mod_name = scope_module(scope_id)
             _walk_seen = set()
             while current_scope and current_scope not in _walk_seen:
                 _walk_seen.add(current_scope)
@@ -11352,7 +11370,7 @@ class TaintTracker:
 
         def _assigned_value(name: str, scope_id: str, lineno: int):
             current_scope = scope_id
-            mod_name = scope_id.split(":")[0]
+            mod_name = scope_module(scope_id)
             _walk_seen = set()
             while current_scope and current_scope not in _walk_seen:
                 _walk_seen.add(current_scope)
@@ -11804,7 +11822,7 @@ class TaintTracker:
 
         def _assigned(name: str, scope_id: str, lineno: int):
             current_scope = scope_id
-            mod_name = scope_id.split(":")[0]
+            mod_name = scope_module(scope_id)
             seen_scopes = set()
             while current_scope and current_scope not in seen_scopes:
                 seen_scopes.add(current_scope)
@@ -12847,7 +12865,7 @@ class TaintTracker:
 
         def _assigned_value(name: str, scope_id: str, lineno: int):
             current_scope = scope_id
-            mod_name = scope_id.split(":")[0]
+            mod_name = scope_module(scope_id)
             _walk_seen = set()
             while current_scope and current_scope not in _walk_seen:
                 _walk_seen.add(current_scope)
@@ -13103,7 +13121,7 @@ class TaintTracker:
 
         def _assigned_value(name: str, scope_id: str, lineno: int):
             current_scope = scope_id
-            mod_name = scope_id.split(":")[0]
+            mod_name = scope_module(scope_id)
             _walk_seen = set()
             while current_scope and current_scope not in _walk_seen:
                 _walk_seen.add(current_scope)
@@ -13394,7 +13412,7 @@ class TaintTracker:
 
         def _assigned_value(name: str, scope_id: str, lineno: int):
             current_scope = scope_id
-            mod_name = scope_id.split(":")[0]
+            mod_name = scope_module(scope_id)
             _walk_seen = set()
             while current_scope and current_scope not in _walk_seen:
                 _walk_seen.add(current_scope)
@@ -13861,7 +13879,7 @@ class TaintTracker:
 
         def _assigned_value(name: str, scope_id: str, lineno: int):
             current_scope = scope_id
-            mod_name = scope_id.split(":")[0]
+            mod_name = scope_module(scope_id)
             _walk_seen = set()
             while current_scope and current_scope not in _walk_seen:
                 _walk_seen.add(current_scope)
@@ -13990,7 +14008,7 @@ class TaintTracker:
                 existing_sink = next((
                     record.security_node for record in self.sink_records
                     if record.security_node.location == location(
-                        call, self.file_paths.get(scope_id.split(":")[0], "unknown.py")
+                        call, self.file_paths.get(scope_module(scope_id), "unknown.py")
                     )
                     and record.security_node.metadata.get("cwe") == "CWE-601"
                 ), None)
@@ -14252,7 +14270,7 @@ class TaintTracker:
 
         def _assigned_value(name: str, scope_id: str, lineno: int):
             current_scope = scope_id
-            mod_name = scope_id.split(":")[0]
+            mod_name = scope_module(scope_id)
             _walk_seen = set()
             while current_scope and current_scope not in _walk_seen:
                 _walk_seen.add(current_scope)
@@ -14515,7 +14533,7 @@ class TaintTracker:
 
         def _assigned_value(name: str, scope_id: str, lineno: int):
             current_scope = scope_id
-            mod_name = scope_id.split(":")[0]
+            mod_name = scope_module(scope_id)
             _walk_seen = set()
             while current_scope and current_scope not in _walk_seen:
                 _walk_seen.add(current_scope)
@@ -14694,7 +14712,7 @@ class TaintTracker:
 
         def _assigned_value(name: str, scope_id: str, lineno: int):
             current_scope = scope_id
-            mod_name = scope_id.split(":")[0]
+            mod_name = scope_module(scope_id)
             _walk_seen = set()
             while current_scope and current_scope not in _walk_seen:
                 _walk_seen.add(current_scope)
@@ -15151,7 +15169,7 @@ class TaintTracker:
                 param_names = [a.arg for a in func_def.args.args]
                 p_fn_idx = param_names.index(p_fn_name)
                 call_sites = self.call_sites_by_target.get(caller_scope, [])
-                mod_name = caller_scope.split(":")[0]
+                mod_name = scope_module(caller_scope)
                 file_path = self.file_paths.get(mod_name, "unknown.py")
 
                 for cs_call, cs_scope, cs_lineno in call_sites:
@@ -15262,7 +15280,7 @@ class TaintTracker:
                 if self.is_sink_call(call_node, caller_scope, lineno):
                     canon_name = self.resolve_canonical_name(call_node.func, caller_scope) or dotted_name(call_node.func) or ""
                     if not self.check_sink_safety(call_node, canon_name):
-                        mod_name = caller_scope.split(":")[0]
+                        mod_name = scope_module(caller_scope)
                         file_path = self.file_paths.get(mod_name, "unknown.py")
                         sink_node = self.get_or_create_sink(call_node, file_path, caller_scope)
                         self.sink_records.append(SinkRecord(node=call_node, security_node=sink_node, lineno=lineno, scope_id=caller_scope))
@@ -15309,7 +15327,7 @@ class TaintTracker:
         _t1 = _time.perf_counter()
         print(f"TimeCodeSecurity [PROFILE] Structural findings (all batches): {_t1 - _t0:.2f}s", file=_sys.stderr)
         for assign_stmt, scope_id, lineno in self.ssl_attr_assigns:
-            mod_name = scope_id.split(":")[0]
+            mod_name = scope_module(scope_id)
             file_path = self.file_paths.get(mod_name, "unknown.py")
             sink_id = self.next_sink_id()
             sink_node = SecurityNode(
