@@ -5,7 +5,7 @@ import re
 from dataclasses import dataclass, field, asdict
 from enum import Enum
 from typing import Optional, List, Dict, Any, Union, Tuple
-from rule_engine import match_sink_rule, check_sink_safety_rules, get_rule
+from rule_engine import match_sink_rule, check_sink_safety_rules, get_rule, SINK_MATCHER_NAMES
 from tcs.analysis.def_use import LocalDefUseTracker
 from tcs.analysis.function_contracts import FunctionContractExtractor, FunctionSinkContract, KNOWN_SINKS
 
@@ -924,13 +924,68 @@ SINK_REGISTRY = {
     "collection.update_many": {"operation": "NOSQL_QUERY", "category": "NOSQL_INJECTION", "cwe": "CWE-943"},
 }
 
-# ─── Pre-indexed sink leaf names for O(1) fast-path filtering ──────────────
-# Extract the last component (leaf name) from every registry sink key.
-# This allows skipping expensive canonical resolution for non-sink calls.
+# ─── CWE-338 insecure PRNG family (flagged unconditionally) ────────────────
+CWE338_RANDOM_NAMES = frozenset({
+    "random.random", "random.randint", "random.choice", "random.randrange", "random.sample",
+    "random.choices", "random.shuffle", "random.randbytes", "random.uniform", "random.triangular",
+    "random.betavariate", "random.expovariate", "random.gammavariate", "random.gauss",
+    "random.lognormvariate", "random.normalvariate", "random.vonmisesvariate",
+    "random.paretovariate", "random.weibullvariate", "random.getrandbits", "random.Random",
+    "randint", "randrange", "choice", "choices", "sample", "shuffle", "randbytes",
+    "uniform", "triangular", "betavariate", "expovariate", "gammavariate", "gauss",
+    "lognormvariate", "normalvariate", "vonmisesvariate", "paretovariate", "weibullvariate",
+    "getrandbits", "random",
+})
+
+# ─── O(1) sink fast-path candidate index ───────────────────────────────────
+# is_sink_call() can return True through paths that never consult SINK_REGISTRY:
+# the rule engine's own matchers, the attribute branches at the tail of the
+# function, and the CWE-322/327/338 probes. A filter built from SINK_REGISTRY
+# keys alone therefore UNDER-approximates and silently prunes real sinks - that
+# is how `render` (CWE-1336) and `executescript` (CWE-89) were lost, costing 7
+# false negatives. This union is deliberately an over-approximation: extra names
+# only cost a little resolution time, a missing name costs a vulnerability.
+_NON_REGISTRY_SINK_NAMES = frozenset({
+    # Tail attribute branches of is_sink_call (file I/O, SSTI render, CWE-400).
+    "read_text", "read_bytes", "write_text", "write_bytes", "open", "render",
+    "read", "run_in_executor",
+    # CWE-322 insecure host key policy.
+    "set_missing_host_key_policy", "AutoAddPolicy", "WarningPolicy",
+    # CWE-327 hashlib.new(<weak algo>).
+    "new",
+})
+
+SINK_CANDIDATE_NAMES = frozenset(
+    {key.rsplit(".", 1)[-1] if "." in key else key for key in SINK_REGISTRY}
+    | {n.rsplit(".", 1)[-1] for n in CWE338_RANDOM_NAMES}
+    | SINK_MATCHER_NAMES
+    | _NON_REGISTRY_SINK_NAMES
+)
+
+# Kept as the registry-only view; SINK_CANDIDATE_NAMES is the pruning authority.
 SINK_LEAF_NAMES = frozenset(
     key.rsplit(".", 1)[-1] if "." in key else key
     for key in SINK_REGISTRY.keys()
 )
+
+# Keyword arguments that make _has_disabled_ssl() (CWE-295) able to return True.
+# That probe is name-agnostic, so the fast path must test for these structurally
+# instead of calling it - see _may_disable_ssl().
+_SSL_TRIGGER_KWARGS = frozenset({"verify", "cert_reqs", "ssl_cert_reqs"})
+
+
+def _may_disable_ssl(node: ast.Call) -> bool:
+    """True when `node` carries a keyword `_has_disabled_ssl()` could inspect.
+
+    `_has_disabled_ssl()` only ever reads `verify`, `cert_reqs`, `ssl_cert_reqs`
+    and `**`-unpacking; with none of those present it provably returns False.
+    This node-local test is O(#keywords) with no scope walking, which is what
+    makes the CWE-295 exemption affordable inside the O(1) fast path.
+    """
+    for kw in node.keywords:
+        if kw.arg is None or kw.arg in _SSL_TRIGGER_KWARGS:
+            return True
+    return False
 
 
 # ─── Batch 2 structural synthetic edge sources (PURE_STRUCTURAL CWEs) ───
@@ -1641,6 +1696,10 @@ class TaintTracker:
         self.sinks: list[SecurityNode] = []
         self.edges: list[DataFlowEdge] = []
         self.assignments_by_scope: dict[tuple[str, str], list[AssignmentRecord]] = {}
+        # Cache for _dynamic_name_index(): (assignment-table size, per-module index).
+        self._dynamic_name_cache: Optional[tuple[int, dict]] = None
+        # Cache for _enclosing_param_names(): (function-table size, scope -> names).
+        self._param_name_cache: Optional[tuple[int, dict]] = None
         self.class_field_assignments: dict[tuple[str, str], list[AssignmentRecord]] = {}
         self.classes: set[str] = set()
         self.sink_records: list[SinkRecord] = []
@@ -3013,6 +3072,114 @@ class TaintTracker:
             return "namespace"
         return None
 
+    def _dynamic_name_index(self, mod: str) -> frozenset:
+        """Names in `mod` that canonical resolution could rewrite into a sink.
+
+        Union of import alias keys (plus their leaves, covering the dotted-remap
+        branch of resolve_canonical_name) and every assignment target in the
+        module. A bare `foo()` or `recv.foo()` whose leaf appears here may
+        resolve to a completely different callee, so the fast path must not
+        prune it on leaf name alone.
+
+        Cached per module; rebuilt when the assignment table grows because
+        Phase 2 collection and sink detection are separate passes.
+        """
+        size = len(self.assignments_by_scope)
+        cache = self._dynamic_name_cache
+        if cache is None or cache[0] != size:
+            index: Dict[str, set] = {}
+            for mod_name, alias_map in self.imports.items():
+                acc = index.setdefault(mod_name, set())
+                for key in alias_map:
+                    acc.add(key)
+                    acc.add(key.rsplit(".", 1)[-1])
+            for (sc, nm) in self.assignments_by_scope:
+                index.setdefault(sc.split(":")[0] if sc else "", set()).add(nm)
+            cache = (size, {m: frozenset(v) for m, v in index.items()})
+            self._dynamic_name_cache = cache
+        return cache[1].get(mod, frozenset())
+
+    def _fast_path_prunable(self, node: ast.Call, leaf_name: str, scope_id: str) -> bool:
+        """True when no branch of is_sink_call() can match this call.
+
+        Sound only because every route by which resolve_canonical_name() could
+        rewrite `leaf_name` into a sink is ruled out first:
+
+          * import aliases           `from jinja2 import Template as T`
+          * local/global rebinding   `f = eval`
+          * higher-order parameters  `def run(fn): fn(x)` called as run(eval)
+          * function contracts       keyed on the bare ast.Name id
+          * CWE-295                  name-agnostic; decided by verify=/cert_reqs=
+
+        Every guard is an O(1) membership test against a pre-built index, so the
+        whole probe stays far cheaper than the canonical resolution it replaces.
+        """
+        # CWE-295 never looks at the callee name - only at its keywords.
+        if _may_disable_ssl(node):
+            return False
+
+        func_node = node.func
+
+        # Contracts are keyed on the bare identifier.
+        if (self.function_contracts and isinstance(func_node, ast.Name)
+                and func_node.id in self.function_contracts):
+            return False
+
+        mod = scope_id.split(":")[0] if scope_id else ""
+        if leaf_name in self._dynamic_name_index(mod):
+            return False
+
+        # A parameter of an enclosing function may be bound to a sink at the call
+        # site; resolve_canonical_name follows that binding. Walk the scope chain
+        # because the call can sit in a nested def, and cover every parameter kind
+        # (positional-only, kw-only, *args, **kwargs) - missing one silently prunes
+        # a higher-order sink such as `def run(*fns): fns[0](x)`.
+        if leaf_name in self._enclosing_param_names(scope_id):
+            return False
+
+        return True
+
+    def _enclosing_param_names(self, scope_id: str) -> frozenset:
+        """Every parameter name visible from `scope_id`, innermost scope outward.
+
+        Cached across calls; invalidated when the function table grows because
+        scope collection and sink detection are separate passes.
+        """
+        size = len(self.functions)
+        cache = self._param_name_cache
+        if cache is None or cache[0] != size:
+            cache = (size, {})
+            self._param_name_cache = cache
+        table = cache[1]
+
+        hit = table.get(scope_id)
+        if hit is not None:
+            return hit
+
+        names: set = set()
+        curr = scope_id
+        seen = set()
+        while curr and curr not in seen:
+            seen.add(curr)
+            fn = self.functions.get(curr)
+            if fn is not None:
+                args = fn.args
+                names.update(a.arg for a in args.args)
+                names.update(a.arg for a in getattr(args, "posonlyargs", []))
+                names.update(a.arg for a in getattr(args, "kwonlyargs", []))
+                if getattr(args, "vararg", None):
+                    names.add(args.vararg.arg)
+                if getattr(args, "kwarg", None):
+                    names.add(args.kwarg.arg)
+            if "." in curr and "function" in curr:
+                curr = curr.rsplit(".", 1)[0]
+            else:
+                break
+
+        result = frozenset(names)
+        table[scope_id] = result
+        return result
+
     def is_sink_call(self, node: ast.AST, scope_id: str = "", lineno: int = 0) -> bool:
         if not isinstance(node, ast.Call): return False
         call_lineno = lineno or getattr(node, "lineno", 0)
@@ -3030,25 +3197,30 @@ class TaintTracker:
             if CLUSTER3_NOSEC_RE.search(line_text):
                 return False
         
-        # TimeCodeSecurity OPTIMIZATION (DISABLED - causes 7 FN in CWE-1336):
-        # O(1) fast-path pre-filter using leaf name frozenset was attempted but caused
-        # false negatives in test_v03_bad.py where jinja2.Template(parts["tmpl"]) calls
-        # were not being registered despite passing all checks. Root cause under investigation.
-        # TODO: Re-enable after fixing sink registration pipeline (Task #25)
-        # 
-        # func_node = node.func
-        # leaf_name = None
-        # if isinstance(func_node, ast.Name):
-        #     leaf_name = func_node.id
-        # elif isinstance(func_node, ast.Attribute):
-        #     leaf_name = func_node.attr
-        # 
-        # if leaf_name and leaf_name not in SINK_LEAF_NAMES:
-        #     is_contract_candidate = (self.function_contracts and 
-        #                              isinstance(func_node, ast.Name) and 
-        #                              func_node.id in self.function_contracts)
-        #     if not is_contract_candidate and not self._has_disabled_ssl(node, scope_id):
-        #         return False
+        # ── O(1) fast path ────────────────────────────────────────────────────
+        # ~95% of call sites in a large codebase name a callee that no sink rule
+        # can match. Extracting the leaf identifier and testing one frozenset
+        # avoids dotted_name() + resolve_canonical_name() (scope walks, import
+        # folding, parameter resolution) for all of them.
+        #
+        # Soundness: SINK_CANDIDATE_NAMES must over-approximate every leaf any
+        # branch below can match, and _fast_path_prunable() must rule out every
+        # way canonical resolution could rewrite the leaf into a sink name.
+        # A call whose func is neither Name nor Attribute (e.g. the
+        # `getattr(recv, dyn)(...)` reflection family) has no leaf to test and is
+        # always passed through to full resolution.
+        func_node = node.func
+        if isinstance(func_node, ast.Name):
+            leaf_name: Optional[str] = func_node.id
+        elif isinstance(func_node, ast.Attribute):
+            leaf_name = func_node.attr
+        else:
+            leaf_name = None
+
+        if (leaf_name is not None
+                and leaf_name not in SINK_CANDIDATE_NAMES
+                and self._fast_path_prunable(node, leaf_name, scope_id)):
+            return False
         
         name = dotted_name(node.func) or ""
         canon = self.resolve_canonical_name(node.func, scope_id) if scope_id else name
@@ -3108,18 +3280,7 @@ class TaintTracker:
             if "." in c:
                 candidates.add(c.split(".")[-1])
         
-        cwe338_names = {
-            "random.random", "random.randint", "random.choice", "random.randrange", "random.sample",
-            "random.choices", "random.shuffle", "random.randbytes", "random.uniform", "random.triangular",
-            "random.betavariate", "random.expovariate", "random.gammavariate", "random.gauss",
-            "random.lognormvariate", "random.normalvariate", "random.vonmisesvariate",
-            "random.paretovariate", "random.weibullvariate", "random.getrandbits", "random.Random",
-            "randint", "randrange", "choice", "choices", "sample", "shuffle", "randbytes",
-            "uniform", "triangular", "betavariate", "expovariate", "gammavariate", "gauss",
-            "lognormvariate", "normalvariate", "vonmisesvariate", "paretovariate", "weibullvariate",
-            "getrandbits", "random"
-        }
-        if candidates & cwe338_names:
+        if candidates & CWE338_RANDOM_NAMES:
             # Exclude calls on SystemRandom instances: random.SystemRandom().randint()
             if isinstance(node.func, ast.Attribute):
                 receiver_name = dotted_name(node.func.value) or ""
@@ -14857,6 +15018,9 @@ class TaintTracker:
                         )
 
     def analyze(self):
+        import gc
+        if gc.isenabled():
+            gc.disable()
         """Analyze all modules for security vulnerabilities with phase-level profiling."""
         import time as _time
         import sys as _sys

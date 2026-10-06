@@ -1369,3 +1369,62 @@ def match_sink_rule(node: ast.AST, name: str, canon_name: Optional[str] = None) 
 
 def check_sink_safety_rules(node: ast.Call, sink_name: str) -> bool:
     return GLOBAL_RULE_REGISTRY.check_safety(node, sink_name)
+
+
+# ==============================================================================
+# Sink matcher name contract (consumed by ast_scanner's O(1) fast path)
+# ==============================================================================
+
+def _harvest_sink_matcher_names() -> frozenset:
+    """Every identifier literal a sink matcher can test a call name against.
+
+    ast_scanner builds an O(1) pre-filter from this, so it MUST be an
+    over-approximation: a name missing here silently prunes a real sink. That is
+    exactly how `render` (CWE-1336) went missing when the filter was derived from
+    SINK_REGISTRY alone. Harvested from this module's own source rather than
+    hand-listed, so it cannot drift when a matcher gains a name.
+    """
+    import pathlib
+
+    names: set = set()
+
+    def _add(value) -> None:
+        if not isinstance(value, str) or not value:
+            return
+        parts = value.split(".")
+        if all(part.isidentifier() for part in parts):
+            names.add(value)
+            names.add(parts[-1])
+
+    tree = ast.parse(pathlib.Path(__file__).read_text(encoding="utf-8"))
+
+    # 1. Literals inside every sink matcher body (target_names, attr checks, ...).
+    for fn in ast.walk(tree):
+        if isinstance(fn, ast.FunctionDef) and fn.name.endswith("_sink_matcher"):
+            for lit in ast.walk(fn):
+                if isinstance(lit, ast.Constant):
+                    _add(lit.value)
+
+    # 2. Any set/frozenset literal of names, module level or local
+    #    (_EXECUTE_FAMILY, CWE78_SINKS, CWE22_PATH_ATTRS, ...).
+    for node in ast.walk(tree):
+        container = node
+        if (isinstance(node, ast.Call) and isinstance(node.func, ast.Name)
+                and node.func.id in ("frozenset", "set") and node.args):
+            container = node.args[0]
+        if isinstance(container, (ast.Set, ast.List, ast.Tuple)):
+            if container.elts and all(isinstance(e, ast.Constant) and isinstance(e.value, str)
+                                      for e in container.elts):
+                for elt in container.elts:
+                    _add(elt.value)
+
+    # 3. Declarative sink table merged into several matchers at call time.
+    for spec in DECLARATIVE_RULES_BY_CWE.values():
+        if isinstance(spec, dict):
+            for entry in spec.get("sinks") or ():
+                _add(entry)
+
+    return frozenset(names)
+
+
+SINK_MATCHER_NAMES = _harvest_sink_matcher_names()

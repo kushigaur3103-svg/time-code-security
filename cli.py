@@ -2,6 +2,7 @@
 
 import argparse
 import ast
+import fnmatch
 import json
 import os
 from pathlib import Path
@@ -60,15 +61,51 @@ def _file_key(path, cwd):
         return path.resolve().as_posix()
 
 
+def _parse_exclude_patterns(raw):
+    if not raw:
+        return None
+    return [p.strip() for p in raw.split(",") if p.strip()] or None
+
+
+def _is_excluded(path, root, exclude_patterns):
+    """True when `path` matches any exclude pattern.
+
+    Patterns are matched three ways because users write all three: a bare directory
+    name (`tests`), a filename glob (`test_*.py`) and a rooted relative glob
+    (`contrib/*/tests/*`). Matching only the basename or only the full relative path
+    silently keeps nested hits, which is how `--exclude tests` used to survive
+    `django/contrib/auth/tests/models.py`.
+
+    Relative paths are normalised to POSIX before fnmatch, whose separator handling
+    is not portable: on Windows `str(Path.relative_to())` yields backslashes, so a
+    pattern containing `/` could never match.
+    """
+    if not exclude_patterns:
+        return False
+    try:
+        rel = path.relative_to(root)
+    except ValueError:
+        rel = path
+    rel_posix = rel.as_posix()
+    name = path.name
+    parts = rel.parts
+    for pattern in exclude_patterns:
+        if fnmatch.fnmatchcase(rel_posix, pattern):
+            return True
+        if fnmatch.fnmatchcase(name, pattern):
+            return True
+        if any(fnmatch.fnmatchcase(part, pattern) for part in parts):
+            return True
+    return False
+
+
 def _collect_files(scan_path, exclude_patterns=None):
     """Collect Python files from scan path, optionally excluding by glob patterns.
-    
+
     Args:
         scan_path: Path object (file or directory)
         exclude_patterns: List of glob patterns to exclude (e.g., ['tests', 'test_*'])
     """
-    import fnmatch
-    
     cwd = Path.cwd().resolve()
     if not scan_path.exists():
         raise FileNotFoundError(f"Path does not exist: {scan_path}")
@@ -77,33 +114,11 @@ def _collect_files(scan_path, exclude_patterns=None):
             raise ValueError(f"Expected a Python file: {scan_path}")
         paths = [scan_path]
     elif scan_path.is_dir():
-        all_paths = sorted(
+        paths = sorted(
             path for path in scan_path.rglob("*.py")
             if not any(part in IGNORED_DIRS for part in path.parts)
+            and not _is_excluded(path, scan_path, exclude_patterns)
         )
-        
-        # Apply exclusion filters if provided
-        if exclude_patterns:
-            paths = []
-            for path in all_paths:
-                rel_path = str(path.relative_to(scan_path)) if scan_path.is_dir() else str(path)
-                excluded = False
-                for pattern in exclude_patterns:
-                    # Check if pattern matches any part of the path or the filename
-                    if fnmatch.fnmatch(rel_path, pattern) or fnmatch.fnmatch(path.name, pattern):
-                        excluded = True
-                        break
-                    # Also check each path component
-                    for part in path.parts:
-                        if fnmatch.fnmatch(part, pattern):
-                            excluded = True
-                            break
-                    if excluded:
-                        break
-                if not excluded:
-                    paths.append(path)
-        else:
-            paths = all_paths
     else:
         raise ValueError(f"Path is not a regular file or directory: {scan_path}")
 
@@ -126,10 +141,12 @@ def _collect_files(scan_path, exclude_patterns=None):
     return files
 
 
-def _collect_auxiliary_files(scan_path):
+def _collect_auxiliary_files(scan_path, exclude_patterns=None):
     """Collect non-Python artefacts in one walk: (templates, IaC documents).
 
-    Keys match _collect_files so findings share a single path namespace.
+    Keys match _collect_files so findings share a single path namespace, and
+    `--exclude` applies here too: a template under an excluded directory is just as
+    out of scope as a .py file under it.
     """
     cwd = Path.cwd().resolve()
     if not scan_path.exists():
@@ -141,6 +158,7 @@ def _collect_auxiliary_files(scan_path):
         paths = sorted(
             path for path in scan_path.rglob("*")
             if path.is_file() and not any(part in IGNORED_DIRS for part in path.parts)
+            and not _is_excluded(path, scan_path, exclude_patterns)
         )
     else:
         return {}, {}
@@ -805,7 +823,8 @@ def _scan(args):
     
     try:
         line_ranges = _parse_line_ranges(getattr(args, "lines", None))
-        templates, iac = _collect_auxiliary_files(args.path)
+        exclude_patterns = _parse_exclude_patterns(getattr(args, "exclude", None))
+        templates, iac = _collect_auxiliary_files(args.path, exclude_patterns)
         if scope not in ("all", "html"):
             templates = {}
         if scope not in ("all", "docker"):
@@ -813,11 +832,6 @@ def _scan(args):
         tracker = None
         files = {}
         if scope in ("all", "python"):
-            # Parse exclude patterns from CLI argument
-            exclude_patterns = None
-            if getattr(args, "exclude", None):
-                exclude_patterns = [p.strip() for p in args.exclude.split(",") if p.strip()]
-            
             try:
                 files = _collect_files(args.path, exclude_patterns=exclude_patterns)
             except ValueError:
@@ -1092,13 +1106,9 @@ def _print_compare_scoreboard(tool, tcs_ms, competitor_ms, matched, tcs_only, co
 
 def _compare(args):
     try:
-        templates, iac = _collect_auxiliary_files(args.path)
-        
-        # Parse exclude patterns from CLI argument (if provided for compare mode)
-        exclude_patterns = None
-        if getattr(args, "exclude", None):
-            exclude_patterns = [p.strip() for p in args.exclude.split(",") if p.strip()]
-        
+        exclude_patterns = _parse_exclude_patterns(getattr(args, "exclude", None))
+        templates, iac = _collect_auxiliary_files(args.path, exclude_patterns)
+
         try:
             files = _collect_files(args.path, exclude_patterns=exclude_patterns)
         except ValueError:
