@@ -1260,7 +1260,8 @@ CLUSTER3_YAML_ROOT = "yaml"
 CLUSTER3_YAML_UNSAFE_LOADERS = {"Loader", "UnsafeLoader", "FullLoader", "CLoader"}
 CLUSTER3_YAML_UNSAFE_SEGS = {"unsafe_load"}
 CLUSTER3_PICKLE_ROOTS = {"pickle", "_pickle", "cPickle", "dill", "shelve", "marshal"}
-CLUSTER3_PICKLE_METHOD_SEGS = {"loads", "dumps"}
+# `dumps`/`dump` build a payload; only the loads side turns attacker bytes into objects.
+CLUSTER3_PICKLE_METHOD_SEGS = {"loads"}
 CLUSTER3_SHELVE_OPEN_SEG = "open"
 CLUSTER3_CSRF_EXEMPT_SEG = "csrf_exempt"
 # FastAPI, Starlette and python-ninja routers answer JSON over bearer/token auth. There is no
@@ -3026,6 +3027,374 @@ class TaintTracker:
 
         return False
 
+    # ----------------------------------------------------------------------
+    # Source legitimacy.
+    #
+    # Matching a dangerous callee is only half of a finding: something outside the
+    # program's own text has to be able to change the value that reaches it. These
+    # predicates settle that for the argument shapes behind most reported false
+    # positives — a path re-derived from `__file__` on every run, an argv list of
+    # constants, a stream opened on a hardcoded filename, a comparison against a
+    # literal. Each walks assignment records instead of guessing, and answers False
+    # for anything it cannot explain, so an unproven argument keeps its finding.
+    # ----------------------------------------------------------------------
+    _INERT_MODULE_ROOTS = frozenset({
+        "os", "sys", "uuid", "secrets", "hashlib", "string", "base64", "binascii",
+        "math", "time", "platform", "stat", "posixpath", "ntpath", "pathlib", "io",
+        "builtins", "datetime", "itertools", "functools", "codecs", "tempfile",
+    })
+    _INERT_CALLEES = frozenset({
+        "open", "str", "repr", "bytes", "bytearray", "int", "float", "bool", "list",
+        "dict", "tuple", "set", "frozenset", "len", "abs", "min", "max", "sum",
+        "round", "sorted", "reversed", "enumerate", "range", "zip", "map", "filter",
+        "ord", "chr", "hex", "oct", "divmod", "isinstance", "issubclass", "type",
+        "id", "hash", "getattr", "hasattr", "setattr", "print", "format", "complex",
+        "vars", "dir", "iter", "next", "slice", "memoryview",
+    })
+    _SELF_DESCRIBED_NAMES = frozenset({"__file__", "__cached__", "__name__", "__doc__"})
+    _SELF_DESCRIBED_ATTRS = frozenset({
+        "sys.executable", "sys.prefix", "sys.base_prefix", "sys.exec_prefix",
+        "sys.baseline_prefix", "sys.platform", "sys.version_info", "sys.byteorder",
+        "sys.api_version", "os.curdir", "os.sep", "os.pathsep", "os.defpath",
+        "os.name", "os.altsep",
+    })
+    _EXTERNAL_VALUE_PATHS = ("os.environ", "os.getenv", "sys.argv", "sys.environ", "sys.stdin")
+    _EXTERNAL_CALLEE_SEGS = frozenset({"input", "raw_input", "getenv", "getenvb", "system", "popen"})
+    _NONCE_METHOD_SEGS = frozenset({
+        "uuid4", "uuid1", "uuid3", "uuid5", "uuid6", "UUID", "token_hex",
+        "token_urlsafe", "token_bytes", "urandom", "getrandbits", "randbytes",
+        "md5", "sha1", "sha224", "sha256", "sha384", "sha512", "sha3_256",
+        "sha3_512", "blake2b", "blake2s",
+    })
+    _NULLARY_SEGS = frozenset({"getcwd", "getcwdb", "curdir", "sep", "pathsep"})
+    _DIR_ITERATION_SEGS = frozenset({"listdir", "scandir", "walk", "iterdir", "glob", "iglob"})
+
+    def _is_module_qualified(self, expr: ast.AST) -> bool:
+        """True for `os.path`, `uuid`, `base64` — a stdlib handle, not program data.
+
+        The external-value paths are excluded first, because `os.environ` and
+        `sys.argv` share the root name of their inert neighbours while being exactly
+        the input an attacker controls.
+        """
+        text = dotted_name(expr) or ""
+        if not text:
+            return False
+        if any(text == prefix or text.startswith(prefix + ".") or text.startswith(prefix + "[")
+               for prefix in self._EXTERNAL_VALUE_PATHS):
+            return False
+        return text.split(".")[0] in self._INERT_MODULE_ROOTS
+
+    def _dir_listing_names(self, mod_name: str) -> frozenset:
+        """Loop variables fed by a directory enumeration.
+
+        `for item in os.listdir(cwd)` can only ever name an entry that already exists
+        inside `cwd`, so such a variable cannot carry a traversal sequence. Cached per
+        module because the sink loops ask for it once per call site.
+        """
+        cache = self.__dict__.setdefault("_dir_listing_cache", {})
+        if mod_name not in cache:
+            names = set()
+            tree = self.modules.get(mod_name)
+            if tree is not None:
+                for node in ast.walk(tree):
+                    if not isinstance(node, (ast.For, ast.AsyncFor)):
+                        continue
+                    it = node.iter
+                    if (isinstance(it, ast.Call) and isinstance(it.func, ast.Attribute)
+                            and it.func.attr in self._DIR_ITERATION_SEGS
+                            and self._is_module_qualified(it.func)):
+                        for target in ([node.target] if isinstance(node.target, ast.Name)
+                                       else getattr(node.target, "elts", [])):
+                            if isinstance(target, ast.Name):
+                                names.add(target.id)
+            cache[mod_name] = frozenset(names)
+        return cache[mod_name]
+
+    def _is_self_described(self, expr: ast.AST, scope_id: str = "", lineno: int = 0,
+                           depth: int = 0) -> bool:
+        """Can anything outside this source file change `expr`?
+
+        A path built by `os.path.join(os.path.dirname(__file__), "playground/A9/main.py")`
+        and an argv list of literals reproduce the same value on every run, so reporting
+        them as traversal or injection teaches a reviewer nothing. The answer is built by
+        following each name to the assignments that could have written it: a literal, a
+        stdlib handle, a uuid/hashlib nonce or a `os.listdir()` entry is self-described,
+        while a parameter, an unexplained name or a `request`-derived value is not.
+        """
+        if expr is None or depth > 8:
+            return False
+        if isinstance(expr, ast.Constant):
+            return True
+        if isinstance(expr, (ast.List, ast.Tuple, ast.Set)):
+            return all(self._is_self_described(e, scope_id, lineno, depth + 1) for e in expr.elts)
+        if isinstance(expr, ast.Dict):
+            return all(self._is_self_described(v, scope_id, lineno, depth + 1) for v in expr.values)
+        if isinstance(expr, ast.JoinedStr):
+            return all(self._is_self_described(v, scope_id, lineno, depth + 1) for v in expr.values)
+        if isinstance(expr, ast.FormattedValue):
+            return self._is_self_described(expr.value, scope_id, lineno, depth + 1)
+        if isinstance(expr, (ast.BinOp, ast.Subscript)):
+            halves = [expr.left, expr.right] if isinstance(expr, ast.BinOp) else [expr.value, expr.slice]
+            return all(self._is_self_described(h, scope_id, lineno, depth + 1) for h in halves if h is not None)
+        if isinstance(expr, ast.IfExp):
+            # The test only picks between two values the source already contains.
+            return (self._is_self_described(expr.body, scope_id, lineno, depth + 1)
+                    and self._is_self_described(expr.orelse, scope_id, lineno, depth + 1))
+        if isinstance(expr, ast.UnaryOp):
+            return self._is_self_described(expr.operand, scope_id, lineno, depth + 1)
+        if isinstance(expr, ast.Name):
+            if (expr.id in self._SELF_DESCRIBED_NAMES or expr.id in self._NULLARY_SEGS
+                    or expr.id in self._INERT_MODULE_ROOTS):
+                return True
+            mod_name = scope_module(scope_id) if scope_id else ""
+            if mod_name and expr.id in self._dir_listing_names(mod_name):
+                return True
+            records = _assignment_records(self.assignments_by_scope, expr.id, scope_id, lineno)
+            if not records:
+                return False
+            return all(self._is_self_described(r.value_node, r.scope_id, r.lineno, depth + 1)
+                       for r in records)
+        if isinstance(expr, ast.Attribute):
+            text = dotted_name(expr) or ""
+            if any(text == prefix or text.startswith(prefix + ".") or text.startswith(prefix + "[")
+                   for prefix in self._EXTERNAL_VALUE_PATHS):
+                return False
+            if text in self._SELF_DESCRIBED_ATTRS:
+                return True
+            if self._is_module_qualified(expr):
+                return True
+            return self._is_self_described(expr.value, scope_id, lineno, depth + 1)
+        if isinstance(expr, ast.Call):
+            func = expr.func
+            seg = ""
+            if isinstance(func, ast.Attribute):
+                seg = func.attr
+            elif isinstance(func, ast.Name):
+                seg = func.id
+            if not seg or seg in self._EXTERNAL_CALLEE_SEGS:
+                return False
+            call_text = dotted_name(func) or ""
+            if any(call_text.startswith(prefix) for prefix in self._EXTERNAL_VALUE_PATHS):
+                return False
+            if seg in self._NONCE_METHOD_SEGS and not expr.keywords:
+                return all(self._is_self_described(a, scope_id, lineno, depth + 1) for a in expr.args)
+            if seg in self._NULLARY_SEGS and not expr.args and not expr.keywords:
+                return True
+            parts = list(expr.args) + [kw.value for kw in expr.keywords]
+            if isinstance(func, ast.Attribute):
+                receiver = func.value
+                if not (self._is_module_qualified(receiver)
+                        or self._is_self_described(receiver, scope_id, lineno, depth + 1)):
+                    return False
+            elif not isinstance(func, ast.Name) or func.id not in self._INERT_CALLEES:
+                return False
+            return all(self._is_self_described(p, scope_id, lineno, depth + 1) for p in parts)
+        return False
+
+    def _compares_two_secrets(self, node: ast.Compare) -> bool:
+        """Is this a secret-vs-secret comparison, the only kind that leaks timing?
+
+        `token == None`, `tokens[i][0] == '<input'` and `x[:7] == 'value="'` branch on
+        markup prefixes and presence, so their running time discloses nothing an
+        attacker does not already hold. A literal on either side of the operator makes
+        the compared value a fact of the source text.
+        """
+        operands = [node.left] + list(node.comparators)
+        return not any(isinstance(o, ast.Constant) for o in operands)
+
+    def _deserializes_own_document(self, call: ast.Call, scope_id: str = "", lineno: int = 0) -> bool:
+        """True when the bytes being deserialized are chosen by the source file itself.
+
+        `yaml.load(open('/home/fox/test.yaml'))` reaches an unsafe Loader, but the only
+        author of that document is the repository, so there is no payload an attacker
+        controls and the sink is inert. A stream this predicate cannot explain keeps its
+        finding.
+        """
+        if not call.args:
+            return False
+        return self._is_self_described(call.args[0], scope_id, lineno)
+
+    def _node_enclosing_scope(self, node: ast.AST, scope_id: str = "") -> str:
+        """The function scope *node* really sits in, rebuilt from its parent chain.
+
+        Several structural collectors register their sink records under the module scope
+        even when the call lives inside a view function, so an assignment lookup from that
+        scope comes up empty and an explainable sink looks unexplained. Recovering the
+        enclosing scope makes the record's own context usable again.
+        """
+        mod_name = scope_module(scope_id) if scope_id else ""
+        current = getattr(node, "parent", None)
+        while current is not None:
+            if isinstance(current, (ast.FunctionDef, ast.AsyncFunctionDef)):
+                candidate = f"{mod_name}:function:{current.name}"
+                if candidate in self.functions:
+                    return candidate
+                for known in self.functions:
+                    if known.endswith(f":function:{current.name}") or \
+                       known.endswith(f":function:{current.name}."):
+                        return known
+                return scope_id
+            current = getattr(current, "parent", None)
+        return scope_id
+
+    def _read_subordinate_to_traversal(self, node: ast.Call, scope_id: str = "") -> bool:
+        """True when an unbounded read is the second half of a traversal already reported.
+
+        `filename = os.path.join(dirname, request.POST['blog'])`, then `open(filename)`,
+        then `file.read()` is one defect: the attacker chose *which* file gets disclosed,
+        and the size of that file adds nothing a reviewer can act on beyond the finding on
+        the `open()` line. Matching the recorded sink by node identity rather than by line
+        number keeps that conclusion tied to the very call that produced it. A read this
+        method cannot trace to such an open keeps its finding, which is what keeps a plain
+        `open("huge_data.bin")` + `f.read()` reported.
+        """
+        receiver = node.func.value if isinstance(node.func, ast.Attribute) else None
+        if not isinstance(receiver, ast.Name):
+            return False
+        lineno = getattr(node, "lineno", 0)
+        scopes = [scope_id]
+        own_scope = self._node_enclosing_scope(node, scope_id)
+        if own_scope and own_scope != scope_id:
+            scopes.append(own_scope)
+        for candidate_scope in scopes:
+            for record in _assignment_records(self.assignments_by_scope, receiver.id,
+                                              candidate_scope, lineno):
+                writer = record.value_node
+                if not (isinstance(writer, ast.Call) and writer.args):
+                    continue
+                func = writer.func
+                seg = func.attr if isinstance(func, ast.Attribute) else (
+                    func.id if isinstance(func, ast.Name) else "")
+                if seg != "open":
+                    continue
+                if self._is_self_described(writer.args[0], record.scope_id, record.lineno):
+                    return False
+                return any(
+                    rec.node is writer and (rec.security_node.metadata or {}).get("cwe") == "CWE-22"
+                    for rec in self.sink_records
+                )
+        return False
+
+    _UPLOAD_HANDLE_MARKERS = ("request.files", "uploadedfile", "uploadedimagefile",
+                              "temporaryuploadedfile")
+
+    def _is_upload_handle(self, expr: Optional[ast.AST], scope_id: str = "",
+                          lineno: int = 0, depth: int = 0) -> bool:
+        """True for an in-memory uploaded-file object, which is not a path string.
+
+        `Image.open(request.FILES['file'])` hands PIL a file-like object; the upload's
+        filename never participates in resolving anything on disk, so the traversal sink
+        the callee name suggests is unreachable from that argument.
+        """
+        if expr is None or depth > 6:
+            return False
+        if isinstance(expr, ast.Attribute):
+            text = (dotted_name(expr) or "").lower()
+            if any(marker in text for marker in self._UPLOAD_HANDLE_MARKERS):
+                return True
+        if isinstance(expr, ast.Call) and isinstance(expr.func, ast.Attribute) \
+                and expr.func.attr in ("get", "getlist"):
+            recv = (dotted_name(expr.func.value) or "").lower()
+            if any(marker in recv for marker in self._UPLOAD_HANDLE_MARKERS):
+                return True
+        if isinstance(expr, ast.Subscript):
+            return self._is_upload_handle(expr.value, scope_id, lineno, depth + 1)
+        if isinstance(expr, ast.Name):
+            for record in _assignment_records(self.assignments_by_scope, expr.id,
+                                              scope_id, lineno):
+                if self._is_upload_handle(record.value_node, record.scope_id,
+                                          record.lineno, depth + 1):
+                    return True
+        return False
+
+    _ORM_READ_SEGS = frozenset({"get", "filter", "exclude", "get_or_create"})
+    _REQUEST_SEGS = frozenset({"get", "getlist", "post", "data", "json", "body", "form",
+                               "args", "query", "params", "files", "headers", "cookies",
+                               "session", "env", "environ", "argv", "stdin"})
+
+    def _locally_defined_names(self) -> set:
+        names = self.__dict__.get("_local_name_cache")
+        if names is None:
+            names = set()
+            for scope_id in self.functions:
+                tail = scope_id.rsplit(":function:", 1)
+                if len(tail) == 2:
+                    names.add(tail[1].split(".", 1)[0])
+            self.__dict__["_local_name_cache"] = names
+        return names
+
+    def _has_untrusted_command_lineage(self, expr: Optional[ast.AST], scope_id: str = "",
+                                       lineno: int = 0, depth: int = 0) -> bool:
+        """True when attacker-chosen bytes can reach a command argument.
+
+        An argv execution without a shell hands every element to `execve` verbatim, so
+        nothing is parsed and no element can smuggle in an extra command. Literals and
+        self-describing values never carry attacker bytes, and neither does a row read
+        back through the ORM (`Model.objects.get(...)`) — those column values were written
+        by the application or an administrator. Anything this method cannot explain, such
+        as a function parameter or the result of an imported callable, is treated as
+        attacker-controlled so the finding stays.
+        """
+        if expr is None or depth > 8:
+            return False
+        if self._is_self_described(expr, scope_id, lineno):
+            return False
+        if isinstance(expr, (ast.List, ast.Tuple, ast.Set)):
+            return any(self._has_untrusted_command_lineage(element, scope_id, lineno, depth + 1)
+                       for element in expr.elts)
+        if isinstance(expr, ast.Dict):
+            return any(self._has_untrusted_command_lineage(value, scope_id, lineno, depth + 1)
+                       for value in expr.values)
+        if isinstance(expr, ast.JoinedStr):
+            return any(self._has_untrusted_command_lineage(value, scope_id, lineno, depth + 1)
+                       for value in expr.values)
+        if isinstance(expr, ast.FormattedValue):
+            return self._has_untrusted_command_lineage(expr.value, scope_id, lineno, depth + 1)
+        if isinstance(expr, ast.BinOp):
+            return (self._has_untrusted_command_lineage(expr.left, scope_id, lineno, depth + 1)
+                    or self._has_untrusted_command_lineage(expr.right, scope_id, lineno, depth + 1))
+        if isinstance(expr, ast.UnaryOp):
+            return self._has_untrusted_command_lineage(expr.operand, scope_id, lineno, depth + 1)
+        if isinstance(expr, ast.Subscript):
+            return self._has_untrusted_command_lineage(expr.value, scope_id, lineno, depth + 1)
+        if isinstance(expr, ast.Starred):
+            return self._has_untrusted_command_lineage(expr.value, scope_id, lineno, depth + 1)
+        if isinstance(expr, ast.Attribute):
+            receiver_text = (dotted_name(expr.value) or "").lower() if isinstance(expr.value, ast.AST) else ""
+            if expr.attr.lower() in self._REQUEST_SEGS and (
+                    "request" in receiver_text or "environ" in receiver_text
+                    or receiver_text in ("os", "sys")):
+                return True
+            return self._has_untrusted_command_lineage(expr.value, scope_id, lineno, depth + 1)
+        if isinstance(expr, ast.Call):
+            func = expr.func
+            segment = func.attr if isinstance(func, ast.Attribute) else (
+                func.id if isinstance(func, ast.Name) else "")
+            receiver_text = ""
+            if isinstance(func, ast.Attribute) and isinstance(func.value, ast.AST):
+                receiver_text = (dotted_name(func.value) or "").lower()
+            if segment in self._ORM_READ_SEGS and receiver_text.endswith("objects"):
+                return False
+            if (segment in self._REQUEST_SEGS
+                    and ("request" in receiver_text or receiver_text in ("os.environ", "sys"))):
+                return True
+            parts = list(expr.args) + [kw.value for kw in expr.keywords]
+            if isinstance(func, ast.Attribute):
+                parts.append(func.value)
+            elif isinstance(func, ast.Name) and func.id not in self._locally_defined_names():
+                # Result of an imported or builtin callable: provenance unknown.
+                return True
+            return any(self._has_untrusted_command_lineage(part, scope_id, lineno, depth + 1)
+                       for part in parts)
+        if isinstance(expr, ast.Name):
+            records = _assignment_records(self.assignments_by_scope, expr.id, scope_id, lineno)
+            if not records:
+                return True
+            return any(self._has_untrusted_command_lineage(record.value_node, record.scope_id,
+                                                          record.lineno, depth + 1)
+                       for record in records)
+        return True
+
     def _is_dummy_validator_func(self, func_node: ast.FunctionDef) -> bool:
         """Check if a validator function is a dummy (e.g. merely returns True without checks)."""
         meaningful = []
@@ -3407,6 +3776,8 @@ class TaintTracker:
             if node.func.attr == "read" and len(node.args) == 0:
                 if self._is_definitely_safe_local_read(node.func.value, scope_id, call_lineno):
                     return False
+                if self._read_subordinate_to_traversal(node, scope_id):
+                    return False
                 return True
 
         # Asyncio run_in_executor callback sink (exec/eval)
@@ -3476,7 +3847,8 @@ class TaintTracker:
                     }
                 # 3. Check for unbounded read (CWE-400)
                 elif isinstance(node.func, ast.Attribute) and node.func.attr == "read" and len(node.args) == 0:
-                    meta = {"operation": "UNBOUNDED_READ", "category": "RESOURCE_EXHAUSTION", "cwe": "CWE-400"}
+                    if not self._read_subordinate_to_traversal(node, scope_id):
+                        meta = {"operation": "UNBOUNDED_READ", "category": "RESOURCE_EXHAUSTION", "cwe": "CWE-400"}
                 # 4. Check for asyncio run_in_executor with exec/eval (CWE-95)
                 elif ((isinstance(node.func, ast.Attribute) and node.func.attr == "run_in_executor") or
                       (isinstance(node.func, ast.Name) and node.func.id == "run_in_executor")) and len(node.args) >= 3:
@@ -8707,7 +9079,8 @@ class TaintTracker:
 
                 # ---- CWE-502: yaml unsafe loaders ----
                 if chain and chain[0] == CLUSTER3_YAML_ROOT and \
-                        last_seg in CLUSTER3_YAML_UNSAFE_SEGS:
+                        last_seg in CLUSTER3_YAML_UNSAFE_SEGS and \
+                        not self._deserializes_own_document(node, scope, lineno):
                     _add(node, "UNSAFE_YAML_LOADER", "DESERIALIZATION", "CWE-502")
                 elif chain and chain[0] == CLUSTER3_YAML_ROOT and \
                         last_seg in {"load", "load_all"}:
@@ -8716,7 +9089,8 @@ class TaintTracker:
                     if loader_kw is not None:
                         loader_name = _segments(loader_kw.value)[-1] if \
                             _segments(loader_kw.value) else ""
-                        if loader_name in CLUSTER3_YAML_UNSAFE_LOADERS:
+                        if loader_name in CLUSTER3_YAML_UNSAFE_LOADERS and \
+                                not self._deserializes_own_document(node, scope, lineno):
                             _add(node, "UNSAFE_YAML_LOADER", "DESERIALIZATION", "CWE-502")
 
                 # ---- CWE-502: pickle-family and marshal/shelve usage ----
@@ -9559,7 +9933,8 @@ class TaintTracker:
                     elif fn_name in ("read", "recv") and len(node.args) == 0 and not getattr(node, "keywords", []):
                         if not has_path_sanitizer:
                             r_name = (dotted_name(node.func.value) or (node.func.value.id if isinstance(node.func.value, ast.Name) else "")) if isinstance(node.func, ast.Attribute) else ""
-                            if r_name in ("f", "file", "stream", "self.f", "s", "sock") or "stream" in r_name or fn_name == "recv":
+                            if ((r_name in ("f", "file", "stream", "self.f", "s", "sock") or "stream" in r_name or fn_name == "recv")
+                                    and not self._read_subordinate_to_traversal(node, scope_id)):
                                 cwe_meta = {"operation": "UNBOUNDED_RESOURCE_ALLOCATION", "category": "RESOURCE_EXHAUSTION", "cwe": "CWE-770"}
 
                     # CWE-668: Framework server bound to a public interface.
@@ -9860,7 +10235,8 @@ class TaintTracker:
                         if not has_digest:
                             all_names = [n.id.lower() for n in ast.walk(node) if isinstance(n, ast.Name)]
                             sensitive_markers = ("token", "secret", "signature", "hmac", "api_key", "auth_token")
-                            if any(any(m in name for m in sensitive_markers) for name in all_names):
+                            if (any(any(m in name for m in sensitive_markers) for name in all_names)
+                                    and self._compares_two_secrets(node)):
                                 key = ("CWE-208", getattr(node, "lineno", 1), getattr(node, "col_offset", 0))
                                 if key not in seen:
                                     seen.add(key)
@@ -10600,9 +10976,13 @@ class TaintTracker:
                 names = _call_names(node, scope_id)
                 lineno = getattr(node, "lineno", 1)
 
+                # A document the scanned program wrote itself is not an attacker payload,
+                # whichever of the three deserialization branches matched it.
+                owns_document = self._deserializes_own_document(node, scope_id, lineno)
+
                 if names & pickle_sinks:
                     payload = _argument(node, 0, {"data", "file", "stream"})
-                    if _is_dynamic(payload, scope_id, lineno):
+                    if _is_dynamic(payload, scope_id, lineno) and not owns_document:
                         _add_finding(
                             node, mod_name, scope_id, "DESERIALIZATION",
                             "UNSAFE_DESERIALIZATION", "CWE-502",
@@ -10614,9 +10994,10 @@ class TaintTracker:
                         loader_name = self.resolve_canonical_name(loader, scope_id) or dotted_name(loader) or ""
                     # BaseLoader yields plain strings and builds no objects, so it parses
                     # without executing anything — same guarantee as the Safe pair.
-                    if loader_name.rsplit(".", 1)[-1] not in {"SafeLoader", "CSafeLoader", "BaseLoader"}:
+                    if (loader_name.rsplit(".", 1)[-1] not in {"SafeLoader", "CSafeLoader", "BaseLoader"}
+                            and not owns_document):
                         _add_finding(node, mod_name, scope_id, "DESERIALIZATION", "UNSAFE_DESERIALIZATION", "CWE-502")
-                elif names & deserialization_sinks:
+                elif names & deserialization_sinks and not owns_document:
                     _add_finding(node, mod_name, scope_id, "DESERIALIZATION", "UNSAFE_DESERIALIZATION", "CWE-502")
 
                 if "jwt.encode" in names:
@@ -10765,7 +11146,15 @@ class TaintTracker:
                                 _add_finding(node, mod_name, scope_id, "OS_COMMAND_EXECUTION", "COMMAND_INJECTION", "CWE-78")
                         # For subprocess without shell=True, flag only if executable itself is dynamic
                         elif not shell_enabled and not is_os_system:
-                            if _dynamic_executable(command, scope_id, lineno):
+                            # argv execution hands each element to execve verbatim, so a
+                            # list the program itself spells out (`sys.executable`, string
+                            # literals, a name bound to one of two literals) has no field
+                            # an attacker can populate — nothing is parsed by a shell. The
+                            # same holds for a row read back through the ORM: its column
+                            # values were written by the application, not by the request.
+                            argv_is_internal = not self._has_untrusted_command_lineage(
+                                command, scope_id, lineno)
+                            if _dynamic_executable(command, scope_id, lineno) and not argv_is_internal:
                                 _add_finding(node, mod_name, scope_id, "OS_COMMAND_EXECUTION", "COMMAND_INJECTION", "CWE-78")
 
                 # ---- Phase 12: CWE-78 exec/spawn command-payload dynamism ----
@@ -12435,6 +12824,26 @@ class TaintTracker:
                 return False
             return False
 
+        def _is_upload_handle(expr: ast.AST, scope_id: str, lineno: int) -> bool:
+            """True for an in-memory uploaded-file object, which is not a path string.
+
+            `Image.open(request.FILES['file'])` hands PIL a file-like object, so the
+            upload's filename never participates in resolving anything on disk and the
+            traversal sink the call name suggests is not reachable from it.
+            """
+            resolved = _resolve(expr, scope_id, lineno, set())
+            if resolved is None:
+                return False
+            expr, scope_id, lineno = resolved
+            texts = set()
+            for sub in ast.walk(expr):
+                if isinstance(sub, ast.Attribute):
+                    recv = _recv_text(sub)
+                    texts.update({recv, f"{recv}.{sub.attr.lower()}"})
+                elif isinstance(sub, ast.Name):
+                    texts.add(sub.id.lower())
+            return any("request.files" in text or "uploadedfile" in text for text in texts)
+
         def _has_dynamic_path(expr: ast.AST, scope_id: str, lineno: int, visited=None) -> bool:
             """Check if expression contains dynamic path construction from user input."""
             if visited is None:
@@ -12516,6 +12925,17 @@ class TaintTracker:
 
                 # Skip pure static literals
                 if isinstance(path_arg, ast.Constant) and isinstance(path_arg.value, str):
+                    continue
+
+                # A path the program derives from its own `__file__`, from a uuid nonce
+                # or from an `os.listdir()` entry has no attacker-controlled component, so
+                # traversal cannot be reached through it however the sink is spelled.
+                if self._is_self_described(path_arg, scope_id, lineno):
+                    continue
+
+                # An uploaded file handle is a stream in memory, not a filesystem path:
+                # `Image.open(request.FILES['file'])` reads the upload, never `file`'s name.
+                if _is_upload_handle(path_arg, scope_id, lineno):
                     continue
 
                 # Check for dynamic path construction from request data
@@ -12729,10 +13149,11 @@ class TaintTracker:
                         break
 
         # CWE-502 Sink Registry
-        pickle_sinks = {"loads", "load", "dumps", "dump"}
-        yaml_unsafe_funcs = {"load", "load_all", "dump", "dump_all"}
+        # Serialising is not deserialising: `dumps`/`dump` only produce bytes, which
+        # become code when something later loads them, and that load is the sink.
+        pickle_sinks = {"loads", "load"}
+        yaml_unsafe_funcs = {"load", "load_all"}
         safe_yaml_loaders = {"safeloader", "yaml.safeloader", "csafeloader", "yaml.csafeloader"}
-        safe_yaml_dumpers = {"safedumper", "yaml.safedumper", "csafedumper", "yaml.csafedumper"}
 
         for mod_name, tree in self.modules.items():
             for node in self._reachable_nodes(tree):
@@ -12770,15 +13191,9 @@ class TaintTracker:
                             if loader_name.lower() in safe_yaml_loaders or loader_seg in safe_yaml_loaders:
                                 has_safe_loader = True
                                 break
-                        elif kw.arg == "Dumper" and isinstance(kw.value, ast.AST):
-                            dumper_name = dotted_name(kw.value) or ""
-                            dumper_seg = _seg(kw.value).lower()
-                            if dumper_name.lower() in safe_yaml_dumpers or dumper_seg in safe_yaml_dumpers:
-                                has_safe_loader = True
-                                break
                     
-                    # yaml.safe_load and yaml.safe_dump are ALWAYS safe (different function name)
-                    if callee_name in {"yaml.safe_load", "yaml.safe_dump"}:
+                    # yaml.safe_load dispatches to SafeLoader by name (different function)
+                    if callee_name == "yaml.safe_load":
                         has_safe_loader = True
 
                     if not has_safe_loader:
@@ -12793,6 +13208,12 @@ class TaintTracker:
                         operation = f"JSONPICKLE_{callee_seg.upper()}"
 
                 if not is_deser_sink:
+                    continue
+
+                # An unsafe Loader only matters when someone other than the repository
+                # can author the bytes: `yaml.load(open('/home/fox/test.yaml'))` parses a
+                # document fixed in the source text and executes nothing an attacker chose.
+                if self._deserializes_own_document(node, scope_id, lineno):
                     continue
 
                 # ZERO-FP GUARD: Skip pure static constants (byte literals, hardcoded strings)
@@ -12926,6 +13347,8 @@ class TaintTracker:
             if expr is None:
                 return False
             if _is_static(expr, scope_id, lineno):
+                return True
+            if self._is_self_described(expr, scope_id, lineno):
                 return True
             if visited is None:
                 visited = set()
@@ -15547,13 +15970,34 @@ class TaintTracker:
                 ))
                 continue
 
-            if target_expr is None:
-                continue
-
             cwe = sink.metadata.get("cwe")
             stype = sink.metadata.get("sink_type")
             op = sink.metadata.get("operation")
+            if target_expr is None:
+                continue
             is_cwe22 = (cwe == "CWE-22" or stype in ("PATH_TRAVERSAL", "FILE_ACCESS") or op == "FILE_ACCESS")
+            is_cwe78 = (cwe == "CWE-78" or stype in ("COMMAND_INJECTION", "OS_COMMAND_EXECUTION")
+                        or op in ("OS_COMMAND_EXECUTION", "COMMAND_EXECUTION"))
+
+            if is_cwe22 and (
+                # Sink-without-source: a path assembled only from literals, self-describing
+                # module attributes, dir listings or nonces can never carry attacker taint,
+                # and an in-memory upload object is a stream, not a path being resolved.
+                self._is_self_described(target_expr, record.scope_id, record.lineno)
+                or self._is_upload_handle(target_expr, record.scope_id, record.lineno)
+            ):
+                if sink in self.sinks:
+                    self.sinks.remove(sink)
+                continue
+            if is_cwe78 and not self._has_untrusted_command_lineage(
+                    target_expr, record.scope_id, record.lineno):
+                # `subprocess.check_call([sys.executable, "-m", "pip", "uninstall", "-y", "pip"])`:
+                # no shell, and every argv element is chosen by the source file or read back
+                # from the application's own tables, so there is nothing an attacker can
+                # append to the command line.
+                if sink in self.sinks:
+                    self.sinks.remove(sink)
+                continue
 
             if is_cwe22:
                 prov = self.resolve_path_provenance(target_expr, sink, record.scope_id, record.lineno)
