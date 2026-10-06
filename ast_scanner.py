@@ -988,6 +988,40 @@ def _may_disable_ssl(node: ast.Call) -> bool:
     return False
 
 
+class AssignmentNameTable(dict):
+    """`dict` of (scope_id, target) -> records that also indexes targets per module.
+
+    The sink fast path has to answer "could this leaf identifier be a rebinding of
+    a sink name?" in constant time. Building that answer by iterating every key on
+    each invalidation costs O(assignment table) per pruned call site, which made
+    the fast path *slower* than no fast path on Django (sink detection 28.7s vs
+    24.45s). Recording the name at key-insertion time makes maintenance O(1) per
+    new key and removes the rebuild entirely.
+
+    Every writer in this module goes through ``setdefault(key, []).append(record)``,
+    so overriding ``setdefault`` catches all of them.
+    """
+
+    def __init__(self, *args, **kwargs):
+        super().__init__(*args, **kwargs)
+        self.names_by_module: Dict[str, set] = {}
+        for key in self:
+            self._index(key)
+
+    def _index(self, key) -> None:
+        if not (isinstance(key, tuple) and len(key) == 2):
+            return
+        scope, name = key
+        if not isinstance(scope, str) or not isinstance(name, str):
+            return
+        self.names_by_module.setdefault(scope.split(":")[0] if scope else "", set()).add(name)
+
+    def setdefault(self, key, default=None):
+        if key not in self:
+            self._index(key)
+        return super().setdefault(key, default)
+
+
 # ─── Batch 2 structural synthetic edge sources (PURE_STRUCTURAL CWEs) ───
 STRUCTURAL_SYNTHETIC_SOURCES = {
     "CWE-377": "INSECURE_TEMP_FILE",
@@ -1695,9 +1729,9 @@ class TaintTracker:
         self.sources: list[SecurityNode] = []
         self.sinks: list[SecurityNode] = []
         self.edges: list[DataFlowEdge] = []
-        self.assignments_by_scope: dict[tuple[str, str], list[AssignmentRecord]] = {}
-        # Cache for _dynamic_name_index(): (assignment-table size, per-module index).
-        self._dynamic_name_cache: Optional[tuple[int, dict]] = None
+        self.assignments_by_scope: dict = AssignmentNameTable()
+        # Cache for _module_alias_names(): per module, (alias count, alias name set).
+        self._alias_name_cache: Dict[str, tuple] = {}
         # Cache for _enclosing_param_names(): (function-table size, scope -> names).
         self._param_name_cache: Optional[tuple[int, dict]] = None
         self.class_field_assignments: dict[tuple[str, str], list[AssignmentRecord]] = {}
@@ -3072,32 +3106,35 @@ class TaintTracker:
             return "namespace"
         return None
 
-    def _dynamic_name_index(self, mod: str) -> frozenset:
-        """Names in `mod` that canonical resolution could rewrite into a sink.
+    def _module_alias_names(self, mod: str) -> frozenset:
+        """Import-alias keys visible in `mod`, plus their leaf identifiers.
 
-        Union of import alias keys (plus their leaves, covering the dotted-remap
-        branch of resolve_canonical_name) and every assignment target in the
-        module. A bare `foo()` or `recv.foo()` whose leaf appears here may
-        resolve to a completely different callee, so the fast path must not
-        prune it on leaf name alone.
-
-        Cached per module; rebuilt when the assignment table grows because
-        Phase 2 collection and sink detection are separate passes.
+        resolve_canonical_name() can rewrite a call through either form
+        (`from jinja2 import Template as T` reaches both `T` and `Template`), so
+        both are indexed. Keyed per module and rebuilt only when that module's own
+        alias map changes size, which keeps the work proportional to one module
+        instead of the whole import table.
         """
-        size = len(self.assignments_by_scope)
-        cache = self._dynamic_name_cache
-        if cache is None or cache[0] != size:
-            index: Dict[str, set] = {}
-            for mod_name, alias_map in self.imports.items():
-                acc = index.setdefault(mod_name, set())
-                for key in alias_map:
-                    acc.add(key)
-                    acc.add(key.rsplit(".", 1)[-1])
-            for (sc, nm) in self.assignments_by_scope:
-                index.setdefault(sc.split(":")[0] if sc else "", set()).add(nm)
-            cache = (size, {m: frozenset(v) for m, v in index.items()})
-            self._dynamic_name_cache = cache
-        return cache[1].get(mod, frozenset())
+        alias_map = self.imports.get(mod)
+        size = len(alias_map) if alias_map else 0
+        cached = self._alias_name_cache.get(mod)
+        if cached is None or cached[0] != size:
+            acc: set = set()
+            for key in (alias_map or {}):
+                acc.add(key)
+                acc.add(key.rsplit(".", 1)[-1])
+            cached = (size, frozenset(acc))
+            self._alias_name_cache[mod] = cached
+        return cached[1]
+
+    def _module_assigned_names(self, mod: str) -> Optional[set]:
+        """Assignment targets recorded in `mod`, maintained on insert.
+
+        A bare `foo()` or `recv.foo()` whose leaf appears here may resolve to a
+        completely different callee, so the fast path must not prune it on leaf
+        name alone.
+        """
+        return self.assignments_by_scope.names_by_module.get(mod)
 
     def _fast_path_prunable(self, node: ast.Call, leaf_name: str, scope_id: str) -> bool:
         """True when no branch of is_sink_call() can match this call.
@@ -3111,8 +3148,9 @@ class TaintTracker:
           * function contracts       keyed on the bare ast.Name id
           * CWE-295                  name-agnostic; decided by verify=/cert_reqs=
 
-        Every guard is an O(1) membership test against a pre-built index, so the
-        whole probe stays far cheaper than the canonical resolution it replaces.
+        Every guard is an O(1) membership test against an incrementally maintained
+        index, so the whole probe stays far cheaper than the canonical resolution
+        it replaces.
         """
         # CWE-295 never looks at the callee name - only at its keywords.
         if _may_disable_ssl(node):
@@ -3126,7 +3164,10 @@ class TaintTracker:
             return False
 
         mod = scope_id.split(":")[0] if scope_id else ""
-        if leaf_name in self._dynamic_name_index(mod):
+        if leaf_name in self._module_alias_names(mod):
+            return False
+        assigned = self._module_assigned_names(mod)
+        if assigned is not None and leaf_name in assigned:
             return False
 
         # A parameter of an enclosing function may be bound to a sink at the call
@@ -15018,9 +15059,28 @@ class TaintTracker:
                         )
 
     def analyze(self):
+        """Run the analysis pipeline with scoped garbage-collector control.
+
+        The pipeline allocates millions of short-lived AST wrapper and record
+        objects, so the generational collector spends its time promoting and
+        scavenging garbage that reference counting already frees, while the pass
+        itself creates no cycles worth collecting mid-flight. Disabling is scoped
+        to this call and restores the caller's own state in `finally`: a scan must
+        not leave the CLI, server, worker or test process permanently running with
+        GC switched off.
+        """
         import gc
-        if gc.isenabled():
+        gc_was_enabled = gc.isenabled()
+        if gc_was_enabled:
             gc.disable()
+        try:
+            return self._analyze_pipeline()
+        finally:
+            if gc_was_enabled:
+                gc.enable()
+                gc.collect()
+
+    def _analyze_pipeline(self):
         """Analyze all modules for security vulnerabilities with phase-level profiling."""
         import time as _time
         import sys as _sys
