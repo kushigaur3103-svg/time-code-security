@@ -33,7 +33,8 @@ jobs:
       - name: Clone PyGoat Target Repository
         run: |
           git clone --depth 1 https://github.com/adeyosemanputra/pygoat.git pygoat_target
-          echo "PYGOAT_FILES=$(find pygoat_target -name '*.py' | wc -l)" >> $GITHUB_ENV
+          COUNT=$(find pygoat_target -name "*.py" | wc -l)
+          echo "PYGOAT_FILES=$COUNT" >> $GITHUB_ENV
 
       - name: Prepare Reports Directory
         run: mkdir -p reports
@@ -42,22 +43,18 @@ jobs:
       # 1. RUN TIMECODESECURITY (TCS)
       # ------------------------------------------------------------------
       - name: Run TimeCodeSecurity on PyGoat
-        id: tcs_scan
         run: |
           echo "=========================================================="
           echo " 1. RUNNING TIMECODESECURITY (TCS) ON PYGOAT"
           echo "=========================================================="
 
-          START_TIME=$(date +%s%N)
-          python cli.py scan pygoat_target \
-            --format json \
-            --output reports/tcs_pygoat.json || true
-          END_TIME=$(date +%s%N)
+          START_TIME=$(date +%s)
+          python cli.py scan pygoat_target --format json > reports/tcs_pygoat.json || true
+          END_TIME=$(date +%s)
 
-          ELAPSED=$(( (END_TIME - START_TIME) / 1000000000 ))
+          ELAPSED=$(( END_TIME - START_TIME ))
           echo "TCS_TIME=${ELAPSED}" >> $GITHUB_ENV
 
-          # Findings Count Parse
           FINDINGS=$(python -c "import json; data=json.load(open('reports/tcs_pygoat.json')); print(len(data.get('findings', data.get('runs', [{}])[0].get('results', []))))" 2>/dev/null || echo "0")
           echo "TCS_FINDINGS=${FINDINGS}" >> $GITHUB_ENV
 
@@ -65,57 +62,34 @@ jobs:
       # 2. RUN SEMGREP (OWASP & SECURITY RULES)
       # ------------------------------------------------------------------
       - name: Run Semgrep on PyGoat
-        id: semgrep_scan
         run: |
           echo "=========================================================="
           echo " 2. RUNNING SEMGREP ON PYGOAT"
           echo "=========================================================="
 
-          START_TIME=$(date +%s%N)
-          semgrep scan pygoat_target \
-            --config "p/python" \
-            --config "p/owasp-top-ten" \
-            --json \
-            --output reports/semgrep_pygoat.json || true
-          END_TIME=$(date +%s%N)
+          START_TIME=$(date +%s)
+          semgrep scan pygoat_target --config "p/python" --config "p/owasp-top-ten" --json --output reports/semgrep_pygoat.json || true
+          END_TIME=$(date +%s)
 
-          ELAPSED=$(( (END_TIME - START_TIME) / 1000000000 ))
+          ELAPSED=$(( END_TIME - START_TIME ))
           echo "SEMGREP_TIME=${ELAPSED}" >> $GITHUB_ENV
 
           FINDINGS=$(python -c "import json; data=json.load(open('reports/semgrep_pygoat.json')); print(len(data.get('results', [])))" 2>/dev/null || echo "0")
           echo "SEMGREP_FINDINGS=${FINDINGS}" >> $GITHUB_ENV
 
       # ------------------------------------------------------------------
-      # 3. GENERATE COMPARATIVE SHOWDOWN REPORT
+      # 3. GENERATE COMPARATIVE SHOWDOWN REPORT (pure Bash echo)
       # ------------------------------------------------------------------
       - name: Generate Showdown Scorecard
         run: |
-          python - << 'EOF'
-          import json
-          import os
-
-          tcs_time = os.environ.get("TCS_TIME", "0")
-          semgrep_time = os.environ.get("SEMGREP_TIME", "0")
-          tcs_findings = os.environ.get("TCS_FINDINGS", "0")
-          semgrep_findings = os.environ.get("SEMGREP_FINDINGS", "0")
-          pygoat_files = os.environ.get("PYGOAT_FILES", "Unknown")
-
-          adv_time = "TCS Faster" if int(tcs_time) < int(semgrep_time) else "Semgrep Faster"
-          adv_find = "TCS Deep Coverage" if int(tcs_findings) > int(semgrep_findings) else "Semgrep Leading"
-
-          markdown = f"""# ⚔️ Level 3 Ground-Truth Showdown: TCS vs Semgrep (PyGoat)
-
-| Metric | TimeCodeSecurity (TCS) | Semgrep (p/python + OWASP) | Advantage |
-| :--- | :--- | :--- | :--- |
-| **Target Files** | {pygoat_files} modules | {pygoat_files} modules | Identical Target |
-| **Execution Time** | {tcs_time}s | {semgrep_time}s | {adv_time} |
-| **Total Findings** | **{tcs_findings}** | **{semgrep_findings}** | {adv_find} |
-| **Detection Precision** | Source-to-Sink Taint Flow | Pattern/Regex Signatures | Architectural Depth |
-"""
-
-          with open("reports/pygoat_summary.md", "w") as f:
-              f.write(markdown)
-          EOF
+          echo "# Level 3 Ground-Truth Showdown: TCS vs Semgrep (PyGoat)" > reports/pygoat_summary.md
+          echo "" >> reports/pygoat_summary.md
+          echo "| Metric | TimeCodeSecurity (TCS) | Semgrep (p/python + OWASP) |" >> reports/pygoat_summary.md
+          echo "| :--- | :--- | :--- |" >> reports/pygoat_summary.md
+          echo "| **Target Files** | ${{ env.PYGOAT_FILES }} modules | ${{ env.PYGOAT_FILES }} modules |" >> reports/pygoat_summary.md
+          echo "| **Execution Time** | ${{ env.TCS_TIME }}s | ${{ env.SEMGREP_TIME }}s |" >> reports/pygoat_summary.md
+          echo "| **Total Findings** | **${{ env.TCS_FINDINGS }}** | **${{ env.SEMGREP_FINDINGS }}** |" >> reports/pygoat_summary.md
+          echo "| **Detection Precision** | Source-to-Sink Taint Flow | Pattern/Regex Signatures |" >> reports/pygoat_summary.md
 
           cat reports/pygoat_summary.md >> $GITHUB_STEP_SUMMARY
           cat reports/pygoat_summary.md
