@@ -26,6 +26,7 @@ import json
 import ast
 import sys
 from ast_scanner import TaintTracker, SINK_REGISTRY, SOURCE_REGISTRY, SANITIZER_REGISTRY, render_proof_graph_ascii, ProofNodeType
+from ci_reporter import sanitize_symbol_display
 try:
     from sarif_adapter import to_sarif, GLOBAL_RULE_REGISTRY
 except ImportError:
@@ -2153,9 +2154,11 @@ def execute_tcs_ast_scan(
                 if clean_p and var_step not in trace_steps:
                     trace_steps.append(var_step)
 
-        trace_steps.append(f"Sink: {sink.symbol} ({sink_loc.file}:{sink_loc.line_start})")
+        trace_steps.append(
+            f"Sink: {sanitize_symbol_display(sink.symbol)} ({sink_loc.file}:{sink_loc.line_start})"
+        )
 
-        snk_sym = sink.symbol
+        snk_sym = sanitize_symbol_display(sink.symbol)
         snk_line = f"L{sink_loc.line_start}"
         src_line_str = f"L{src_line_no}" if src_line_no is not None else "L?"
 
@@ -2173,6 +2176,8 @@ def execute_tcs_ast_scan(
             "proof_label": "CONFIRMED (100% AST Flow Proof)" if confidence_val >= 1.0 else "POTENTIAL (AST Flow Proof)",
             "file": sink_loc.file,
             "line_number": sink_loc.line_start,
+            # Deliberately raw: remediation/orchestrator.py and verification.py compare this
+            # against a freshly resolved sink.symbol, so trimming it here breaks patch identity.
             "sink_symbol": sink.symbol,
             "source_symbol": src_sym if (source_node or src_sym) else "USER_INPUT",
             "source_line": src_line_no,

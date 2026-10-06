@@ -15,6 +15,7 @@ import traceback
 from typing import Optional
 from cross_file_engine import CrossFileTaintEngine
 from ast_scanner import TaintTracker
+from ci_reporter import sanitize_symbol_display
 from html_auditor import audit_templates, is_template_path
 from iac_auditor import audit_iac_files, is_iac_path
 from rule_engine import get_rule
@@ -198,12 +199,16 @@ def _merge_findings(*finding_groups):
 # be simultaneously a broken algorithm (327/328) and a storage-strength failure (759/916),
 # and one set_cookie() can lack Secure (614), HttpOnly (1004) and SameSite (1275). Reporting
 # every attribute as its own alert multiplies the count without adding an actionable site.
+# An unbounded `f.read()` is the same case from the other direction: the rule engine calls it
+# CWE-400 and the structural batch calls the identical call node CWE-770, so one sink is
+# counted as two findings.
 # The families below collapse to one finding per (file, line); the surviving CWEs are kept
-# in `related_cwes` so nothing is lost. This is presentation-only: the engine still emits
+# in `consolidated_from` so nothing is lost. This is presentation-only: the engine still emits
 # every CWE, which is what the benchmark scores per rule.
 FAMILY_PRIORITY = {
     "CRYPTO_HASH": ("CWE-327", "CWE-916", "CWE-759", "CWE-328"),
     "INSECURE_COOKIE": ("CWE-614", "CWE-1004", "CWE-1275"),
+    "RESOURCE_EXHAUSTION": ("CWE-770", "CWE-400"),
 }
 FAMILY_OF_CWE = {
     cwe: family for family, members in FAMILY_PRIORITY.items() for cwe in members
@@ -292,7 +297,7 @@ def _findings_for(tracker, edges):
             "cwe": cwe,
             "severity": severity,
             "category": sink.metadata.get("category") or (rule.category if rule else "Security"),
-            "message": f"{cwe}: {sink.metadata.get('operation') or sink.symbol}",
+            "message": f"{cwe}: {sink.metadata.get('operation') or sanitize_symbol_display(sink.symbol)}",
         }
         identity = (finding["file"], finding["line"], finding["cwe"])
         if identity not in seen:

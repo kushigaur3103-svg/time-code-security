@@ -11,6 +11,7 @@ Invariants:
 - Deterministic byte-for-byte output via strict multi-attribute sorting.
 """
 
+import re
 from typing import Dict, List, Any, Optional, Tuple
 
 
@@ -21,6 +22,7 @@ __all__ = [
     "format_github_annotations",
     "generate_annotations",
     "generate_step_summary",
+    "sanitize_symbol_display",
     "write_step_summary",
 ]
 
@@ -155,6 +157,26 @@ def format_github_annotation(
     return f"::{cmd_level}{prop_str}::{escaped_msg}"
 
 
+# A sink's resolved name is prefixed with its path-derived module, so an untrimmed Windows
+# scan root reaches a PR comment as
+# `C:.Users.me.Temp.tmp.ab12cd.target.app.models.login.objects.raw`. Three trailing segments
+# still qualify a real call such as `PIL.ImageMath.eval`. Every channel that renders a sink
+# name (CI annotations, step summary, cli.py JSON report, GUI dataflow trace) goes through
+# this rule so the same finding reads identically everywhere.
+_TARGET_DISPLAY_SEGMENTS = 3
+_SYMBOL_NOISE_TOKENS = frozenset({"tmp", "temp"})
+
+
+def sanitize_symbol_display(symbol: Any) -> str:
+    """Reduce a resolved sink name to the call chain a reviewer can act on."""
+    text = str(symbol)
+    segments = [
+        part for part in re.split(r"[.:]", text)
+        if part and part.lower() not in _SYMBOL_NOISE_TOKENS
+    ]
+    return ".".join(segments[-_TARGET_DISPLAY_SEGMENTS:]) if segments else text
+
+
 def _format_sast_annotation(finding: Dict[str, Any]) -> Tuple[Tuple[str, int, int, int, str], str]:
     """Formats a SAST finding into a GitHub Actions annotation with sorting tuple."""
     cwe = finding.get("cwe") or "CWE-UNKNOWN"
@@ -170,7 +192,7 @@ def _format_sast_annotation(finding: Dict[str, Any]) -> Tuple[Tuple[str, int, in
     title = f"{cwe} ({cat_label})" if cat_label else cwe
 
     # Extract informative message
-    sink_sym = finding.get("sink_symbol")
+    sink_sym = sanitize_symbol_display(finding.get("sink_symbol")) if finding.get("sink_symbol") else ""
     trace_summary = finding.get("flow_trace_summary")
     code_snip = finding.get("code_snippet")
 
@@ -462,7 +484,9 @@ def generate_step_summary(scan_result: Dict[str, Any]) -> str:
             cwe = f.get("cwe") or "CWE-UNKNOWN"
             sev = str(f.get("severity") or "HIGH").upper()
             loc = f"`{_normalize_path(f.get('file', ''))}:{f.get('line_number', '')}`"
-            detail = f.get("sink_symbol") or f.get("flow_trace_summary") or f.get("code_snippet") or "Dataflow vulnerability"
+            sink_sym = f.get("sink_symbol")
+            detail = (sanitize_symbol_display(sink_sym) if sink_sym else
+                      f.get("flow_trace_summary") or f.get("code_snippet") or "Dataflow vulnerability")
             clean_detail = str(detail).replace("|", "\\|").replace("\n", " ").strip()
             lines.append(f"| {cwe} | {sev} | {loc} | {clean_detail} |")
         lines.append("")
