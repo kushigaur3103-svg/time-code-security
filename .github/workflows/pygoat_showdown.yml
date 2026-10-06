@@ -68,7 +68,11 @@ jobs:
           echo "=========================================================="
 
           START_TIME=$(date +%s)
-          semgrep scan pygoat_target --config "p/python" --config "p/owasp-top-ten" --json --output reports/semgrep_pygoat.json || true
+          semgrep scan pygoat_target \
+            --config "p/default" \
+            --config "p/owasp-top-ten" \
+            --json \
+            --output reports/semgrep_pygoat.json || true
           END_TIME=$(date +%s)
 
           ELAPSED=$(( END_TIME - START_TIME ))
@@ -84,7 +88,7 @@ jobs:
         run: |
           echo "# Level 3 Ground-Truth Showdown: TCS vs Semgrep (PyGoat)" > reports/pygoat_summary.md
           echo "" >> reports/pygoat_summary.md
-          echo "| Metric | TimeCodeSecurity (TCS) | Semgrep (p/python + OWASP) |" >> reports/pygoat_summary.md
+          echo "| Metric | TimeCodeSecurity (TCS) | Semgrep (p/default + p/owasp-top-ten) |" >> reports/pygoat_summary.md
           echo "| :--- | :--- | :--- |" >> reports/pygoat_summary.md
           echo "| **Target Files** | ${{ env.PYGOAT_FILES }} modules | ${{ env.PYGOAT_FILES }} modules |" >> reports/pygoat_summary.md
           echo "| **Execution Time** | ${{ env.TCS_TIME }}s | ${{ env.SEMGREP_TIME }}s |" >> reports/pygoat_summary.md
