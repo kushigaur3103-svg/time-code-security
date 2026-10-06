@@ -27,7 +27,9 @@ jobs:
       - name: Install Scanner Dependencies
         run: |
           python -m pip install --upgrade pip
-          pip install semgrep
+          pipx install semgrep
+          echo "$HOME/.local/bin" >> $GITHUB_PATH
+          "$HOME/.local/bin/semgrep" --version
           if [ -f requirements.txt ]; then pip install -r requirements.txt; fi
 
       - name: Clone PyGoat Target Repository
