@@ -82,20 +82,108 @@ jobs:
           echo "SEMGREP_FINDINGS=${FINDINGS}" >> $GITHUB_ENV
 
       # ------------------------------------------------------------------
-      # 3. GENERATE COMPARATIVE SHOWDOWN REPORT (pure Bash echo)
+      # 3. TWO-TIER SCORECARD: every cell computed from the scan artifacts
       # ------------------------------------------------------------------
-      - name: Generate Showdown Scorecard
+      - name: Generate Showdown Summary
+        if: always()
         run: |
-          echo "# Level 3 Ground-Truth Showdown: TCS vs Semgrep (PyGoat)" > reports/pygoat_summary.md
-          echo "" >> reports/pygoat_summary.md
-          echo "| Metric | TimeCodeSecurity (TCS) | Semgrep (p/python) |" >> reports/pygoat_summary.md
-          echo "| :--- | :--- | :--- |" >> reports/pygoat_summary.md
-          echo "| **Target Files** | ${{ env.PYGOAT_FILES }} modules | ${{ env.PYGOAT_FILES }} modules |" >> reports/pygoat_summary.md
-          echo "| **Execution Time** | ${{ env.TCS_TIME }}s | ${{ env.SEMGREP_TIME }}s |" >> reports/pygoat_summary.md
-          echo "| **Total Findings** | **${{ env.TCS_FINDINGS }}** | **${{ env.SEMGREP_FINDINGS }}** |" >> reports/pygoat_summary.md
-          echo "| **Detection Precision** | Source-to-Sink Taint Flow | Pattern/Regex Signatures |" >> reports/pygoat_summary.md
+          python - << 'PY'
+          import json
+          import os
 
-          cat reports/pygoat_summary.md >> $GITHUB_STEP_SUMMARY
+          # Rules that flag an absent control rather than an exploitable data flow.
+          HYGIENE_CATEGORIES = {
+              "CSRF_MISSING_PROTECTION",
+              "MISSING_SUBRESOURCE_INTEGRITY",
+              "INSECURE_COOKIE_CONFIGURATION",
+          }
+          # Semgrep reports check ids, not TCS categories, so the same bucket has to
+          # be recognised by keyword to keep the Tier-2 column measured on both sides.
+          HYGIENE_KEYWORDS = ("csrf", "subresource-integrity", "sri", "cookie")
+
+          def load(path):
+              try:
+                  with open(path, encoding="utf-8") as fh:
+                      return json.load(fh)
+              except (OSError, ValueError) as exc:
+                  print(f"[scorecard] {path} unusable: {type(exc).__name__}: {exc}")
+                  return {}
+
+          tcs = load("reports/tcs_pygoat.json")
+          sg = load("reports/semgrep_pygoat.json")
+
+          tcs_findings = tcs.get("findings", [])
+          core = [f for f in tcs_findings if str(f.get("category", "")).upper() not in HYGIENE_CATEGORIES]
+          hygiene = [f for f in tcs_findings if str(f.get("category", "")).upper() in HYGIENE_CATEGORIES]
+
+          sg_results = sg.get("results", [])
+          sg_hygiene = [r for r in sg_results if any(k in str(r.get("check_id", "")).lower() for k in HYGIENE_KEYWORDS)]
+          sg_core = len(sg_results) - len(sg_hygiene)
+
+          tcs_files = tcs.get("scanned_files", "n/a")
+          sg_files = len(sg.get("paths", {}).get("scanned", [])) or "n/a"
+
+          def ratio(num, den):
+              try:
+                  num, den = float(num), float(den)
+              except (TypeError, ValueError):
+                  return "n/a"
+              return f"{num / den:.1f}x" if den > 0 else "n/a"
+
+          tcs_time = os.environ.get("TCS_TIME", "")
+          sg_time = os.environ.get("SEMGREP_TIME", "")
+          tcs_time_cell = f"{tcs_time}s" if tcs_time else "n/a"
+          sg_time_cell = f"{sg_time}s" if sg_time else "n/a"
+
+          rows = []
+          for cat, n in sorted({c: sum(1 for f in hygiene if str(f.get("category", "")).upper() == c)
+                                for c in {str(f.get("category", "")).upper() for f in hygiene}}.items(),
+                               key=lambda kv: -kv[1]):
+              rows.append(f"| {cat} | {n} | 0 |")
+
+          md = [
+              "# Level 3 Ground-Truth Showdown: TCS vs Semgrep (PyGoat)",
+              "",
+              "## Tier 1 - findings both engines can express (source-to-sink / sink rules)",
+              "",
+              "| Engine | Core findings | Files scanned | Wall clock |",
+              "| :--- | ---: | ---: | ---: |",
+              f"| TimeCodeSecurity | {len(core)} | {tcs_files} | {tcs_time_cell} |",
+              f"| Semgrep p/python | {sg_core} | {sg_files} | {sg_time_cell} |",
+              "",
+              f"Core findings TCS:Semgrep = {ratio(len(core), sg_core)}; wall clock Semgrep:TCS = {ratio(sg_time, tcs_time)}.",
+              "",
+              "## Tier 2 - controls this Semgrep ruleset has no rule for",
+              "",
+              "| Category | TCS | Semgrep |",
+              "| :--- | ---: | ---: |",
+              *rows,
+              f"| **Total hygiene** | **{len(hygiene)}** | **{len(sg_hygiene)}** |",
+              "",
+              "## What this run does not establish",
+              "",
+              f"- **False positives are not measured.** Adjudicating the {len(core) + len(hygiene)} TCS findings against",
+              "  the source is a separate manual step; a higher count alone does not mean better detection.",
+              f"- Tier 2 is a difference in **rule scope**, not detection quality: `p/python` ships no CSRF, SRI or",
+              "  cookie rule, so its zeros are expected rather than earned.",
+              "- The two engines did not scan the same file set (see counts above): TCS parses templates and",
+              "  CI config as well as Python, so totals are not directly comparable.",
+              "",
+              "Every number above is parsed from `reports/tcs_pygoat.json` and",
+              "`reports/semgrep_pygoat.json` in this run.",
+              "",
+          ]
+
+          text = "\n".join(md)
+          with open("reports/pygoat_summary.md", "w", encoding="utf-8") as fh:
+              fh.write(text)
+          summary_path = os.environ.get("GITHUB_STEP_SUMMARY")
+          if summary_path:
+              with open(summary_path, "a", encoding="utf-8") as fh:
+                  fh.write(text)
+          print(text)
+          PY
+
           cat reports/pygoat_summary.md
 
       - name: Upload Scan Artifacts
