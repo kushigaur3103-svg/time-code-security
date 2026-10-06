@@ -100,25 +100,25 @@ jobs:
           semgrep_findings = os.environ.get("SEMGREP_FINDINGS", "0")
           pygoat_files = os.environ.get("PYGOAT_FILES", "Unknown")
 
-          markdown = f"""
-          # ⚔️ Level 3 Ground-Truth Showdown: TCS vs Semgrep (PyGoat)
+          adv_time = "TCS Faster" if int(tcs_time) < int(semgrep_time) else "Semgrep Faster"
+          adv_find = "TCS Deep Coverage" if int(tcs_findings) > int(semgrep_findings) else "Semgrep Leading"
 
-          | Metric | TimeCodeSecurity (TCS) | Semgrep (p/python + OWASP) | Advantage |
-          | :--- | :--- | :--- | :--- |
-          | **Target Files** | {pygoat_files} modules | {pygoat_files} modules | Identical Target |
-          | **Execution Time** | {tcs_time}s | {semgrep_time}s | {"TCS Faster" if int(tcs_time) < int(semgrep_time) else "Semgrep Faster"} |
-          | **Total Findings** | **{tcs_findings}** | **{semgrep_findings}** | {"TCS Deep Coverage" if int(tcs_findings) > int(semgrep_findings) else "Semgrep Leading"} |
-          | **Detection Precision** | Source-to-Sink Taint Flow | Pattern/Regex Signatures | Architectural Depth |
+          markdown = f"""# ⚔️ Level 3 Ground-Truth Showdown: TCS vs Semgrep (PyGoat)
 
-          ---
-          """
+| Metric | TimeCodeSecurity (TCS) | Semgrep (p/python + OWASP) | Advantage |
+| :--- | :--- | :--- | :--- |
+| **Target Files** | {pygoat_files} modules | {pygoat_files} modules | Identical Target |
+| **Execution Time** | {tcs_time}s | {semgrep_time}s | {adv_time} |
+| **Total Findings** | **{tcs_findings}** | **{semgrep_findings}** | {adv_find} |
+| **Detection Precision** | Source-to-Sink Taint Flow | Pattern/Regex Signatures | Architectural Depth |
+"""
 
           with open("reports/pygoat_summary.md", "w") as f:
               f.write(markdown)
+          EOF
 
           cat reports/pygoat_summary.md >> $GITHUB_STEP_SUMMARY
           cat reports/pygoat_summary.md
-          EOF
 
       - name: Upload Scan Artifacts
         uses: actions/upload-artifact@v4
