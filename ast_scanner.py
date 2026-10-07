@@ -1467,6 +1467,56 @@ def _eval_dict_constants(dict_node, assignments_by_scope, scope_id="", lineno=0)
             res[k_node.value] = val
     return res
 
+def _fold_inline_literal_container(node, assignments_by_scope, scope_id="", lineno=0, visited=None):
+    """Fold an *inline* Dict/List/Tuple literal whose every member folds.
+
+    Deliberately refuses Names: a dict that was bound to a name can be rewritten between
+    its assignment and the sink (`d[request.args["k"]] = evil`), and subscript stores are
+    recorded under `d[k]`, not under `d` (see the Subscript branch of the statement
+    collector), so a name-bound fold would be unsound. An inline literal is created and
+    indexed inside one expression, which nothing can mutate.
+    """
+    if visited is None:
+        visited = set()
+    if isinstance(node, ast.Dict):
+        container = {}
+        for key_node, value_node in zip(node.keys, node.values):
+            if key_node is None:  # {**other}: the key set is not provable
+                return None
+            key = _eval_static_constant(key_node, assignments_by_scope, scope_id, lineno, visited)
+            value = _eval_static_constant(value_node, assignments_by_scope, scope_id, lineno, visited)
+            if key is None or value is None:
+                return None
+            try:
+                container[key] = value
+            except TypeError:
+                return None
+        return container
+    if isinstance(node, (ast.List, ast.Tuple)):
+        items = []
+        for element in node.elts:
+            if isinstance(element, ast.Starred):
+                return None
+            value = _eval_static_constant(element, assignments_by_scope, scope_id, lineno, visited)
+            if value is None:
+                return None
+            items.append(value)
+        return items
+    return None
+
+
+def _read_literal_member(container, key_node, assignments_by_scope, scope_id, lineno, visited):
+    """The value of `container[key]` for a folded inline container, or None when unprovable."""
+    key = _eval_static_constant(key_node, assignments_by_scope, scope_id, lineno, visited)
+    if key is None:
+        return None
+    if isinstance(container, dict):
+        return container.get(key)
+    if isinstance(container, list) and isinstance(key, int) and not isinstance(key, bool):
+        return container[key] if -len(container) <= key < len(container) else None
+    return None
+
+
 def _eval_static_constant(node, assignments_by_scope, scope_id="", lineno=0, visited=None):
     """Deterministically evaluates literal int/str/bool constants, resolving Name
     references through the static assignment chain. Returns None when the
@@ -1554,6 +1604,24 @@ def _eval_static_constant(node, assignments_by_scope, scope_id="", lineno=0, vis
                 candidates.append(val)
         if candidates and all(c == candidates[0] for c in candidates):
             return candidates[0]
+        return None
+    if isinstance(node, ast.Subscript):
+        # `{"cmd": "ls"}["cmd"]` and `["ls", "pwd"][0]` are literals wearing an index.
+        base = _fold_inline_literal_container(node.value, assignments_by_scope, scope_id, lineno, visited)
+        if base is not None:
+            return _read_literal_member(base, node.slice, assignments_by_scope, scope_id, lineno, visited)
+        return None
+    if (isinstance(node, ast.Call) and isinstance(node.func, ast.Attribute)
+            and node.func.attr in ("get", "pop", "setdefault") and node.args):
+        # `{"cmd": "ls"}.get("cmd")` on an inline dict reads a literal too; the default
+        # argument is literal as well when the key is absent.
+        base = _fold_inline_literal_container(node.func.value, assignments_by_scope, scope_id, lineno, visited)
+        if isinstance(base, dict):
+            value = _read_literal_member(base, node.args[0], assignments_by_scope, scope_id, lineno, visited)
+            if value is not None:
+                return value
+            if len(node.args) > 1:
+                return _eval_static_constant(node.args[1], assignments_by_scope, scope_id, lineno, visited)
         return None
     return None
 
