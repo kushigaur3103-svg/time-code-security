@@ -22,6 +22,26 @@ GH_MAX_SARIF_BYTES = 10 * 1024 * 1024
 GH_MAX_SHOWN_RESULTS = 5_000
 _LEVEL_RANK = {"error": 0, "warning": 1, "note": 2, "none": 3}
 
+# CWE Specificity Precedence Ladder, consulted only when a SARIF document has to shed
+# results (display cap or the 10 MB upload budget). Tier 1 = concrete exploitable sinks,
+# Tier 2 = behavioural/crypto, Tier 3 = broad hygiene. Among alerts of equal severity the
+# specific sink is kept and the generic one is shed, so a CWE-20 can never push a CWE-89
+# off the upload. Unlisted CWEs sit mid-ladder (2); equal keys keep discovery order.
+CWE_SPECIFICITY_TIER = {
+    "CWE-89": 1, "CWE-78": 1, "CWE-79": 1, "CWE-94": 1, "CWE-22": 1,
+    "CWE-918": 1, "CWE-916": 1, "CWE-384": 1,
+    "CWE-327": 2, "CWE-798": 2, "CWE-502": 2,
+    "CWE-20": 3, "CWE-707": 3, "CWE-116": 3, "CWE-693": 3,
+}
+_SPECIFICITY_UNRANKED = 2
+
+
+def _result_priority(result: Dict[str, Any]) -> tuple:
+    """Shed order for one result: severity first, CWE specificity second."""
+    level = _LEVEL_RANK.get(str(result.get("level", "warning")).lower(), 1)
+    tier = CWE_SPECIFICITY_TIER.get(str(result.get("ruleId") or ""), _SPECIFICITY_UNRANKED)
+    return (level, tier)
+
 # TimeCodeSecurity — MITRE Canonical Hierarchy Rollup Map
 # Minimal map targeting only the 5 specific CWE mismatches observed in the Python showdown.
 # Each entry is verified against actual benchmark data to avoid over-mapping.
@@ -106,8 +126,10 @@ def bound_sarif_document(
 ) -> Dict[str, Any]:
     """Dedupe, severity-rank and byte-budget a SARIF document without breaking its schema.
 
-    CRITICAL/HIGH (level=error) results are always kept ahead of MEDIUM/LOW ones, so a
-    trimmed upload still carries every exploitable finding GitHub would act on.
+    CRITICAL/HIGH (level=error) results are always kept ahead of MEDIUM/LOW ones, and within
+    a severity band the CWE specificity ladder decides what survives, so a trimmed upload
+    still carries every exploitable sink alert instead of a pile of generic hygiene notes.
+    Nothing is dropped until a cap is actually exceeded.
     """
     for run in sarif_doc.get("runs") or []:
         if not isinstance(run, dict):
@@ -125,10 +147,7 @@ def bound_sarif_document(
 
         overflow = 0
         if max_results is not None and len(deduped) > max_results:
-            ranked = sorted(
-                deduped,
-                key=lambda r: _LEVEL_RANK.get(str(r.get("level", "warning")).lower(), 1),
-            )
+            ranked = sorted(deduped, key=_result_priority)
             deduped = ranked[:max_results]
             overflow = len(ranked) - max_results
 
@@ -144,9 +163,9 @@ def bound_sarif_document(
         runs = [r for r in (sarif_doc.get("runs") or []) if isinstance(r, dict) and r.get("results")]
         if not runs:
             break
-        # Shed from the lowest-priority run tail: severity order is already applied.
+        # Order only once shedding starts, so an untrimmed document keeps discovery order.
         target = max(runs, key=lambda r: len(r["results"]))
-        results = target["results"]
+        results = sorted(target["results"], key=_result_priority)
         keep = max(1, (len(results) * 3) // 4)
         dropped_for_size += len(results) - keep
         target["results"] = results[:keep]

@@ -77,6 +77,22 @@ class TestDedupeAndCaps:
         for result in doc["runs"][0]["results"]:
             assert 0 <= result["ruleIndex"] < len(rules)
 
+    def test_specificity_ladder_sheds_generic_before_sink(self):
+        # Same severity, same file: the display cap must drop the Tier-3 CWE-20 notes and
+        # keep every Tier-1 CWE-89 sink alert.
+        results = [_result(rule_id="CWE-20", line=index) for index in range(1, 5)] + \
+                  [_result(rule_id="CWE-89", line=index) for index in range(101, 105)]
+        doc = bound_sarif_document(_doc(results), max_results=5, max_bytes=10_000_000)
+        kept = doc["runs"][0]["results"]
+        assert len(kept) == 5
+        # All four Tier-1 sinks fill the cap first; only the leftover slot goes to Tier-3.
+        assert [r["ruleId"] for r in kept] == ["CWE-89"] * 4 + ["CWE-20"]
+
+    def test_untrimmed_document_keeps_discovery_order(self):
+        results = [_result(rule_id="CWE-20", line=1), _result(rule_id="CWE-89", line=2)]
+        doc = bound_sarif_document(_doc(results))
+        assert [r["ruleId"] for r in doc["runs"][0]["results"]] == ["CWE-20", "CWE-89"]
+
 
 class TestByteBudget:
     def test_snippets_are_the_first_sacrifice(self):
