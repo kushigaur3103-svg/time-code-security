@@ -1259,6 +1259,10 @@ CLUSTER3_WEAK_EC_CURVE_RE = re.compile(r"^SEC[PpT]\d*(1[0-9]{2}|2[01][0-9]|22[0-
 CLUSTER3_YAML_ROOT = "yaml"
 CLUSTER3_YAML_UNSAFE_LOADERS = {"Loader", "UnsafeLoader", "FullLoader", "CLoader"}
 CLUSTER3_YAML_UNSAFE_SEGS = {"unsafe_load"}
+# ruamel's constructor takes the typ as a keyword: 'rt' and 'safe' are the documented safe
+# presets, 'unsafe' rebuilds arbitrary python objects and 'base' drops all type validation.
+CLUSTER3_YAML_UNSAFE_TYPES = {"unsafe", "base"}
+CLUSTER3_RUAMEL_YAML_CTOR_SEG = "YAML"
 CLUSTER3_PICKLE_ROOTS = {"pickle", "_pickle", "cPickle", "dill", "shelve", "marshal"}
 # `dumps`/`dump` build a payload; only the loads side turns attacker bytes into objects.
 CLUSTER3_PICKLE_METHOD_SEGS = {"loads"}
@@ -1320,6 +1324,7 @@ CLUSTER3_STRUCTURAL_SOURCE_IDS = {
     "INSECURE_CIPHER_MODE_ECB": "INSECURE_CIPHER_MODE_ECB",
     "WEAK_CIPHER_LEGACY": "WEAK_CIPHER_LEGACY",
     "UNSAFE_YAML_LOADER": "UNSAFE_YAML_LOADER",
+    "UNSAFE_RUAMEL_YAML": "UNSAFE_RUAMEL_YAML",
     "UNSAFE_PICKLE_USAGE": "UNSAFE_PICKLE_USAGE",
     "MARSHAL_USAGE": "MARSHAL_USAGE",
     "CSRF_EXEMPT_VIEW": "CSRF_EXEMPT_VIEW",
@@ -8121,7 +8126,7 @@ class TaintTracker:
                 """Phase 6.3: an edgeless registry sink at the same (cwe, line) used to swallow
                 the structural finding; stamp its synthetic source id instead (mirrors the
                 P3 `_add_finding` merge)."""
-                source_id = CLUSTER2_STRUCTURAL_SOURCE_IDS.get(operation)
+                source_id = CLUSTER2_STRUCTURAL_SOURCE_IDS.get(operation, operation)
                 if not source_id:
                     return
                 for existing in existing_index.get((cwe, line)) or []:
@@ -8155,7 +8160,12 @@ class TaintTracker:
                     operation=operation,
                     location=location(node, file_path),
                     metadata={"sink_type": category, "category": category, "cwe": cwe,
-                              "p3_source_id": CLUSTER2_STRUCTURAL_SOURCE_IDS[operation]},
+                              # Identity-mapped for every registered operation; the fallback
+                              # keeps an unregistered one reporting under its own name instead
+                              # of raising KeyError, which the collector's error handling would
+                              # swallow and silently disable the whole rule.
+                              "p3_source_id": CLUSTER2_STRUCTURAL_SOURCE_IDS.get(operation,
+                                                                                   operation)},
                 )
                 self.sinks.append(sink_node)
                 self.sink_records.append(SinkRecord(
@@ -8627,7 +8637,8 @@ class TaintTracker:
                    password-named default arguments.
           CWE-326  rsa/dsa.generate_private_key(<2048 bits); ec weak (<224-bit) curves.
           CWE-502  pickle/_pickle/cPickle/dill/marshal loads+dumps (alias aware),
-                   shelve.open/loads, yaml.unsafe_load and unsafe Loader= variants.
+                   shelve.open/loads, yaml.unsafe_load and unsafe Loader= variants,
+                   ruamel YAML(typ='unsafe'|'base').
           CWE-352  @csrf_exempt views; WTF_CSRF_ENABLED=False (subscript, attribute,
                    bare, and config.update()/from_mapping() kwargs, TESTING=True exempt).
 
@@ -8771,7 +8782,12 @@ class TaintTracker:
                     operation=operation,
                     location=location(node, file_path),
                     metadata={"sink_type": category, "category": category, "cwe": cwe,
-                              "p3_source_id": CLUSTER3_STRUCTURAL_SOURCE_IDS[operation]},
+                              # Same contract as the Cluster 2 collector: identity-mapped for
+                              # registered operations, and a fallback instead of a KeyError for
+                              # one that was never registered, so a rule can never be silently
+                              # disabled by the collector's error handling.
+                              "p3_source_id": CLUSTER3_STRUCTURAL_SOURCE_IDS.get(operation,
+                                                                                  operation)},
                 )
                 self.sinks.append(sink_node)
                 self.sink_records.append(SinkRecord(
@@ -9254,6 +9270,21 @@ class TaintTracker:
                         if loader_name in CLUSTER3_YAML_UNSAFE_LOADERS and \
                                 not self._deserializes_own_document(node, scope, lineno):
                             _add(node, "UNSAFE_YAML_LOADER", "DESERIALIZATION", "CWE-502")
+
+                # ---- CWE-502: ruamel YAML(typ='unsafe'|'base') ----
+                # The constructor itself is the deserialization surface, so an unsafe typ is
+                # decided by the literal keyword alone; 'rt' and 'safe' stay silent, as does a
+                # YAML() with no typ at all. The `yaml` segment must come from the module path
+                # (`ruamel.yaml.YAML`), never from the constructor name itself, or a local
+                # class spelled YAML would match.
+                if chain and chain[-1] == CLUSTER3_RUAMEL_YAML_CTOR_SEG and \
+                        any(seg.lower() == CLUSTER3_YAML_ROOT for seg in chain[:-1]):
+                    typ_kw = kw_map.get("typ")
+                    if typ_kw is not None:
+                        typ_value = _static(typ_kw.value, scope, lineno)
+                        if isinstance(typ_value, str) and \
+                                typ_value.lower() in CLUSTER3_YAML_UNSAFE_TYPES:
+                            _add(node, "UNSAFE_RUAMEL_YAML", "DESERIALIZATION", "CWE-502")
 
                 # ---- CWE-502: pickle-family and marshal/shelve usage ----
                 if chain and len(chain) >= 2 and chain[-2] in CLUSTER3_PICKLE_ROOTS:
