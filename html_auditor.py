@@ -17,7 +17,7 @@ from __future__ import annotations
 from html.parser import HTMLParser
 from typing import Any, Dict, List, Optional, Sequence, Tuple
 
-TEMPLATE_SUFFIXES: Tuple[str, ...] = (".html", ".htm", ".jinja", ".dtl")
+TEMPLATE_SUFFIXES: Tuple[str, ...] = (".html", ".htm", ".jinja", ".jinja2", ".j2", ".dtl")
 
 # A subresource is externally hosted when its URL carries an explicit scheme or is
 # protocol-relative. Local and framework-static assets are out of scope for SRI.
