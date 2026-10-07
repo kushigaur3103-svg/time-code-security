@@ -6,6 +6,7 @@ __pycache__/
 # Local scratch scripts and temporary artifacts
 scratch/
 test.py
+scripts/benchmark_django.py
 
 # Build & packaging artifacts
 dist/
