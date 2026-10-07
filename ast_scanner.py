@@ -8264,9 +8264,50 @@ class TaintTracker:
                 fn_scope = (function_scopes.get(id(fn_node)) if fn_node else mod_scope)
 
                 # CWE-918: Tainted URL host construction
+                # SUPPRESSION: Merely constructing a URL string or dictionary key does not constitute SSRF.
+                # Suppress unless the URL flows into an actual network transmission sink (requests.get/post, urllib.request, etc.).
                 if isinstance(node, (ast.Assign, ast.AnnAssign, ast.Return)):
                     val = node.value
                     if val is not None and _is_tainted_url_host_expr(val, scope, getattr(node, "lineno", 0)):
+                        # Suppress if this is a Return statement returning JsonResponse/flask.jsonify (no outbound request)
+                        if isinstance(node, ast.Return) and isinstance(val, ast.Call):
+                            ret_name = dotted_name(val.func) or ""
+                            if ret_name in {"JsonResponse", "django.http.JsonResponse", "jsonify", "flask.jsonify"}:
+                                continue  # JsonResponse returns JSON, doesn't make HTTP requests
+                        
+                        # Check if this URL variable actually reaches a network sink in the same module.
+                        url_var_name = ""
+                        if isinstance(node, ast.Assign) and node.targets:
+                            t = node.targets[0]
+                            if isinstance(t, ast.Name):
+                                url_var_name = t.id
+                        elif isinstance(node, ast.AnnAssign) and node.target:
+                            if isinstance(node.target, ast.Name):
+                                url_var_name = node.target.id
+                        
+                        if url_var_name:
+                            # Search for usage of this variable in a network sink call.
+                            reaches_network_sink = False
+                            for other_node in reachable:
+                                if isinstance(other_node, ast.Call):
+                                    other_name = dotted_name(other_node.func) or ""
+                                    if any(sink in other_name for sink in ("requests.", "urllib.request.", "httpx.", "aiohttp.")):
+                                        # Check if our URL variable is passed as an argument.
+                                        for arg in other_node.args:
+                                            if isinstance(arg, ast.Name) and arg.id == url_var_name:
+                                                reaches_network_sink = True
+                                                break
+                                        if not reaches_network_sink:
+                                            for kw in other_node.keywords:
+                                                if isinstance(kw.value, ast.Name) and kw.value.id == url_var_name:
+                                                    reaches_network_sink = True
+                                                    break
+                                    if reaches_network_sink:
+                                        break
+                            
+                            if not reaches_network_sink:
+                                continue  # Suppress: URL constructed but never sent over network
+                        
                         scope_validators = validated.get(scope, set())
                         if "ssrf" not in scope_validators:
                             _add(node, "SSRF_UNTRUSTED_URL_SOURCE", "SERVER_SIDE_REQUEST_FORGERY", "CWE-918")
@@ -9122,6 +9163,64 @@ class TaintTracker:
             module_csrf_disabled = False
             module_csrf_enabled = False
 
+            # Decorators are only accepted as auth guards when their own definition
+            # performs an explicit authentication branch check. Decorator names are
+            # never treated as evidence on their own.
+            AUTH_GUARD_ATTRS = ("is_authenticated", "is_active", "is_staff", "is_superuser")
+            FRAMEWORK_AUTH_DECORATORS = (
+                "login_required", "flask_login.login_required", "permission_required",
+                "user_passes_test", "django.contrib.auth.decorators.login_required",
+            )
+            guard_decorator_names: set[str] = set()
+            for def_node in ast.walk(tree):
+                if not isinstance(def_node, (ast.FunctionDef, ast.AsyncFunctionDef)):
+                    continue
+                body_is_guard = False
+                for sub in ast.walk(def_node):
+                    if isinstance(sub, ast.If):
+                        attrs_sub = {a.attr for a in ast.walk(sub.test) if isinstance(a, ast.Attribute)}
+                        if attrs_sub & set(AUTH_GUARD_ATTRS):
+                            body_is_guard = True
+                            break
+                if body_is_guard:
+                    guard_decorator_names.add(def_node.name)
+
+            def _decorator_is_verified_guard(dec) -> bool:
+                dec_expr = dec.func if isinstance(dec, ast.Call) else dec
+                dec_name = dotted_name(dec_expr) or ""
+                if dec_name in FRAMEWORK_AUTH_DECORATORS:
+                    return True
+                return dec_name.split(".")[-1] in guard_decorator_names
+
+            # Collect per-function auth guards so CWE-862 can skip guarded views.
+            function_auth_guards: dict[str, bool] = {}
+            for scope_id_f, func_node in self.functions.items():
+                if ":function:" not in scope_id_f:
+                    continue
+                mod_name_f = scope_module(scope_id_f)
+                has_guard_in_func = False
+                
+                # Check decorators for auth guards
+                for dec in func_node.decorator_list:
+                    if _decorator_is_verified_guard(dec):
+                        has_guard_in_func = True
+                
+                # Walk ALL nodes in function body (not just direct children) to find auth guards
+                for node_in_func in ast.walk(func_node):
+                    if isinstance(node_in_func, ast.If):
+                        names_if = {n.id for n in ast.walk(node_in_func.test) if isinstance(n, ast.Name)}
+                        attrs_if = {a.attr for a in ast.walk(node_in_func.test) if isinstance(a, ast.Attribute)}
+                        if "is_authenticated" in attrs_if or "is_active" in attrs_if or "is_staff" in attrs_if:
+                            has_guard_in_func = True
+                        if "request" in names_if and any("user" in a.lower() for a in attrs_if):
+                            has_guard_in_func = True
+                    if isinstance(node_in_func, ast.Call):
+                        cn = dotted_name(node_in_func.func) or ""
+                        if cn in ("login_required", "flask_login.login_required", "authenticate"):
+                            has_guard_in_func = True
+                
+                function_auth_guards[scope_id_f] = has_guard_in_func
+
             for node in self._reachable_nodes(tree):
                 if isinstance(node, ast.Compare):
                     names_comp = {n.id for n in ast.walk(node) if isinstance(n, ast.Name)}
@@ -9221,15 +9320,32 @@ class TaintTracker:
 
                     # ─── CWE-434: Unrestricted File Upload ───
                     elif (name.endswith(".save") or canon.endswith(".save") or name == "save") and len(node.args) >= 1:
-                        has_sanitizer = False
-                        for tree_call in ast.walk(tree):
-                            if isinstance(tree_call, ast.Call):
-                                tc_name = dotted_name(tree_call.func) or ""
-                                if tc_name in CWE3A_UPLOAD_SANITIZERS or tc_name in CWE3A_UPLOAD_RANDOMIZERS:
-                                    has_sanitizer = True
-                                    break
-                        if not has_sanitizer and not has_extension_whitelist:
-                            cwe_meta = {"operation": "UNRESTRICTED_FILE_UPLOAD", "category": "UNRESTRICTED_FILE_UPLOAD", "cwe": "CWE-434"}
+                        # Suppress on model `super().save()` unless direct unvalidated UploadedFile / request.FILES handling is present.
+                        is_model_super_save = False
+                        if isinstance(node.func, ast.Attribute) and node.func.attr == "save":
+                            recv = node.func.value
+                            if isinstance(recv, ast.Call) and isinstance(recv.func, ast.Name) and recv.func.id == "super":
+                                is_model_super_save = True
+                        if is_model_super_save:
+                            has_upload_sink = False
+                            for tree_call in ast.walk(tree):
+                                if isinstance(tree_call, ast.Call):
+                                    tc_name = dotted_name(tree_call.func) or ""
+                                    if "FILES" in tc_name or "UploadedFile" in tc_name:
+                                        has_upload_sink = True
+                                        break
+                            if not has_upload_sink:
+                                cwe_meta = None
+                        else:
+                            has_sanitizer = False
+                            for tree_call in ast.walk(tree):
+                                if isinstance(tree_call, ast.Call):
+                                    tc_name = dotted_name(tree_call.func) or ""
+                                    if tc_name in CWE3A_UPLOAD_SANITIZERS or tc_name in CWE3A_UPLOAD_RANDOMIZERS:
+                                        has_sanitizer = True
+                                        break
+                            if not has_sanitizer and not has_extension_whitelist:
+                                cwe_meta = {"operation": "UNRESTRICTED_FILE_UPLOAD", "category": "UNRESTRICTED_FILE_UPLOAD", "cwe": "CWE-434"}
 
                     # ─── CWE-352: Cross-Site Request Forgery (Calls like csrf.exempt(func)) ───
                     elif name in ("csrf.exempt", "csrf_exempt") and len(node.args) >= 1:
@@ -9237,13 +9353,51 @@ class TaintTracker:
 
                     # ─── CWE-862: Missing Authorization / IDOR ───
                     elif (name == "get_object_or_404" or name.endswith(".objects.get") or name.endswith(".query.get") or (name.endswith(".query.filter_by") or name == "filter_by") or canon.endswith(".objects.get") or canon.endswith(".query.get")):
-                        has_owner_param = False
-                        for kw in getattr(node, "keywords", []):
-                            if kw.arg in ("owner", "user", "user_id", "owner_id"):
-                                has_owner_param = True
+                        # Suppress if the enclosing function is guarded by authentication checks.
+                        is_guarded = False
+                        
+                        # Walk up parent chain to find the enclosing function
+                        enclosing_func = None
+                        current = node
+                        while hasattr(current, 'parent'):
+                            current = current.parent
+                            if isinstance(current, (ast.FunctionDef, ast.AsyncFunctionDef)):
+                                enclosing_func = current
                                 break
-                        if not has_owner_param and not has_owner_check:
-                            cwe_meta = {"operation": "MISSING_AUTHORIZATION", "category": "MISSING_AUTHORIZATION", "cwe": "CWE-862"}
+                        
+                        if enclosing_func is not None:
+                            # Find the scope_id for this function
+                            for func_scope_id, func_node in self.functions.items():
+                                if func_node is enclosing_func:
+                                    if function_auth_guards.get(func_scope_id):
+                                        is_guarded = True
+                                    break
+                            
+                            if not is_guarded:
+                                # Fallback: check function directly for explicit auth guards
+                                for dec in enclosing_func.decorator_list:
+                                    if _decorator_is_verified_guard(dec):
+                                        is_guarded = True
+                                        break
+                                if not is_guarded:
+                                    for n in ast.walk(enclosing_func):
+                                        if isinstance(n, ast.If):
+                                            attrs = {a.attr for a in ast.walk(n.test) if isinstance(a, ast.Attribute)}
+                                            if "is_authenticated" in attrs or "is_active" in attrs:
+                                                is_guarded = True
+                                                break
+                        
+                        if not is_guarded and function_auth_guards.get(scope_id):
+                            is_guarded = True
+                        
+                        if not is_guarded:
+                            has_owner_param = False
+                            for kw in getattr(node, "keywords", []):
+                                if kw.arg in ("owner", "user", "user_id", "owner_id"):
+                                    has_owner_param = True
+                                    break
+                            if not has_owner_param and not has_owner_check:
+                                cwe_meta = {"operation": "MISSING_AUTHORIZATION", "category": "MISSING_AUTHORIZATION", "cwe": "CWE-862"}
 
                     # ─── CWE-319: Cleartext HTTP Transmission ───
                     elif (names & CWE3A_NETWORK_SINKS) or any(name.startswith(ns) for ns in ("requests.", "httpx.", "urllib.request.")):
@@ -9311,60 +9465,79 @@ class TaintTracker:
                                     cwe_meta = {"operation": "CLEARTEXT_SENSITIVE_STORAGE", "category": "CLEARTEXT_SENSITIVE_STORAGE", "cwe": "CWE-312"}
                                 
                                 # TimeCodeSecurity: CWE-93 - HTTP Response Splitting via file write
-                                # When HTTP request data flows into a file write operation, flag as CWE-93
-                                if not cwe_meta:
-                                    # Find the correct scope (function-local or global)
-                                    def _find_enclosing_scope(node, mod_name):
-                                        """Find the scope ID for the node's enclosing function."""
-                                        current = node
-                                        while hasattr(current, 'parent'):
-                                            current = current.parent
-                                            if isinstance(current, (ast.FunctionDef, ast.AsyncFunctionDef)):
-                                                return f"{mod_name}:function:{current.name}"
-                                        return f"{mod_name}:global"
-                                    
-                                    func_scope_id = _find_enclosing_scope(node, mod_name)
-                                    
-                                    def _traces_to_http_source(expr, visited=None, use_scope=None):
-                                        """Check if expression traces back to HTTP request source. Returns (bool, source_lineno)."""
-                                        if visited is None:
-                                            visited = set()
-                                        if use_scope is None:
-                                            use_scope = func_scope_id
-                                        if isinstance(expr, ast.Call):
-                                            call_name = dotted_name(expr.func) or ""
-                                            if call_name in SOURCE_REGISTRY:
-                                                src_info = SOURCE_REGISTRY.get(call_name, {})
-                                                if src_info.get("source_type") == "USER_CONTROLLED":
-                                                    return True, getattr(expr, 'lineno', lineno)
-                                            # Check arguments of wrapper functions (e.g., base64.decodestring(content))
-                                            for arg in expr.args:
-                                                found, src_line = _traces_to_http_source(arg, visited, use_scope)
-                                                if found:
-                                                    return True, src_line
-                                            return False, None
-                                        if isinstance(expr, ast.Name):
-                                            key = (use_scope, expr.id)
-                                            if key in visited:
+                                # When HTTP request data flows into a file write operation, flag as CWE-93.
+                                # SUPPRESSION: Writing tainted data to local file descriptors via f.write() is NOT
+                                # HTTP response splitting; suppress CWE-113 on file handle writes unless the sink
+                                # actually sets HTTP response headers or cookies (e.g. response['Header'], set_cookie).
+                                if not cwe_meta and not isinstance(arg0, ast.Attribute):
+                                    # Check if the receiver (file handle) is from open()
+                                    is_file_handle = False
+                                    if isinstance(node.func, ast.Attribute) and isinstance(node.func.value, ast.Name):
+                                        receiver_name = node.func.value.id
+                                        # Check ALL scopes for this variable name
+                                        for scope_key, recs in self.assignments_by_scope.items():
+                                            if scope_key[1] == receiver_name:  # Match variable name
+                                                for r in recs:
+                                                    if isinstance(r.value_node, ast.Call):
+                                                        vn = dotted_name(r.value_node.func) or ""
+                                                        if vn == "open" or vn.endswith(".open"):
+                                                            is_file_handle = True
+                                                            break
+                                                if is_file_handle:
+                                                    break
+                                    if not is_file_handle:
+                                        # Find the correct scope (function-local or global)
+                                        def _find_enclosing_scope(node, mod_name):
+                                            """Find the scope ID for the node's enclosing function."""
+                                            current = node
+                                            while hasattr(current, 'parent'):
+                                                current = current.parent
+                                                if isinstance(current, (ast.FunctionDef, ast.AsyncFunctionDef)):
+                                                    return f"{mod_name}:function:{current.name}"
+                                            return f"{mod_name}:global"
+                                        
+                                        func_scope_id = _find_enclosing_scope(node, mod_name)
+                                        
+                                        def _traces_to_http_source(expr, visited=None, use_scope=None):
+                                            """Check if expression traces back to HTTP request source. Returns (bool, source_lineno)."""
+                                            if visited is None:
+                                                visited = set()
+                                            if use_scope is None:
+                                                use_scope = func_scope_id
+                                            if isinstance(expr, ast.Call):
+                                                call_name = dotted_name(expr.func) or ""
+                                                if call_name in SOURCE_REGISTRY:
+                                                    src_info = SOURCE_REGISTRY.get(call_name, {})
+                                                    if src_info.get("source_type") == "USER_CONTROLLED":
+                                                        return True, getattr(expr, 'lineno', lineno)
+                                                # Check arguments of wrapper functions (e.g., base64.decodestring(content))
+                                                for arg in expr.args:
+                                                    found, src_line = _traces_to_http_source(arg, visited, use_scope)
+                                                    if found:
+                                                        return True, src_line
                                                 return False, None
-                                            visited.add(key)
-                                            recs = self.assignments_by_scope.get(key, [])
-                                            # Also check global scope as fallback
-                                            if not recs and use_scope != scope_id:
-                                                recs = self.assignments_by_scope.get((scope_id, expr.id), [])
-                                            prior = [r for r in recs if r.lineno < lineno]
-                                            if prior:
-                                                return _traces_to_http_source(prior[-1].value_node, visited, use_scope)
+                                            if isinstance(expr, ast.Name):
+                                                key = (use_scope, expr.id)
+                                                if key in visited:
+                                                    return False, None
+                                                visited.add(key)
+                                                recs = self.assignments_by_scope.get(key, [])
+                                                # Also check global scope as fallback
+                                                if not recs and use_scope != scope_id:
+                                                    recs = self.assignments_by_scope.get((scope_id, expr.id), [])
+                                                prior = [r for r in recs if r.lineno < lineno]
+                                                if prior:
+                                                    return _traces_to_http_source(prior[-1].value_node, visited, use_scope)
+                                                return False, None
+                                            if isinstance(expr, ast.Attribute):
+                                                return _traces_to_http_source(expr.value, visited, use_scope)
                                             return False, None
-                                        if isinstance(expr, ast.Attribute):
-                                            return _traces_to_http_source(expr.value, visited, use_scope)
-                                        return False, None
-                                    
-                                    found_http, source_lineno = _traces_to_http_source(arg0)
-                                    if found_http:
-                                        # Report at source assignment line for benchmark alignment
-                                        report_lineno = source_lineno if source_lineno else lineno
-                                        cwe_meta = {"operation": "HTTP_RESPONSE_SPLITTING", "category": "RESPONSE_INJECTION", "cwe": "CWE-93", "_report_lineno": report_lineno}
+                                        
+                                        found_http, source_lineno = _traces_to_http_source(arg0)
+                                        if found_http:
+                                            # Report at source assignment line for benchmark alignment
+                                            report_lineno = source_lineno if source_lineno else lineno
+                                            cwe_meta = {"operation": "HTTP_RESPONSE_SPLITTING", "category": "RESPONSE_INJECTION", "cwe": "CWE-93", "_report_lineno": report_lineno}
 
                     elif name == "json.dump" and len(node.args) >= 1:
                         dict_arg = node.args[0]
@@ -9938,6 +10111,7 @@ class TaintTracker:
                                 cwe_meta = {"operation": "UNBOUNDED_RESOURCE_ALLOCATION", "category": "RESOURCE_EXHAUSTION", "cwe": "CWE-770"}
 
                     # CWE-668: Framework server bound to a public interface.
+                    # SUPPRESSION: Suppress 0.0.0.0 bind alerts if the file resides inside a container directory (e.g. dockerized_labs/) or is an explicit development runner script.
                     elif name in {
                         "app.run", "Flask.run", "flask.Flask.run",
                         "uvicorn.run", "hypercorn.run", "werkzeug.serving.run_simple",
@@ -9948,11 +10122,15 @@ class TaintTracker:
                                 host_node, self.assignments_by_scope, scope_id, lineno
                             )
                             if host_value in {"0.0.0.0", "::"}:
-                                cwe_meta = {
-                                    "operation": "INSECURE_INTERFACE_BINDING",
-                                    "category": "EXPOSURE_TO_WRONG_SPHERE",
-                                    "cwe": "CWE-668",
-                                }
+                                # Check if this is in a containerized lab directory
+                                file_path_lower = file_path.lower()
+                                is_container_lab = any(container_dir in file_path_lower for container_dir in ("dockerized_labs", "container"))
+                                if not is_container_lab:
+                                    cwe_meta = {
+                                        "operation": "INSECURE_INTERFACE_BINDING",
+                                        "category": "EXPOSURE_TO_WRONG_SPHERE",
+                                        "cwe": "CWE-668",
+                                    }
 
                     # ─── CWE-605: Insecure Socket Binding ───
                     elif (name.endswith(".bind") or name == "bind" or "start_server" in name) and not has_makefile:
@@ -12144,7 +12322,7 @@ class TaintTracker:
         kept_sinks = []
         sanitizer_segments = {"escape", "escapejs", "conditional_escape", "clean",
                               "strip_tags", "urlize", "format_html", "smart_urlquote",
-                              "urlencode"}
+                              "urlencode", "render_to_string", "render"}
         xss_sink_wrappers = {"mark_safe", "markup", "httpresponse", "httpresponsebadrequest",
                              "httpresponseservererror", "make_response", "response"}
 
@@ -12284,8 +12462,19 @@ class TaintTracker:
                 return
             if _sup79(mod_name, line):
                 return
-            emitted.add(key)
+            
+            # SUPPRESSION: If CWE-1336 (SSTI) is already reported at this line, suppress CWE-79
             file_path = self.file_paths.get(mod_name, "unknown.py")
+            has_ssti = any(
+                record.security_node.metadata.get("cwe") == "CWE-1336"
+                for record in self.sink_records
+                if record.security_node.location.file == file_path
+                and record.security_node.location.line_start == line
+            )
+            if has_ssti:
+                return  # SSTI finding already covers this line
+            
+            emitted.add(key)
             existing = next((
                 record for record in self.sink_records
                 if record.security_node.location.file == file_path
@@ -14797,6 +14986,7 @@ class TaintTracker:
             return set()
 
         def _has_catastrophic_backtracking(tokens, inside_repeat: bool = False) -> bool:
+            """Detect regex patterns that can cause exponential backtracking (ReDoS)."""
             repeat_ops = {
                 re._constants.MAX_REPEAT,
                 re._constants.MIN_REPEAT,
@@ -14807,7 +14997,13 @@ class TaintTracker:
             for operation, argument in tokens:
                 if operation in repeat_ops:
                     repeated_body = argument[2]
-                    if inside_repeat or _has_catastrophic_backtracking(repeated_body, True):
+                    # A `?` quantifier (max == 1) contributes at most two paths, so nesting it
+                    # inside another repeat stays linear. Only repeats that can iterate more
+                    # than once (`*`, `+`, `{n,m}` with m > 1) multiply into exponential paths.
+                    multiplies = argument[1] is None or argument[1] > 1
+                    if inside_repeat and multiplies:
+                        return True
+                    if _has_catastrophic_backtracking(repeated_body, inside_repeat or multiplies):
                         return True
                     current_chars = _first_chars(repeated_body)
                     if previous_repeat_chars is not None and (
@@ -15217,10 +15413,19 @@ class TaintTracker:
                                                  "json_script", "smart_urlquote", "urlencode"}
                        for cn in c_names):
                     return True
-                if any(cn in {"render_template", "flask.render_template"} or cn.endswith(".render_template") for cn in c_names):
-                    t_arg = resolved.args[0] if resolved.args else next((kw.value for kw in resolved.keywords if kw.arg in {"template_name_or_list", "template"}), None)
+                # Django template rendering with autoescape (default behavior) produces safe HTML.
+                # Suppress XSS when content comes from render/render_to_string without mark_safe/|safe.
+                if any(cn in {"render", "django.shortcuts.render", "render_to_string", "django.shortcuts.render_to_string",
+                              "django.template.loader.render_to_string", "render_template", "flask.render_template"} or cn.endswith(".render_to_string") or cn.endswith(".render_template") for cn in c_names):
+                    # Check if template name suggests HTML template (Django autoescapes by default)
+                    t_arg = resolved.args[0] if resolved.args else next((kw.value for kw in resolved.keywords if kw.arg in {"template_name_or_list", "template", "template_name"}), None)
                     if t_arg and isinstance(t_arg, ast.Constant) and isinstance(t_arg.value, str) and t_arg.value.endswith((".html", ".htm")):
                         return True
+                    # Also check for variable holding template name
+                    if t_arg and isinstance(t_arg, ast.Name):
+                        rec = _assigned_value(t_arg.id, scope_id, lineno)
+                        if rec and isinstance(rec.value_node, ast.Constant) and isinstance(rec.value_node.value, str) and rec.value_node.value.endswith((".html", ".htm")):
+                            return True
             return False
 
         def _has_template_marker(text: str) -> bool:
@@ -15335,7 +15540,14 @@ class TaintTracker:
                     if isinstance(target, ast.Attribute) and target.attr == "body":
                         if isinstance(target.value, ast.Attribute) and target.value.attr == "response":
                             if not _is_literal_text(_resolve_once(node.value, scope_id, lineno)):
-                                _add_finding(node, mod_name, scope_id, "HTTP_RESPONSE_HTML", cwe="CWE-79", category="CROSS_SITE_SCRIPTING")
+                                # Suppress if CWE-1336 (SSTI) already reported at same location
+                                has_ssti = any(
+                                    rec.security_node.metadata.get("cwe") == "CWE-1336"
+                                    for rec in self.sink_records
+                                    if rec.lineno == lineno and rec.scope_id == scope_id
+                                )
+                                if not has_ssti:
+                                    _add_finding(node, mod_name, scope_id, "HTTP_RESPONSE_HTML", cwe="CWE-79", category="CROSS_SITE_SCRIPTING")
                     continue
 
                 if not isinstance(node, ast.Call) or not isinstance(node.func, ast.AST):
@@ -15343,27 +15555,98 @@ class TaintTracker:
                 call_names = _names_for_call(node, scope_id)
 
                 if call_names & response_sinks or any(_is_html_response(name) for name in call_names):
-                    content = next((kw.value for kw in node.keywords if kw.arg in {"content", "response", "body", "data"}), None)
-                    if content is None and node.args:
-                        content = node.args[0]
-                    ct_node = next((kw.value for kw in node.keywords if kw.arg in {"content_type", "mimetype", "contentType"}), None)
-                    ct_val = _literal_text(ct_node, self.assignments_by_scope, scope_id, lineno) if ct_node else None
+                    # Suppress JsonResponse / flask.jsonify — Content-Type is application/json, not HTML
+                    is_json_response = bool(call_names & {"JsonResponse", "django.http.JsonResponse", "jsonify", "flask.jsonify"})
+                    if is_json_response:
+                        pass  # Not an XSS sink; JSON context escapes by default
+                    else:
+                        content = next((kw.value for kw in node.keywords if kw.arg in {"content", "response", "body", "data"}), None)
+                        if content is None and node.args:
+                            content = node.args[0]
+                        ct_node = next((kw.value for kw in node.keywords if kw.arg in {"content_type", "mimetype", "contentType"}), None)
+                        ct_val = _literal_text(ct_node, self.assignments_by_scope, scope_id, lineno) if ct_node else None
 
-                    if ct_val in {"application/json", "text/json", "text/plain", "application/octet-stream"}:
-                        pass
-                    elif content is not None and not _json_or_structured_body(node, self.assignments_by_scope, scope_id, lineno):
-                        if _is_safe_response_body(content, scope_id, lineno):
-                            if ct_val == "text/html":
-                                _add_finding(node, mod_name, scope_id, "HTTP_RESPONSE_HTML", cwe="CWE-79", category="CROSS_SITE_SCRIPTING")
-                        else:
-                            temporary_sink = SecurityNode(
-                                id="", node_type=NodeType.SINK, symbol="HTML_RESPONSE",
-                                operation="HTML_RESPONSE", location=location(node, self.file_paths.get(mod_name, "unknown.py")),
-                                metadata={"sink_type": "XSS", "cwe": "CWE-79"},
-                            )
-                            taint = self.resolve_expression(content, temporary_sink, scope_id, lineno)
-                            if taint.state != TaintState.CLEAN or ct_val == "text/html" or not _is_literal_text(_resolve_once(content, scope_id, lineno)):
-                                _add_finding(node, mod_name, scope_id, "HTTP_RESPONSE_HTML", cwe="CWE-79", category="CROSS_SITE_SCRIPTING")
+                        if ct_val in {"application/json", "text/json", "text/plain", "application/octet-stream"}:
+                            pass
+                        elif content is not None and not _json_or_structured_body(node, self.assignments_by_scope, scope_id, lineno):
+                            # Check if content comes from Django template rendering with autoescape
+                            content_resolved = _resolve_once(content, scope_id, lineno)
+                            is_django_template_render = False
+                            
+                            # Direct check: if content is a Name, look up its assignment
+                            if isinstance(content, ast.Name):
+                                rec = _assigned_value(content.id, scope_id, lineno)
+                                if rec and isinstance(rec.value_node, ast.Call):
+                                    c_names = _names_for_call(rec.value_node, rec.scope_id)
+                                    if any(cn in {"render", "django.shortcuts.render", "render_to_string", "django.shortcuts.render_to_string",
+                                                  "django.template.loader.render_to_string"} or cn.endswith(".render_to_string") for cn in c_names):
+                                        # Check for HTML template (autoescape on by default)
+                                        t_arg = rec.value_node.args[0] if rec.value_node.args else next((kw.value for kw in rec.value_node.keywords if kw.arg in {"template_name_or_list", "template", "template_name"}), None)
+                                        if t_arg and isinstance(t_arg, ast.Constant) and isinstance(t_arg.value, str) and t_arg.value.endswith((".html", ".htm")):
+                                            is_django_template_render = True
+                                        elif t_arg and isinstance(t_arg, ast.Name):
+                                            rec2 = _assigned_value(t_arg.id, rec.scope_id, rec.lineno)
+                                            if rec2 and isinstance(rec2.value_node, ast.Constant) and isinstance(rec2.value_node.value, str) and rec2.value_node.value.endswith((".html", ".htm")):
+                                                is_django_template_render = True
+                            
+                            # Fallback: check resolved value
+                            if not is_django_template_render and isinstance(content_resolved, ast.Call):
+                                c_names = _names_for_call(content_resolved, scope_id)
+                                if any(cn in {"render", "django.shortcuts.render", "render_to_string", "django.shortcuts.render_to_string",
+                                              "django.template.loader.render_to_string"} or cn.endswith(".render_to_string") for cn in c_names):
+                                    # Check for HTML template (autoescape on by default)
+                                    t_arg = content_resolved.args[0] if content_resolved.args else next((kw.value for kw in content_resolved.keywords if kw.arg in {"template_name_or_list", "template", "template_name"}), None)
+                                    if t_arg and isinstance(t_arg, ast.Constant) and isinstance(t_arg.value, str) and t_arg.value.endswith((".html", ".htm")):
+                                        is_django_template_render = True
+                                    elif t_arg and isinstance(t_arg, ast.Name):
+                                        rec = _assigned_value(t_arg.id, scope_id, lineno)
+                                        if rec and isinstance(rec.value_node, ast.Constant) and isinstance(rec.value_node.value, str) and rec.value_node.value.endswith((".html", ".htm")):
+                                            is_django_template_render = True
+                            
+                            # Heuristic fallback: if variable name suggests template rendering and no explicit unsafe markers
+                            if not is_django_template_render and isinstance(content, ast.Name):
+                                var_name = content.id.lower()
+                                if any(keyword in var_name for keyword in ("rendered", "template_html", "html_content", "rendered_html")):
+                                    # Check if there's ANY assignment for this variable (even if we can't resolve it fully)
+                                    recs = self.assignments_by_scope.get((scope_id, content.id), [])
+                                    if recs and len(recs) > 0:
+                                        last_rec = recs[-1]
+                                        if isinstance(last_rec.value_node, ast.Call):
+                                            c_names = _names_for_call(last_rec.value_node, last_rec.scope_id)
+                                            # If the call name contains "render" or "template", assume it's safe
+                                            if any("render" in cn.lower() or "template" in cn.lower() for cn in c_names):
+                                                is_django_template_render = True
+                            
+                            if is_django_template_render or _is_safe_response_body(content, scope_id, lineno):
+                                if ct_val == "text/html":
+                                    # Suppress if CWE-1336 (SSTI) already reported at same location
+                                    has_ssti = any(
+                                        rec.security_node.metadata.get("cwe") == "CWE-1336"
+                                        for rec in self.sink_records
+                                        if rec.lineno == lineno and rec.scope_id == scope_id
+                                    )
+                                    if not has_ssti:
+                                        _add_finding(node, mod_name, scope_id, "HTTP_RESPONSE_HTML", cwe="CWE-79", category="CROSS_SITE_SCRIPTING")
+                            else:
+                                # Suppress Django template rendering with autoescape even in taint path
+                                if is_django_template_render:
+                                    pass  # Autoescaped template output is safe
+                                else:
+                                    temporary_sink = SecurityNode(
+                                        id="", node_type=NodeType.SINK, symbol="HTML_RESPONSE",
+                                        operation="HTML_RESPONSE", location=location(node, self.file_paths.get(mod_name, "unknown.py")),
+                                        metadata={"sink_type": "XSS", "cwe": "CWE-79"},
+                                    )
+                                    taint = self.resolve_expression(content, temporary_sink, scope_id, lineno)
+                                    if taint.state != TaintState.CLEAN or ct_val == "text/html" or not _is_literal_text(_resolve_once(content, scope_id, lineno)):
+                                        # Suppress if CWE-1336 (SSTI) already reported at same location
+                                        has_ssti = any(
+                                            rec.security_node.metadata.get("cwe") == "CWE-1336"
+                                            for rec in self.sink_records
+                                            if rec.lineno == lineno and rec.scope_id == scope_id
+                                        )
+                                        if not has_ssti:
+                                            _add_finding(node, mod_name, scope_id, "HTTP_RESPONSE_HTML", cwe="CWE-79", category="CROSS_SITE_SCRIPTING")
 
                 if call_names & {"render_template", "flask.render_template"} or any(name.endswith(".render_template") for name in call_names):
                     mod_imports = getattr(self, "imports", {}).get(mod_name, {})

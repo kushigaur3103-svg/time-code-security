@@ -35,6 +35,9 @@ external/pygoat/
 
 external/
 
+# PyGoat clone used by the showdown harness (fetched by CI, not source)
+pygoat_target/
+
 # Generated SARIF scan artifacts (CLI / CI output, not source)
 timecodesecurity-results.sarif
 *.sarif
