@@ -1,4 +1,4 @@
-name: "Showdown: TCS vs Semgrep (DVPA)"
+name: "Showdown: TCS vs Semgrep (DVPWA)"
 
 on:
   workflow_dispatch:
@@ -28,9 +28,10 @@ jobs:
           pipx install semgrep
           semgrep --version
 
-      - name: Clone DVPA Target Repository
+      - name: Clone DVPWA Target Repository
         run: |
-          git clone --depth 1 https://github.com/anxolerd/dvpa.git dvpa_target
+          # anxolerd/dvpa does not exist; the repo is 'Damn Vulnerable Python Web App' = dvpwa.
+          git clone --depth 1 https://github.com/anxolerd/dvpwa.git dvpa_target
           COUNT=$(find dvpa_target -name "*.py" | wc -l)
           echo "DVPA_PY_FILES=$COUNT" >> $GITHUB_ENV
 
@@ -198,11 +199,14 @@ jobs:
               cwe_rows.append(f"| {cwe} | {tcs_by_cwe.get(cwe, 0)} | {sg_by_cwe.get(cwe, 0)} |")
 
           md = [
-              "# Showdown: TCS vs Semgrep (DVPA)",
+              "# Showdown: TCS vs Semgrep (DVPWA)",
               "",
-              "DVPA (`anxolerd/dvpa`) is an intentionally vulnerable Flask app. This is the **first** run "
-              "against it, so every number below is a raw live count: nothing has been hand-adjudicated "
-              "against the source yet, and no precision, TP or FP figure is claimed anywhere on this page.",
+              "Target: `anxolerd/dvpwa` - Damn Vulnerable Python Web App, an **aiohttp** + Jinja + PostgreSQL "
+              "app (default branch `master`). It is *not* a Flask app, so the `p/flask` ruleset requested for "
+              "this comparison has no framework to match; treat Semgrep's count as `p/python` coverage. "
+              "This is the **first** run against it, so every number below is a raw live count: nothing has "
+              "been hand-adjudicated against the source yet, and no precision, TP or FP figure is claimed "
+              "anywhere on this page.",
               "",
               "## Tier 1 - source-to-sink / exploit findings (raw counts)",
               "",
