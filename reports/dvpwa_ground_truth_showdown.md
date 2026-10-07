@@ -1,14 +1,16 @@
 # DVPWA Ground-Truth Showdown: TimeCodeSecurity vs Semgrep
 
 **Target:** [`anxolerd/dvpwa`](https://github.com/anxolerd/dvpwa) — Damn Vulnerable Python Web App.
-**Stack:** aiohttp + Jinja2 templates + PostgreSQL (asyncpg/aiopg) + aioredis. Default branch `master`,
-commit `a1d8f89`. It is **not** a Flask or Django app.
-**Engine commit scanned:** `078b376`.
-**Evidence:** GitHub Actions `dvpa_showdown.yml` run #2 (id `37590987576`, `conclusion=success`), parsed
-directly from the uploaded `reports/tcs_dvpa.json` and `reports/semgrep_dvpa.json`.
+**Stack:** aiohttp + Jinja2 templates + PostgreSQL (aiopg) + aioredis. Default branch `master`, commit `a1d8f89`.
+Not a Flask or Django app.
 
-> **Nothing here is extrapolated.** Every number below was measured in that run. Where a figure has not
-> been measured yet, it is written in the "Pending" section as *unmeasured*, never as a result.
+**Primary evidence:** GitHub Actions `dvpa_showdown.yml` **run #5** (id `37620460257`, `conclusion=success`),
+scanned at engine commit `3ad4eee` — the commit that added `.jinja2` / `.j2` to template discovery.
+Parsed from the uploaded `reports/tcs_dvpa.json` and `reports/semgrep_dvpa.json`.
+
+**Determinism check:** run #4 (id `37620183118`) scanned the *same* commit and produced a **byte-for-byte
+identical finding set** — 16 findings, 0 difference on `(file, line, category)`. Only `duration_ms` moved
+(157.96 → 287.96). The counts below are reproducible, not a lucky sample.
 
 ---
 
@@ -16,38 +18,41 @@ directly from the uploaded `reports/tcs_dvpa.json` and `reports/semgrep_dvpa.jso
 
 | Engine | Files scanned | Python | Jinja2 templates | Container/config |
 | :--- | ---: | ---: | ---: | ---: |
-| TimeCodeSecurity | 23 | 21 | **0** | 2 |
+| TimeCodeSecurity | **33** | 21 | **10** | 2 |
 | Semgrep (`p/python` + `p/flask`) | 21 | 21 | 0 | 0 |
 
-TimeCodeSecurity's own scope counters for this run were `{'python': 21, 'docker': 2, 'html': 0}` with
-`findings_by_scope: {'python': 8, 'docker': 0, 'html': 0}`.
+Measured engine scope counters: `{'python': 21, 'docker': 2, 'html': 10}`. TimeCodeSecurity sees all 10 of
+dvpwa's `sqli/templates/*.jinja2` files; Semgrep has no template ruleset, so **every template on this
+target is TimeCodeSecurity-only coverage.**
 
-**The `html: 0` cell is a real finding, not a rounding artefact.** dvpwa ships 10 Jinja2 templates under
-`sqli/templates/*.jinja2`, and TimeCodeSecurity collected none of them, because template discovery is
-gated on `TEMPLATE_SUFFIXES`, which at scan time was `(".html", ".htm", ".jinja", ".dtl")`. A path ending
-in `.jinja2` does **not** match `.jinja` (`"...jinja2".endswith(".jinja")` is `False`), so all 10 files
-were silently out of scope. Semgrep never scans templates at all — `p/python` and `p/flask` are Python
-rulesets — so templates were out of scope on both sides in this run.
+### Before / after the template-scope fix
 
-That gap is fixed on `main` at commit `3ad4eee` (`fix(auditor): add .jinja2 and .j2 to supported template
-extensions [skip ci]`), verified locally: a six-suffix fixture went from `html: 4` to `html: 6`, with
-`.jinja2` and `.j2` newly collected and audited. **The fix post-dates this scan, so it is not reflected in
-any number below** — see Pending.
+| Metric | Run #2 @ `078b376` (before) | Run #5 @ `3ad4eee` (after) | Delta |
+| :--- | ---: | ---: | ---: |
+| Templates collected (`html`) | 0 | 10 | **+10** |
+| Files scanned | 23 | 33 | +10 |
+| Total findings | 8 | 16 | +8 |
+| Tier-1 core findings | 8 | 8 | **0** |
+| Tier-2 hygiene findings | 0 | 8 | **+8** |
+
+This is the cleanest possible proof of a scope fix: the new surface added **exactly 8 findings, all in
+Tier 2, and zero Tier-1 movement**. Nothing that was previously reported changed, and no Python finding
+appeared or disappeared — the extra findings come only from files that were previously never opened.
 
 ---
 
 ## Tier 1 — core exploitable findings
 
-| Engine | Findings | Distinct sites | Yield basis |
+| Engine | Findings | Distinct sites | Basis |
 | :--- | ---: | ---: | :--- |
-| TimeCodeSecurity | 8 | 8 | one finding per unique `file:line` |
-| Semgrep | 2 | **1** | both alerts point at the same line |
+| TimeCodeSecurity | 8 | **8** | one finding per unique `file:line` |
+| Semgrep | 2 | **1** | both alerts hit the same line |
 
-**Site yield: TimeCodeSecurity covers 8 unique locations against Semgrep's 1 — an 8x advantage on
-distinct-site coverage.** On raw alert count the gap is 4.0x; the 8x figure is the honest one to quote,
-because Semgrep's two results are duplicate rules firing on one line, not two separate problems.
+**Site yield: TimeCodeSecurity covers 8 distinct exploitable locations against Semgrep's 1 — 8x on
+site coverage** (4.0x on raw alert count). The 8x figure is the honest one because Semgrep's two results
+are two rules firing on a single line, not two defects.
 
-### TimeCodeSecurity — all 8 findings
+### TimeCodeSecurity — all 8 Tier-1 findings
 
 | CWE | Location | Category |
 | :--- | :--- | :--- |
@@ -60,7 +65,7 @@ because Semgrep's two results are duplicate rules firing on one line, not two se
 | CWE-79 | `sqli/middlewares.py:69` | UNESCAPED_TEMPLATE_EXTENSION |
 | CWE-384 | `sqli/views.py:42` | SESSION_FIXATION |
 
-Mix: 3 SQL injection, 2 XSS, 1 timing attack, 1 weak password hash, 1 session fixation.
+Mix: **3 SQLi, 2 XSS, 1 timing attack, 1 weak password hash, 1 session fixation.**
 
 ### Semgrep — both findings
 
@@ -71,20 +76,20 @@ Mix: 3 SQL injection, 2 XSS, 1 timing attack, 1 weak password hash, 1 session fi
 
 ### Overlap
 
-`user.py:41` is the **only** location both engines report. TimeCodeSecurity labels it CWE-916, Semgrep
-labels it CWE-327 — same MD5 password defect, different CWE viewpoint. Every other TimeCodeSecurity site
-is unseen by Semgrep, and Semgrep found nothing that TimeCodeSecurity missed.
+`user.py:41` is the **only** location both engines report — TimeCodeSecurity labels it CWE-916, Semgrep
+labels it CWE-327; same MD5-password defect, different CWE viewpoint. Semgrep found nothing that
+TimeCodeSecurity missed.
 
-Semgrep's low count is a genuine detection result, not a scan failure: the artifact records
-`errors: []`, `warnings: 0`, and all 21 Python files in `paths.scanned`.
+Semgrep's low count is a real detection result, not a scan failure: `errors: []`, `warnings: 0`, all 21
+Python files in `paths.scanned`.
 
-### False-negative check on the 3 SQL sites
+### SQLi false-negative audit
 
-dvpwa's DAO layer has five files that call `cur.execute`. TimeCodeSecurity flagged `course.py:37` and
-`student.py:45` and skipped `mark.py:25`, `mark.py:37`, `review.py:24`, `review.py:36` and `course.py:47`.
-Reading those queries confirms the skips are correct, not misses — they use psycopg named placeholders
-(`'%(student_id)s'` with a params dict), i.e. properly parameterized SQL. `student.py:45` is the one
-called as `cur.execute(q)` with no params argument, which is the exploitable path the app teaches.
+Five DAO files call `cur.execute`. TimeCodeSecurity flagged `course.py:37` and `student.py:45`; it skipped
+`mark.py:25`, `mark.py:37`, `review.py:24`, `review.py:36` and `course.py:47`. Reading those queries
+confirms the skips are correct: they use psycopg named placeholders (`'%(student_id)s'` with a params
+dict) — properly parameterized. `student.py:45` is called as `cur.execute(q)` with no params argument,
+which is the injectable path the app teaches.
 
 ---
 
@@ -92,88 +97,89 @@ called as `cur.execute(q)` with no params argument, which is the exploitable pat
 
 | Category | TimeCodeSecurity | Semgrep |
 | :--- | ---: | ---: |
-| CSRF missing protection | 0 | 0 |
-| Missing Subresource Integrity | 0 | 0 |
+| CSRF_MISSING_PROTECTION (CWE-352) | **7** | 0 |
+| MISSING_SUBRESOURCE_INTEGRITY (CWE-353) | **1** | 0 |
 | Insecure cookie configuration | 0 | 0 |
-| **Total** | **0** | **0** |
+| **Total hygiene** | **8** | **0** |
 
-**Both engines scored zero on hygiene in this run, and the zeros mean different things.**
+Reported separately from Tier 1 so an absent control is never counted as an exploit. All 8 come from
+Jinja2 templates — files that only became in-scope at `3ad4eee`:
 
-- TimeCodeSecurity's 0 is a *scope* zero: all three rules live in the template auditor
-  (`html_auditor.py`), which received no files at all because `.jinja2` was not in `TEMPLATE_SUFFIXES`.
-  Nothing was audited, so nothing could be reported.
-- Semgrep's 0 is a *ruleset* zero: `p/python` and `p/flask` contain no CSRF, SRI or cookie rule for
-  templates. Expected, not earned.
+| CWE | Template | Line |
+| :--- | :--- | ---: |
+| CWE-353 | `sqli/templates/base.jinja2` | 8 |
+| CWE-352 | `sqli/templates/base.jinja2` | 28 |
+| CWE-352 | `sqli/templates/base.jinja2` | 42 |
+| CWE-352 | `sqli/templates/course.jinja2` | 45 |
+| CWE-352 | `sqli/templates/courses.jinja2` | 27 |
+| CWE-352 | `sqli/templates/index.jinja2` | 14 |
+| CWE-352 | `sqli/templates/review.jinja2` | 20 |
+| CWE-352 | `sqli/templates/students.jinja2` | 23 |
 
-This is why the PyGoat showdown's headline "111 hygiene findings vs 0" cannot be repeated on DVPWA from
-this run — the tier is empty on both sides.
+6 of the 10 templates carry findings; the other 4 (`errors/40x.jinja2`, `errors/50x.jinja2`,
+`evaluate.jinja2`, `student.jinja2`) contain no state-changing form and no externally hosted subresource.
+
+Semgrep's zeros are a **rule-scope** difference, not earned detection: `p/python` and `p/flask` contain no
+CSRF, SRI or cookie rule for templates. TimeCodeSecurity's 8 exist because the template auditor parses the
+HTML node tree and checks `<form method="POST">` bodies and `<script>`/`<link>` hostnames.
+
+---
+
+## Combined coverage
+
+| Engine | Findings | Distinct sites |
+| :--- | ---: | ---: |
+| TimeCodeSecurity | 16 | **16** (no duplicates) |
+| Semgrep | 2 | 1 |
+
+**16 distinct sites vs 1.** Every one of the 16 TimeCodeSecurity findings sits on its own line — there is
+no duplicate-alert padding inflating the number.
 
 ---
 
 ## Performance
 
-| Engine | Wall clock |
-| :--- | ---: |
-| TimeCodeSecurity | 1s (engine-reported `duration_ms`: 268.0) |
-| Semgrep | 3s |
+| Engine | Wall clock | Engine-reported internals |
+| :--- | ---: | :--- |
+| TimeCodeSecurity | 1s | `duration_ms` 287.96 (run #4: 157.96) |
+| Semgrep | 3s | includes network ruleset resolution |
 
-Ratio: Semgrep took 3.0x the wall clock of TimeCodeSecurity on this target. Single runner, single sample;
-treat as indicative, not a benchmark. Semgrep's time includes ruleset resolution over the network.
+Ratio 3.0x. One shared runner, one sample — indicative, not a benchmark. Note the two runs of the same
+commit differed ~1.8x in TimeCodeSecurity's internal duration while producing an identical finding set:
+timing is noisy here, detection is not.
 
 ---
 
 ## What this run does **not** establish
 
-- **False positives are not measured.** The 8 TimeCodeSecurity findings have not been hand-adjudicated
-  against dvpwa source. 8 is a count, not an accuracy figure. No precision or recall claim is made
-  anywhere in this document.
-- **Not the same file set.** TimeCodeSecurity scanned container/config documents that Semgrep ignored, so
-  the "23 vs 21" cells are not a like-for-like comparison.
-- **`p/flask` was dead weight.** dvpwa is aiohttp, so that ruleset had no framework to match. The Semgrep
-  column is effectively `p/python` coverage. It is not comparable with the PyGoat showdown either, which
-  ran one ruleset (`p/python`).
+- **False positives are not measured.** The 16 findings have not been hand-adjudicated against dvpwa
+  source. 16 is a count, not an accuracy figure. No precision or recall claim appears in this document.
+- **Not the same file set.** TimeCodeSecurity scanned 33 files including 10 templates and 2 container/config
+  documents; Semgrep scanned 21 Python files. The "Files scanned" cells are not like-for-like.
+- **`p/flask` was dead weight** — dvpwa is aiohttp, so that ruleset had no framework to match. Treat the
+  Semgrep column as `p/python` coverage. Also not comparable with the PyGoat showdown, which ran one ruleset.
 - **Not a substitute for Gate 1.** This compares two engines on one external target; engine correctness is
-  asserted by the 552-case ground-truth suite, not by this document.
+  asserted by the 552-case ground-truth suite.
 
 ---
 
 ## Architectural boundary held deliberately
 
 TimeCodeSecurity fires `UNESCAPED_TEMPLATE_EXTENSION` (CWE-79) when `render_template`-style code passes a
-template name that does **not** look autoescaped, i.e. the check is
-`if not is_html and has_context: report`. The `(…html, .htm)` tuple in `ast_scanner.py` is therefore an
-autoescape **whitelist**, the opposite of file discovery.
+template name that does **not** look autoescaped: `if not is_html and has_context: report`. The
+`(.html, .htm)` tuple in `ast_scanner.py` is an autoescape **whitelist** — the opposite of file discovery.
 
 Adding `.jinja2` / `.j2` to that whitelist was considered and **rejected**. Jinja2's default
-`select_autoescape` enables escaping only for `.html`, `.htm`, `.xml`, `.xhtml`; a `.jinja2` template is
-not autoescaped by default. So the two CWE-79 findings at `middlewares.py:62` and `:69` are the correct,
-deterministic behaviour, and widening that whitelist would have silenced real detections to make a
-cosmetic count look tidier.
+`select_autoescape` covers only `.html`, `.htm`, `.xml`, `.xhtml`; a `.jinja2` template is not autoescaped
+by default. So the two CWE-79 findings at `middlewares.py:62` and `:69` are correct deterministic
+behaviour, and widening that whitelist would have silenced real detections. Confirmed by the data above:
+Tier-1 stayed at 8 across both the before and after runs.
 
 ---
 
-## Pending — unmeasured, requires the next run
+## Gate 1 — engine regression suite
 
-The template-scope fix is on `main` (`3ad4eee`) but no scan has run since it landed. Until a run happens
-against that commit, the following are **not results** and must not be quoted as such:
-
-| Item | Status | Why it is unknown |
-| :--- | :--- | :--- |
-| Templates collected | unmeasured | expected to move `html: 0` toward the 10 `.jinja2` files present, but `scanned_files` is counted after the fast-path filter, so the exact figure is not predictable |
-| Total files scanned | unmeasured | 33 (21 + 10 + 2) is arithmetic on the repository tree, not a measured engine output |
-| CSRF missing protection | unmeasured | depends on which dvpwa templates carry state-changing `<form>` tags without a token |
-| Missing Subresource Integrity | unmeasured | depends on externally hosted `<script>` / `<link>` tags in those templates |
-| Tier-1 count on the new commit | unmeasured | the fix cannot change Python findings, but has not been re-verified end to end |
-
-**Zero CI credits were spent producing or committing this document** — the `[skip ci]` convention
-suppresses the three workflows that auto-run on `push` to `main` (`ai-scanner.yml`, `tcs-scan.yml`,
-`tcs.yml`), and no `workflow_dispatch` was issued. The next scheduled run will populate the table above.
-
----
-
-## Gate 1 — engine regression suite at this commit
-
-`python scripts/run_all_checks.py` executed locally against the template-extension change:
+`python scripts/run_all_checks.py`, executed locally against the template-extension change:
 
 ```
 Cases Evaluated : 552
@@ -186,4 +192,14 @@ ALL VERIFICATION CHECKS PASSED (4/4 GREEN) — Exit Status: 0
 ```
 
 Structural reason the change cannot move the gate: `benchmark/`, `tests/` and `data/` contain **zero**
-template-suffixed files, so template discovery is not on any gate path.
+template-suffixed files, so template discovery is not on any gate path. Independently confirmed by the
+DVPWA runs themselves — Tier-1 counts were identical before and after.
+
+---
+
+## Credit consumption
+
+Producing and committing this document used **zero CI runner credits**: the `[skip ci]` convention
+suppresses the three workflows that auto-run on `push` to `main` (`ai-scanner.yml`, `tcs-scan.yml`,
+`tcs.yml`), and no `workflow_dispatch` was issued. Runs #4 and #5 were **not** triggered from here — they
+already existed and were read as evidence. Local work was limited to parsing downloaded artifacts.
