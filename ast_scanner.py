@@ -9161,6 +9161,18 @@ class TaintTracker:
         CWE-614, CWE-916, CWE-759, CWE-434, CWE-352, CWE-287, CWE-862, CWE-312, CWE-319, CWE-489.
         Appends sinks + sink_records; analyze() emits synthetic edges for them.
         """
+        # Index every function by its owning module once. The auth-guard map below only
+        # ever needs the current module's functions, and scanning self.functions for each
+        # of M modules is O(modules x functions) -- the dominant cost on large trees.
+        functions_by_module: dict[str, list[tuple[str, ast.AST]]] = {}
+        function_scopes: dict[int, str] = {}
+        for func_scope, func_node in self.functions.items():
+            function_scopes.setdefault(id(func_node), func_scope)
+            if ":function:" in func_scope:
+                functions_by_module.setdefault(scope_module(func_scope), []).append(
+                    (func_scope, func_node))
+        func_explicit_guard_cache: dict[int, bool] = {}
+
         for mod_name, tree in self.modules.items():
             file_path = self.file_paths.get(mod_name, "unknown.py")
             scope_id = f"{mod_name}:global"
@@ -9205,10 +9217,7 @@ class TaintTracker:
 
             # Collect per-function auth guards so CWE-862 can skip guarded views.
             function_auth_guards: dict[str, bool] = {}
-            for scope_id_f, func_node in self.functions.items():
-                if ":function:" not in scope_id_f:
-                    continue
-                mod_name_f = scope_module(scope_id_f)
+            for scope_id_f, func_node in functions_by_module.get(mod_name, ()):
                 has_guard_in_func = False
                 
                 # Check decorators for auth guards
@@ -9377,13 +9386,10 @@ class TaintTracker:
                                 break
                         
                         if enclosing_func is not None:
-                            # Find the scope_id for this function
-                            for func_scope_id, func_node in self.functions.items():
-                                if func_node is enclosing_func:
-                                    if function_auth_guards.get(func_scope_id):
-                                        is_guarded = True
-                                    break
-                            
+                            func_scope_id = function_scopes.get(id(enclosing_func))
+                            if func_scope_id is not None and function_auth_guards.get(func_scope_id):
+                                is_guarded = True
+
                             if not is_guarded:
                                 # Fallback: check function directly for explicit auth guards
                                 for dec in enclosing_func.decorator_list:
@@ -9391,12 +9397,17 @@ class TaintTracker:
                                         is_guarded = True
                                         break
                                 if not is_guarded:
-                                    for n in ast.walk(enclosing_func):
-                                        if isinstance(n, ast.If):
-                                            attrs = {a.attr for a in ast.walk(n.test) if isinstance(a, ast.Attribute)}
-                                            if "is_authenticated" in attrs or "is_active" in attrs:
-                                                is_guarded = True
-                                                break
+                                    cached_guard = func_explicit_guard_cache.get(id(enclosing_func))
+                                    if cached_guard is None:
+                                        cached_guard = False
+                                        for n in ast.walk(enclosing_func):
+                                            if isinstance(n, ast.If):
+                                                attrs = {a.attr for a in ast.walk(n.test) if isinstance(a, ast.Attribute)}
+                                                if "is_authenticated" in attrs or "is_active" in attrs:
+                                                    cached_guard = True
+                                                    break
+                                        func_explicit_guard_cache[id(enclosing_func)] = cached_guard
+                                    is_guarded = cached_guard
                         
                         if not is_guarded and function_auth_guards.get(scope_id):
                             is_guarded = True
