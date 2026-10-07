@@ -204,19 +204,24 @@ def _parse_single_file(args: Tuple[str, str]) -> Dict[str, Any]:
 def parse_files_parallel(
     files: Dict[str, str],
     max_workers: Optional[int] = None,
-) -> Tuple[Dict[str, ast.AST], Dict[str, str], Dict[str, str]]:
+) -> Tuple[Dict[str, ast.AST], Dict[str, str], Dict[str, str], Dict[str, Any]]:
     """Parse files in parallel with dynamic hardware governance.
-    
+
     Args:
         files: Dict mapping filepath → source code
         max_workers: Override safe worker count (None = auto-compute via governor)
-    
+
     Returns:
-        (modules, file_paths, skipped_files) tuples matching TaintTracker init
+        (modules, file_paths, skipped_files, parse_stats) matching TaintTracker init.
+        parse_stats reports every file the discovery walk handed over and where it went,
+        so "scanned_files" is never mistaken for "files considered".
     """
     if max_workers is None:
         max_workers = compute_safe_workers()
-    
+
+    workers_initial = max_workers
+    governor_events = 0
+
     # Get current memory stats for logging
     mem_stats = get_memory_stats()
     free_ram_mb = mem_stats["available_gb"] * 1024
@@ -264,6 +269,7 @@ def parse_files_parallel(
                     file=sys.stderr,
                 )
                 max_workers = 1
+                governor_events += 1
             elif current_free_mb < 1500:
                 # Moderate pressure - reduce by 1 if possible
                 if max_workers > 1:
@@ -273,6 +279,7 @@ def parse_files_parallel(
                         file=sys.stderr,
                     )
                     max_workers = max(1, max_workers - 1)
+                    governor_events += 1
         
         # Process this batch with worker pool
         batch_results = _process_batch(batch, max_workers)
@@ -293,8 +300,18 @@ def parse_files_parallel(
         f"({fast_path_skipped} fast-path skipped, {len(skipped_files)} errors)",
         file=sys.stderr,
     )
-    
-    return modules, file_paths, skipped_files
+
+    parse_stats = {
+        "discovered": total_files,
+        "parsed": len(modules),
+        "fast_path_skipped": fast_path_skipped,
+        "unparseable": len(skipped_files),
+        "parse_mode": "parallel",
+        "workers_initial": workers_initial,
+        "workers_final": max_workers,
+        "governor_events": governor_events,
+    }
+    return modules, file_paths, skipped_files, parse_stats
 
 
 def _process_batch(
@@ -349,7 +366,7 @@ def _process_batch(
 
 def _parse_files_sequential(
     files: Dict[str, str],
-) -> Tuple[Dict[str, ast.AST], Dict[str, str], Dict[str, str]]:
+) -> Tuple[Dict[str, ast.AST], Dict[str, str], Dict[str, str], Dict[str, Any]]:
     """Fallback sequential parsing for small workloads."""
     modules: Dict[str, ast.AST] = {}
     file_paths: Dict[str, str] = {}
@@ -374,8 +391,17 @@ def _parse_files_sequential(
             file_paths[mod_name] = filepath
         except (SyntaxError, ValueError, UnicodeDecodeError) as exc:
             skipped_files[filepath] = f"{type(exc).__name__}: {exc}"[:200]
-    
-    return modules, file_paths, skipped_files
+
+    parse_stats = {
+        "discovered": len(files),
+        "parsed": len(modules),
+        "fast_path_skipped": fast_path_skipped,
+        "unparseable": len(skipped_files),
+        "workers_used": 1,
+        "governor_events": 0,
+        "parse_mode": "sequential",
+    }
+    return modules, file_paths, skipped_files, parse_stats
 
 
 if __name__ == "__main__":

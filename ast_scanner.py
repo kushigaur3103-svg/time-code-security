@@ -1723,7 +1723,8 @@ class TaintTracker:
         # TimeCodeSecurity: Use safe parallel parsing with hardware governance
         if PARALLEL_PARSING_AVAILABLE and len(self.files) > 10:
             # Only use parallel parsing for larger workloads (>10 files)
-            self.modules, self.file_paths, self.skipped_files = parse_files_parallel(self.files, max_workers=max_workers)
+            (self.modules, self.file_paths, self.skipped_files,
+             self.parse_stats) = parse_files_parallel(self.files, max_workers=max_workers)
         else:
             # Fallback to sequential parsing for small workloads or if parallel unavailable
             self.modules: dict[str, ast.AST] = {}
@@ -1743,6 +1744,16 @@ class TaintTracker:
                     # One malformed file must not remove every other module from the scan:
                     # ast.parse raises ValueError on embedded NUL bytes, which is not a SyntaxError.
                     self.skipped_files[fpath] = f"{type(exc).__name__}: {exc}"[:200]
+            # No fast-path pre-filter on this branch, so the count is a real zero, not a gap.
+            self.parse_stats = {
+                "discovered": len(self.files),
+                "parsed": len(self.modules),
+                "fast_path_skipped": 0,
+                "unparseable": len(self.skipped_files),
+                "workers_used": 1,
+                "governor_events": 0,
+                "parse_mode": "inline",
+            }
         self.dead_node_ids: set = self._compute_dead_node_ids()
         self.imports = {m: {} for m in self.modules}
         self.sources: list[SecurityNode] = []

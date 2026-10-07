@@ -514,6 +514,27 @@ def _ascii_table(findings):
     return "\n".join(lines)
 
 
+def _sarif_rule(cwe, category, severity):
+    """Build one driver rule carrying the same required members the SARIF adapter emits."""
+    digits = re.search(r"\d+", str(cwe))
+    rule_meta = get_rule(cwe)
+    short = str(category).replace("_", " ")
+    return {
+        "id": cwe,
+        "name": str(cwe).replace("-", "_"),
+        "shortDescription": {"text": short},
+        "fullDescription": {"text": rule_meta.name if rule_meta else short},
+        "helpUri": (
+            f"https://cwe.mitre.org/data/definitions/{digits.group()}.html"
+            if digits else "https://cwe.mitre.org/data/definitions/index.html"
+        ),
+        "defaultConfiguration": {
+            "level": "error" if severity in ("CRITICAL", "HIGH") else "warning"
+        },
+        "properties": {"tags": ["security", str(cwe).lower()]},
+    }
+
+
 def _sarif_uri(path, cwd):
     """Normalize a filesystem path into a valid SARIF artifactLocation URI."""
     resolved = Path(str(path).replace("\\", "/")).resolve()
@@ -552,15 +573,7 @@ def _sarif_document(findings, cwd):
         if cwe in rule_indexes:
             continue
         rule_indexes[cwe] = len(rules)
-        rules.append({
-            "id": cwe,
-            "name": cwe.replace("-", "_"),
-            "shortDescription": {"text": finding["category"].replace("_", " ")},
-            "defaultConfiguration": {
-                "level": "error" if finding["severity"] in ("CRITICAL", "HIGH") else "warning"
-            },
-            "properties": {"tags": ["security", cwe.lower()]},
-        })
+        rules.append(_sarif_rule(cwe, finding["category"], finding["severity"]))
 
     level_by_severity = {"CRITICAL": "error", "HIGH": "error", "MEDIUM": "warning", "LOW": "note", "UNKNOWN": "note"}
     results = []
@@ -599,17 +612,31 @@ def _scope_breakdown(findings):
     return counts
 
 
-def _print_summary(file_count, duration_ms, findings, file_counts=None):
+def _print_summary(file_count, duration_ms, findings, file_counts=None,
+                   discovered_files=None, fast_path_skipped_files=0,
+                   unparseable_files=0, parse_governor=None):
     counts = {severity: 0 for severity in SEVERITIES}
     scope_counts = _scope_breakdown(findings)
     for finding in findings:
         severity = finding["severity"]
         counts[severity if severity in counts else "UNKNOWN"] += 1
-    print(f"\nTotal scanned files: {file_count}")
+    if discovered_files is not None:
+        print(f"\nTotal discovered files: {discovered_files}")
+    print(f"Total scanned files: {file_count}")
     if file_counts:
         print("Files scanned by scope: " + ", ".join(
             f"{SCOPE_LABELS[scope]}: {file_counts[scope]}" for scope in SCOPE_ORDER
         ))
+        skipped = discovered_files - file_count if discovered_files is not None else 0
+        if skipped:
+            print(f"Files not scanned: {skipped} "
+                  f"({fast_path_skipped_files} fast-path skipped, "
+                  f"{unparseable_files} unparseable)")
+    if parse_governor:
+        workers = parse_governor.get("workers_final", parse_governor.get("workers_used"))
+        print(f"Parser: {parse_governor.get('parse_mode', 'unknown')} mode, "
+              f"{workers} worker(s), "
+              f"{parse_governor.get('governor_events', 0)} governor reduction(s)")
     print(f"Scan duration: {duration_ms:.2f} ms")
     print("Findings by severity: " + ", ".join(f"{severity.title()}: {counts[severity]}" for severity in SEVERITIES))
     print("Findings by scope: " + ", ".join(
@@ -767,7 +794,10 @@ def _scan_failure(args, exc):
             "scope": getattr(args, "scope", "all"),
             "status": "incomplete",
             "error": message,
+            "total_discovered_files": 0,
             "scanned_files": 0,
+            "fast_path_skipped_files": 0,
+            "unparseable_files": 0,
             "findings": [],
         }, indent=2))
     if getattr(args, "sarif", None):
@@ -868,6 +898,34 @@ def _scan(args):
             "html": len(templates),
         }
         scanned_files = sum(file_counts.values())
+        parse_stats = getattr(tracker, "parse_stats", None) or {}
+        python_discovered = parse_stats.get("discovered", len(files))
+        fast_path_skipped_files = parse_stats.get("fast_path_skipped", 0)
+        unparseable_files = parse_stats.get(
+            "unparseable", len(tracker.skipped_files) if tracker else 0)
+        scope_breakdown = {
+            "python": {
+                "discovered": python_discovered,
+                "scanned": file_counts["python"],
+                "fast_path_skipped": fast_path_skipped_files,
+                "unparseable": unparseable_files,
+            },
+            "docker": {
+                "discovered": len(iac),
+                "scanned": file_counts["docker"],
+            },
+            "html": {
+                "discovered": len(templates),
+                "scanned": file_counts["html"],
+            },
+        }
+        total_discovered_files = sum(bucket["discovered"] for bucket in scope_breakdown.values())
+        parse_governor = {
+            key: parse_stats[key]
+            for key in ("parse_mode", "workers_used", "workers_initial",
+                        "workers_final", "governor_events")
+            if key in parse_stats
+        }
         findings = _merge_findings(ast_findings, audit_templates(templates), audit_iac_files(iac))
         findings = consolidate_findings(findings)
         if scope in ("all", "python"):
@@ -919,15 +977,24 @@ def _scan(args):
         print(json.dumps({
             "scope": scope,
             "line_filter": [list(r) for r in line_ranges] if line_ranges else None,
+            "total_discovered_files": total_discovered_files,
             "scanned_files": scanned_files,
             "scanned_files_by_scope": file_counts,
+            "fast_path_skipped_files": fast_path_skipped_files,
+            "unparseable_files": unparseable_files,
+            "scope_breakdown": scope_breakdown,
+            "parse_governor": parse_governor,
             "duration_ms": round(duration_ms, 2),
             "findings_by_scope": _scope_breakdown(findings),
             "findings": findings,
         }, indent=2))
     else:
         print(_ascii_table(findings) if findings else "[+] No vulnerabilities found. Clean scan!")
-        _print_summary(scanned_files, duration_ms, findings, file_counts)
+        _print_summary(scanned_files, duration_ms, findings, file_counts,
+                       discovered_files=total_discovered_files,
+                       fast_path_skipped_files=fast_path_skipped_files,
+                       unparseable_files=unparseable_files,
+                       parse_governor=parse_governor)
         traces = _cross_trace_report(findings, Path.cwd().resolve())
         if traces:
             print(traces)
@@ -947,22 +1014,28 @@ def _scan(args):
     # TimeCodeSecurity: Print performance metrics to stderr
     if files and tracker:
         try:
-            from tcs.parallel_scanner import compute_safe_workers, get_memory_stats
-            worker_count = compute_safe_workers()
-            mem_stats = get_memory_stats()
-            
+            from tcs.parallel_scanner import HARD_SAFETY_THRESHOLD_MB
+
             print("\n" + "="*70, file=sys.stderr)
             print("TimeCodeSecurity - Performance Metrics", file=sys.stderr)
             print("="*70, file=sys.stderr)
             print(f"Wall-Clock Scan Time:     {duration_ms/1000:.2f}s ({duration_ms:.0f}ms)", file=sys.stderr)
-            print(f"Worker Count Utilized:    {worker_count}", file=sys.stderr)
+            print(f"Parser Mode:              {parse_governor.get('parse_mode', 'unknown')}", file=sys.stderr)
+            print(f"Worker Count Utilized:    {parse_governor.get('workers_final', parse_governor.get('workers_used', 'n/a'))}"
+                  f" (governor start: {parse_governor.get('workers_initial', parse_governor.get('workers_used', 'n/a'))}, "
+                  f"reductions: {parse_governor.get('governor_events', 0)})", file=sys.stderr)
+            print(f"Governor RAM Floor:       {HARD_SAFETY_THRESHOLD_MB} MB", file=sys.stderr)
             print(f"Peak Memory RSS:          {peak_rss_mb:.1f} MB", file=sys.stderr)
             print(f"Available RAM (min):      {available_ram_gb:.2f} GB", file=sys.stderr)
             print(f"Total Findings:           {len(findings)}", file=sys.stderr)
             if args.sarif:
                 print(f"SARIF File Size:          {sarif_size_mb:.2f} MB {'✓' if sarif_size_mb < 10 else '⚠ EXCEEDS 10 MB'}", file=sys.stderr)
-            print(f"Files Scanned:            {scanned_files} Python", file=sys.stderr)
-            print(f"Zero-Risk Fast-Path Skip: {len(tracker.skipped_files)} skipped", file=sys.stderr)
+            print(f"Files Discovered:         {total_discovered_files} "
+                  f"(python: {python_discovered}, docker: {len(iac)}, html: {len(templates)})", file=sys.stderr)
+            print(f"Files Scanned:            {scanned_files} "
+                  f"(python: {file_counts['python']}, docker: {file_counts['docker']}, html: {file_counts['html']})", file=sys.stderr)
+            print(f"Zero-Risk Fast-Path Skip: {fast_path_skipped_files} skipped", file=sys.stderr)
+            print(f"Unparseable Files:        {unparseable_files} skipped", file=sys.stderr)
             print("="*70, file=sys.stderr)
         except ImportError:
             pass  # Parallel scanner not available, skip metrics

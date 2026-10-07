@@ -11,6 +11,7 @@ Executes end-to-end post-commit sanity and compliance checks in one shot:
    - Generates an OASIS SARIF v2.1.0 JSON export file.
    - Validates official SARIF schema compliance, including driver metadata,
      108 driver rules from rules catalog, and valid ruleIndex cross-referencing.
+     Both emitters are gated: the library export and the CLI export CI uploads.
 3. Desktop GUI Component & Rules Catalog Verification:
    - Verifies all 46 benchmark CWEs are registered and present in data/rules_catalog.json.
    - Instantiates interactive GUI components (rules catalog container, structural view,
@@ -28,6 +29,8 @@ from __future__ import annotations
 
 import json
 import os
+import shutil
+import subprocess
 import sys
 import time
 from pathlib import Path
@@ -116,6 +119,59 @@ def check_benchmark_suite() -> bool:
     return True
 
 
+def _validate_sarif_document(loaded_doc: Dict[str, Any], label: str,
+                             expected_rules: int = None) -> tuple:
+    """Assert OASIS SARIF v2.1.0 structural compliance on one document."""
+    assert loaded_doc.get("$schema") == SARIF_SCHEMA_URI, f"[{label}] Invalid $schema: {loaded_doc.get('$schema')}"
+    assert loaded_doc.get("version") == SARIF_VERSION, f"[{label}] Invalid version: {loaded_doc.get('version')}"
+    assert isinstance(loaded_doc.get("runs"), list) and len(loaded_doc["runs"]) > 0, f"[{label}] Missing or empty 'runs'"
+
+    run = loaded_doc["runs"][0]
+    driver = run.get("tool", {}).get("driver", {})
+    assert driver.get("name") == TOOL_NAME, f"[{label}] Invalid tool name: {driver.get('name')}"
+
+    rules = driver.get("rules", [])
+    if expected_rules is not None:
+        assert len(rules) == expected_rules, f"[{label}] Expected {expected_rules} driver rules, got {len(rules)}"
+
+    rule_ids = set()
+    for rule in rules:
+        assert "id" in rule and rule["id"], f"[{label}] Rule missing 'id'"
+        assert "name" in rule, f"[{label}] Rule {rule['id']} missing 'name'"
+        assert "shortDescription" in rule, f"[{label}] Rule {rule['id']} missing 'shortDescription'"
+        assert "fullDescription" in rule, f"[{label}] Rule {rule['id']} missing 'fullDescription'"
+        assert "helpUri" in rule, f"[{label}] Rule {rule['id']} missing 'helpUri'"
+        assert "defaultConfiguration" in rule, f"[{label}] Rule {rule['id']} missing 'defaultConfiguration'"
+        assert "properties" in rule, f"[{label}] Rule {rule['id']} missing 'properties'"
+        rule_ids.add(rule["id"])
+
+    results = run.get("results", [])
+    assert len(results) > 0, f"[{label}] SARIF results list is empty"
+
+    for r_idx, res in enumerate(results):
+        rule_id = res.get("ruleId")
+        rule_index = res.get("ruleIndex")
+        assert rule_id in rule_ids, f"[{label}] Result {r_idx} ruleId {rule_id} not in driver rules"
+        assert isinstance(rule_index, int), f"[{label}] Result {r_idx} ruleIndex is not int: {rule_index}"
+        assert 0 <= rule_index < len(rules), f"[{label}] Result {r_idx} ruleIndex out of range: {rule_index}"
+        assert rules[rule_index]["id"] == rule_id, (
+            f"[{label}] Result {r_idx} ruleIndex mismatch: ruleIndex {rule_index} is "
+            f"{rules[rule_index]['id']}, expected {rule_id}"
+        )
+        assert res.get("level") in ("none", "note", "warning", "error"), f"[{label}] Result {r_idx} invalid level: {res.get('level')}"
+        assert "message" in res and res["message"].get("text"), f"[{label}] Result {r_idx} missing message text"
+        assert "locations" in res and len(res["locations"]) > 0, f"[{label}] Result {r_idx} missing locations"
+
+        loc = res["locations"][0].get("physicalLocation", {})
+        uri = loc.get("artifactLocation", {}).get("uri")
+        assert uri, f"[{label}] Result {r_idx} missing artifactLocation uri"
+        assert "\\" not in str(uri), f"[{label}] Result {r_idx} uri is not a valid relative reference: {uri}"
+        start_line = loc.get("region", {}).get("startLine", 0)
+        assert isinstance(start_line, int) and start_line >= 1, f"[{label}] Result {r_idx} invalid startLine: {start_line}"
+
+    return len(rules), len(results)
+
+
 def check_sarif_export() -> bool:
     """Check 2: Executes scan on benchmark corpus and verifies SARIF 2.1.0 compliance."""
     print_header("CHECK 2/4: SARIF v2.1.0 Export & Schema Validation (108 Rules)")
@@ -155,57 +211,39 @@ def check_sarif_export() -> bool:
     with open(sarif_file, "r", encoding="utf-8") as f:
         loaded_doc = json.load(f)
 
-    # Validate OASIS SARIF v2.1.0 Schema fields
-    assert loaded_doc.get("$schema") == SARIF_SCHEMA_URI, f"Invalid $schema: {loaded_doc.get('$schema')}"
-    assert loaded_doc.get("version") == SARIF_VERSION, f"Invalid version: {loaded_doc.get('version')}"
-    assert isinstance(loaded_doc.get("runs"), list) and len(loaded_doc["runs"]) > 0, "Missing or empty 'runs'"
+    print("  Validating adapter export (sarif_exporter.export_sarif) ...")
+    n_rules, n_results = _validate_sarif_document(loaded_doc, "adapter", expected_rules=108)
+    print(f"  Driver Rules Loaded      : {n_rules} (expected 108)")
+    print(f"  SARIF Results Serialized : {n_results}")
 
-    run = loaded_doc["runs"][0]
-    tool = run.get("tool", {})
-    driver = tool.get("driver", {})
-    assert driver.get("name") == TOOL_NAME, f"Invalid tool name: {driver.get('name')}"
-
-    rules = driver.get("rules", [])
-    print(f"  Driver Rules Loaded      : {len(rules)} (expected 108)")
-    assert len(rules) == 108, f"Expected 108 driver rules in SARIF export, got {len(rules)}"
-
-    # Validate rule structure
-    rule_ids = set()
-    for rule in rules:
-        assert "id" in rule and rule["id"], "Rule missing 'id'"
-        assert "name" in rule, f"Rule {rule['id']} missing 'name'"
-        assert "shortDescription" in rule, f"Rule {rule['id']} missing 'shortDescription'"
-        assert "fullDescription" in rule, f"Rule {rule['id']} missing 'fullDescription'"
-        assert "helpUri" in rule, f"Rule {rule['id']} missing 'helpUri'"
-        assert "defaultConfiguration" in rule, f"Rule {rule['id']} missing 'defaultConfiguration'"
-        assert "properties" in rule, f"Rule {rule['id']} missing 'properties'"
-        rule_ids.add(rule["id"])
-
-    # Validate results mapping to rules
-    results = run.get("results", [])
-    print(f"  SARIF Results Serialized : {len(results)}")
-    assert len(results) > 0, "Expected SARIF results list to be populated"
-
-    for r_idx, res in enumerate(results):
-        rule_id = res.get("ruleId")
-        rule_index = res.get("ruleIndex")
-        assert rule_id in rule_ids, f"Result {r_idx} ruleId {rule_id} not in driver rules"
-        assert isinstance(rule_index, int), f"Result {r_idx} ruleIndex is not int: {rule_index}"
-        assert 0 <= rule_index < len(rules), f"Result {r_idx} ruleIndex out of range: {rule_index}"
-        assert rules[rule_index]["id"] == rule_id, (
-            f"Result {r_idx} ruleIndex mismatch: ruleIndex {rule_index} is {rules[rule_index]['id']}, expected {rule_id}"
-        )
-        assert res.get("level") in ("error", "warning", "note"), f"Invalid level: {res.get('level')}"
-        assert "message" in res and res["message"].get("text"), f"Result {r_idx} missing message text"
-        assert "locations" in res and len(res["locations"]) > 0, f"Result {r_idx} missing locations"
-
-        loc = res["locations"][0].get("physicalLocation", {})
-        assert loc.get("artifactLocation", {}).get("uri"), f"Result {r_idx} missing uri"
-        start_line = loc.get("region", {}).get("startLine", 0)
-        assert start_line >= 1, f"Result {r_idx} invalid startLine: {start_line}"
+    # The CLI writes the artifact CI uploads, and its findings carry a different shape
+    # from tcs_cli's, so exercise that emitter end-to-end instead of feeding it
+    # hand-mapped data.
+    print("  Validating CLI export (cli.py scan --sarif, the artifact CI uploads) ...")
+    cli_corpus = output_dir / "sarif_cli_corpus"
+    shutil.rmtree(cli_corpus, ignore_errors=True)
+    cli_corpus.mkdir(parents=True)
+    for idx, case in enumerate(sample_cases):
+        shutil.copy(case.get_absolute_path(),
+                    cli_corpus / f"case{idx:02d}_{case.cwe.replace('-', '')}.py")
+    cli_sarif = output_dir / "cli_verification_scan.sarif"
+    if cli_sarif.exists():
+        cli_sarif.unlink()
+    proc = subprocess.run(
+        [sys.executable, "cli.py", "scan", str(cli_corpus), "--format", "json",
+         "--sarif", str(cli_sarif)],
+        cwd=REPO_ROOT, capture_output=True, text=True, encoding="utf-8", errors="replace",
+    )
+    assert proc.returncode == 0, f"CLI SARIF scan exited {proc.returncode}: {proc.stderr[-400:]}"
+    assert cli_sarif.is_file(), f"CLI produced no SARIF artifact at {cli_sarif}"
+    with open(cli_sarif, "r", encoding="utf-8") as f:
+        cli_doc = json.load(f)
+    cli_rules, cli_results = _validate_sarif_document(cli_doc, "cli")
+    print(f"  CLI Driver Rules Loaded  : {cli_rules} | CLI Results : {cli_results}")
 
     print(f"  Export & Verification Time: {elapsed:.2f}s")
-    print(f"  -> [PASS] SARIF v2.1.0 valid | 107 rules loaded | All results correctly cross-indexed")
+    print(f"  -> [PASS] SARIF v2.1.0 valid | {n_rules} rules loaded (adapter), "
+          f"{cli_rules} (CLI) | All results correctly cross-indexed")
     return True
 
 
