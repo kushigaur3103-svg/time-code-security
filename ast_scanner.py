@@ -1292,6 +1292,15 @@ WEB_REQUEST_INPUT_ATTRS = frozenset({
 })
 CLUSTER3_WTF_CSRF_KEY = "WTF_CSRF_ENABLED"
 CLUSTER3_TESTING_KEY = "TESTING"
+# H2 static-config residuals. Both predicates are line-local and literal-only, which is what
+# keeps their measured corpus exposure at zero `# ok:` sites. Deliberate non-goals: a
+# name-followed boolean (`{"verify_signature": a_false_boolean}`) is undecidable at the line,
+# and "CBC mode with no HMAC in scope" fires on AES-CBC lines the corpus labels `# ok:`, so
+# neither ships.
+CLUSTER3_JWT_SIGNATURE_CHECK_OPTION = "verify_signature"
+CLUSTER3_BLOCK_CIPHER_CLASS_NAMES = frozenset({
+    "AES", "DES", "DES3", "ARC4", "Blowfish", "CAST", "CAST5", "IDEA",
+})
 CLUSTER3_STRUCTURAL_SOURCE_IDS = {
     "WEAK_HASH_NEW": "WEAK_HASH_NEW",
     "WEAK_HASH_CONSTRUCTOR": "WEAK_HASH_CONSTRUCTOR",
@@ -1315,6 +1324,8 @@ CLUSTER3_STRUCTURAL_SOURCE_IDS = {
     "MARSHAL_USAGE": "MARSHAL_USAGE",
     "CSRF_EXEMPT_VIEW": "CSRF_EXEMPT_VIEW",
     "FLASK_CSRF_DISABLED": "FLASK_CSRF_DISABLED",
+    "UNVERIFIED_JWT_DECODE": "UNVERIFIED_JWT_DECODE",
+    "EMPTY_CIPHER_KEY": "EMPTY_CIPHER_KEY",
     "HARDCODED_CONFIG": "HARDCODED_CONFIG",
     "ACTIVE_DEBUG_CODE": "ACTIVE_DEBUG_CODE",
 }
@@ -8603,7 +8614,9 @@ class TaintTracker:
 
           CWE-327  hashlib.new(md4/md5/sha1) without usedforsecurity=False;
                    Crypto(Dome).Hash weak-class .new() behind an import alias;
-                   cryptography hashes.MD5()/SHA1(); weak digest fed to setPassword.
+                   cryptography hashes.MD5()/SHA1(); weak digest fed to setPassword;
+                   block cipher constructed with an empty key literal (`AES.new("", ...)`).
+          CWE-287  jwt decode options dict carrying a literal `"verify_signature": False`.
           CWE-330  uuid.uuid1() / bare uuid1() (also via `import *`).
           CWE-939  urllib urlopen/opener.open/retrieve with a non-constant URL.
           CWE-155  os.system/popen2 or shell=True subprocess on 'tar|rsync|chown|chmod *'.
@@ -8902,6 +8915,19 @@ class TaintTracker:
                             _add(node, "FLASK_CSRF_DISABLED", "CSRF_MISSING_PROTECTION",
                                  "CWE-352")
 
+                # ---- CWE-287: options={"verify_signature": False} ----
+                # Anchored on the dict, not the jwt.decode call: the corpus labels both the
+                # inline literal and the `opts = {...}` assignment as the vulnerable site, and
+                # a literal False is the only form the file itself proves.
+                if isinstance(node, ast.Dict):
+                    for opt_key, opt_value in zip(node.keys, node.values):
+                        if isinstance(opt_key, ast.Constant) and \
+                                opt_key.value == CLUSTER3_JWT_SIGNATURE_CHECK_OPTION and \
+                                isinstance(opt_value, ast.Constant) and opt_value.value is False:
+                            _add(node, "UNVERIFIED_JWT_DECODE", "IMPROPER_AUTHENTICATION",
+                                 "CWE-287")
+                            break
+
                 # ---- CWE-326: weak ssl.PROTOCOL_* constant (args, kwargs, defaults) ----
                 if isinstance(node, (ast.Attribute, ast.Name)):
                     ssl_segs = _segments(node)
@@ -8978,6 +9004,22 @@ class TaintTracker:
                         chain[-2] in CLUSTER3_LEGACY_CIPHER_NAMES and \
                         chain[0] in CLUSTER3_CIPHER_MODULE_ROOTS:
                     _add(node, "WEAK_CIPHER_LEGACY", "WEAK_CRYPTOGRAPHY", "CWE-327")
+
+                # ---- CWE-327: block cipher built from an empty key literal ----
+                # `AES.new("", ...)` has no key material at all; a non-empty literal is the
+                # corpus' own negative control, so only the empty string is accepted.
+                if last_seg == "new" and len(chain) >= 2 and \
+                        chain[-2] in CLUSTER3_BLOCK_CIPHER_CLASS_NAMES and \
+                        node.args and isinstance(node.args[0], ast.Constant) and \
+                        node.args[0].value == "":
+                    _add(node, "EMPTY_CIPHER_KEY", "WEAK_CRYPTOGRAPHY", "CWE-327")
+                elif chain and chain[-1] == "Cipher" and node.args and \
+                        isinstance(node.args[0], ast.Call) and node.args[0].args:
+                    algo_chain = _segments(node.args[0].func)
+                    if algo_chain and algo_chain[-1] in CLUSTER3_BLOCK_CIPHER_CLASS_NAMES and \
+                            isinstance(node.args[0].args[0], ast.Constant) and \
+                            node.args[0].args[0].value == "":
+                        _add(node, "EMPTY_CIPHER_KEY", "WEAK_CRYPTOGRAPHY", "CWE-327")
 
                 # ---- CWE-327: Crypto(Dome).Hash weak class .new() (alias aware) ----
                 if last_seg == "new" and len(chain) >= 3:
