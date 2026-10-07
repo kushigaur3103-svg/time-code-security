@@ -1,0 +1,283 @@
+name: "Showdown: TCS vs Semgrep (DVPA)"
+
+on:
+  workflow_dispatch:
+
+jobs:
+  dvpa-benchmark:
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+
+    steps:
+      - name: Checkout TimeCodeSecurity Repo
+        uses: actions/checkout@v4
+
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.11"
+          cache: "pip"
+
+      - name: Install Scanner Dependencies
+        run: |
+          python -m pip install --upgrade pip
+          if [ -f requirements.txt ]; then pip install -r requirements.txt; fi
+
+      - name: Install Semgrep CLI
+        run: |
+          pipx install semgrep
+          semgrep --version
+
+      - name: Clone DVPA Target Repository
+        run: |
+          git clone --depth 1 https://github.com/anxolerd/dvpa.git dvpa_target
+          COUNT=$(find dvpa_target -name "*.py" | wc -l)
+          echo "DVPA_PY_FILES=$COUNT" >> $GITHUB_ENV
+
+      - name: Prepare Reports Directory
+        run: mkdir -p reports
+
+      # ------------------------------------------------------------------
+      # 1. RUN TIMECODESECURITY (TCS)
+      # ------------------------------------------------------------------
+      - name: Run TimeCodeSecurity on DVPA
+        run: |
+          echo "=========================================================="
+          echo " 1. RUNNING TIMECODESECURITY (TCS) ON DVPA"
+          echo "=========================================================="
+
+          START_TIME=$(date +%s)
+          python cli.py scan dvpa_target --format json > reports/tcs_dvpa.json || true
+          END_TIME=$(date +%s)
+
+          ELAPSED=$(( END_TIME - START_TIME ))
+          echo "TCS_TIME=${ELAPSED}" >> $GITHUB_ENV
+
+      # ------------------------------------------------------------------
+      # 2. RUN SEMGREP (python + flask rulesets)
+      # ------------------------------------------------------------------
+      - name: Run Semgrep on DVPA
+        run: |
+          echo "=========================================================="
+          echo " 2. RUNNING SEMGREP ON DVPA"
+          echo "=========================================================="
+
+          START_TIME=$(date +%s)
+          semgrep scan dvpa_target \
+            --config "p/python" \
+            --config "p/flask" \
+            --json \
+            --output reports/semgrep_dvpa.json || true
+          END_TIME=$(date +%s)
+
+          ELAPSED=$(( END_TIME - START_TIME ))
+          echo "SEMGREP_TIME=${ELAPSED}" >> $GITHUB_ENV
+
+      # ------------------------------------------------------------------
+      # 3. TWO-TIER SCORECARD: every cell computed from the scan artifacts
+      # ------------------------------------------------------------------
+      - name: Generate Showdown Summary
+        if: always()
+        run: |
+          python - << 'PY'
+          import json
+          import os
+          import re
+
+          # Rules that flag an absent control rather than an exploitable data flow.
+          HYGIENE_CATEGORIES = {
+              "CSRF_MISSING_PROTECTION",
+              "MISSING_SUBRESOURCE_INTEGRITY",
+              "INSECURE_COOKIE_CONFIGURATION",
+          }
+          # Semgrep reports check ids, not TCS categories, so the same bucket has to
+          # be recognised by keyword to keep the Tier-2 column measured on both sides.
+          HYGIENE_KEYWORDS = ("csrf", "subresource-integrity", "sri", "cookie")
+
+          def load(path):
+              try:
+                  with open(path, encoding="utf-8") as fh:
+                      return json.load(fh)
+              except (OSError, ValueError) as exc:
+                  print(f"[scorecard] {path} unusable: {type(exc).__name__}: {exc}")
+                  return {}
+
+          tcs = load("reports/tcs_dvpa.json")
+          sg = load("reports/semgrep_dvpa.json")
+
+          tcs_findings = tcs.get("findings", [])
+          core = [f for f in tcs_findings
+                  if str(f.get("category", "")).upper() not in HYGIENE_CATEGORIES]
+          hygiene = [f for f in tcs_findings
+                     if str(f.get("category", "")).upper() in HYGIENE_CATEGORIES]
+
+          sg_results = sg.get("results", [])
+          sg_hygiene, sg_core_items = [], []
+          for r in sg_results:
+              cid = str(r.get("check_id", "")).lower()
+              (sg_hygiene if any(k in cid for k in HYGIENE_KEYWORDS) else sg_core_items).append(r)
+          sg_core = len(sg_core_items)
+
+          def cwe_token(raw):
+              """Normalise both engines' CWE spellings to 'CWE-<n>'.
+
+              TCS emits 'CWE-862'; Semgrep's metadata.cwe can be 'CWE-79', a list,
+              or an 'external/cwe/cwe-079' URL, so only the digits are trustworthy.
+              """
+              if isinstance(raw, (list, tuple)):
+                  raw = " ".join(str(x) for x in raw)
+              m = re.search(r"cwe[-_ /]*(\d+)", str(raw), re.I)
+              return f"CWE-{int(m.group(1))}" if m else ""
+
+          def tier1_cwes(items, key):
+              counts = {}
+              for it in items:
+                  cwe = cwe_token(key(it)) or "UNCATEGORISED"
+                  counts[cwe] = counts.get(cwe, 0) + 1
+              return counts
+
+          def sg_cwe(r):
+              # Semgrep nests rule metadata under extra.metadata; the CWE arrives there
+              # as a list like ['CWE-327: Use of a Broken...']. Older/other shapes put it
+              # at the top level, so both are checked.
+              ex = r.get("extra") or {}
+              meta = ex.get("metadata") or r.get("metadata") or {}
+              return meta.get("cwe", "")
+
+          tcs_by_cwe = tier1_cwes(core, lambda f: f.get("cwe", ""))
+          sg_by_cwe = tier1_cwes(sg_core_items, sg_cwe)
+
+          tcs_files = tcs.get("scanned_files", "n/a")
+          tcs_scope = tcs.get("scanned_files_by_scope", {}) or {}
+          scope_cell = ", ".join(f"{k}: {v}" for k, v in sorted(tcs_scope.items())) or "n/a"
+          sg_files = len(sg.get("paths", {}).get("scanned", [])) or "n/a"
+          on_disk = os.environ.get("DVPA_PY_FILES", "")
+
+          drift = []
+          if not tcs_findings:
+              drift.append("TCS produced no findings - the scan step failed, so no column below "
+                           "is a valid detection claim.")
+          if not sg_results:
+              drift.append("Semgrep produced no results - the ruleset download or scan failed.")
+
+          def ratio(num, den):
+              try:
+                  num, den = float(num), float(den)
+              except (TypeError, ValueError):
+                  return "n/a"
+              return f"{num / den:.1f}x" if den > 0 else "n/a"
+
+          tcs_time = os.environ.get("TCS_TIME", "")
+          sg_time = os.environ.get("SEMGREP_TIME", "")
+          tcs_time_cell = f"{tcs_time}s" if tcs_time else "n/a"
+          sg_time_cell = f"{sg_time}s" if sg_time else "n/a"
+
+          # Each hygiene category mapped to the Semgrep check-id fragments that
+          # would report it, so the Tier-2 Semgrep column is measured, not assumed zero.
+          HYGIENE_SEMGREP_KEYS = {
+              "CSRF_MISSING_PROTECTION": ("csrf",),
+              "MISSING_SUBRESOURCE_INTEGRITY": ("subresource-integrity", "sri"),
+              "INSECURE_COOKIE_CONFIGURATION": ("cookie",),
+          }
+
+          hygiene_by_cat = {}
+          for f in hygiene:
+              cat = str(f.get("category", "")).upper()
+              hygiene_by_cat[cat] = hygiene_by_cat.get(cat, 0) + 1
+
+          hygiene_rows = []
+          for cat, n in sorted(hygiene_by_cat.items(), key=lambda kv: -kv[1]):
+              keys = HYGIENE_SEMGREP_KEYS.get(cat, ())
+              sg_h = sum(1 for r in sg_hygiene
+                         if any(k in str(r.get("check_id", "")).lower() for k in keys))
+              hygiene_rows.append(f"| {cat} | {n} | {sg_h} |")
+
+          cwe_rows = []
+          for cwe in sorted(set(tcs_by_cwe) | set(sg_by_cwe),
+                            key=lambda c: -(tcs_by_cwe.get(c, 0) + sg_by_cwe.get(c, 0))):
+              cwe_rows.append(f"| {cwe} | {tcs_by_cwe.get(cwe, 0)} | {sg_by_cwe.get(cwe, 0)} |")
+
+          md = [
+              "# Showdown: TCS vs Semgrep (DVPA)",
+              "",
+              "DVPA (`anxolerd/dvpa`) is an intentionally vulnerable Flask app. This is the **first** run "
+              "against it, so every number below is a raw live count: nothing has been hand-adjudicated "
+              "against the source yet, and no precision, TP or FP figure is claimed anywhere on this page.",
+              "",
+              "## Tier 1 - source-to-sink / exploit findings (raw counts)",
+              "",
+              "| Engine | Findings | Files scanned | Wall clock |",
+              "| :--- | ---: | ---: | ---: |",
+              f"| TimeCodeSecurity | {len(core)} | {tcs_files} | {tcs_time_cell} |",
+              f"| Semgrep p/python + p/flask | {sg_core} | {sg_files} | {sg_time_cell} |",
+              "",
+              f"TCS:Semgrep Tier-1 = {ratio(len(core), sg_core)}; "
+              f"Semgrep:TCS wall clock = {ratio(sg_time, tcs_time)}. "
+              "A higher count is not by itself better detection - see 'What this run does not establish'.",
+              "",
+              f"TCS file count by scope: {scope_cell}. Semgrep counted {sg_files} files. "
+              "These sets are not the same, so the two 'Files scanned' cells are not comparable.",
+              "",
+              "## Tier 1 - which CWEs each engine actually reported",
+              "",
+              "| CWE | TCS | Semgrep |",
+              "| :--- | ---: | ---: |",
+              *cwe_rows,
+              "",
+              "CWE labels are taken from each engine's own output and normalised to `CWE-<n>`; a finding "
+              "neither engine labels is shown as UNCATEGORISED rather than silently dropped.",
+              "",
+              "## Tier 2 - hygiene: an absent control, never counted as an exploit",
+              "",
+              "| Category | TCS | Semgrep |",
+              "| :--- | ---: | ---: |",
+              *hygiene_rows,
+              f"| **Total hygiene** | **{len(hygiene)}** | **{len(sg_hygiene)}** |",
+              "",
+              "## What this run does not establish",
+              "",
+              f"- **False positives are not measured.** Adjudicating the {len(core) + len(hygiene)} TCS "
+              "findings against the DVPA source is a separate manual step; until that is done the raw counts "
+              "above are counts, not accuracy.",
+              "- Semgrep ran two rulesets here (`p/python` + `p/flask`) while the PyGoat showdown ran one, "
+              "so this table is not comparable with that run's numbers.",
+              f"- TCS's `scanned_files` is counted after its fast-path filter, so it can differ from the "
+              f"{on_disk or '?'} `.py` files actually present in the checkout.",
+              "- Wall-clock figures are measured in this run on one shared runner; they are indicative, "
+              "not a performance benchmark.",
+              "",
+              "## Provenance",
+              "",
+          ]
+
+          if drift:
+              md.append("**This run did not produce two usable scans - read the numbers with care:**")
+              md.append("")
+              md.extend(f"- {d}" for d in drift)
+          else:
+              md.append("Both engines produced parseable artifacts in this run.")
+          md.extend([
+              "",
+              "Every measured number above is parsed from `reports/tcs_dvpa.json` and",
+              "`reports/semgrep_dvpa.json` in this run.",
+              "",
+          ])
+
+          text = "\n".join(md)
+          os.makedirs("reports", exist_ok=True)
+          with open("reports/dvpa_summary.md", "w", encoding="utf-8") as fh:
+              fh.write(text)
+          summary_path = os.environ.get("GITHUB_STEP_SUMMARY")
+          if summary_path:
+              with open(summary_path, "a", encoding="utf-8") as fh:
+                  fh.write(text)
+          print(text)
+          PY
+
+          cat reports/dvpa_summary.md
+
+      - name: Upload Scan Artifacts
+        uses: actions/upload-artifact@v4
+        with:
+          name: dvpa-showdown-artifacts
+          path: reports/
