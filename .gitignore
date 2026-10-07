@@ -32,8 +32,6 @@ external/flask_test/
 
 external/pygoat/
 
-external/pygoat/
-
 external/
 
 # PyGoat clone used by the showdown harness (fetched by CI, not source)
