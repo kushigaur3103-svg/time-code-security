@@ -37,6 +37,7 @@ def view_user(username):
 def test_percent_formatting_host_tainted():
     code = """
 import flask
+import requests
 
 app = flask.Flask(__name__)
 
@@ -44,8 +45,11 @@ app = flask.Flask(__name__)
 def fetch():
     host = flask.request.args.get("host")
     url = "https://%s/data" % host
+    requests.get(url)
     return url
 """
+    # The sink is required, not decoration: building a URL is only SSRF once it is sent
+    # (ast_scanner.py suppresses host-tainted URLs that never reach a network call).
     tracker = TaintTracker(files={"app.py": code})
     _, sinks, edges = tracker.analyze()
     by_id = {s.id: s for s in sinks}

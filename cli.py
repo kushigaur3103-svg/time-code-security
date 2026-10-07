@@ -1040,10 +1040,14 @@ def _scan(args):
         except ImportError:
             pass  # Parallel scanner not available, skip metrics
 
-    if args.fail_on_critical and any(item["severity"] in ("CRITICAL", "HIGH") for item in findings):
-        return 1
-    # Clean CI exit code: 0 for successful scan, 2 for internal error
-    return 0
+    # Exit-code parity with `tcs_cli.py`: a scan that finds something exits 1, so CI can gate
+    # on either entry point. 2 stays reserved for an internal error (see the crash handler).
+    # `--fail-on-critical` narrows what blocks: only Critical/High findings count.
+    if args.fail_on_critical:
+        blocking = [item for item in findings if item["severity"] in ("CRITICAL", "HIGH")]
+    else:
+        blocking = findings
+    return 1 if blocking else 0
 
 
 def _normalize_compare_path(value):
@@ -1241,7 +1245,7 @@ def main(argv=None):
     scan_parser = commands.add_parser("scan", help="Scan a Python file or directory")
     scan_parser.add_argument("path", type=Path, help="Python file or directory to scan")
     scan_parser.add_argument("--sarif", metavar="OUTPUT_PATH", help="Write findings as SARIF 2.1.0 JSON")
-    scan_parser.add_argument("--fail-on-critical", action="store_true", help="Exit 1 when a Critical or High finding is detected")
+    scan_parser.add_argument("--fail-on-critical", action="store_true", help="Only exit 1 on a Critical or High finding (default: any finding exits 1, matching tcs_cli.py)")
     scan_parser.add_argument("--format", choices=("table", "json"), default="table", help="Output format (default: table)")
     scan_parser.add_argument(
         "--scope", choices=("all", "python", "docker", "html"), default="all",

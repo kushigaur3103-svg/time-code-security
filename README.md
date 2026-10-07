@@ -45,7 +45,7 @@ tcs scan .
 # Scan specific folder or file
 tcs scan apps/api/views.py
 
-# CI/CD enforcement: exit code 1 on High/Critical findings
+# CI/CD gate: by default ANY finding exits 1; this flag blocks only on High/Critical
 tcs scan . --fail-on-critical
 2. Live Head-to-Head Comparison (tcs compare)Compare TCS directly against competing SAST tools in real-time:Bash# Run comparison against Semgrep
 tcs compare ./external/pygoat --vs semgrep
@@ -62,7 +62,7 @@ python tcs_cli.py . --fix
 
 # Atomically apply validated patches
 python tcs_cli.py . --fix --write
-🖥️ CLI ReferenceCommandActionDisk ImpactExit Codetcs scan <path>Standard terminal SAST scanRead-only0 clean · 1 on errortcs scan <path> --fail-on-criticalCI/CD security gate enforcementRead-only1 on High/Critical findingstcs scan <path> --sarif <file>Export OASIS SARIF v2.1.0Writes SARIF file0 clean · 1 on criticaltcs compare <path> --vs semgrepHead-to-head match against SemgrepRead-only0 finished · 127 tool missingtcs compare <path> --vs banditHead-to-head match against BanditRead-only0 finished · 127 tool missingpython tcs_cli.py . --fixPreview automated AST remediationRead-only1 if fixes availablepython tcs_cli.py . --fix --writeApply 7-stage verified AST patchesSafely Patched0 on completionpython tcs_cli.py . --sca --sca-reachabilityVector C dependency reachability auditRead-only0 clean · 1 findings⚙️ GitHub Actions CI/CD IntegrationUse the official composite action to scan repositories on every push and pull request:YAMLname: TimeCodeSecurity Audit
+🖥️ CLI ReferenceCommandActionDisk ImpactExit Codetcs scan <path>Standard terminal SAST scanRead-only0 clean · 1 findings · 2 internal error (exit-code parity with `python tcs_cli.py`)tcs scan <path> --fail-on-criticalCI/CD security gate enforcementRead-only1 on High/Critical findingstcs scan <path> --sarif <file>Export OASIS SARIF v2.1.0Writes SARIF file0 clean · 1 on findingstcs compare <path> --vs semgrepHead-to-head match against SemgrepRead-only0 finished · 127 tool missingtcs compare <path> --vs banditHead-to-head match against BanditRead-only0 finished · 127 tool missingpython tcs_cli.py . --fixPreview automated AST remediationRead-only1 if fixes availablepython tcs_cli.py . --fix --writeApply 7-stage verified AST patchesSafely Patched0 on completionpython tcs_cli.py . --sca --sca-reachabilityVector C dependency reachability auditRead-only0 clean · 1 findings⚙️ GitHub Actions CI/CD IntegrationUse the official composite action to scan repositories on every push and pull request:YAMLname: TimeCodeSecurity Audit
 on:
   push:
     branches: [main]

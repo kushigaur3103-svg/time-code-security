@@ -234,11 +234,17 @@ def check_sarif_export() -> bool:
          "--sarif", str(cli_sarif)],
         cwd=REPO_ROOT, capture_output=True, text=True, encoding="utf-8", errors="replace",
     )
-    assert proc.returncode == 0, f"CLI SARIF scan exited {proc.returncode}: {proc.stderr[-400:]}"
+    # The corpus is deliberately vulnerable and `cli.py scan` exits 1 whenever it finds
+    # something (parity with `tcs_cli.py`), so 1 is the pass signal: 0 would mean the engine
+    # silently stopped reporting, 2 would mean an internal error.
+    assert proc.returncode == 1, (
+        f"CLI SARIF scan exited {proc.returncode} on a vulnerable corpus (expected 1): "
+        f"{proc.stderr[-400:]}")
     assert cli_sarif.is_file(), f"CLI produced no SARIF artifact at {cli_sarif}"
     with open(cli_sarif, "r", encoding="utf-8") as f:
         cli_doc = json.load(f)
     cli_rules, cli_results = _validate_sarif_document(cli_doc, "cli")
+    assert cli_results > 0, "CLI produced an empty SARIF run on a vulnerable corpus"
     print(f"  CLI Driver Rules Loaded  : {cli_rules} | CLI Results : {cli_results}")
 
     print(f"  Export & Verification Time: {elapsed:.2f}s")
