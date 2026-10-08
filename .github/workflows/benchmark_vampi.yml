@@ -1,0 +1,218 @@
+name: "Benchmark - VAmPI Showdown (TimeCodeSecurity vs Semgrep)"
+
+# Manual trigger only. No push/pull_request/schedule events, so a commit of this file
+# costs zero runner minutes; the job runs only when someone presses "Run workflow".
+on:
+  workflow_dispatch:
+    inputs:
+      vampi_ref:
+        description: 'VAmPI branch or tag to benchmark (its default branch is master)'
+        required: false
+        default: 'master'
+
+permissions:
+  contents: read
+
+jobs:
+  run-benchmark:
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+
+    env:
+      # Passed through the environment instead of interpolating the input straight into a
+      # shell string, so a ref containing shell metacharacters cannot become a command.
+      VAMPI_REF: ${{ github.event.inputs.vampi_ref }}
+
+    steps:
+      - name: Checkout TimeCodeSecurity (HEAD)
+        uses: actions/checkout@v4
+
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.11"
+          cache: "pip"
+
+      - name: Install Engine & Benchmark Dependencies
+        run: |
+          python -m pip install --upgrade pip
+          if [ -f requirements.txt ]; then pip install -r requirements.txt; fi
+          pipx install semgrep || python -m pip install semgrep
+          semgrep --version
+
+      # Refuse to benchmark with a broken engine: Gate 1 must be green before any number
+      # produced below is worth reading. Deliberately no "|| true" here.
+      - name: Verify Engine (Gate 1 baseline)
+        run: python scripts/run_all_checks.py
+
+      - name: Clone Target Platform (VAmPI)
+        run: |
+          : "${VAMPI_REF:=master}"
+          git clone --depth 1 --branch "$VAMPI_REF" \
+            https://github.com/erev0s/VAmPI.git target_vampi
+          echo "VAMPI_PY_FILES=$(find target_vampi -name '*.py' | wc -l)" >> "$GITHUB_ENV"
+
+      - name: Prepare Results Directory
+        run: mkdir -p benchmark_results
+
+      - name: Execute TCS Scan on VAmPI
+        run: |
+          python cli.py scan target_vampi \
+            --sarif benchmark_results/tcs_vampi.sarif \
+            > benchmark_results/tcs_stdout.txt 2>&1 \
+            || echo "TCS_SCAN_EXIT=$?" >> "$GITHUB_ENV"
+
+      - name: Execute Semgrep Scan on VAmPI
+        run: |
+          semgrep scan --config auto --metrics=off --sarif \
+            --output benchmark_results/semgrep_vampi.sarif \
+            target_vampi \
+            > benchmark_results/semgrep_stdout.txt 2>&1 \
+            || echo "SEMGREP_SCAN_EXIT=$?" >> "$GITHUB_ENV"
+
+      # Every number in the report is parsed from the two SARIF files produced above.
+      # A missing or unreadable artifact is reported as a failure, never as a zero, so a
+      # crashed scan can not masquerade as "engine found nothing".
+      - name: Generate Comparative Scoreboard
+        if: always()
+        run: |
+          python - << 'PY'
+          import json
+          import os
+          import re
+
+          CWE_RE = re.compile(r"CWE[- ]?(\d+)", re.I)
+
+
+          def load(path):
+              """(status, data) - status is 'ok' or a human-readable failure."""
+              if not os.path.exists(path):
+                  return "no SARIF produced (scan step failed or timed out)", {}
+              if os.path.getsize(path) == 0:
+                  return "SARIF file is empty", {}
+              try:
+                  with open(path, encoding="utf-8") as handle:
+                      return "ok", json.load(handle)
+              except (OSError, ValueError) as exc:
+                  return f"SARIF unreadable: {type(exc).__name__}", {}
+
+
+          def results_of(data):
+              rows = []
+              for run in data.get("runs", []):
+                  rows.extend(run.get("results", []))
+              return rows
+
+
+          def cwe_ids(data):
+              ids = set()
+              for run in data.get("runs", []):
+                  rules = run.get("tool", {}).get("driver", {}).get("rules", [])
+                  for res in run.get("results", []):
+                      index = res.get("ruleIndex", -1)
+                      rule = rules[index] if isinstance(index, int) and 0 <= index < len(rules) else {}
+                      tags = rule.get("properties", {}).get("tags", [])
+                      fields = [res.get("ruleId", "") or "", res.get("rule", "") or "",
+                                rule.get("id", "") or "", rule.get("name", "") or ""]
+                      fields += [str(tag) for tag in tags if isinstance(tag, (str, int))]
+                      for field in fields:
+                          match = CWE_RE.search(field)
+                          if match:
+                              ids.add(int(match.group(1)))
+              return ids
+
+
+          def status(name, exit_key):
+              code = os.environ.get(exit_key, "")
+              return f"failed (exit {code})" if code else "ok"
+
+
+          tcs_status, tcs = load("benchmark_results/tcs_vampi.sarif")
+          sg_status, sg = load("benchmark_results/semgrep_vampi.sarif")
+
+          tcs_results, sg_results = results_of(tcs), results_of(sg)
+          tcs_cwes, sg_cwes = cwe_ids(tcs), cwe_ids(sg)
+          shared = sorted(tcs_cwes & sg_cwes)
+          only_tcs = sorted(tcs_cwes - sg_cwes)
+          only_sg = sorted(sg_cwes - tcs_cwes)
+
+          def cell(count, cwes, state):
+              if state != "ok":
+                  return f"**SCAN FAILED: {state}**"
+              return f"{count} findings across {len(cwes)} distinct CWEs"
+
+          md = [
+              "# VAmPI Benchmark Showdown: TimeCodeSecurity vs Semgrep",
+              "",
+              f"Target: [VAmPI](https://github.com/erev0s/VAmPI) "
+              f"@ `{os.environ.get('VAMPI_REF') or 'master'}` "
+              f"(a vulnerable Flask REST API), {os.environ.get('VAMPI_PY_FILES', 'n/a')} Python files.",
+              "",
+              "| Engine | Yield | Tool status |",
+              "| :--- | :--- | :--- |",
+              f"| TimeCodeSecurity | {cell(len(tcs_results), tcs_cwes, tcs_status)} "
+              f"| {status('TCS', 'TCS_SCAN_EXIT')} |",
+              f"| Semgrep (`--config auto`) | {cell(len(sg_results), sg_cwes, sg_status)} "
+              f"| {status('Semgrep', 'SEMGREP_SCAN_EXIT')} |",
+              "",
+          ]
+
+          if tcs_status == "ok" and sg_status == "ok":
+              md += [
+                  "## CWE coverage overlap",
+                  "",
+                  f"- Shared by both engines: {len(shared)} "
+                  f"{'(CWE-' + ', CWE-'.join(str(c) for c in shared) + ')' if shared else '(none)'}",
+                  f"- Only TimeCodeSecurity: {len(only_tcs)} "
+                  f"{'(CWE-' + ', CWE-'.join(str(c) for c in only_tcs) + ')' if only_tcs else '(none)'}",
+                  f"- Only Semgrep: {len(only_sg)} "
+                  f"{'(CWE-' + ', CWE-'.join(str(c) for c in only_sg) + ')' if only_sg else '(none)'}",
+                  "",
+              ]
+          else:
+              md += ["## CWE coverage overlap", "", "Not computed: at least one scan did not produce a SARIF.", ""]
+
+          md += [
+              "## What this run does NOT measure",
+              "",
+              "- **Precision and recall.** Neither is computed here: labelling VAmPI findings as true or",
+              "  false positive needs a hand-adjudicated ground truth for this target, which lives in the",
+              "  repo benchmark suite (`scripts/run_all_checks.py`, run above) and not in this workflow.",
+              "  The two Yield numbers above are raw output volume, not accuracy - a higher count can just",
+              "  as easily mean more noise.",
+              "- **Same file set is not guaranteed.** TimeCodeSecurity also parses HTML templates and",
+              "  config files, while Semgrep `--config auto` picks rules by language, so totals are",
+              "  indicative rather than directly comparable.",
+              "- **Business-logic flaws (BOLA/IDOR) and ReDoS.** Both engines are pattern/taint based and",
+              "  neither models request-level authorisation state, so VAmPI's broken-object-level",
+              "  authorization endpoints are expected to be missed by both. That is a stated limitation",
+              "  of the approach, not a measured result of this run.",
+              "",
+              "## Reproducibility",
+              "",
+              "- Engine commit: `" + os.environ.get("GITHUB_SHA", "n/a")[:7] + "`",
+              "- Gate 1 status: enforced as a hard prerequisite step before the scans.",
+              "- Artifacts: `benchmark_results/` (both SARIF files, both stdout logs, this report).",
+              "",
+          ]
+
+          text = "\n".join(md)
+          with open("benchmark_results/summary.md", "w", encoding="utf-8") as handle:
+              handle.write(text)
+          summary_path = os.environ.get("GITHUB_STEP_SUMMARY")
+          if summary_path:
+              with open(summary_path, "a", encoding="utf-8") as handle:
+                  handle.write(text)
+          print(text)
+
+          # A failed scan is a failed benchmark: surface it instead of shipping a table of zeros.
+          if tcs_status != "ok" or sg_status != "ok":
+              raise SystemExit("one or both engines produced no usable SARIF")
+          PY
+
+      - name: Upload Benchmark Artifacts
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: vampi-benchmark-results
+          path: benchmark_results/
