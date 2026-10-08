@@ -127,21 +127,73 @@ jobs:
               return rows
 
 
+          def rule_catalog(run_data):
+              """ruleId -> rule object.
+
+              Measured on real output: Semgrep OSS 1.178 SARIF results carry `ruleIndex: None`, so an
+              index-based lookup returns {} and every CWE in the rule metadata is lost - the scoreboard
+              then says Semgrep covered 0 CWEs even when it reported findings. Joining on `ruleId` is
+              the reliable lookup; `ruleIndex` stays as a fallback for tools that do emit it.
+              """
+              rules = run_data.get("tool", {}).get("driver", {}).get("rules", []) or []
+              catalog = {rule.get("id"): rule for rule in rules
+                         if isinstance(rule, dict) and rule.get("id")}
+              return catalog, rules
+
+
+          def _cwe_numbers(*values):
+              """Every CWE id mentioned by any mix of strings, lists and nested SARIF fragments."""
+              found = set()
+              stack = list(values)
+              while stack:
+                  item = stack.pop()
+                  if isinstance(item, str):
+                      for match in CWE_RE.finditer(item):
+                          number = int(match.group(1))
+                          if 0 < number < 10000:
+                              found.add(number)
+                  elif isinstance(item, (list, tuple, set)):
+                      stack.extend(item)
+                  elif isinstance(item, dict):
+                      stack.extend(item.values())
+              return found
+
+
+          def extract_cwes(result, rule_meta):
+              """All CWEs one finding claims, read from every field a tool is known to use.
+
+              Shapes covered, each taken from real tool output:
+                * TimeCodeSecurity: `ruleId` is literally "CWE-601".
+                * Semgrep OSS 1.x: `ruleId` is a dotted path carrying no CWE; the CWE sits in
+                  `rules[].properties.tags` as "CWE-89: Improper Neutralization of Special Elements
+                  used in an SQL Command ('SQL Injection')" - the title after the colon is dropped.
+                * Generic SARIF: `properties.cwe` as a string or a list ("cwe": ["CWE-89: ..."]),
+                  `properties.subcategories`, `taxonomies[].terms[].text`, and per-result properties.
+              """
+              if not isinstance(rule_meta, dict):
+                  rule_meta = {}
+              rule_props = rule_meta.get("properties", {}) or {}
+              result_props = result.get("properties", {}) or {}
+              short = (rule_meta.get("shortDescription") or {}).get("text")
+              return _cwe_numbers(
+                  result.get("ruleId"), result.get("rule"),
+                  result_props.get("cwe"), result_props.get("tags"),
+                  rule_props.get("cwe"), rule_props.get("tags"), rule_props.get("subcategories"),
+                  rule_meta.get("id"), rule_meta.get("name"), short,
+                  rule_meta.get("taxonomies"),
+              )
+
+
           def cwe_ids(data):
               ids = set()
               for run in data.get("runs", []):
-                  rules = run.get("tool", {}).get("driver", {}).get("rules", [])
+                  catalog, rules = rule_catalog(run)
                   for res in run.get("results", []):
-                      index = res.get("ruleIndex", -1)
-                      rule = rules[index] if isinstance(index, int) and 0 <= index < len(rules) else {}
-                      tags = rule.get("properties", {}).get("tags", [])
-                      fields = [res.get("ruleId", "") or "", res.get("rule", "") or "",
-                                rule.get("id", "") or "", rule.get("name", "") or ""]
-                      fields += [str(tag) for tag in tags if isinstance(tag, (str, int))]
-                      for field in fields:
-                          match = CWE_RE.search(field)
-                          if match:
-                              ids.add(int(match.group(1)))
+                      rule = catalog.get(res.get("ruleId"))
+                      if rule is None:
+                          index = res.get("ruleIndex", -1)
+                          rule = rules[index] if isinstance(index, int) and 0 <= index < len(rules) else {}
+                      ids |= extract_cwes(res, rule)
               return ids
 
 
@@ -149,7 +201,7 @@ jobs:
               """One (file, line, rule, category, message) tuple per SARIF result."""
               out = []
               for run in data.get("runs", []):
-                  rules = run.get("tool", {}).get("driver", {}).get("rules", [])
+                  catalog, rules = rule_catalog(run)
                   for res in run.get("results", []):
                       uri, line = "?", "?"
                       for loc in res.get("locations", []):
@@ -157,8 +209,11 @@ jobs:
                           uri = place.get("artifactLocation", {}).get("uri", uri)
                           line = place.get("region", {}).get("startLine", line)
                           break
-                      index = res.get("ruleIndex", -1)
-                      rule = rules[index] if isinstance(index, int) and 0 <= index < len(rules) else {}
+                      rule = catalog.get(res.get("ruleId", ""))
+                      if rule is None:
+                          index = res.get("ruleIndex", -1)
+                          rule = rules[index] if isinstance(index, int) and 0 <= index < len(rules) else {}
+                      rule = rule or {}
                       category = rule.get("shortDescription", {}).get("text", "") or rule.get("name", "")
                       message = (res.get("message", {}).get("text", "") or "").replace("|", "/")[:90]
                       out.append((uri, line, res.get("ruleId", "") or rule.get("id", "") or "?",

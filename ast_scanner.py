@@ -9506,6 +9506,9 @@ class TaintTracker:
             file_path = self.file_paths.get(mod_name, "unknown.py")
             scope_id = f"{mod_name}:global"
             seen: set[tuple[str, int, int]] = set()
+            # CWE-862 function-level debounce: id(enclosing FunctionDef) already charged. The AST
+            # trees live in self.modules for the whole pass, so these ids stay valid.
+            authz_emitted_funcs: set[int] = set()
 
             # Pre-scan module for extension whitelist, sanitizers, CSRF config, auth settings
             has_extension_whitelist = False
@@ -9748,7 +9751,21 @@ class TaintTracker:
                                     has_owner_param = True
                                     break
                             if not has_owner_param and not has_owner_check:
-                                cwe_meta = {"operation": "MISSING_AUTHORIZATION", "category": "MISSING_AUTHORIZATION", "cwe": "CWE-862"}
+                                # One finding per view, not one per object fetch: a view that reads
+                                # three rows by client-supplied id has one authorisation gap, while
+                                # three line-level hits read as three defects. Report the finding at
+                                # the view boundary (decorator line, else def line) so it names the
+                                # handler instead of a statement inside it.
+                                if enclosing_func is None:
+                                    cwe_meta = {"operation": "MISSING_AUTHORIZATION", "category": "MISSING_AUTHORIZATION", "cwe": "CWE-862"}
+                                elif id(enclosing_func) not in authz_emitted_funcs:
+                                    authz_emitted_funcs.add(id(enclosing_func))
+                                    # Charge the view, not the statement: the outermost decorator if
+                                    # the view has one, otherwise the def line itself.
+                                    anchor = min(list(enclosing_func.decorator_list)
+                                                 + [enclosing_func], key=lambda n: n.lineno)
+                                    cwe_meta = {"operation": "MISSING_AUTHORIZATION", "category": "MISSING_AUTHORIZATION", "cwe": "CWE-862",
+                                                "_report_node": anchor, "_report_lineno": anchor.lineno}
 
                     # ─── CWE-319: Cleartext HTTP Transmission ───
                     elif (names & CWE3A_NETWORK_SINKS) or any(name.startswith(ns) for ns in ("requests.", "httpx.", "urllib.request.")):
@@ -10033,12 +10050,15 @@ class TaintTracker:
                     has_route_post_or_put = False
                     has_csrf_exempt_dec = False
                     has_csrf_protect_dec = False
+                    cluster3_owns_exempt = False
 
                     for dec in node.decorator_list:
                         d_name = dotted_name(dec.func if isinstance(dec, ast.Call) else dec) or ""
                         dec_names.add(d_name)
                         if d_name in ("csrf_exempt", "csrf.exempt"):
                             has_csrf_exempt_dec = True
+                        if d_name.rsplit(".", 1)[-1] == CLUSTER3_CSRF_EXEMPT_SEG:
+                            cluster3_owns_exempt = True
                         if d_name in ("csrf_protect", "csrf.protect"):
                             has_csrf_protect_dec = True
                         if d_name in ("app.route", "route") and isinstance(dec, ast.Call):
@@ -10048,12 +10068,22 @@ class TaintTracker:
                                     if any(m in CWE3A_STATE_CHANGING_METHODS for m in m_vals):
                                         has_route_post_or_put = True
 
-                    if has_csrf_exempt_dec and (has_route_post_or_put or _view_accepts_state_change(node)) \
-                            and not self._csrf_is_json_api_noise(mod_name):
-                        # @csrf_exempt removes the only guard a state-changing request meets. When
-                        # the view neither declares a state-changing route nor performs a state
-                        # change, exemption has no security consequence and the report is noise.
-                        cwe_meta = {"operation": "CSRF_MISSING_PROTECTION", "category": "CSRF_MISSING_PROTECTION", "cwe": "CWE-352"}
+                    # CWE-352 mutual exclusion: a bare `@csrf_exempt` view is reported once, at its
+                    # decorator, by the Cluster 3 CSRF_EXEMPT_VIEW rule. Both rules gate on
+                    # `_csrf_is_json_api_noise`, and for that decorator Cluster 3 passes
+                    # dec_chain ending in "csrf_exempt", which is not a JSON_API_ROUTE_SEGS member,
+                    # so its second signal can never fire and the two guards are the same test.
+                    # Charging the view here as well reported it twice: decorator line + def line.
+                    # Dotted spellings (`@csrf.exempt`) are not what that rule matches, so those
+                    # views still have to be reported from here.
+                    if has_csrf_exempt_dec:
+                        if not cluster3_owns_exempt \
+                                and (has_route_post_or_put or _view_accepts_state_change(node)) \
+                                and not self._csrf_is_json_api_noise(mod_name):
+                            # @csrf_exempt removes the only guard a state-changing request meets. When
+                            # the view neither declares a state-changing route nor performs a state
+                            # change, exemption has no security consequence and the report is noise.
+                            cwe_meta = {"operation": "CSRF_MISSING_PROTECTION", "category": "CSRF_MISSING_PROTECTION", "cwe": "CWE-352"}
                     elif has_route_post_or_put and not has_csrf_protect_dec \
                             and not has_csrf_form_validation and not module_csrf_enabled \
                             and not self._csrf_is_json_api_noise(mod_name):
@@ -10095,7 +10125,10 @@ class TaintTracker:
                                 break
 
                 if cwe_meta:
-                    report_lineno = cwe_meta.pop("_report_lineno", getattr(node, "lineno", 0))
+                    # `_report_node` lets a finding be charged to the construct that owns it (a
+                    # view's def/decorator) instead of the statement that happened to match first.
+                    anchor_node = cwe_meta.pop("_report_node", node)
+                    report_lineno = cwe_meta.pop("_report_lineno", getattr(anchor_node, "lineno", 0))
                     dedupe_key = (cwe_meta["cwe"], report_lineno, getattr(node, "col_offset", 0))
                     if dedupe_key in seen:
                         continue
@@ -10107,7 +10140,7 @@ class TaintTracker:
                         node_type=NodeType.SINK,
                         symbol=cwe_meta["operation"],
                         operation=cwe_meta["operation"],
-                        location=location(node, file_path),
+                        location=location(anchor_node, file_path),
                         metadata={
                             "sink_type": cwe_meta["category"],
                             "category": cwe_meta["category"],
@@ -14957,6 +14990,107 @@ class TaintTracker:
                 return _is_safe_route_expr(expr.left) and _is_safe_route_expr(expr.right)
             return False
 
+        def _func_arg_names(scope_id: str) -> set[str]:
+            """Every parameter name of the function that owns `scope_id`."""
+            func = self.functions.get(scope_id)
+            args = getattr(func, "args", None)
+            if args is None:
+                return set()
+            names = {a.arg for a in list(args.args) + list(args.posonlyargs) + list(args.kwonlyargs)}
+            for extra in (args.vararg, args.kwarg):
+                if extra is not None:
+                    names.add(extra.arg)
+            return names
+
+        def _expr_reads_client_input(expr: ast.AST, scope_id: str, lineno: int, depth: int = 0) -> bool:
+            """True unless every leaf of `expr` is provably not client-supplied data.
+
+            Fail-closed: anything this walk cannot explain (an unknown call, an unresolved name
+            that is not a parameter, nesting beyond `depth`) counts as client input, so the only
+            destinations that ever get carved out are the ones that can be shown to be built from
+            literals and route parameters.
+            """
+            if expr is None or depth > 3:
+                return True
+            if isinstance(expr, ast.Constant):
+                return False
+            if isinstance(expr, ast.Attribute):
+                chain: list[str] = []
+                cursor = expr
+                while isinstance(cursor, ast.Attribute):
+                    chain.append(cursor.attr)
+                    cursor = cursor.value
+                root = cursor.id if isinstance(cursor, ast.Name) else ""
+                if not root:
+                    return True
+                if root == "request" or "request" in chain:
+                    return True
+                if root in ("sys", "os") and set(chain) & {"argv", "environ"}:
+                    return True
+                return False
+            if isinstance(expr, ast.Name):
+                record = _assigned_value(expr.id, scope_id, lineno)
+                if record is not None:
+                    return _expr_reads_client_input(record.value_node, record.scope_id,
+                                                    record.lineno, depth + 1)
+                return expr.id not in _func_arg_names(scope_id)
+            if isinstance(expr, ast.Call):
+                dname = dotted_name(expr.func) or ""
+                short = dname.rsplit(".", 1)[-1]
+                if short in {"input", "read", "readline", "argv"} or "environ" in dname:
+                    return True
+                if any(_expr_reads_client_input(a, scope_id, lineno, depth + 1)
+                       for a in list(expr.args) + [kw.value for kw in expr.keywords]):
+                    return True
+                # A call on a receiver that reads client input (request.POST.get(...)) propagates it.
+                return isinstance(expr.func, ast.Attribute) and \
+                    _expr_reads_client_input(expr.func.value, scope_id, lineno, depth + 1)
+            # Any other shape (subscript, comprehension, ternary, star-arg ...) is not something
+            # this predicate can explain, so it is treated as client input.
+            return True
+
+        def _same_origin_relative_target(expr: ast.AST, scope_id: str, lineno: int) -> bool:
+            """True for '/literal/' + <parts with no client input> destinations.
+
+            A Location beginning with one '/' is same-origin: the browser resolves it against the
+            current host, so no host can be injected. The two ways that proof breaks are a '//'
+            (protocol-relative) or scheme in the literal anchor, and a component that carries
+            client input, because that input could itself begin with '//evil.com'. Both are
+            excluded here, so django.nV's `redirect('/taskManager/' + project_id + '/')` -- a route
+            parameter interpolated into a fixed relative path -- stops being reported while
+            `redirect(request.GET.get('next'))` still is.
+            """
+            parts: list[ast.AST] = []
+
+            def flatten(node: ast.AST) -> None:
+                if isinstance(node, ast.BinOp) and isinstance(node.op, ast.Add):
+                    flatten(node.left)
+                    flatten(node.right)
+                else:
+                    parts.append(node)
+
+            head: ast.AST | None = None
+            rest: list[ast.AST] = []
+            if isinstance(expr, ast.JoinedStr):
+                first = expr.values[0] if expr.values else None
+                if not isinstance(first, ast.Constant):
+                    return False
+                head = first
+                rest = [item.value if isinstance(item, ast.FormattedValue) else item
+                        for item in expr.values[1:]]
+            elif isinstance(expr, ast.BinOp) and isinstance(expr.op, ast.Add):
+                flatten(expr)
+                if len(parts) < 2:
+                    return False
+                head, rest = parts[0], parts[1:]
+            else:
+                return False
+            if not isinstance(head, ast.Constant) or not isinstance(head.value, str):
+                return False
+            if not head.value.startswith("/") or head.value.startswith("//"):
+                return False
+            return all(not _expr_reads_client_input(part, scope_id, lineno) for part in rest)
+
         def _redirect_is_safe(call: ast.Call, target: ast.AST, scope_id: str, lineno: int, visited=None) -> bool:
             if target is None:
                 return False
@@ -14965,7 +15099,13 @@ class TaintTracker:
             static_value = _static_value(target, scope_id, lineno)
             if isinstance(static_value, str):
                 return True
+            if isinstance(static_value, (dict, tuple, set, frozenset)) and static_value:
+                # Fully literal, immutable destination: nothing client-supplied is inside it,
+                # because _static_value only resolves when every component is a constant.
+                return True
             if _is_safe_route_expr(target):
+                return True
+            if _same_origin_relative_target(target, scope_id, lineno):
                 return True
             if isinstance(target, ast.Name):
                 existing_sink = next((
