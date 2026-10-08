@@ -1741,9 +1741,28 @@ def _json_or_structured_body(call: ast.Call, assignments_by_scope, scope_id: str
         (kw.value for kw in call.keywords if kw.arg in {"content", "data"}), None)
     if isinstance(body, (ast.Dict, ast.List, ast.Tuple, ast.Set)):
         return True
-    media = next((kw.value for kw in call.keywords if kw.arg == "content_type"), None)
+    media = next((kw.value for kw in call.keywords if kw.arg in {"content_type", "mimetype"}), None)
     text = _literal_text(media, assignments_by_scope, scope_id, lineno)
-    return isinstance(text, str) and "json" in text.lower()
+    if isinstance(text, str) and "json" in text.lower():
+        return True
+    headers = next((kw.value for kw in call.keywords if kw.arg == "headers"), None)
+    if headers is not None:
+        literal = headers if isinstance(headers, ast.Dict) else None
+        if literal is None and isinstance(headers, ast.Name):
+            # Same treatment as an inline dict: `_assignment_records` returns the writes
+            # visible at this point, oldest first, so the last one is in effect.
+            for record in _assignment_records(assignments_by_scope, headers.id, scope_id, lineno):
+                if isinstance(record.value_node, ast.Dict):
+                    literal = record.value_node
+        if literal is not None:
+            for key, value in zip(literal.keys, literal.values):
+                name = _literal_text(key, assignments_by_scope, scope_id, lineno)
+                if not isinstance(name, str) or name.lower() != "content-type":
+                    continue
+                declared = _literal_text(value, assignments_by_scope, scope_id, lineno)
+                if isinstance(declared, str) and "json" in declared.lower():
+                    return True
+    return False
 
 
 def location(node: ast.AST, file_path: str) -> CodeLocation:

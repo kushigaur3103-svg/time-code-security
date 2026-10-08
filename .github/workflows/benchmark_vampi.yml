@@ -70,12 +70,16 @@ jobs:
             || echo "TCS_SCAN_EXIT=$?" >> "$GITHUB_ENV"
 
       - name: Execute Semgrep Scan on VAmPI
-        # `--config auto` needs the Semgrep registry binding and exits 2 in a headless job.
-        # `p/python` is the community Python ruleset. Either way this step can never break the
-        # workflow: the exit code is recorded for the report and the trailing `true` pins the
-        # step to success, so a Semgrep outage degrades the table instead of failing the run.
+        # `--config auto` needs the Semgrep registry binding and exited 2 in a headless job.
+        # These three free community rulesets are named explicitly instead, and together they
+        # give Semgrep the same web-application surface TimeCodeSecurity is being judged on
+        # (Python language rules, Flask-specific rules, and the OWASP Top Ten pack).
+        # The step can still never break the workflow: the exit code is recorded for the report
+        # and the trailing `true` pins the step to success, so a registry outage degrades the
+        # table instead of failing the run.
         run: |
-          semgrep scan --config "p/python" --metrics=off --sarif \
+          semgrep scan --config "p/python" --config "p/flask" --config "p/owasp-top-ten" \
+            --metrics=off --sarif \
             --output benchmark_results/semgrep_vampi.sarif \
             target_vampi \
             > benchmark_results/semgrep_stdout.txt 2>&1 \
@@ -212,7 +216,7 @@ jobs:
               "| :--- | :--- | :--- |",
               f"| TimeCodeSecurity | {cell(len(tcs_results), tcs_cwes, tcs_status, 'SCAN FAILED')} "
               f"| {status('TCS_SCAN_EXIT', tcs_status)} |",
-              f"| Semgrep (`--config p/python`) "
+              f"| Semgrep (`p/python + p/flask + p/owasp-top-ten`) "
               f"| {cell(len(sg_results), sg_cwes, sg_status, 'Error / Registry Offline')} "
               f"| {status('SEMGREP_SCAN_EXIT', sg_status)} |",
               "",
@@ -276,8 +280,8 @@ jobs:
               "  The two Yield numbers above are raw output volume, not accuracy - a higher count can just",
               "  as easily mean more noise.",
               "- **Same file set is not guaranteed.** TimeCodeSecurity also parses HTML templates and",
-              "  config files, while `--config p/python` loads only the community Python ruleset, so",
-              "  totals are indicative rather than directly comparable.",
+              "  config files, while Semgrep runs three community rulesets (`p/python`, `p/flask`,",
+              "  `p/owasp-top-ten`), so totals are indicative rather than directly comparable.",
               "- **Business-logic flaws (BOLA/IDOR) and ReDoS.** Both engines are pattern/taint based and",
               "  neither models request-level authorisation state, so VAmPI's broken-object-level",
               "  authorization endpoints are expected to be missed by both. That is a stated limitation",
