@@ -37,7 +37,14 @@ jobs:
         run: |
           python -m pip install --upgrade pip
           if [ -f requirements.txt ]; then pip install -r requirements.txt; fi
+          # Gate 1 needs flet: scripts/run_all_checks.py:56 does `import tcs_gui` and
+          # tcs_gui.py:6 does `import flet as ft`. flet is not in requirements.txt, so on a
+          # clean runner the gate died with ModuleNotFoundError before scanning anything.
+          pip install flet
           pipx install semgrep || python -m pip install semgrep
+          # Prove the gate's import chain resolves *here*, so a missing dependency shows up
+          # as a dependency failure instead of a confusing crash in the next step.
+          python -c "import flet, tcs_gui; from importlib.metadata import version; print('gate imports OK: flet', version('flet'))"
           semgrep --version
 
       # Refuse to benchmark with a broken engine: Gate 1 must be green before any number
