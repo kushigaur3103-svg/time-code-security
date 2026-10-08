@@ -89,6 +89,9 @@ jobs:
           import re
 
           CWE_RE = re.compile(r"CWE[- ]?(\d+)", re.I)
+          # 0 = nothing found, 1 = findings reported (cli.py:1050 returns 1 if blocking else 0;
+          # semgrep does the same). Anything else means the process really did not run.
+          NORMAL_SCAN_EXITS = {"", "0", "1"}
 
 
           def load(path):
@@ -129,9 +132,25 @@ jobs:
               return ids
 
 
-          def status(name, exit_key):
+          def status(exit_key, state):
+              """Renderer-facing label. Exit 1 == 'findings exist', which is the point of
+              scanning a deliberately vulnerable app, so it is a normal result."""
               code = os.environ.get(exit_key, "")
-              return f"failed (exit {code})" if code else "ok"
+              if code == "1":
+                  return "ok (exit 1 = vulnerabilities found)"
+              if code in ("", "0"):
+                  return "ok (exit 0)"
+              return f"**FAILED (exit {code})**"
+
+
+          def fatal(state, exit_key):
+              """Empty string = this engine ran acceptably; otherwise why the run is invalid."""
+              code = os.environ.get(exit_key, "")
+              if state != "ok":
+                  return f"no usable SARIF ({state})"
+              if code not in NORMAL_SCAN_EXITS:
+                  return f"unexpected exit code {code}"
+              return ""
 
 
           tcs_status, tcs = load("benchmark_results/tcs_vampi.sarif")
@@ -158,9 +177,9 @@ jobs:
               "| Engine | Yield | Tool status |",
               "| :--- | :--- | :--- |",
               f"| TimeCodeSecurity | {cell(len(tcs_results), tcs_cwes, tcs_status)} "
-              f"| {status('TCS', 'TCS_SCAN_EXIT')} |",
+              f"| {status('TCS_SCAN_EXIT', tcs_status)} |",
               f"| Semgrep (`--config auto`) | {cell(len(sg_results), sg_cwes, sg_status)} "
-              f"| {status('Semgrep', 'SEMGREP_SCAN_EXIT')} |",
+              f"| {status('SEMGREP_SCAN_EXIT', sg_status)} |",
               "",
           ]
 
@@ -212,9 +231,12 @@ jobs:
                   handle.write(text)
           print(text)
 
-          # A failed scan is a failed benchmark: surface it instead of shipping a table of zeros.
-          if tcs_status != "ok" or sg_status != "ok":
-              raise SystemExit("one or both engines produced no usable SARIF")
+          # Only a missing/corrupt SARIF or an unexpected exit code fails the job. Exit 1 from
+          # either scanner is deliberately NOT a failure here.
+          problems = [msg for msg in (fatal(tcs_status, "TCS_SCAN_EXIT"),
+                                      fatal(sg_status, "SEMGREP_SCAN_EXIT")) if msg]
+          if problems:
+              raise SystemExit("benchmark incomplete: " + "; ".join(problems))
           PY
 
       - name: Upload Benchmark Artifacts
