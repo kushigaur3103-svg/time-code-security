@@ -1203,7 +1203,7 @@ CLUSTER2_STRUCTURAL_SOURCE_IDS = {
     "PERMISSIVE_CORS_POLICY": "PERMISSIVE_CORS_POLICY",
 }
 
-# ─── Phase 3 Cluster 3 structural rule constants (18-rule grand finale batch) ───
+# ─── Phase 3 Cluster 3 structural rule constants (20-rule grand finale batch) ───
 CLUSTER3_NOSEC_RE = re.compile(r"#\s*(?:nosec|ok)\b")
 CLUSTER3_WEAK_NEW_HASH_ALGOS = {"md2", "md4", "md5", "sha1", "sha0", "sha224"}
 CLUSTER3_WEAK_HASH_CLASS_NAMES = {"MD2", "MD4", "MD5", "SHA", "SHA1"}
@@ -1305,6 +1305,33 @@ CLUSTER3_JWT_SIGNATURE_CHECK_OPTION = "verify_signature"
 CLUSTER3_BLOCK_CIPHER_CLASS_NAMES = frozenset({
     "AES", "DES", "DES3", "ARC4", "Blowfish", "CAST", "CAST5", "IDEA",
 })
+
+# ─── Cluster 3 structural rule constants (mutable default / token payload) ───
+# Both rules are measured on external/semgrep_rules_python before shipping: the mutable
+# default family fires on 42 `# OK`-annotated-corpus positive lines with zero hits on the
+# negatives, the token payload family fires on all 3 `# ruleid:` lines of
+# python/jwt/security/jwt-exposed-credentials.py with zero hits on its single `# ok:` line.
+# A mutable default is only a defect once the *shared* object is actually written to, and a
+# rebinding of the parameter to a freshly built object before that write removes the sharing.
+CLUSTER3_MUTABLE_DEFAULT_CONTAINER_NAMES = frozenset({"list", "dict", "set"})
+CLUSTER3_MUTABLE_DEFAULT_COPY_NAMES = frozenset({"copy", "deepcopy"})
+CLUSTER3_MUTABLE_DEFAULT_FRESH_VALUE_TYPES = (
+    ast.List, ast.Dict, ast.Set, ast.ListComp, ast.DictComp, ast.SetComp, ast.GeneratorExp,
+)
+CLUSTER3_MUTABLE_DEFAULT_METHOD_NAMES = frozenset({
+    "append", "extend", "insert", "update", "setdefault", "add", "discard", "remove",
+    "pop", "popitem", "clear", "sort",
+})
+# A credential inside a dictionary only leaks when that dictionary is what gets encoded into
+# the token, so the sink is the token call, reached either inline or through one assignment.
+CLUSTER3_TOKEN_PAYLOAD_FUNCTION_NAMES = frozenset({"encode", "Encrypt", "sign"})
+CLUSTER3_TOKEN_LIBRARY_ROOTS = frozenset({
+    "jwt", "jose", "authlib", "itsdangerous", "oauth2",
+})
+CLUSTER3_SENSITIVE_PAYLOAD_KEYS = frozenset({
+    "password", "passwd", "user_password", "secret",
+})
+
 CLUSTER3_STRUCTURAL_SOURCE_IDS = {
     "WEAK_HASH_NEW": "WEAK_HASH_NEW",
     "WEAK_HASH_CONSTRUCTOR": "WEAK_HASH_CONSTRUCTOR",
@@ -1333,6 +1360,8 @@ CLUSTER3_STRUCTURAL_SOURCE_IDS = {
     "EMPTY_CIPHER_KEY": "EMPTY_CIPHER_KEY",
     "HARDCODED_CONFIG": "HARDCODED_CONFIG",
     "ACTIVE_DEBUG_CODE": "ACTIVE_DEBUG_CODE",
+    "MUTABLE_DEFAULT_ARGUMENT": "MUTABLE_DEFAULT_ARGUMENT",
+    "HARDCODED_CREDENTIAL_IN_PAYLOAD": "HARDCODED_CREDENTIAL_IN_PAYLOAD",
 }
 
 # ─── Batch 3A structural rule constants ───
@@ -8620,7 +8649,7 @@ class TaintTracker:
 
     def _collect_cluster3_structural_findings(self) -> None:
         """
-        Phase 3 Cluster 3 PURE_STRUCTURAL visitors, the eighteen-rule grand finale:
+        Phase 3 Cluster 3 PURE_STRUCTURAL visitors, the twenty-rule grand finale:
 
           CWE-327  hashlib.new(md4/md5/sha1) without usedforsecurity=False;
                    Crypto(Dome).Hash weak-class .new() behind an import alias;
@@ -8641,6 +8670,8 @@ class TaintTracker:
                    ruamel YAML(typ='unsafe'|'base').
           CWE-352  @csrf_exempt views; WTF_CSRF_ENABLED=False (subscript, attribute,
                    bare, and config.update()/from_mapping() kwargs, TESTING=True exempt).
+          CWE-1188 mutable default argument whose object is mutated in the body.
+          CWE-522  credential key in a dictionary that reaches a jwt/jose encode/sign call.
 
         Appends sinks + sink_records; edges come from the generic p3_source_id synthetic
         path in analyze().
@@ -9295,6 +9326,144 @@ class TaintTracker:
                             (chain[-2] == "shelve" and last_seg == CLUSTER3_SHELVE_OPEN_SEG)):
                         _add(node, "UNSAFE_PICKLE_USAGE" if chain[-2] != "marshal"
                              else "MARSHAL_USAGE", "DESERIALIZATION", "CWE-502")
+
+            # ---- Cluster 3 rule A: mutable default argument mutated in place (CWE-1188) ----
+            # Three facts have to hold on one function before the shared object is at risk: a
+            # container default, a write through that object, and no rebinding of the parameter
+            # to a freshly built object before the write. Definitions nested inside another
+            # function are out of scope: the corpus labels that shape `# OK`, and the upstream
+            # rule excludes it the same way.
+            def _nested_in_function(node: ast.AST) -> bool:
+                current = getattr(node, "parent", None)
+                while current is not None:
+                    if isinstance(current, (ast.FunctionDef, ast.AsyncFunctionDef)):
+                        return True
+                    current = getattr(current, "parent", None)
+                return False
+
+            def _mutable_default_parameters(func) -> list[tuple[str, ast.AST]]:
+                positional = list(func.args.posonlyargs) + list(func.args.args)
+                defaults = list(func.args.defaults)
+                padded = [None] * (len(positional) - len(defaults)) + defaults
+                pairs = list(zip(positional, padded)) + \
+                    list(zip(func.args.kwonlyargs, func.args.kw_defaults))
+                out: list[tuple[str, ast.AST]] = []
+                for arg, default in pairs:
+                    if default is None:
+                        continue
+                    if isinstance(default, (ast.List, ast.Dict, ast.Set)):
+                        out.append((arg.arg, default))
+                    elif isinstance(default, ast.Call) and not default.args:
+                        head = getattr(default.func, "id", None) or \
+                            getattr(default.func, "attr", None)
+                        if head in CLUSTER3_MUTABLE_DEFAULT_CONTAINER_NAMES:
+                            out.append((arg.arg, default))
+                return out
+
+            def _fresh_rebind_lines(func, name: str) -> set[int]:
+                lines: set[int] = set()
+                for sub in ast.walk(func):
+                    if isinstance(sub, ast.Assign):
+                        value = sub.value
+                        sub_base = getattr(value, "value", None)
+                        fresh = (isinstance(value, ast.Call) and (
+                                    (getattr(value.func, "id", None)
+                                     in CLUSTER3_MUTABLE_DEFAULT_CONTAINER_NAMES) or
+                                    (getattr(value.func, "attr", None)
+                                     in CLUSTER3_MUTABLE_DEFAULT_COPY_NAMES) or
+                                    (isinstance(value.func, ast.Attribute) and
+                                     getattr(value.func.value, "id", None)
+                                     in CLUSTER3_MUTABLE_DEFAULT_CONTAINER_NAMES))) or \
+                            isinstance(value, CLUSTER3_MUTABLE_DEFAULT_FRESH_VALUE_TYPES) or \
+                            (isinstance(value, ast.Subscript) and
+                             isinstance(sub_base, ast.Name) and sub_base.id == name) or \
+                            (isinstance(value, ast.BoolOp) and
+                             any(isinstance(n, ast.Name) and n.id == name
+                                 for n in ast.walk(value)))
+                        if fresh and any(isinstance(t, ast.Name) and t.id == name
+                                         for t in sub.targets):
+                            lines.add(getattr(sub, "lineno", 0))
+                    elif isinstance(sub, ast.AnnAssign) and isinstance(sub.target, ast.Name) \
+                            and sub.target.id == name and sub.value is not None:
+                        lines.add(getattr(sub, "lineno", 0))
+                return lines
+
+            def _shared_object_mutations(func, name: str) -> list[tuple[ast.AST, str]]:
+                # `x = default` then `x.append(...)` is the same shared object, so one level of
+                # plain aliasing counts as a mutation of the default itself.
+                aliases = {name}
+                for sub in ast.walk(func):
+                    if isinstance(sub, ast.Assign) and isinstance(sub.value, ast.Name) and \
+                            sub.value.id == name:
+                        aliases.update(t.id for t in sub.targets if isinstance(t, ast.Name))
+                sites: list[tuple[ast.AST, str]] = []
+                for sub in ast.walk(func):
+                    if isinstance(sub, ast.Call) and isinstance(sub.func, ast.Attribute) and \
+                            isinstance(sub.func.value, ast.Name) and \
+                            sub.func.value.id in aliases and \
+                            sub.func.attr in CLUSTER3_MUTABLE_DEFAULT_METHOD_NAMES:
+                        sites.append((sub, sub.func.attr))
+                    elif isinstance(sub, ast.Assign):
+                        for target in sub.targets:
+                            if isinstance(target, ast.Subscript) and \
+                                    isinstance(target.value, ast.Name) and \
+                                    target.value.id in aliases:
+                                sites.append((sub, "subscript_store"))
+                    elif isinstance(sub, ast.AugAssign) and isinstance(sub.target, ast.Name) \
+                            and sub.target.id in aliases:
+                        sites.append((sub, "augassign"))
+                return sites
+
+            for func in [node for node in reachable
+                         if isinstance(node, (ast.FunctionDef, ast.AsyncFunctionDef))]:
+                if _nested_in_function(func):
+                    continue
+                for param, _default in _mutable_default_parameters(func):
+                    rebound = _fresh_rebind_lines(func, param)
+                    for mut_node, _kind in _shared_object_mutations(func, param):
+                        if any(rb <= getattr(mut_node, "lineno", 0) for rb in rebound):
+                            continue
+                        _add(mut_node, "MUTABLE_DEFAULT_ARGUMENT",
+                             "INSECURE_DEFAULT_INITIALIZATION", "CWE-1188")
+
+            # ---- Cluster 3 rule B: credential key in a dictionary that reaches a token call ----
+            # A password inside a payload only becomes a leak when that payload is what gets
+            # encoded into the token, so the dictionary must be an argument of an encode/sign
+            # call -- inline, or one assignment away. HTTP request bodies with the same keys are
+            # another CWE's business and are deliberately not matched here.
+            module_roots: set[str] = set()
+            for sub in reachable:
+                if isinstance(sub, ast.Import):
+                    module_roots.update(alias.name.split(".")[0] for alias in sub.names)
+                elif isinstance(sub, ast.ImportFrom) and sub.module:
+                    module_roots.add(sub.module.split(".")[0])
+            if module_roots & CLUSTER3_TOKEN_LIBRARY_ROOTS:
+                payload_dict_ids: set[int] = set()
+                payload_names: set[str] = set()
+                for sub in reachable:
+                    if not isinstance(sub, ast.Call):
+                        continue
+                    segs = _segments(sub.func)
+                    if not segs or segs[-1] not in CLUSTER3_TOKEN_PAYLOAD_FUNCTION_NAMES:
+                        continue
+                    for arg in list(sub.args) + [kw.value for kw in sub.keywords]:
+                        if isinstance(arg, ast.Dict):
+                            payload_dict_ids.add(id(arg))
+                        elif isinstance(arg, ast.Name):
+                            payload_names.add(arg.id)
+                if payload_names:
+                    for sub in reachable:
+                        if isinstance(sub, ast.Assign) and isinstance(sub.value, ast.Dict) and \
+                                any(isinstance(t, ast.Name) and t.id in payload_names
+                                    for t in sub.targets):
+                            payload_dict_ids.add(id(sub.value))
+                for node in [n for n in reachable if isinstance(n, ast.Dict)]:
+                    keys = [key.value for key in node.keys
+                            if isinstance(key, ast.Constant) and isinstance(key.value, str)]
+                    if id(node) in payload_dict_ids and \
+                            any(key.lower() in CLUSTER3_SENSITIVE_PAYLOAD_KEYS for key in keys):
+                        _add(node, "HARDCODED_CREDENTIAL_IN_PAYLOAD", "HARDCODED_CREDENTIAL",
+                             "CWE-522")
 
     def _collect_batch3a_structural_findings(self) -> None:
         """
