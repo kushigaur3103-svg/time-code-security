@@ -70,16 +70,22 @@ jobs:
             || echo "TCS_SCAN_EXIT=$?" >> "$GITHUB_ENV"
 
       - name: Execute Semgrep Scan on VAmPI
+        # `--config auto` needs the Semgrep registry binding and exits 2 in a headless job.
+        # `p/python` is the community Python ruleset. Either way this step can never break the
+        # workflow: the exit code is recorded for the report and the trailing `true` pins the
+        # step to success, so a Semgrep outage degrades the table instead of failing the run.
         run: |
-          semgrep scan --config auto --metrics=off --sarif \
+          semgrep scan --config "p/python" --metrics=off --sarif \
             --output benchmark_results/semgrep_vampi.sarif \
             target_vampi \
             > benchmark_results/semgrep_stdout.txt 2>&1 \
             || echo "SEMGREP_SCAN_EXIT=$?" >> "$GITHUB_ENV"
+          true
 
-      # Every number in the report is parsed from the two SARIF files produced above.
-      # A missing or unreadable artifact is reported as a failure, never as a zero, so a
-      # crashed scan can not masquerade as "engine found nothing".
+      # Every number below is parsed from the SARIF files produced above. TimeCodeSecurity is the
+      # engine this repo owns, so its SARIF is mandatory and a missing/corrupt one fails the job.
+      # Semgrep is only a reference point: no SARIF from it is reported as
+      # "Error / Registry Offline" and the run still exits 0 with the full TimeCodeSecurity table.
       - name: Generate Comparative Scoreboard
         if: always()
         run: |
@@ -87,11 +93,14 @@ jobs:
           import json
           import os
           import re
+          import sys
 
           CWE_RE = re.compile(r"CWE[- ]?(\d+)", re.I)
           # 0 = nothing found, 1 = findings reported (cli.py:1050 returns 1 if blocking else 0;
           # semgrep does the same). Anything else means the process really did not run.
           NORMAL_SCAN_EXITS = {"", "0", "1"}
+          # Cap the in-run findings table so a huge scan cannot blow up the step summary page.
+          MAX_ROWS = 200
 
 
           def load(path):
@@ -132,15 +141,38 @@ jobs:
               return ids
 
 
+          def rows_of(data):
+              """One (file, line, rule, category, message) tuple per SARIF result."""
+              out = []
+              for run in data.get("runs", []):
+                  rules = run.get("tool", {}).get("driver", {}).get("rules", [])
+                  for res in run.get("results", []):
+                      uri, line = "?", "?"
+                      for loc in res.get("locations", []):
+                          place = loc.get("physicalLocation", {})
+                          uri = place.get("artifactLocation", {}).get("uri", uri)
+                          line = place.get("region", {}).get("startLine", line)
+                          break
+                      index = res.get("ruleIndex", -1)
+                      rule = rules[index] if isinstance(index, int) and 0 <= index < len(rules) else {}
+                      category = rule.get("shortDescription", {}).get("text", "") or rule.get("name", "")
+                      message = (res.get("message", {}).get("text", "") or "").replace("|", "/")[:90]
+                      out.append((uri, line, res.get("ruleId", "") or rule.get("id", "") or "?",
+                                  category, message))
+              return out
+
+
           def status(exit_key, state):
               """Renderer-facing label. Exit 1 == 'findings exist', which is the point of
               scanning a deliberately vulnerable app, so it is a normal result."""
               code = os.environ.get(exit_key, "")
+              if code and code not in NORMAL_SCAN_EXITS:
+                  return f"**exit {code} (not a normal scanner result)**"
+              if state != "ok":
+                  return f"no SARIF (exit {code or '0'})"
               if code == "1":
                   return "ok (exit 1 = vulnerabilities found)"
-              if code in ("", "0"):
-                  return "ok (exit 0)"
-              return f"**FAILED (exit {code})**"
+              return "ok (exit 0)"
 
 
           def fatal(state, exit_key):
@@ -162,10 +194,12 @@ jobs:
           only_tcs = sorted(tcs_cwes - sg_cwes)
           only_sg = sorted(sg_cwes - tcs_cwes)
 
-          def cell(count, cwes, state):
+          def cell(count, cwes, state, failed_label):
               if state != "ok":
-                  return f"**SCAN FAILED: {state}**"
+                  return f"**{failed_label}** ({state})"
               return f"{count} findings across {len(cwes)} distinct CWEs"
+
+          single_engine = tcs_status == "ok" and sg_status != "ok"
 
           md = [
               "# VAmPI Benchmark Showdown: TimeCodeSecurity vs Semgrep",
@@ -176,12 +210,21 @@ jobs:
               "",
               "| Engine | Yield | Tool status |",
               "| :--- | :--- | :--- |",
-              f"| TimeCodeSecurity | {cell(len(tcs_results), tcs_cwes, tcs_status)} "
+              f"| TimeCodeSecurity | {cell(len(tcs_results), tcs_cwes, tcs_status, 'SCAN FAILED')} "
               f"| {status('TCS_SCAN_EXIT', tcs_status)} |",
-              f"| Semgrep (`--config auto`) | {cell(len(sg_results), sg_cwes, sg_status)} "
+              f"| Semgrep (`--config p/python`) "
+              f"| {cell(len(sg_results), sg_cwes, sg_status, 'Error / Registry Offline')} "
               f"| {status('SEMGREP_SCAN_EXIT', sg_status)} |",
               "",
           ]
+
+          if single_engine:
+              md += [
+                  "> **Single-engine run.** Semgrep produced no SARIF, so every count below is",
+                  "> TimeCodeSecurity only. No comparison against Semgrep is implied, and nothing",
+                  "> here should be quoted as a head-to-head result.",
+                  "",
+              ]
 
           if tcs_status == "ok" and sg_status == "ok":
               md += [
@@ -195,8 +238,34 @@ jobs:
                   f"{'(CWE-' + ', CWE-'.join(str(c) for c in only_sg) + ')' if only_sg else '(none)'}",
                   "",
               ]
+          elif single_engine:
+              md += [
+                  "## CWE coverage found by TimeCodeSecurity",
+                  "",
+                  f"Overlap with Semgrep is not computed: Semgrep produced no SARIF. "
+                  f"TimeCodeSecurity covered {len(tcs_cwes)} distinct CWEs "
+                  f"(CWE-{', CWE-'.join(str(c) for c in sorted(tcs_cwes))}).",
+                  "",
+              ]
           else:
-              md += ["## CWE coverage overlap", "", "Not computed: at least one scan did not produce a SARIF.", ""]
+              md += ["## CWE coverage overlap", "",
+                     "Not computed: TimeCodeSecurity produced no usable SARIF.", ""]
+
+          if tcs_status == "ok":
+              tcs_rows = rows_of(tcs)
+              md += [
+                  f"## TimeCodeSecurity findings on VAmPI ({len(tcs_rows)} total)",
+                  "",
+                  "| # | File | Line | CWE | Category | Message |",
+                  "| --: | :--- | ---: | :--- | :--- | :--- |",
+              ]
+              for number, row in enumerate(tcs_rows[:MAX_ROWS], 1):
+                  uri, line, rule_id, category, message = row
+                  md.append(f"| {number} | {uri} | {line} | {rule_id} | {category} | {message} |")
+              if len(tcs_rows) > MAX_ROWS:
+                  md.append(f"| ... | *{len(tcs_rows) - MAX_ROWS} further rows are in the "
+                            f"uploaded `tcs_vampi.sarif` artifact* | | | | |")
+              md.append("")
 
           md += [
               "## What this run does NOT measure",
@@ -207,8 +276,8 @@ jobs:
               "  The two Yield numbers above are raw output volume, not accuracy - a higher count can just",
               "  as easily mean more noise.",
               "- **Same file set is not guaranteed.** TimeCodeSecurity also parses HTML templates and",
-              "  config files, while Semgrep `--config auto` picks rules by language, so totals are",
-              "  indicative rather than directly comparable.",
+              "  config files, while `--config p/python` loads only the community Python ruleset, so",
+              "  totals are indicative rather than directly comparable.",
               "- **Business-logic flaws (BOLA/IDOR) and ReDoS.** Both engines are pattern/taint based and",
               "  neither models request-level authorisation state, so VAmPI's broken-object-level",
               "  authorization endpoints are expected to be missed by both. That is a stated limitation",
@@ -218,7 +287,8 @@ jobs:
               "",
               "- Engine commit: `" + os.environ.get("GITHUB_SHA", "n/a")[:7] + "`",
               "- Gate 1 status: enforced as a hard prerequisite step before the scans.",
-              "- Artifacts: `benchmark_results/` (both SARIF files, both stdout logs, this report).",
+              "- Artifacts: `benchmark_results/` (each SARIF that was produced, both stdout logs,",
+              "  this report).",
               "",
           ]
 
@@ -231,12 +301,16 @@ jobs:
                   handle.write(text)
           print(text)
 
-          # Only a missing/corrupt SARIF or an unexpected exit code fails the job. Exit 1 from
-          # either scanner is deliberately NOT a failure here.
-          problems = [msg for msg in (fatal(tcs_status, "TCS_SCAN_EXIT"),
-                                      fatal(sg_status, "SEMGREP_SCAN_EXIT")) if msg]
-          if problems:
-              raise SystemExit("benchmark incomplete: " + "; ".join(problems))
+          # TimeCodeSecurity is mandatory: no usable SARIF, or an exit code outside 0/1, fails the
+          # job. Semgrep is optional by design - its problem is written to stderr and shown in the
+          # table, and the run still exits 0 with the full TimeCodeSecurity table above.
+          sg_note = fatal(sg_status, "SEMGREP_SCAN_EXIT")
+          if sg_note:
+              print(f"[warn] Semgrep did not contribute to this benchmark: {sg_note}",
+                    file=sys.stderr)
+          tcs_note = fatal(tcs_status, "TCS_SCAN_EXIT")
+          if tcs_note:
+              raise SystemExit("benchmark incomplete: " + tcs_note)
           PY
 
       - name: Upload Benchmark Artifacts
