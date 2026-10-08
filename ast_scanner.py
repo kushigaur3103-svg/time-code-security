@@ -1088,6 +1088,41 @@ CWE798_TARGET_RE = re.compile(r"(?i).*(password|passwd|secret_key|api_key|access
 # Django's unvalidated client-input containers. `is_valid()` fills `form.cleaned_data`, never
 # these, so a read of them inside a validated-form scope is the CWE-20 signal.
 DJANGO_RAW_POST_ATTRS = frozenset({"POST", "FILES"})
+
+# ─── PyGoat blind-spot structural collectors (CWE-78 / 532 / 668 / 93) ───
+# Each rule below is a single-file syntactic check. They run after every other phase and defer
+# to any sink the taint engine already reported on the same line, so they widen coverage
+# without ever duplicating - or re-litigating - a finding the taint path already owns.
+SUBPROCESS_SHELL_FUNCS = frozenset({
+    "subprocess.Popen", "subprocess.run", "subprocess.call",
+    "subprocess.check_output", "subprocess.check_call",
+})
+
+# Credential-bearing *names* passed to a log/print call. Applied to identifier text only
+# (variable, attribute, subscript key), never to message literals, so
+# `logger.info("password reset complete")` stays clean while `logger.info("hi", password)`
+# and `print(f"token {tok}")` are reported.
+SENSITIVE_VALUE_NAME_RE = re.compile(
+    r"(?i)\b(password|passwd|secret|token|api_key|auth_token|credit_card|private_key)\b")
+
+# A name that only *talks about* a credential - a boolean flag, a form column label, a schema
+# key - holds no secret value, so it is not a log leak.
+SENSITIVE_NAME_EXEMPT_RE = re.compile(
+    r"(?i)^(?:has|is|was|were|did|does|should|can|could|must|need)_[a-z_0-9]+$|"
+    r"_(?:flag|bool|sent|set|required|enabled|exists|valid|ok|done|field|fields|label|"
+    r"name|names|schema|type|types|choices|keys|params)$")
+
+LOG_SINK_METHODS = frozenset({"info", "debug", "warning", "error", "exception", "critical", "log"})
+
+# `app.run(host='0.0.0.0')` listens on every interface the machine has, not just loopback.
+INSECURE_BIND_HOSTS = frozenset({"0.0.0.0", "::", "0:0:0:0:0:0:0:0"})
+BIND_METHOD_NAMES = frozenset({"run", "run_simple"})
+
+# Django/DRF containers that return raw, unvalidated client input.
+CLIENT_INPUT_CONTAINERS = frozenset(
+    {"GET", "POST", "COOKIES", "META", "data", "headers", "body", "query_params"})
+RESPONSE_HEADER_METHODS = frozenset({"set_header", "set_cookie"})
+RESPONSE_TARGET_RE = re.compile(r"(?i)^(?:response|resp|res|http_response|html?|[a-z0-9_]*response)$")
 # Dummy/test string blocklist for CWE-798 - suppress known test placeholders
 CWE798_DUMMY_STRINGS = frozenset({
     "this-is-probably-a-test", "this-is-not-a-key", "this-is-secret",
@@ -7692,6 +7727,264 @@ class TaintTracker:
                         lineno=getattr(node, "lineno", 1),
                         scope_id=scope_id,
                     ))
+
+    # ── shared helpers for the PyGoat blind-spot collectors ────────────────────────
+    @staticmethod
+    def _blindspot_build_assignment_map(tree):
+        """name -> [(lineno, value_node)] for every plain `name = ...` binding in the module."""
+        table: dict[str, list] = {}
+        for node in ast.walk(tree):
+            if isinstance(node, ast.Assign) and len(node.targets) == 1 \
+                    and isinstance(node.targets[0], ast.Name):
+                table.setdefault(node.targets[0].id, []).append((node.lineno, node.value))
+        return table
+
+    @staticmethod
+    def _blindspot_latest_assignment(table, name, use_lineno):
+        """The value *name* held at *use_lineno*: its closest assignment above that line."""
+        best = None
+        for lineno, value in table.get(name, []):
+            if lineno < use_lineno and (best is None or lineno >= best[0]):
+                best = (lineno, value)
+        return best[1] if best else None
+
+    def _blindspot_resolve_command(self, node, table, use_lineno, depth=2):
+        """Follow `command.split(' ')` and `command = <expr>` back to the expression itself."""
+        current = node
+        while depth > 0:
+            name = None
+            if isinstance(current, ast.Name):
+                name = current.id
+            elif isinstance(current, ast.Call) and isinstance(current.func, ast.Attribute) \
+                    and isinstance(current.func.value, ast.Name):
+                name = current.func.value.id
+            else:
+                break
+            value = self._blindspot_latest_assignment(table, name, use_lineno)
+            if value is None:
+                break
+            current, depth = value, depth - 1
+        return current
+
+    def _blindspot_is_dynamic_command(self, command, table, use_lineno):
+        """True when the command carries a value the source does not spell out in full.
+
+        A list/tuple argument is argv-style - the kernel splits it, no shell re-parses it - so
+        it is never dynamic here, matching `subprocess.run(["ping", "-c", "1", host])`.
+        """
+        node = self._blindspot_resolve_command(command, table, use_lineno)
+        if isinstance(node, (ast.List, ast.Tuple, ast.Set, ast.Dict, ast.Constant)):
+            return False
+        if isinstance(node, ast.JoinedStr):
+            return True
+        return isinstance(node, ast.BinOp) and isinstance(node.op, ast.Add)
+
+    @staticmethod
+    def _blindspot_line_suppressed(source_lines, node):
+        """Respect an inline `# ok:` / `# nosec` review marker on the finding or its predecessor."""
+        lineno = getattr(node, "lineno", 1)
+        for line_no in (lineno, lineno - 1):
+            if 0 < line_no <= len(source_lines):
+                if re.search(r"#\s*(?:ok|nosec)\b", source_lines[line_no - 1], re.IGNORECASE):
+                    return True
+        return False
+
+    def _blindspot_sink_exists(self, file_path, lineno, cwe):
+        """True when an earlier phase already reported *cwe on *lineno* of *file_path*."""
+        for record in self.sink_records:
+            node = record.security_node
+            if node.location.file == file_path and node.location.line_start == lineno \
+                    and node.metadata.get("cwe") == cwe:
+                return True
+        return False
+
+    def _add_blindspot_sink(self, node, filename, cwe, operation, category, message, source_id):
+        """Append a structural sink plus the synthetic source id that makes it reportable."""
+        lineno = getattr(node, "lineno", 1)
+        if self._blindspot_sink_exists(filename, lineno, cwe):
+            return
+        sink_node = SecurityNode(
+            id=self.next_sink_id(),
+            node_type=NodeType.SINK,
+            symbol=operation,
+            operation=operation,
+            location=location(node, filename),
+            metadata={
+                "sink_type": category,
+                "category": category,
+                "cwe": cwe,
+                "operation": operation,
+                "message": message,
+                "p4_source_id": source_id,
+            },
+        )
+        self.sinks.append(sink_node)
+        self.sink_records.append(SinkRecord(
+            node=node,
+            security_node=sink_node,
+            lineno=lineno,
+            scope_id=f"{filename}:global",
+        ))
+
+    # ── 1. CWE-78: subprocess with shell=True on a command built at runtime ────────
+    def _collect_cwe78_subprocess_calls(self, tree, filename, source_lines):
+        table = self._blindspot_build_assignment_map(tree)
+        for node in ast.walk(tree):
+            if not isinstance(node, ast.Call) or not isinstance(node.func, ast.AST):
+                continue
+            if dotted_name(node.func) not in SUBPROCESS_SHELL_FUNCS:
+                continue
+            shell_kw = next((kw.value for kw in node.keywords if kw.arg == "shell"), None)
+            if not isinstance(shell_kw, ast.Constant) or shell_kw.value is not True:
+                continue
+            if not node.args:
+                continue
+            if not self._blindspot_is_dynamic_command(node.args[0], table, node.lineno):
+                continue
+            if self._blindspot_line_suppressed(source_lines, node):
+                continue
+            self._add_blindspot_sink(
+                node, filename, "CWE-78", "OS_COMMAND_EXECUTION", "COMMAND_INJECTION",
+                "CWE-78: OS command built at runtime passed to subprocess with shell=True; "
+                "pass an argument list and drop shell=True",
+                "OS_COMMAND_EXECUTION")
+
+    # ── 2. CWE-532: credential value written into a log line or stdout ─────────────
+    def _collect_cwe532_logging_leaks(self, tree, filename, source_lines):
+        func_ranges = [
+            (func.lineno, getattr(func, "end_lineno", None) or func.lineno)
+            for func in ast.walk(tree)
+            if isinstance(func, (ast.FunctionDef, ast.AsyncFunctionDef))
+        ]
+        for node in ast.walk(tree):
+            if not isinstance(node, ast.Call):
+                continue
+            if not self._blindspot_is_log_call(node, func_ranges):
+                continue
+            if not any(self._blindspot_sensitive_names(arg) for arg in node.args):
+                continue
+            if self._blindspot_line_suppressed(source_lines, node):
+                continue
+            self._add_blindspot_sink(
+                node, filename, "CWE-532", "SENSITIVE_DATA_LOGGING", "SENSITIVE_DATA_LOGGING",
+                "CWE-532: Insertion of sensitive data into log entry",
+                "SENSITIVE_DATA_LOGGING")
+
+    @staticmethod
+    def _blindspot_is_log_call(node, func_ranges):
+        """logger/logging writes always; a bare print() only inside a function body."""
+        func = node.func
+        if isinstance(func, ast.Attribute):
+            root = func
+            while isinstance(root, ast.Attribute):
+                root = root.value
+            root_name = root.id if isinstance(root, ast.Name) else ""
+            # `app.logger.info(...)` binds the logger on an object instead of a `logger` name.
+            receiver_is_logger = isinstance(func.value, ast.Attribute) and func.value.attr == "logger"
+            return func.attr in LOG_SINK_METHODS and (
+                root_name in ("logger", "logging", "log") or root_name.endswith("_logger")
+                or receiver_is_logger)
+        if isinstance(func, ast.Name) and func.id == "print":
+            return any(start <= node.lineno <= end for start, end in func_ranges)
+        return False
+
+    def _blindspot_sensitive_names(self, arg):
+        """Credential words found in the *identifiers* an argument reads, not in its text."""
+        names = []
+        for sub in ast.walk(arg):
+            if isinstance(sub, ast.Name):
+                names.append(sub.id)
+            elif isinstance(sub, ast.Attribute):
+                names.append(sub.attr)
+            elif isinstance(sub, ast.Subscript) and isinstance(sub.slice, ast.Constant) \
+                    and isinstance(sub.slice.value, str):
+                names.append(sub.slice.value)
+        return [name for name in names
+                if SENSITIVE_VALUE_NAME_RE.search(name) and not SENSITIVE_NAME_EXEMPT_RE.search(name)]
+
+    # ── 3. CWE-668: server started on every interface instead of loopback ──────────
+    def _collect_cwe668_insecure_host_binding(self, tree, filename, source_lines):
+        for node in ast.walk(tree):
+            if not isinstance(node, ast.Call) or not isinstance(node.func, ast.Attribute):
+                continue
+            if node.func.attr not in BIND_METHOD_NAMES:
+                continue
+            host = next((kw.value for kw in node.keywords if kw.arg == "host"), None)
+            if not isinstance(host, ast.Constant) or not isinstance(host.value, str):
+                continue
+            if host.value.strip() not in INSECURE_BIND_HOSTS:
+                continue
+            if self._blindspot_line_suppressed(source_lines, node):
+                continue
+            self._add_blindspot_sink(
+                node, filename, "CWE-668", "INSECURE_INTERFACE_BINDING",
+                "INSECURE_NETWORK_BINDING",
+                "CWE-668: Insecure binding to all network interfaces (0.0.0.0)",
+                "INSECURE_INTERFACE_BINDING")
+
+    # ── 4. CWE-93: raw client input written into a response header ─────────────────
+    def _collect_cwe93_header_injection(self, tree, filename, source_lines):
+        table = self._blindspot_build_assignment_map(tree)
+        for node in ast.walk(tree):
+            # Only the values that actually land in the header are inspected: the receiver of
+            # a method call and the subscript key are the response object's own names.
+            exprs = []
+            if isinstance(node, ast.Assign):
+                for target in node.targets:
+                    if isinstance(target, ast.Subscript) \
+                            and self._blindspot_is_response_target(target.value):
+                        exprs.append(node.value)
+                        if isinstance(target.slice, ast.Constant):
+                            exprs.append(target.slice)
+            elif isinstance(node, ast.Call):
+                func = node.func
+                if isinstance(func, ast.Attribute) and func.attr in RESPONSE_HEADER_METHODS \
+                        and self._blindspot_is_response_target(func.value):
+                    exprs.extend(node.args)
+                elif self._blindspot_is_http_response_ctor(node):
+                    headers_kw = next((kw.value for kw in node.keywords if kw.arg == "headers"), None)
+                    if headers_kw is not None:
+                        exprs.append(headers_kw)
+            if not exprs:
+                continue
+            if not any(self._blindspot_reads_client_input(expr, table, getattr(node, "lineno", 1))
+                       for expr in exprs):
+                continue
+            if self._blindspot_line_suppressed(source_lines, node):
+                continue
+            self._add_blindspot_sink(
+                node, filename, "CWE-93", "HTTP_RESPONSE_SPLITTING", "CRLF_HEADER_INJECTION",
+                "CWE-93: Improper Neutralization of CRLF Sequences in HTTP Headers",
+                "HTTP_HEADER_INJECTION")
+
+    @staticmethod
+    def _blindspot_is_http_response_ctor(node):
+        """`HttpResponse(...)`, `JsonResponse(...)` or `django.http.HttpResponse(...)`."""
+        func = node.func
+        name = func.id if isinstance(func, ast.Name) else (dotted_name(func) or "")
+        return name.endswith("HttpResponse") or name.endswith("JsonResponse")
+
+    @staticmethod
+    def _blindspot_is_response_target(node):
+        """`response`, `resp`, `html`, `x_response` - the object that becomes the reply."""
+        while isinstance(node, ast.Attribute):
+            node = node.value
+        return isinstance(node, ast.Name) and bool(RESPONSE_TARGET_RE.match(node.id))
+
+    def _blindspot_reads_client_input(self, node, table, use_lineno, depth=2):
+        """True when *node* touches `request.GET/POST/COOKIES/META/data`, direct or via a name."""
+        if depth <= 0:
+            return False
+        for sub in ast.walk(node):
+            if isinstance(sub, ast.Attribute) and sub.attr in CLIENT_INPUT_CONTAINERS \
+                    and isinstance(sub.value, ast.Name) and sub.value.id == "request":
+                return True
+            if isinstance(sub, ast.Name) and sub.id != "request":
+                value = self._blindspot_latest_assignment(table, sub.id, use_lineno)
+                if value is not None and self._blindspot_reads_client_input(
+                        value, table, use_lineno, depth - 1):
+                    return True
+        return False
 
     def _c20_is_form_valid_test(self, test):
         """None unless *test* is an `x.is_valid()` check; else False/True for plain/negated."""
@@ -16646,6 +16939,14 @@ class TaintTracker:
         self._collect_cluster2_structural_findings()
         self._collect_cluster3_structural_findings()
         self._collect_django_post_validation_findings()
+        # Last, so their line+CWE dedup sees every sink the earlier phases already reported.
+        for _bs_mod, _bs_tree in sorted(self.modules.items()):
+            _bs_file = self.file_paths.get(_bs_mod, "unknown.py")
+            _bs_lines = self._source_lines_by_file.get(_bs_file, [])
+            self._collect_cwe78_subprocess_calls(_bs_tree, _bs_file, _bs_lines)
+            self._collect_cwe532_logging_leaks(_bs_tree, _bs_file, _bs_lines)
+            self._collect_cwe668_insecure_host_binding(_bs_tree, _bs_file, _bs_lines)
+            self._collect_cwe93_header_injection(_bs_tree, _bs_file, _bs_lines)
         _t1 = _time.perf_counter()
         print(f"TimeCodeSecurity [PROFILE] Structural findings (all batches): {_t1 - _t0:.2f}s", file=_sys.stderr)
         for assign_stmt, scope_id, lineno in self.ssl_attr_assigns:
