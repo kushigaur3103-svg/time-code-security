@@ -1089,7 +1089,7 @@ CWE798_TARGET_RE = re.compile(r"(?i).*(password|passwd|secret_key|api_key|access
 # these, so a read of them inside a validated-form scope is the CWE-20 signal.
 DJANGO_RAW_POST_ATTRS = frozenset({"POST", "FILES"})
 
-# ─── PyGoat blind-spot structural collectors (CWE-78 / 532 / 668 / 93 / 22 / 94) ───
+# ─── PyGoat blind-spot structural collectors (CWE-78 / 532 / 668 / 93 / 22 / 94 / 79) ───
 # Each rule below is a single-file syntactic check. They run after every other phase and defer
 # to any sink the taint engine already reported on the same line, so they widen coverage
 # without ever duplicating - or re-litigating - a finding the taint path already owns.
@@ -1123,6 +1123,8 @@ CLIENT_INPUT_CONTAINERS = frozenset(
     {"GET", "POST", "COOKIES", "META", "data", "headers", "body", "query_params"})
 RESPONSE_HEADER_METHODS = frozenset({"set_header", "set_cookie"})
 RESPONSE_TARGET_RE = re.compile(r"(?i)^(?:response|resp|res|http_response|html?|[a-z0-9_]*response)$")
+# Attributes that *are* the reply payload: assigning to them replaces the bytes the browser reads.
+RESPONSE_BODY_ATTRIBUTES = frozenset({"content", "body"})
 
 # Filesystem reads that open a path string. Only the builtin spellings: `Path.open()` and
 # `csv.open()` are receivers we cannot resolve to a path, so they stay out.
@@ -1132,6 +1134,15 @@ FILE_OPEN_FUNCS = frozenset({"open", "io.open", "builtins.open"})
 PATH_SANITIZER_SEGMENTS = frozenset({
     "secure_filename", "sanitize_filename", "basename", "normpath",
     "abspath", "realpath", "commonpath",
+})
+# Django's "trust this string as HTML" wrappers: whatever they return is written into the page
+# unescaped, so a value the source does not spell out in full is an XSS sink.
+XSS_SAFE_WRAPPERS = frozenset(
+    {"mark_safe", "SafeString", "SafeText", "SafeUnicode", "SafeBytes"})
+# Wrappers that escape first, so marking their result safe is exactly what Django prescribes.
+XSS_ESCAPING_WRAPPERS = frozenset({
+    "escape", "conditional_escape", "striptags", "strip_tags", "urlize", "urlescape",
+    "format_html", "json_script", "smart_urlquote",
 })
 # Dummy/test string blocklist for CWE-798 - suppress known test placeholders
 CWE798_DUMMY_STRINGS = frozenset({
@@ -7946,7 +7957,7 @@ class TaintTracker:
                 "CWE-668: Insecure binding to all network interfaces (0.0.0.0)",
                 "INSECURE_INTERFACE_BINDING")
 
-    # ── 4. CWE-93: raw client input written into a response header ─────────────────
+    # ── 4. CWE-93: raw client input written into a response header or body ─────────
     def _collect_cwe93_header_injection(self, tree, filename, source_lines):
         table = self._blindspot_build_assignment_map(tree)
         for node in ast.walk(tree):
@@ -7980,6 +7991,31 @@ class TaintTracker:
                 node, filename, "CWE-93", "HTTP_RESPONSE_SPLITTING", "CRLF_HEADER_INJECTION",
                 "CWE-93: Improper Neutralization of CRLF Sequences in HTTP Headers",
                 "HTTP_HEADER_INJECTION")
+
+        # `response.content = request.POST['body']` overwrites the reply payload with text the
+        # client chose. The loop above only reads Subscript targets (`response['Header']`) and
+        # method calls, so an Attribute target was never examined and every body write stayed
+        # silent - measured: that snippet produced no finding at all before this pass.
+        for node in ast.walk(tree):
+            if not isinstance(node, ast.Assign):
+                continue
+            if not any(self._c93_is_response_body_target(t) for t in node.targets):
+                continue
+            if not self._blindspot_reads_client_input(node.value, table, node.lineno):
+                continue
+            if self._blindspot_line_suppressed(source_lines, node):
+                continue
+            self._add_blindspot_sink(
+                node, filename, "CWE-93", "HTTP_RESPONSE_BODY_INJECTION",
+                "RESPONSE_CONTENT_INJECTION",
+                "CWE-93: Raw client input written directly into the HTTP response body",
+                "HTTP_RESPONSE_BODY_INJECTION")
+
+    def _c93_is_response_body_target(self, target):
+        """`response.content` / `resp.body` on the object that becomes the reply."""
+        return (isinstance(target, ast.Attribute)
+                and target.attr in RESPONSE_BODY_ATTRIBUTES
+                and self._blindspot_is_response_target(target.value))
 
     @staticmethod
     def _blindspot_is_http_response_ctor(node):
@@ -8205,6 +8241,93 @@ class TaintTracker:
         path = self._c22_path_expression(opened.args[0], table, use_lineno)
         return any(isinstance(part, ast.Constant) and isinstance(part.value, str)
                    and part.value.endswith(".py") for part in ast.walk(path))
+
+    # ── 6. CWE-79: Django "mark as safe" wrapper fed a runtime-built value ──────────
+    def _collect_cwe79_django_xss(self, tree, filename, source_lines):
+        """Report `mark_safe(value)` / `SafeString(value)` when *value* is built at runtime.
+
+        Whatever these wrappers hand back is written into the page as raw HTML, so a literal
+        (`mark_safe("<b>Static</b>")`) is fine and anything constructed at runtime is an XSS
+        sink. The taint engine only reaches these calls when a request source flows into them
+        inside the same scan, so a wrapper fed a function parameter, or a value assigned at
+        module level, stayed silent. Measured on the labelled Bandit corpus:
+        `external/bandit_corpus/examples/mark_safe_insecure.py` goes from 15 to 25 CWE-79
+        findings, adding lines 10-14, 30, 41, 54, 114 and 153, while `mark_safe_secure.py`
+        keeps its original 5 and gains nothing and `mark_safe.py` stays at 0. OWASP PyGoat
+        spells none of these wrappers, so its four new CWE-79 rows all come from the template
+        rule in `html_auditor.py`.
+        """
+        table = self._blindspot_build_assignment_map(tree)
+        ranges = self._c22_function_ranges(tree)
+        for node in ast.walk(tree):
+            if not isinstance(node, ast.Call) or not node.args:
+                continue
+            if self._c79_segment(node.func) not in XSS_SAFE_WRAPPERS:
+                continue
+            if self._blindspot_line_suppressed(source_lines, node):
+                continue
+            value = self._c22_path_expression(node.args[0], table, node.lineno)
+            if not self._c79_is_dynamic(value, table, node.lineno, ranges):
+                continue
+            self._add_blindspot_sink(
+                node, filename, "CWE-79", "XSS_HTML_RESPONSE", "CROSS_SITE_SCRIPTING",
+                "CWE-79: Unescaped dynamic content marked safe or rendered directly in HTTP "
+                "response",
+                "XSS_HTML_RESPONSE", reuse_existing=True)
+
+    @staticmethod
+    def _c79_segment(func):
+        """The trailing name of a call target: `safestring.mark_safe` -> `mark_safe`."""
+        if isinstance(func, ast.Attribute):
+            return func.attr
+        return func.id if isinstance(func, ast.Name) else ""
+
+    def _c79_is_dynamic(self, value, table, use_lineno, ranges, depth=3):
+        """True when *value* carries something the source does not spell out as literal text.
+
+        Only the substitution holes are walked - `{}` fields, `%` operands, concatenation sides,
+        container items - so `'<b>{}</b>'.format('secure')` counts as static while
+        `'<b>{}</b>'.format(user_input)` does not. A name that resolves to nothing stays out
+        unless it is a parameter of the enclosing definition or a raw `request` read, because an
+        imported constant is not proven unsafe by this rule.
+        """
+        if depth <= 0:
+            return False
+
+        def part(expression):
+            resolved = self._c22_path_expression(expression, table, use_lineno, 1)
+            return self._c79_is_dynamic(resolved, table, use_lineno, ranges, depth - 1)
+
+        if isinstance(value, ast.Constant):
+            return False
+        if isinstance(value, ast.Call):
+            segment = self._c79_segment(value.func)
+            if segment in XSS_ESCAPING_WRAPPERS:
+                return False
+            if segment in ("format", "format_map"):
+                return any(part(arg) for arg in value.args) or \
+                    any(part(kw.value) for kw in value.keywords)
+            return True
+        if isinstance(value, ast.JoinedStr):
+            return any(part(field.value) for field in value.values
+                       if isinstance(field, ast.FormattedValue))
+        if isinstance(value, ast.BinOp) and isinstance(value.op, (ast.Add, ast.Mod)):
+            return part(value.left) or part(value.right)
+        if isinstance(value, (ast.List, ast.Tuple, ast.Set)):
+            return any(part(elt) for elt in value.elts)
+        if isinstance(value, ast.Dict):
+            return any(part(item) for item in value.keys + value.values)
+        if isinstance(value, ast.Starred):
+            return part(value.value)
+        if self._blindspot_reads_client_input(value, table, use_lineno):
+            return True
+        if isinstance(value, ast.Name) and value.id not in ("True", "False", "None"):
+            candidates = [scope for scope in ranges if scope[0] <= use_lineno <= scope[1]]
+            if not candidates:
+                return False
+            _start, _end, params = max(candidates, key=lambda scope: scope[0])
+            return value.id in params
+        return False
 
     def _c20_is_form_valid_test(self, test):
         """None unless *test* is an `x.is_valid()` check; else False/True for plain/negated."""
@@ -17169,6 +17292,7 @@ class TaintTracker:
             self._collect_cwe93_header_injection(_bs_tree, _bs_file, _bs_lines)
             self._collect_cwe22_parameter_path_sinks(_bs_tree, _bs_file, _bs_lines)
             self._collect_cwe94_python_source_writes(_bs_tree, _bs_file, _bs_lines)
+            self._collect_cwe79_django_xss(_bs_tree, _bs_file, _bs_lines)
         _t1 = _time.perf_counter()
         print(f"TimeCodeSecurity [PROFILE] Structural findings (all batches): {_t1 - _t0:.2f}s", file=_sys.stderr)
         for assign_stmt, scope_id, lineno in self.ssl_attr_assigns:

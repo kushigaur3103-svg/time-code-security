@@ -1,19 +1,23 @@
 """HTML / Jinja / Django template security auditor for TimeCodeSecurity.
 
 Performs concrete HTML-node analysis over server-side templates using the standard
-library ``html.parser``. Two rules are implemented:
+library ``html.parser``. Three rules are implemented:
 
 * CWE-353 -- Missing Subresource Integrity (SRI) on externally hosted subresources.
 * CWE-352 -- State-changing ``<form>`` without a CSRF token in its body.
+* CWE-79 -- Django ``{{ value|safe }}`` output: the ``safe`` filter turns off the
+  auto-escaping that otherwise protects every template variable.
 
-Both rules are deterministic: findings are derived from parsed tag nodes, their
+The rules are deterministic: findings are derived from parsed tag nodes, their
 attribute maps, and the raw character data contained between an opening and
-closing ``<form>`` tag. No path allow-listing and no text pattern matching over
-whole files is performed.
+closing ``<form>`` tag. No path allow-listing is performed. The CSRF and SRI rules read
+parsed nodes only; the ``|safe`` rule scans the character text of those nodes, because the
+Django expression is markup content rather than a tag or attribute.
 """
 
 from __future__ import annotations
 
+import re
 from html.parser import HTMLParser
 from typing import Any, Dict, List, Optional, Sequence, Tuple
 
@@ -29,6 +33,26 @@ STATE_CHANGING_FORM_METHODS = frozenset({"post", "put", "patch", "delete"})
 # Django/Jinja CSRF token markers. ``csrfmiddlewaretoken`` covers the rendered
 # <input type="hidden"> form of the token as well as the template tag itself.
 CSRF_TOKEN_MARKERS: Tuple[str, ...] = ("csrf_token", "csrfmiddlewaretoken")
+
+# Django's ``safe`` filter declares a variable to be trusted HTML and stops the template engine
+# from escaping it, which is exactly how a stored or reflected XSS reaches the browser.
+UNESCAPED_OUTPUT_RE = re.compile(r"\{\{\s*([^{}]+?)\s*\|\s*safe\s*\}\}")
+
+# Text inside these tags is sample code shown to the reader, not markup the template renders, so
+# a ``|safe`` written there documents a vulnerability instead of creating one.
+VERBATIM_TAGS = frozenset({"pre", "code", "textarea", "samp", "kbd"})
+
+# Expressions that never carry client HTML: Django's own CSRF token, and ``form.<field>`` widget
+# renders, whose markup the framework builds and escapes itself, so ``|safe`` on them is a no-op.
+ALWAYS_SAFE_EXPRESSION_ROOTS = frozenset({"csrf_token", "csrfmiddlewaretoken"})
+
+# .. except when the render reaches into bound data: ``form.field.value`` *is* the submitted
+# request text, and marking that safe reproduces it raw, so those expressions stay reported.
+FORM_USER_DATA_SEGMENTS = frozenset({"value", "data", "initial"})
+
+UNESCAPED_OUTPUT_MESSAGE = (
+    "CWE-79: Unescaped dynamic content marked safe or rendered directly in HTTP response"
+)
 
 
 def is_template_path(path: str) -> bool:
@@ -54,7 +78,7 @@ def _is_external_url(url: Optional[str]) -> bool:
 
 
 class TemplateSecurityAuditor(HTMLParser):
-    """Collects CWE-353 and CWE-352 findings from a single template document."""
+    """Collects CWE-353, CWE-352 and CWE-79 findings from a single template document."""
 
     def __init__(self, file_path: str) -> None:
         super().__init__(convert_charrefs=True)
@@ -62,6 +86,8 @@ class TemplateSecurityAuditor(HTMLParser):
         self.findings: List[Dict[str, Any]] = []
         # Each frame is [start_line, csrf_token_seen] for an open state-changing form.
         self._form_frames: List[List[Any]] = []
+        # How deep inside <pre>/<code>/<textarea> the parser currently sits.
+        self._verbatim_depth = 0
         self._reported: set = set()
 
     # ── emission ──────────────────────────────────────────────────────────
@@ -103,11 +129,46 @@ class TemplateSecurityAuditor(HTMLParser):
             ),
         )
 
+    # ── CWE-79: Django "safe" output ──────────────────────────────────────
+    @staticmethod
+    def _is_trusted_expression(expression: str) -> bool:
+        """True when a ``|safe`` expression cannot carry client-controlled markup."""
+        root = re.match(r"[A-Za-z_][A-Za-z0-9_]*", expression)
+        if not root:
+            return False
+        name = root.group(0).lower()
+        if name in ALWAYS_SAFE_EXPRESSION_ROOTS:
+            return True
+        if name != "form":
+            return False
+        segments = [segment.lower() for segment in expression.split(".")]
+        return not any(segment in FORM_USER_DATA_SEGMENTS for segment in segments[1:])
+
+    def _check_unescaped_output(self, line: int, data: str) -> None:
+        """Report ``{{ value|safe }}``: the filter switches off the escaping that protects
+        every other template variable, so the value lands in the page as raw HTML."""
+        if self._verbatim_depth:
+            return
+        for match in UNESCAPED_OUTPUT_RE.finditer(data):
+            expression = match.group(1).strip()
+            if self._is_trusted_expression(expression):
+                continue
+            self._emit(
+                line=line + data[:match.start()].count("\n"),
+                cwe="CWE-79",
+                severity="HIGH",
+                category="CROSS_SITE_SCRIPTING",
+                message=UNESCAPED_OUTPUT_MESSAGE,
+            )
+
     # ── HTMLParser hooks ──────────────────────────────────────────────────
-    def handle_starttag(self, tag: str, attrs) -> None:
+    def handle_starttag(self, tag: str, attrs, self_closing: bool = False) -> None:
         line = self.getpos()[0]
         attr_map = _normalize_attrs(attrs)
         lowered = tag.lower()
+
+        if lowered in VERBATIM_TAGS and not self_closing:
+            self._verbatim_depth += 1
 
         if lowered == "script":
             self._check_subresource_integrity(line, "script", attr_map, "src")
@@ -126,11 +187,20 @@ class TemplateSecurityAuditor(HTMLParser):
                 self._form_frames[-1][1] = True
 
     def handle_startendtag(self, tag: str, attrs) -> None:
-        # Self-closing form/script tags still carry the same attributes.
-        self.handle_starttag(tag, attrs)
+        # Self-closing form/script tags still carry the same attributes. A self-closing
+        # <code/> opens no region, so it must not bump the depth counter.
+        self.handle_starttag(tag, attrs, self_closing=True)
 
     def handle_data(self, data: str) -> None:
-        if not self._form_frames or not data:
+        if not data:
+            return
+        # getpos() is the offset where this character run began, so a run spanning several
+        # lines is anchored by counting the newlines that precede the match inside it.
+        self._check_csrf_token(self.getpos()[0], data)
+        self._check_unescaped_output(self.getpos()[0], data)
+
+    def _check_csrf_token(self, line: int, data: str) -> None:
+        if not self._form_frames:
             return
         # Django's tag is case-preserving but template authors do write `{% CSRF_TOKEN %}`,
         # and a case-sensitive match then exonerates nothing: a protected form gets reported.
@@ -144,7 +214,12 @@ class TemplateSecurityAuditor(HTMLParser):
                 return
 
     def handle_endtag(self, tag: str) -> None:
-        if tag.lower() != "form" or not self._form_frames:
+        lowered = tag.lower()
+        if lowered in VERBATIM_TAGS:
+            # An unclosed <pre> would otherwise keep the counter positive and hide every
+            # finding below it, so the depth is clamped at zero.
+            self._verbatim_depth = max(0, self._verbatim_depth - 1)
+        if lowered != "form" or not self._form_frames:
             return
         line, has_csrf = self._form_frames.pop()
         if has_csrf:
