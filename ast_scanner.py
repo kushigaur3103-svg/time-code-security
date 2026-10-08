@@ -1089,7 +1089,7 @@ CWE798_TARGET_RE = re.compile(r"(?i).*(password|passwd|secret_key|api_key|access
 # these, so a read of them inside a validated-form scope is the CWE-20 signal.
 DJANGO_RAW_POST_ATTRS = frozenset({"POST", "FILES"})
 
-# ─── PyGoat blind-spot structural collectors (CWE-78 / 532 / 668 / 93 / 22) ───
+# ─── PyGoat blind-spot structural collectors (CWE-78 / 532 / 668 / 93 / 22 / 94) ───
 # Each rule below is a single-file syntactic check. They run after every other phase and defer
 # to any sink the taint engine already reported on the same line, so they widen coverage
 # without ever duplicating - or re-litigating - a finding the taint path already owns.
@@ -8126,6 +8126,85 @@ class TaintTracker:
                 if isinstance(root, ast.Name):
                     out.add(root.id)
         return out
+
+    # ── 5. CWE-94: dynamically built content written into a Python source file ─────
+    def _collect_cwe94_python_source_writes(self, tree, filename, source_lines):
+        """Report `handle.write(payload)` when the handle opened a `.py` file for writing.
+
+        PyGoat's APIs take a POST body and overwrite a module the project imports:
+        `introduction/apis.py:70` writes `request.POST['log_code']` into
+        `playground/A9/main.py` (imported by `apis.py:10`) and `introduction/utility.py:36`
+        writes generated source into `playground/ssrf/main.py`. The next import runs
+        attacker-written Python. Three conditions keep the false-positive burden down: the
+        open mode must allow writing, the path must name a `.py` file, and the payload must
+        not be a literal - so `open('test.log', 'a')` log rotation and a static generated
+        file stay silent.
+        """
+        table = self._blindspot_build_assignment_map(tree)
+        with_opens = self._c94_handle_opens(tree)
+        for node in ast.walk(tree):
+            if not isinstance(node, ast.Call) or not node.args:
+                continue
+            func = node.func
+            if not isinstance(func, ast.Attribute) or func.attr not in ("write", "writelines"):
+                continue
+            handle = func.value
+            if not isinstance(handle, ast.Name):
+                continue
+            if self._blindspot_line_suppressed(source_lines, node):
+                continue
+            opened = self._c94_open_call(handle.id, table, node.lineno, with_opens)
+            if opened is None or not self._c94_open_is_python_write(opened, table, node.lineno):
+                continue
+            payload = self._c22_path_expression(node.args[0], table, node.lineno)
+            if isinstance(payload, ast.Constant):
+                continue
+            self._add_blindspot_sink(
+                node, filename, "CWE-94", "CODE_INJECTION", "CODE_INJECTION",
+                "CWE-94: Dynamically built content written into a Python source file the "
+                "program imports",
+                "DYNAMIC_CODE_EXECUTION")
+
+    @staticmethod
+    def _c94_handle_opens(tree):
+        """`with open(path, mode) as handle:` bindings, mapping the handle name to the open()."""
+        out = {}
+        for node in ast.walk(tree):
+            for item in getattr(node, "items", []):
+                value = item.context_expr
+                if not (isinstance(value, ast.Call)
+                        and (dotted_name(value.func) or "") in FILE_OPEN_FUNCS):
+                    continue
+                if isinstance(item.optional_vars, ast.Name):
+                    out[item.optional_vars.id] = value
+        return out
+
+    def _c94_open_call(self, handle, table, use_lineno, with_opens):
+        """The `open(...)` call a file handle most recently referred to, or None."""
+        value = with_opens.get(handle)
+        if value is None:
+            value = self._blindspot_latest_assignment(table, handle, use_lineno)
+        if isinstance(value, ast.Call) and (dotted_name(value.func) or "") in FILE_OPEN_FUNCS:
+            return value
+        return None
+
+    def _c94_open_is_python_write(self, opened, table, use_lineno):
+        """True when the open() mode allows writing and its path names a `.py` file."""
+        if not opened.args:
+            return False
+        mode = opened.args[1] if len(opened.args) > 1 else next(
+            (kw.value for kw in opened.keywords if kw.arg == "mode"), None)
+        if mode is None:
+            mode_value = "r"
+        else:
+            resolved = self._c22_path_expression(mode, table, use_lineno)
+            mode_value = resolved.value if isinstance(resolved, ast.Constant) \
+                and isinstance(resolved.value, str) else None
+        if mode_value is None or not any(char in "wax+" for char in mode_value):
+            return False
+        path = self._c22_path_expression(opened.args[0], table, use_lineno)
+        return any(isinstance(part, ast.Constant) and isinstance(part.value, str)
+                   and part.value.endswith(".py") for part in ast.walk(path))
 
     def _c20_is_form_valid_test(self, test):
         """None unless *test* is an `x.is_valid()` check; else False/True for plain/negated."""
@@ -17089,6 +17168,7 @@ class TaintTracker:
             self._collect_cwe668_insecure_host_binding(_bs_tree, _bs_file, _bs_lines)
             self._collect_cwe93_header_injection(_bs_tree, _bs_file, _bs_lines)
             self._collect_cwe22_parameter_path_sinks(_bs_tree, _bs_file, _bs_lines)
+            self._collect_cwe94_python_source_writes(_bs_tree, _bs_file, _bs_lines)
         _t1 = _time.perf_counter()
         print(f"TimeCodeSecurity [PROFILE] Structural findings (all batches): {_t1 - _t0:.2f}s", file=_sys.stderr)
         for assign_stmt, scope_id, lineno in self.ssl_attr_assigns:
