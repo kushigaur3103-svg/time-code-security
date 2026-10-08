@@ -297,7 +297,8 @@ def _findings_for(tracker, edges):
             "cwe": cwe,
             "severity": severity,
             "category": sink.metadata.get("category") or (rule.category if rule else "Security"),
-            "message": f"{cwe}: {sink.metadata.get('operation') or sanitize_symbol_display(sink.symbol)}",
+            "message": sink.metadata.get("message") or \
+                f"{cwe}: {sink.metadata.get('operation') or sanitize_symbol_display(sink.symbol)}",
         }
         identity = (finding["file"], finding["line"], finding["cwe"])
         if identity not in seen:

@@ -86,6 +86,20 @@ jobs:
           CFG
           cat benchmark_results/codeql_config.yml
 
+      # CodeQL's Python extractor resolves imports to build its symbol table. With Django absent it
+      # still parses, but every `django.*` type is unknown, so flow through Django request/response
+      # objects is cut and security-extended loses its most valuable reach. Installing the target's
+      # own dependency set is what lets CodeQL run at full power; the target is a 2015-era Django
+      # app whose pins cannot always install on Python 3.11, hence `|| true` and an unpinned
+      # `django` fallback so the extractor always finds *a* Django.
+      - name: Resolve Target Dependencies (CodeQL semantic symbols)
+        run: |
+          if [ -f "$TARGET_DIR/requirements.txt" ]; then
+            pip install -r "$TARGET_DIR/requirements.txt" || true
+          fi
+          python -c "import django" 2>/dev/null || pip install django
+          python -c "import django; print('CodeQL will see Django', django.get_version())"
+
       - name: Initialize CodeQL (python, security-extended)
         uses: github/codeql-action/init@v3
         with:
@@ -142,7 +156,13 @@ jobs:
           import re
           import sys
 
-          CWE_RE = re.compile(r"CWE[- ]?(\d+)", re.I)
+          # One ladder for every spelling seen in real SARIF: TimeCodeSecurity writes `CWE-89` in
+          # ruleId, CodeQL writes `external/cwe/cwe-089` (zero-padded, as a space-separated tag
+          # string or a list), Semgrep writes `CWE-89: title` in tags and `cwe: ["CWE-89: ..."]`.
+          # The `cwe/` alternative is what captures a bare `external/cwe/089`; `_` is deliberately
+          # absent so a directory name like `cwe_352_csrf` can never masquerade as a CWE id.
+          # Digits are re-emitted through int(), so `cwe-089` normalises to CWE-89 everywhere.
+          CWE_RE = re.compile(r"\bcwe[/\s-]?(\d{1,4})\b", re.I)
           ENGINES = ("TimeCodeSecurity", "CodeQL", "Semgrep")
           NORMAL_SCAN_EXITS = {"", "0", "1"}
           # Findings are joined across tools by (file, line +/- this window). TCS deliberately

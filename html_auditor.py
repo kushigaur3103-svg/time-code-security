@@ -118,6 +118,13 @@ class TemplateSecurityAuditor(HTMLParser):
             if attr_map.get("method", "").strip().lower() in STATE_CHANGING_FORM_METHODS:
                 self._form_frames.append([line, False])
 
+        if self._form_frames and lowered in ("input", "button"):
+            # The token also arrives pre-rendered as <input type="hidden"
+            # name="csrfmiddlewaretoken" value="...">. Attribute values are never handed to
+            # handle_data, so without this check a protected form is reported as vulnerable.
+            if attr_map.get("name", "").strip().lower() in CSRF_TOKEN_MARKERS:
+                self._form_frames[-1][1] = True
+
     def handle_startendtag(self, tag: str, attrs) -> None:
         # Self-closing form/script tags still carry the same attributes.
         self.handle_starttag(tag, attrs)
@@ -125,8 +132,11 @@ class TemplateSecurityAuditor(HTMLParser):
     def handle_data(self, data: str) -> None:
         if not self._form_frames or not data:
             return
+        # Django's tag is case-preserving but template authors do write `{% CSRF_TOKEN %}`,
+        # and a case-sensitive match then exonerates nothing: a protected form gets reported.
+        lowered = data.lower()
         for marker in CSRF_TOKEN_MARKERS:
-            if marker in data:
+            if marker in lowered:
                 # Attribute the token to the form that actually encloses it. Marking every
                 # open frame let one {% csrf_token %} exonerate unrelated forms that were
                 # left open by malformed or nested markup.

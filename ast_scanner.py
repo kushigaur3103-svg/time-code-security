@@ -1081,8 +1081,13 @@ STRUCTURAL_SYNTHETIC_SOURCES = {
     "CWE-96": "DANGEROUS_GLOBALS_USE",
     "CWE-116": "TEMPLATE_AUTOESCAPE_DISABLED",
     "CWE-521": "EMPTY_PASSWORD_POLICY",
+    # Django form views that read the raw request.POST/FILES after form.is_valid() validated.
+    "CWE-20": "IMPROPER_INPUT_VALIDATION",
 }
 CWE798_TARGET_RE = re.compile(r"(?i).*(password|passwd|secret_key|api_key|access_token|auth_token).*")
+# Django's unvalidated client-input containers. `is_valid()` fills `form.cleaned_data`, never
+# these, so a read of them inside a validated-form scope is the CWE-20 signal.
+DJANGO_RAW_POST_ATTRS = frozenset({"POST", "FILES"})
 # Dummy/test string blocklist for CWE-798 - suppress known test placeholders
 CWE798_DUMMY_STRINGS = frozenset({
     "this-is-probably-a-test", "this-is-not-a-key", "this-is-secret",
@@ -7687,6 +7692,125 @@ class TaintTracker:
                         lineno=getattr(node, "lineno", 1),
                         scope_id=scope_id,
                     ))
+
+    def _c20_is_form_valid_test(self, test):
+        """None unless *test* is an `x.is_valid()` check; else False/True for plain/negated."""
+        node, negated = test, False
+        if isinstance(node, ast.UnaryOp) and isinstance(node.op, ast.Not):
+            negated, node = True, node.operand
+        if (isinstance(node, ast.Call) and isinstance(node.func, ast.Attribute)
+                and node.func.attr == "is_valid" and not node.args
+                and not getattr(node, "keywords", [])):
+            return negated
+        return None
+
+    def _c20_raw_request_reads(self, region):
+        """Every `request.POST` / `request.FILES` attribute read inside a statement region.
+
+        Reported on the ``request.POST`` attribute node itself, so `request.POST.get('x')`
+        and `request.POST['x']` both anchor at the read, not at the enclosing call.
+        """
+        statements = region if isinstance(region, list) else [region]
+        nodes = [child for statement in statements for child in ast.walk(statement)]
+        for node in nodes:
+            if not isinstance(node, ast.Attribute):
+                continue
+            chain = []
+            root = node
+            while isinstance(root, ast.Attribute):
+                chain.append(root.attr)
+                root = root.value
+            if chain[0] not in DJANGO_RAW_POST_ATTRS:
+                continue
+            # `request.POST`, or `self.request.POST` in a class-based view.
+            if isinstance(root, ast.Name) and root.id == "request":
+                yield node
+            elif len(chain) > 1 and chain[1] == "request":
+                yield node
+
+    def _c20_statement_index(self, tree):
+        """id(statement) -> (owning statement list, position) for every block in the module."""
+        index = {}
+        for node in ast.walk(tree):
+            for _field, value in ast.iter_fields(node):
+                if isinstance(value, list) and value and all(isinstance(item, ast.stmt) for item in value):
+                    for position, item in enumerate(value):
+                        index[id(item)] = (value, position)
+        return index
+
+    def _c20_validated_post_reads(self, tree):
+        """(guard, access) pairs for raw request data read inside a validated-form scope."""
+        statement_index = self._c20_statement_index(tree)
+        found = []
+        for node in ast.walk(tree):
+            if not isinstance(node, ast.If):
+                continue
+            negated = self._c20_is_form_valid_test(node.test)
+            if negated is None:
+                continue
+            if negated:
+                # Only an unconditional exit makes the code after the guard unreachable
+                # without a valid form; a `if not form.is_valid():` that merely logs is not
+                # a proven gate, so it is skipped rather than guessed about.
+                if not node.body or not isinstance(node.body[-1], (ast.Return, ast.Raise)):
+                    continue
+                entry = statement_index.get(id(node))
+                if entry is None:
+                    continue
+                statement_list, position = entry
+                regions = statement_list[position + 1:]
+            else:
+                regions = [node.body]
+            for region in regions:
+                for access in self._c20_raw_request_reads(region):
+                    found.append((node, access))
+        return found
+
+    def _collect_django_post_validation_findings(self) -> None:
+        """
+        CWE-20: Django form views that read the raw `request.POST` / `request.FILES` multi-dict
+        *after* the form validated. `is_valid()` only populates `form.cleaned_data`; the untouched
+        request dict still carries client input, so anything built from it was never validated
+        (query strings from `request.POST['id']`, filenames from `request.POST['name']`, ...).
+
+        Two provable shapes, each anchored at the read itself:
+          `if form.is_valid():`      -> any raw read inside that body
+          `if not form.is_valid():`  -> only when the guard block ends in return/raise, in which
+                                       case the statements after it run with a validated form.
+
+        Purely structural, no taint inference. Appends sinks + sink_records; analyze() supplies
+        the synthetic source through STRUCTURAL_SYNTHETIC_SOURCES.
+        """
+        for mod_name, tree in sorted(self.modules.items()):
+            file_path = self.file_paths.get(mod_name, "unknown.py")
+            scope_id = f"{mod_name}:global"
+            seen: set[tuple[int, int]] = set()
+            for _guard, access in self._c20_validated_post_reads(tree):
+                dedupe_key = (getattr(access, "lineno", 0), getattr(access, "col_offset", 0))
+                if dedupe_key in seen:
+                    continue
+                seen.add(dedupe_key)
+                sink_node = SecurityNode(
+                    id=self.next_sink_id(),
+                    node_type=NodeType.SINK,
+                    symbol="IMPROPER_INPUT_VALIDATION",
+                    operation="IMPROPER_INPUT_VALIDATION",
+                    location=location(access, file_path),
+                    metadata={
+                        "sink_type": "IMPROPER_INPUT_VALIDATION",
+                        "category": "IMPROPER_INPUT_VALIDATION",
+                        "cwe": "CWE-20",
+                        "message": ("CWE-20: Direct use of raw request.POST after "
+                                    "form.is_valid(); use form.cleaned_data instead"),
+                    },
+                )
+                self.sinks.append(sink_node)
+                self.sink_records.append(SinkRecord(
+                    node=access,
+                    security_node=sink_node,
+                    lineno=getattr(access, "lineno", 1),
+                    scope_id=scope_id,
+                ))
 
     def _collect_cluster1_structural_findings(self) -> None:
         """
@@ -16521,6 +16645,7 @@ class TaintTracker:
         self._collect_cluster1_structural_findings()
         self._collect_cluster2_structural_findings()
         self._collect_cluster3_structural_findings()
+        self._collect_django_post_validation_findings()
         _t1 = _time.perf_counter()
         print(f"TimeCodeSecurity [PROFILE] Structural findings (all batches): {_t1 - _t0:.2f}s", file=_sys.stderr)
         for assign_stmt, scope_id, lineno in self.ssl_attr_assigns:
