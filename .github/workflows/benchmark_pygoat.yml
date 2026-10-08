@@ -1,0 +1,501 @@
+name: "Benchmark - 3-Way Showdown on OWASP PyGoat"
+
+# Manual trigger only: committing this file costs zero runner minutes, and no push, pull_request
+# or schedule event can start it. Every number in the report is parsed from the three SARIF files
+# produced below.
+on:
+  workflow_dispatch:
+    inputs:
+      pygoat_ref:
+        description: 'Git ref for adeyosemanputra/pygoat'
+        required: true
+        default: 'master'
+
+# contents:read clones this repo; security-events:write is what codeql-action expects to see even
+# though `upload: false` means no SARIF is ever sent to the code-scanning API.
+permissions:
+  contents: read
+  security-events: write
+
+jobs:
+  run-benchmark:
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+
+    env:
+      # Passed through the environment instead of interpolating the dispatched ref straight into a
+      # shell string, so a ref containing shell metacharacters cannot become a command.
+      PYGOAT_REF: ${{ github.event.inputs.pygoat_ref }}
+      TARGET_DIR: target_pygoat
+
+    steps:
+      - name: Checkout TimeCodeSecurity (HEAD)
+        uses: actions/checkout@v4
+
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.11"
+          cache: "pip"
+
+      - name: Install Engine & Benchmark Dependencies
+        # requirements.txt first: Gate 1 (step 4) and `python cli.py scan` both import from it.
+        run: |
+          python -m pip install --upgrade pip
+          if [ -f requirements.txt ]; then pip install -r requirements.txt; fi
+          # flet is not in requirements.txt, but scripts/run_all_checks.py:56 imports tcs_gui, and
+          # tcs_gui.py:6 does `import flet as ft`. Without it Gate 1 dies on ModuleNotFoundError.
+          pip install flet semgrep
+          python -c "import flet, tcs_gui; print('gate imports OK')"
+          semgrep --version
+
+      - name: Gate 1 Hard Verification
+        # Deliberately no "|| true": a red engine makes every number below worthless, so stop here.
+        run: python scripts/run_all_checks.py
+
+      - name: Clone Neutral Third-Party Target (OWASP PyGoat)
+        run: |
+          : "${PYGOAT_REF:=master}"
+          git clone --depth 1 --branch "$PYGOAT_REF" \
+            https://github.com/adeyosemanputra/pygoat.git "$TARGET_DIR"
+          echo "TARGET_PY_FILES=$(find "$TARGET_DIR" -name '*.py' | wc -l)" >> "$GITHUB_ENV"
+          echo "TARGET_HTML_FILES=$(find "$TARGET_DIR" -name '*.html' | wc -l)" >> "$GITHUB_ENV"
+          echo "TARGET_REF_USED=$PYGOAT_REF" >> "$GITHUB_ENV"
+
+      - name: Collect Target File Inventory
+        run: |
+          mkdir -p benchmark_results
+          find "$TARGET_DIR" -type f | sort > benchmark_results/target_files.txt
+          echo "target files: $(wc -l < benchmark_results/target_files.txt)"
+
+      # CodeQL scans the whole checkout by default, which here would mean our own 15k-line engine
+      # as well as the target. `paths:` inside a CodeQL config file is the documented way to scope
+      # analysis, so all three engines really are compared on identical input. `config-file` and
+      # `queries` are mutually exclusive inputs, so the query suite is named inside the config.
+      # Python needs no build tracer, so `build-mode: none` replaces the autobuild step.
+      - name: Write CodeQL Config (target only)
+        run: |
+          mkdir -p benchmark_results
+          cat > benchmark_results/codeql_config.yml << CFG
+          name: "3-way benchmark: $TARGET_DIR only"
+          disable-default-queries: true
+          queries:
+            - uses: security-extended
+          paths:
+            - $TARGET_DIR
+          CFG
+          cat benchmark_results/codeql_config.yml
+
+      # CodeQL's Python extractor resolves imports to build its symbol table. With Django absent it
+      # still parses, but every `django.*` type is unknown, so flow through Django request/response
+      # objects is cut and security-extended loses its most valuable reach. Installing the target's
+      # own dependency set is what lets CodeQL run at full power. The target pins exact versions, and
+      # a pin that needs a system library can fail on the runner, hence `|| true` plus an unpinned
+      # `django` fallback so the extractor always finds *a* Django.
+      - name: Resolve Target Dependencies (CodeQL semantic symbols)
+        run: |
+          if [ -f "$TARGET_DIR/requirements.txt" ]; then
+            pip install -r "$TARGET_DIR/requirements.txt" || true
+          fi
+          python -c "import django" 2>/dev/null || pip install django
+          python -c "import django; print('CodeQL will see Django', django.get_version())"
+
+      - name: Initialize CodeQL (python, security-extended)
+        uses: github/codeql-action/init@v3
+        with:
+          languages: python
+          build-mode: none
+          config-file: benchmark_results/codeql_config.yml
+        continue-on-error: true
+
+      - name: Run CodeQL Analysis (no upload)
+        uses: github/codeql-action/analyze@v3
+        with:
+          category: "/language:python"
+          output: benchmark_results/codeql_results
+          upload: false
+          cleanup-level: none
+        continue-on-error: true
+
+      - name: Record CodeQL Outcome
+        run: |
+          mkdir -p benchmark_results
+          {
+            echo "## CodeQL raw output"
+            ls -la benchmark_results/codeql_results 2>/dev/null || echo "no output directory"
+          } >> benchmark_results/tool_versions.txt
+          CODEQL_SARIF=$(find benchmark_results/codeql_results -name '*.sarif' 2>/dev/null | head -1)
+          echo "CODEQL_SARIF=${CODEQL_SARIF:-}" >> "$GITHUB_ENV"
+          echo "codeql sarif file: ${CODEQL_SARIF:-none}"
+
+      - name: Execute TimeCodeSecurity Scan
+        run: |
+          python cli.py scan "$TARGET_DIR" \
+            --sarif benchmark_results/tcs_pygoat.sarif \
+            > benchmark_results/tcs_stdout.txt 2>&1 \
+            || echo "TCS_SCAN_EXIT=$?" >> "$GITHUB_ENV"
+
+      - name: Execute Semgrep OSS Scan (p/python + p/django + p/owasp-top-ten)
+        run: |
+          semgrep scan --config "p/python" --config "p/django" --config "p/owasp-top-ten" \
+            --metrics=off --sarif \
+            --output benchmark_results/semgrep_pygoat.sarif \
+            "$TARGET_DIR" \
+            > benchmark_results/semgrep_stdout.txt 2>&1 \
+            || echo "SEMGREP_SCAN_EXIT=$?" >> "$GITHUB_ENV"
+
+      # The neutral referee. Every engine is treated exactly the same: same loader, same location
+      # join, same CWE extraction. It reports agreement AND disagreement, and the disagreement
+      # section that names TimeCodeSecurity as the miss is printed first and in full.
+      - name: Neutral 3-Way Scoreboard & Gap Analysis
+        if: always()
+        run: |
+          python - << 'PY'
+          import json
+          import os
+          import re
+          import sys
+
+          # One ladder for every spelling seen in real SARIF: TimeCodeSecurity writes `CWE-89` in
+          # ruleId, CodeQL writes `external/cwe/cwe-089` (zero-padded, as a space-separated tag
+          # string or a list), Semgrep writes `CWE-89: title` in tags and `cwe: ["CWE-89: ..."]`.
+          # The `cwe/` alternative is what captures a bare `external/cwe/089`; `_` is deliberately
+          # absent so a directory name like `cwe_352_csrf` can never masquerade as a CWE id.
+          # Digits are re-emitted through int(), so `cwe-089` normalises to CWE-89 everywhere.
+          CWE_RE = re.compile(r"\bcwe[/\s-]?(\d{1,4})\b", re.I)
+          ENGINES = ("TimeCodeSecurity", "CodeQL", "Semgrep")
+          NORMAL_SCAN_EXITS = {"", "0", "1"}
+          # Findings are joined across tools by (file, line +/- this window). TCS deliberately
+          # reports some rules at the view boundary (decorator/def line) instead of the statement
+          # line, so an exact-line join would under-count consensus and over-count "blind spots".
+          LINE_WINDOW = 5
+          # Rows printed per table; the full set always lives in the uploaded artifacts.
+          MAX_ROWS = 120
+          # A finding only belongs to this benchmark if it is inside the cloned target.
+          TARGET_DIR = os.environ.get("TARGET_DIR", "target_pygoat")
+
+
+          def norm_path(uri):
+              """Map any tool's URI onto `path/inside/the/target`, POSIX separators."""
+              if not uri:
+                  return "?"
+              text = uri.replace("\\", "/").lstrip("./")
+              marker = "/" + TARGET_DIR.strip("/") + "/"
+              idx = text.find(marker)
+              if idx >= 0:
+                  return text[idx + len(marker):]
+              if text.startswith(TARGET_DIR.strip("/") + "/"):
+                  return text[len(TARGET_DIR.strip("/") + "/"):]
+              return text
+
+
+          def rule_catalog(run_data):
+              """ruleId -> rule object.
+
+              Measured on real output: Semgrep OSS 1.178 SARIF results carry `ruleIndex: None`, so an
+              index-based lookup returns {} and every CWE in the rule metadata is lost. Joining on
+              `ruleId` is the reliable lookup; `ruleIndex` stays as a fallback, and an embedded
+              `result.rule` (CodeQL writes one) is used when present.
+              """
+              rules = run_data.get("tool", {}).get("driver", {}).get("rules", []) or []
+              catalog = {rule.get("id"): rule for rule in rules
+                         if isinstance(rule, dict) and rule.get("id")}
+              return catalog, rules
+
+
+          def _cwe_numbers(*values):
+              """Every CWE id mentioned by any mix of strings, lists and nested SARIF fragments.
+
+              Handles the two real taxonomies seen in the wild: Semgrep's
+              `["CWE-89: Improper Neutralization … ('SQL Injection')"]` list of tags, and CodeQL's
+              space-separated `"security … external/cwe/cwe-089"` tag string (zero-padded, no title).
+              """
+              found = set()
+              stack = list(values)
+              while stack:
+                  item = stack.pop()
+                  if isinstance(item, str):
+                      for match in CWE_RE.finditer(item):
+                          number = int(match.group(1))
+                          if 0 < number < 10000:
+                              found.add(number)
+                  elif isinstance(item, (list, tuple, set)):
+                      stack.extend(item)
+                  elif isinstance(item, dict):
+                      stack.extend(item.values())
+              return found
+
+
+          def extract_cwes(result, rule_meta):
+              """All CWEs one finding claims, from every field a tool is known to use."""
+              if not isinstance(rule_meta, dict):
+                  rule_meta = {}
+              embedded = result.get("rule") if isinstance(result.get("rule"), dict) else {}
+              rule_props = rule_meta.get("properties", {}) or {}
+              result_props = result.get("properties", {}) or {}
+              embedded_props = embedded.get("properties", {}) or {}
+              short = (rule_meta.get("shortDescription") or {}).get("text")
+              return _cwe_numbers(
+                  result.get("ruleId"), result.get("rule"),
+                  result_props.get("cwe"), result_props.get("tags"),
+                  rule_props.get("cwe"), rule_props.get("tags"), rule_props.get("subcategories"),
+                  embedded_props.get("cwe"), embedded_props.get("tags"),
+                  embedded.get("id"), embedded.get("name"),
+                  rule_meta.get("id"), rule_meta.get("name"), short,
+                  rule_meta.get("taxonomies"),
+              )
+
+
+          def load_sarif(path):
+              """(status, data). A missing file is reported as missing, never as zero findings."""
+              if not path:
+                  return "no SARIF path", {}
+              if not os.path.exists(path):
+                  return "no SARIF produced (step failed, timed out or wrote nothing)", {}
+              if os.path.getsize(path) == 0:
+                  return "SARIF file is empty", {}
+              try:
+                  with open(path, encoding="utf-8") as handle:
+                      return "ok", json.load(handle)
+              except (OSError, ValueError) as exc:
+                  return f"SARIF unreadable: {type(exc).__name__}", {}
+
+
+          def rows_of(path):
+              """One row per finding: (file, line, cwen, ruleId, category, message)."""
+              status, data = load_sarif(path)
+              rows = []
+              for run in data.get("runs", []):
+                  catalog, rules = rule_catalog(run)
+                  for res in run.get("results", []):
+                      rule = catalog.get(res.get("ruleId", ""))
+                      if rule is None:
+                          index = res.get("ruleIndex", -1)
+                          rule = rules[index] if isinstance(index, int) and 0 <= index < len(rules) else {}
+                      rule = rule or {}
+                      uri, line = "?", 0
+                      for loc in res.get("locations", []):
+                          place = loc.get("physicalLocation", {})
+                          uri = norm_path(place.get("artifactLocation", {}).get("uri", uri))
+                          line = place.get("region", {}).get("startLine", line) or 0
+                          break
+                      cwes = extract_cwes(res, rule)
+                      cwen = min(cwes) if cwes else None
+                      category = (rule.get("shortDescription", {}) or {}).get("text", "") \
+                          or rule.get("name", "") or ""
+                      message = (res.get("message", {}).get("text", "") or "").replace("|", "/")
+                      message = " ".join(message.split())[:90]
+                      rows.append((uri, int(line), cwen, res.get("ruleId", "") or rule.get("id", "") or "?",
+                                   " ".join(category.split())[:48], message))
+              return status, rows
+
+
+          def first_sarif(candidates):
+              """First candidate that exists and is non-empty; '' when there is none."""
+              for candidate in candidates:
+                  if candidate and os.path.exists(candidate) and os.path.getsize(candidate):
+                      return candidate
+              return ""
+
+
+          def sarif_candidates():
+              """CodeQL writes `<language>.sarif` under its `output:` directory; the exact name is
+              discovered rather than assumed, and the path recorded by the earlier step wins."""
+              out_dir = os.path.join("benchmark_results", "codeql_results")
+              names = sorted(os.listdir(out_dir)) if os.path.isdir(out_dir) else []
+              return [os.environ.get("CODEQL_SARIF", "")] + \
+                     [os.path.join(out_dir, name) for name in names]
+
+
+          paths = {
+              "TimeCodeSecurity": "benchmark_results/tcs_pygoat.sarif",
+              "Semgrep": "benchmark_results/semgrep_pygoat.sarif",
+              "CodeQL": first_sarif(sarif_candidates()),
+          }
+          exit_keys = {"TimeCodeSecurity": "TCS_SCAN_EXIT", "Semgrep": "SEMGREP_SCAN_EXIT",
+                       "CodeQL": "CODEQL_SCAN_EXIT"}
+
+          statuses, findings = {}, {}
+          for engine in ENGINES:
+              statuses[engine], findings[engine] = rows_of(paths[engine])
+
+          def cwes_of(engine):
+              return {row[2] for row in findings[engine] if row[2] is not None}
+
+
+          def matched(engine, row):
+              """Any finding of `engine` in the same file within LINE_WINDOW lines of `row`."""
+              uri, line = row[0], row[1]
+              return any(other[0] == uri and abs(other[1] - line) <= LINE_WINDOW
+                         for other in findings[engine])
+
+
+          md = [
+              "# 3-Way Neutral Showdown on OWASP PyGoat: TimeCodeSecurity vs CodeQL vs Semgrep OSS",
+              "",
+              f"Target: [OWASP PyGoat](https://github.com/adeyosemanputra/pygoat) @ `{os.environ.get('TARGET_REF_USED') or 'master'}` "
+              f"- {os.environ.get('TARGET_PY_FILES', 'n/a')} `.py` and {os.environ.get('TARGET_HTML_FILES', 'n/a')} `.html` files.",
+              "",
+              "Referee rules, applied identically to all three engines: findings join on "
+              f"`(same file, |line difference| <= {LINE_WINDOW})`; CWEs come from `ruleId`, "
+              "`rule.properties.cwe`, `properties.tags`, `properties.subcategories`, embedded "
+              "`result.rule` and `taxonomies`. No ground truth is used, so nothing here is a "
+              "precision or recall number.",
+              "",
+              "## Headline",
+              "",
+              "| Engine | Findings | Distinct CWEs | SARIF | Process exit |",
+              "| :--- | ---: | ---: | :--- | :--- |",
+          ]
+
+          for engine in ENGINES:
+              code = os.environ.get(exit_keys[engine], "")
+              exit_label = ("not recorded (assumed 0/1)" if code == "" else
+                            f"{code}" if code in NORMAL_SCAN_EXITS else f"**{code} (abnormal)**")
+              count = len(findings[engine])
+              md.append(f"| {engine} | {count} | {len(cwes_of(engine))} | {statuses[engine]} | {exit_label} |")
+          md.append("")
+
+          usable = [e for e in ENGINES if statuses[e] == "ok"]
+          if len(usable) < len(ENGINES):
+              missing = [e for e in ENGINES if e not in usable]
+              md += [f"> Engines with no usable SARIF: **{', '.join(missing)}**. Every agreement "
+                     f"count below is computed only over the engines that actually reported, so it "
+                     f"is not a head-to-head result until all three rows say `ok`.", ""]
+
+          # Every finding from every engine is grouped into location slots (same file, lines
+          # within LINE_WINDOW of each other). All gap/consensus counts below are slot counts, so a
+          # gap two engines both report is one gap, and no engine gets a friendlier rule than the
+          # others. Slots stay deterministic: rows are sorted, and merging measures against the
+          # slot's lowest line, so a chain of findings cannot merge unboundedly.
+          def cluster():
+              slots = []
+              for engine in ENGINES:
+                  for row in sorted(findings[engine], key=lambda r: (r[0], r[1])):
+                      for slot in slots:
+                          if slot["uri"] == row[0] and abs(slot["line"] - row[1]) <= LINE_WINDOW:
+                              slot["line"] = min(slot["line"], row[1])
+                              slot["engines"].add(engine)
+                              slot["rows"].append((engine, row))
+                              break
+                      else:
+                          slots.append({"uri": row[0], "line": row[1], "engines": {engine},
+                                        "rows": [(engine, row)]})
+              slots.sort(key=lambda slot: (slot["uri"], slot["line"]))
+              return slots
+
+
+          def join_sorted(values):
+              return ", ".join(sorted(set(values))) or "-"
+
+
+          def cwe_cell(slot):
+              return join_sorted("CWE-" + str(row[2]) for _e, row in slot["rows"]
+                                 if row[2] is not None)
+
+
+          slots_all = cluster()
+          consensus = [slot for slot in slots_all if len(slot["engines"]) == len(ENGINES)]
+          tcs_only = [slot for slot in slots_all if slot["engines"] == {"TimeCodeSecurity"}]
+          blind = [slot for slot in slots_all if "TimeCodeSecurity" not in slot["engines"]]
+
+          per_engine_gaps = ", ".join(
+              "{}: {}".format(engine, sum(1 for slot in blind if engine in slot["engines"]))
+              for engine in ("CodeQL", "Semgrep"))
+
+          # --- TCS blind spots, printed first and in full detail: this is the section that can
+          # embarrass the engine this repo owns, so it is never summarised away.
+          md += [
+              "## TimeCodeSecurity blind spots (caught by CodeQL or Semgrep, missed by TCS)",
+              "",
+              f"**{len(blind)}** of {len(slots_all)} distinct locations were flagged by CodeQL "
+              f"and/or Semgrep with no TCS finding within {LINE_WINDOW} lines "
+              f"({per_engine_gaps}).",
+              "",
+              "| # | File | Line | CWE | Caught by | Rule(s) |",
+              "| --: | :--- | ---: | :--- | :--- | :--- |",
+          ]
+          for number, slot in enumerate(blind[:MAX_ROWS], 1):
+              md.append(f"| {number} | {slot['uri']} | {slot['line']} | {cwe_cell(slot)} | "
+                        f"{'+'.join(sorted(slot['engines']))} | "
+                        f"{join_sorted(f'{e}:{row[3]}' for e, row in slot['rows'])} |")
+          if len(blind) > MAX_ROWS:
+              md.append(f"| ... | *{len(blind) - MAX_ROWS} further locations are in the "
+                        f"uploaded artifacts* | | | | | |")
+          md.append("")
+
+          # --- Consensus and pairwise agreement.
+          md += [
+              "## Shared consensus",
+              "",
+              f"- **{len(consensus)}** of {len(slots_all)} locations found by **all three** engines",
+              f"- **{len(tcs_only)}** locations found **only** by TCS - extra yield, not verified "
+              f"true positives",
+              f"- **{len(blind)}** locations found by CodeQL and/or Semgrep but **not** by TCS",
+              "",
+              "| Pair | Agreement (rows of the left engine matched) |",
+              "| :--- | :--- |",
+          ]
+          for left, right in (("TimeCodeSecurity", "CodeQL"), ("TimeCodeSecurity", "Semgrep"),
+                              ("CodeQL", "Semgrep")):
+              hits = sum(1 for row in findings[left] if matched(right, row))
+              total = len(findings[left])
+              pct = f"{hits / total * 100:.0f}%" if total else "n/a"
+              md.append(f"| {left} -> {right} | {hits} / {total} ({pct}) |")
+          md.append("")
+
+          # --- CWE coverage matrix: where the disagreement is about rule families, not line numbers.
+          matrix = {}
+          for engine in ENGINES:
+              matrix[engine] = cwes_of(engine)
+          every_cwe = sorted(set().union(*matrix.values()))
+          md += [
+              "## CWE coverage matrix",
+              "",
+              "| CWE | TCS | CodeQL | Semgrep | Status |",
+              "| :--- | :---: | :---: | :---: | :--- |",
+          ]
+          for cwe in every_cwe:
+              marks = {engine: cwe in matrix[engine] for engine in ENGINES}
+              if all(marks.values()):
+                  label = "all three"
+              elif marks["TimeCodeSecurity"]:
+                  friends = [e for e in ENGINES[1:] if marks[e]]
+                  label = ("TCS + " + "+".join(friends)) if friends else "TCS only"
+              else:
+                  label = "**TCS blind spot (CWE family never reported)**"
+              md.append(f"| CWE-{cwe} | " + " | ".join("Y" if marks[e] else "-" for e in ENGINES) +
+                        f" | {label} |")
+          md += ["", "## Reproducibility", "",
+                 "- Engine commit: `" + os.environ.get("GITHUB_SHA", "n/a")[:7] + "`",
+                 "- Gate 1 (`scripts/run_all_checks.py`, 552 cases): enforced as a hard prerequisite.",
+                 "- CodeQL: `queries: security-extended`, `upload: false`, output under "
+                 "`benchmark_results/codeql_results/`.",
+                 "- Artifacts: `benchmark_results/` (three SARIF sets, three stdout logs, this report).", ""]
+
+          text = "\n".join(md)
+          with open("benchmark_results/summary.md", "w", encoding="utf-8") as handle:
+              handle.write(text)
+          summary_path = os.environ.get("GITHUB_STEP_SUMMARY")
+          if summary_path:
+              with open(summary_path, "a", encoding="utf-8") as handle:
+                  handle.write(text)
+          print(text)
+
+          # Neutral referee: one engine failing to produce SARIF is a reported fact, not a job
+          # failure. Only a run where NOTHING usable was produced is invalid.
+          if not usable:
+              raise SystemExit("benchmark invalid: no engine produced a readable SARIF")
+          abnormal = [f"{engine} exit {os.environ[key]}" for engine, key in exit_keys.items()
+                      if os.environ.get(key, "") not in NORMAL_SCAN_EXITS]
+          if abnormal:
+              raise SystemExit("benchmark incomplete: " + "; ".join(abnormal))
+          PY
+
+      - name: Upload Benchmark Artifacts
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: pygoat-benchmark-results
+          path: benchmark_results/
+          if-no-files-found: warn
