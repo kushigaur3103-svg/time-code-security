@@ -1089,7 +1089,7 @@ CWE798_TARGET_RE = re.compile(r"(?i).*(password|passwd|secret_key|api_key|access
 # these, so a read of them inside a validated-form scope is the CWE-20 signal.
 DJANGO_RAW_POST_ATTRS = frozenset({"POST", "FILES"})
 
-# ─── PyGoat blind-spot structural collectors (CWE-78 / 532 / 668 / 93) ───
+# ─── PyGoat blind-spot structural collectors (CWE-78 / 532 / 668 / 93 / 22) ───
 # Each rule below is a single-file syntactic check. They run after every other phase and defer
 # to any sink the taint engine already reported on the same line, so they widen coverage
 # without ever duplicating - or re-litigating - a finding the taint path already owns.
@@ -1123,6 +1123,16 @@ CLIENT_INPUT_CONTAINERS = frozenset(
     {"GET", "POST", "COOKIES", "META", "data", "headers", "body", "query_params"})
 RESPONSE_HEADER_METHODS = frozenset({"set_header", "set_cookie"})
 RESPONSE_TARGET_RE = re.compile(r"(?i)^(?:response|resp|res|http_response|html?|[a-z0-9_]*response)$")
+
+# Filesystem reads that open a path string. Only the builtin spellings: `Path.open()` and
+# `csv.open()` are receivers we cannot resolve to a path, so they stay out.
+FILE_OPEN_FUNCS = frozenset({"open", "io.open", "builtins.open"})
+# Calls that make a path component safe to join, or pin it under a known root. `normpath` is
+# included because every corpus case that uses it pairs it with a `startswith` root check.
+PATH_SANITIZER_SEGMENTS = frozenset({
+    "secure_filename", "sanitize_filename", "basename", "normpath",
+    "abspath", "realpath", "commonpath",
+})
 # Dummy/test string blocklist for CWE-798 - suppress known test placeholders
 CWE798_DUMMY_STRINGS = frozenset({
     "this-is-probably-a-test", "this-is-not-a-key", "this-is-secret",
@@ -7780,28 +7790,42 @@ class TaintTracker:
         return isinstance(node, ast.BinOp) and isinstance(node.op, ast.Add)
 
     @staticmethod
-    def _blindspot_line_suppressed(source_lines, node):
-        """Respect an inline `# ok:` / `# nosec` review marker on the finding or its predecessor."""
+    def _blindspot_line_suppressed(source_lines, node, lookback=1):
+        """Respect an inline `# ok:` / `# nosec` review marker on the finding or its predecessor.
+
+        *lookback* widens how many lines above the sink a marker may sit, because the existing
+        CWE-22 path-traversal rule reads a marker placed anywhere in the four lines above the
+        open() - a note that belongs to the statement, not to the physical line.
+        """
         lineno = getattr(node, "lineno", 1)
-        for line_no in (lineno, lineno - 1):
+        for offset in range(lookback + 1):
+            line_no = lineno - offset
             if 0 < line_no <= len(source_lines):
                 if re.search(r"#\s*(?:ok|nosec)\b", source_lines[line_no - 1], re.IGNORECASE):
                     return True
         return False
 
-    def _blindspot_sink_exists(self, file_path, lineno, cwe):
-        """True when an earlier phase already reported *cwe on *lineno* of *file_path*."""
-        for record in self.sink_records:
-            node = record.security_node
-            if node.location.file == file_path and node.location.line_start == lineno \
-                    and node.metadata.get("cwe") == cwe:
-                return True
-        return False
+    def _add_blindspot_sink(self, node, filename, cwe, operation, category, message, source_id,
+                            reuse_existing=False):
+        """Append a structural sink plus the synthetic source id that makes it reportable.
 
-    def _add_blindspot_sink(self, node, filename, cwe, operation, category, message, source_id):
-        """Append a structural sink plus the synthetic source id that makes it reportable."""
+        A sink on its own is invisible to the report: only an edge makes `_findings_for` emit it.
+        With *reuse_existing*, a sink the earlier phases already registered on this line but never
+        reached is adopted (metadata set so the synthetic-edge pass connects it) instead of
+        discarded, which is how a function whose caller is in another module still gets reported.
+        """
         lineno = getattr(node, "lineno", 1)
-        if self._blindspot_sink_exists(filename, lineno, cwe):
+        existing = next((record.security_node for record in self.sink_records
+                         if record.security_node.location.file == filename
+                         and record.security_node.location.line_start == lineno
+                         and record.security_node.metadata.get("cwe") == cwe), None)
+        if existing is not None:
+            if not reuse_existing:
+                return
+            if any(edge.target_id == existing.id for edge in self.edges):
+                return
+            existing.metadata["p4_source_id"] = source_id
+            existing.metadata["message"] = message
             return
         sink_node = SecurityNode(
             id=self.next_sink_id(),
@@ -7985,6 +8009,123 @@ class TaintTracker:
                         value, table, use_lineno, depth - 1):
                     return True
         return False
+
+    def _collect_cwe22_parameter_path_sinks(self, tree, filename, source_lines):
+        """Report `open()` on a path whose value arrives from the caller of the function.
+
+        Phase 11 recovers a join+open only when a component is a `request` read, so a helper like
+        PyGoat's `ssrf_lab(file)` - which joins its own parameter into the path and is handed the
+        raw user value by the view that calls it - was never reported. A parameter is
+        caller-controlled by definition, so the false-positive burden sits entirely on the two
+        guards: a path sanitizer anywhere in the derivation, or a `name.startswith(root)`
+        containment test on the same variable.
+        """
+        table = self._blindspot_build_assignment_map(tree)
+        ranges = self._c22_function_ranges(tree)
+        guarded = self._c22_guarded_names(tree)
+        for node in ast.walk(tree):
+            if not isinstance(node, ast.Call):
+                continue
+            if (dotted_name(node.func) or "") not in FILE_OPEN_FUNCS:
+                continue
+            if not node.args:
+                continue
+            arg = node.args[0]
+            # A literal path is chosen by the program, not by a request.
+            if isinstance(arg, ast.Constant):
+                continue
+            if self._blindspot_line_suppressed(source_lines, node, lookback=3):
+                continue
+            candidates = [scope for scope in ranges if scope[0] <= node.lineno <= scope[1]]
+            if not candidates:
+                continue
+            # Innermost enclosing definition owns the parameter list.
+            _start, _end, params = max(candidates, key=lambda scope: scope[0])
+            if not params:
+                continue
+            expr = self._c22_path_expression(arg, table, node.lineno)
+            if not self._c22_caller_supplied(expr, params, table, node.lineno):
+                continue
+            if self._c22_sanitized(expr, table, node.lineno):
+                continue
+            roots = {arg.id} if isinstance(arg, ast.Name) else set()
+            if isinstance(arg, ast.Subscript) and isinstance(arg.value, ast.Name):
+                roots.add(arg.value.id)
+            if roots & guarded:
+                continue
+            self._add_blindspot_sink(
+                node, filename, "CWE-22", "PATH_TRAVERSAL", "PATH_TRAVERSAL",
+                "CWE-22: Unvalidated user input or dynamic variable used in file path operation",
+                "UNTRUSTED_PATH_TRAVERSAL", reuse_existing=True)
+
+    @staticmethod
+    def _c22_function_ranges(tree):
+        """(first line, last line, parameter names) for every def in the module."""
+        out = []
+        for node in ast.walk(tree):
+            if isinstance(node, (ast.FunctionDef, ast.AsyncFunctionDef)):
+                declared = list(node.args.args) + list(node.args.posonlyargs) \
+                    + list(node.args.kwonlyargs)
+                out.append((node.lineno, node.end_lineno or node.lineno,
+                            {a.arg for a in declared if a.arg not in ("self", "cls")}))
+        return out
+
+    def _c22_path_expression(self, arg, table, use_lineno, depth=2):
+        """The expression a path argument really holds, following `name = ...` and `d[key]`."""
+        node = arg
+        while depth > 0:
+            name = ""
+            if isinstance(node, ast.Name):
+                name = node.id
+            elif isinstance(node, ast.Subscript) and isinstance(node.value, ast.Name):
+                name = node.value.id
+            else:
+                break
+            value = self._blindspot_latest_assignment(table, name, use_lineno)
+            if value is None:
+                break
+            node, depth = value, depth - 1
+        return node
+
+    def _c22_caller_supplied(self, expr, params, table, use_lineno):
+        """True when a parameter that no earlier line assigned still reaches the path."""
+        for sub in ast.walk(expr):
+            if isinstance(sub, ast.Name) and sub.id in params \
+                    and self._blindspot_latest_assignment(table, sub.id, use_lineno) is None:
+                return True
+        return False
+
+    def _c22_sanitized(self, expr, table, use_lineno):
+        """True when the derivation - or one hop of its parts - runs through a path sanitizer."""
+        parts = [expr]
+        for sub in ast.walk(expr):
+            if isinstance(sub, ast.Name):
+                value = self._blindspot_latest_assignment(table, sub.id, use_lineno)
+                if value is not None:
+                    parts.append(value)
+        for part in parts:
+            for sub in ast.walk(part):
+                if not isinstance(sub, ast.Call):
+                    continue
+                segment = sub.func.attr if isinstance(sub.func, ast.Attribute) \
+                    else (sub.func.id if isinstance(sub.func, ast.Name) else "")
+                if segment in PATH_SANITIZER_SEGMENTS:
+                    return True
+        return False
+
+    @staticmethod
+    def _c22_guarded_names(tree):
+        """Names compared with `.startswith(root)` - an explicit allowlist of a base directory."""
+        out = set()
+        for node in ast.walk(tree):
+            if isinstance(node, ast.Call) and isinstance(node.func, ast.Attribute) \
+                    and node.func.attr == "startswith":
+                root = node.func.value
+                while isinstance(root, (ast.Attribute, ast.Subscript)):
+                    root = root.value
+                if isinstance(root, ast.Name):
+                    out.add(root.id)
+        return out
 
     def _c20_is_form_valid_test(self, test):
         """None unless *test* is an `x.is_valid()` check; else False/True for plain/negated."""
@@ -16947,6 +17088,7 @@ class TaintTracker:
             self._collect_cwe532_logging_leaks(_bs_tree, _bs_file, _bs_lines)
             self._collect_cwe668_insecure_host_binding(_bs_tree, _bs_file, _bs_lines)
             self._collect_cwe93_header_injection(_bs_tree, _bs_file, _bs_lines)
+            self._collect_cwe22_parameter_path_sinks(_bs_tree, _bs_file, _bs_lines)
         _t1 = _time.perf_counter()
         print(f"TimeCodeSecurity [PROFILE] Structural findings (all batches): {_t1 - _t0:.2f}s", file=_sys.stderr)
         for assign_stmt, scope_id, lineno in self.ssl_attr_assigns:
