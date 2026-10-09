@@ -29,7 +29,10 @@ jobs:
   universal-showdown:
     runs-on: ubuntu-latest
     # Hard credit cap: the whole job, target clone, Gate 1 and all three engines included.
-    timeout-minutes: 20
+    # 20 -> 30 because the job now also runs the unit suite before any arena work: 866 tests took
+    # 153.17s on an 8-core machine, so a 2-core runner can plausibly need 6-9 minutes there, and a
+    # cancelled job throws away the entire dispatch plus whatever target clone already completed.
+    timeout-minutes: 30
 
     env:
       # The dispatched choice travels through the environment instead of being interpolated into
@@ -78,7 +81,12 @@ jobs:
         # stubbed out - so a rule that over-fires shows up as a red test instead of an opinion.
         # Run here rather than on a workstation: the arena clones below are what need the RAM.
         # Actions uses `bash -eo pipefail`, so a non-zero suite fails the step through the tee pipe.
+        # `pip install pytest` is mandatory, not decoration: requirements.txt has no pytest line
+        # (measured by reading the whole file) and the install step above adds only flet + semgrep,
+        # so the first version of this step died in seconds on `No module named pytest` while Gate 1
+        # beside it passed. Kept inside this step so the dependency travels with its consumer.
         run: |
+          python -m pip install pytest
           python -m pytest tests -q | tee benchmark_results/unit_suite.txt
           grep -q "passed" benchmark_results/unit_suite.txt
           ! grep -Eq "^(FAILED|ERROR)" benchmark_results/unit_suite.txt
