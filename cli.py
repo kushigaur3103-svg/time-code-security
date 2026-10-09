@@ -100,6 +100,37 @@ def _is_excluded(path, root, exclude_patterns):
     return False
 
 
+def _progress(message):
+    """Emit one progress line on stderr so a stalled scan names the file it stuck on.
+
+    stderr keeps stdout parsable (`--format json` consumers read stdout only) and
+    flush=True means the line lands even if the process is killed mid-file.
+    """
+    print(f"[progress] {message}", file=sys.stderr, flush=True)
+
+
+def _iter_tree_files(root):
+    """Yield the real files under `root`, never following a symlink.
+
+    Traversal guard (CWE-59): `Path.rglob` semantics are version dependent — Python
+    3.13+ follows symlinked directories by default, so one link back into an ancestor
+    makes the crawl loop. os.walk with followlinks=False plus explicit symlink pruning
+    keeps discovery inside the real tree. Ignored directories are pruned before
+    descending, so `node_modules` is never walked just to be filtered out again.
+    """
+    for dirpath, dirnames, filenames in os.walk(root, followlinks=False):
+        dirnames[:] = sorted(
+            name for name in dirnames
+            if name not in IGNORED_DIRS
+            and not os.path.islink(os.path.join(dirpath, name))
+        )
+        for name in sorted(filenames):
+            path = Path(dirpath) / name
+            if os.path.islink(path):
+                continue
+            yield path
+
+
 def _collect_files(scan_path, exclude_patterns=None):
     """Collect Python files from scan path, optionally excluding by glob patterns.
 
@@ -116,8 +147,9 @@ def _collect_files(scan_path, exclude_patterns=None):
         paths = [scan_path]
     elif scan_path.is_dir():
         paths = sorted(
-            path for path in scan_path.rglob("*.py")
-            if not any(part in IGNORED_DIRS for part in path.parts)
+            path for path in _iter_tree_files(scan_path)
+            if path.suffix.lower() == ".py"
+            and not any(part in IGNORED_DIRS for part in path.parts)
             and not _is_excluded(path, scan_path, exclude_patterns)
         )
     else:
@@ -128,7 +160,10 @@ def _collect_files(scan_path, exclude_patterns=None):
 
     files = {}
     skipped = 0
-    for path in paths:
+    total = len(paths)
+    _progress(f"discovered {total} python file(s) under {scan_path}")
+    for index, path in enumerate(paths, 1):
+        _progress(f"reading python ({index}/{total}) {path}")
         try:
             files[_file_key(path, cwd)] = path.read_text(encoding="utf-8", errors="replace")
         except (OSError, ValueError, UnicodeDecodeError) as exc:
@@ -157,8 +192,8 @@ def _collect_auxiliary_files(scan_path, exclude_patterns=None):
         paths = [scan_path]
     elif scan_path.is_dir():
         paths = sorted(
-            path for path in scan_path.rglob("*")
-            if path.is_file() and not any(part in IGNORED_DIRS for part in path.parts)
+            path for path in _iter_tree_files(scan_path)
+            if not any(part in IGNORED_DIRS for part in path.parts)
             and not _is_excluded(path, scan_path, exclude_patterns)
         )
     else:
@@ -166,14 +201,18 @@ def _collect_auxiliary_files(scan_path, exclude_patterns=None):
 
     templates = {}
     iac = {}
+    buckets = {}
     for path in paths:
         relative = str(path).replace("\\", "/")
         if is_template_path(relative):
-            bucket = templates
+            buckets[path] = templates
         elif is_iac_path(relative):
-            bucket = iac
-        else:
-            continue
+            buckets[path] = iac
+
+    total = len(buckets)
+    _progress(f"discovered {total} template/IaC file(s) under {scan_path}")
+    for index, (path, bucket) in enumerate(buckets.items(), 1):
+        _progress(f"reading auxiliary ({index}/{total}) {path}")
         try:
             bucket[_file_key(path, cwd)] = path.read_text(encoding="utf-8", errors="replace")
         except OSError as exc:
@@ -886,11 +925,13 @@ def _scan(args):
         
         started = time.perf_counter()
         if files:
+            _progress(f"parsing {len(files)} python file(s) with {workers} worker(s)")
             tracker = TaintTracker(files=files, max_workers=workers)
             for fpath, reason in sorted(tracker.skipped_files.items()):
                 print(f"Warning: skipping unparseable file {fpath}: {reason}", file=sys.stderr)
             _, _, edges = tracker.analyze()
             ast_findings = _findings_for(tracker, edges)
+            _progress(f"parsed + traced, {len(ast_findings)} AST finding(s) so far")
         else:
             ast_findings = []
         file_counts = {

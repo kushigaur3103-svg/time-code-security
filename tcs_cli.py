@@ -1861,7 +1861,7 @@ def main(argv: Optional[List[str]] = None):
                 mf_candidate = target / mf_name
                 if mf_candidate.exists():
                     cand_manifests.append(mf_candidate)
-            for root, dirs, files_in_dir in os.walk(target):
+            for root, dirs, files_in_dir in os.walk(target, followlinks=False):
                 dirs[:] = [d for d in dirs if d not in IGNORED_DIRS and not d.startswith(".")]
                 for f in files_in_dir:
                     if f.endswith(".py") and f != "tcs_cli.py":
@@ -1869,7 +1869,7 @@ def main(argv: Optional[List[str]] = None):
         else:
             if target.name in ("poetry.lock", "requirements.txt"):
                 cand_manifests.append(target)
-                for root, dirs, files_in_dir in os.walk(target.parent):
+                for root, dirs, files_in_dir in os.walk(target.parent, followlinks=False):
                     dirs[:] = [d for d in dirs if d not in IGNORED_DIRS and not d.startswith(".")]
                     for f in files_in_dir:
                         if f.endswith(".py") and f != "tcs_cli.py":

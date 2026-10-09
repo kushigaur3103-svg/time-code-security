@@ -61,7 +61,10 @@ class GlobalSymbolIndex:
     def build(self) -> GlobalSymbolIndex:
         """Pass 1: Discover and index all Python definitions and imports."""
         py_files: list[Path] = []
-        for root, _, files in os.walk(self.root_dir):
+        for root, dirs, files in os.walk(self.root_dir, followlinks=False):
+            # Symlinked dirs are pruned before descending: a link into an ancestor
+            # would otherwise make this crawl loop and never reach the analysis.
+            dirs[:] = [d for d in dirs if not os.path.islink(os.path.join(root, d))]
             for f in files:
                 if f.endswith(".py"):
                     full_p = Path(root) / f
