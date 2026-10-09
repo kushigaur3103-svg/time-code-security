@@ -1126,6 +1126,80 @@ RESPONSE_TARGET_RE = re.compile(r"(?i)^(?:response|resp|res|http_response|html?|
 # Attributes that *are* the reply payload: assigning to them replaces the bytes the browser reads.
 RESPONSE_BODY_ATTRIBUTES = frozenset({"content", "body"})
 
+# Calls whose result is handed to the client as the reply. Exception detail inside one of these is
+# CWE-209 (information exposed over HTTP), not the milder case of writing it to a server log.
+RESPONSE_CONSTRUCTOR_NAMES = frozenset({
+    "jsonify", "flask.jsonify", "make_response", "flask.make_response",
+    "Response", "flask.Response", "render_template", "flask.render_template",
+    "render_template_string", "flask.render_template_string",
+    "HttpResponse", "django.http.HttpResponse", "django.http.JsonResponse", "JsonResponse",
+    "HttpResponseBadRequest", "HttpResponseServerError", "HttpResponseNotAllowed",
+    "django.shortcuts.render", "render",
+})
+# Only the traceback helpers that *return* text; `traceback.print_exc()` writes to stderr, which is
+# a log line and not a reply, so it is deliberately absent.
+TRACEBACK_FORMAT_FUNCS = frozenset({
+    "traceback.format_exc", "format_exc", "traceback.format_exception", "format_exception",
+    "traceback.format_exception_only", "format_exception_only", "sys.exc_info", "exc_info",
+})
+# Attributes of a caught exception whose text describes the failure in detail.
+EXCEPTION_DETAIL_ATTRIBUTES = frozenset({"message", "args", "traceback", "stack", "__traceback__"})
+# Decorators that make a function a client-facing endpoint (`@expose` is Airflow/Flask-Admin's own
+# spelling of `@route`), which is what turns a returned dict into an HTTP response body.
+WEB_HANDLER_DECORATOR_SEGMENTS = frozenset({"route", "expose", "errorhandler", "app_errorhandler"})
+# Flask/Werkzeug request containers. CLIENT_INPUT_CONTAINERS is Django-shaped and is shared with the
+# CWE-22/CWE-93 rules, so the Flask spellings live here instead of being bolted onto it.
+FLASK_REQUEST_CONTAINERS = frozenset({
+    "args", "form", "json", "values", "query_string", "files", "cookies", "headers",
+    "params", "path", "url", "full_path", "data",
+})
+# CWE-601: the sinks whose single argument becomes the Location header the browser follows.
+REDIRECT_SINK_NAMES = frozenset({
+    "redirect", "flask.redirect", "werkzeug.utils.redirect",
+    "HttpResponseRedirect", "django.http.HttpResponseRedirect",
+    "HttpResponsePermanentRedirect", "django.http.HttpResponsePermanentRedirect",
+})
+# CWE-319: outbound fetches that can be pointed at a cleartext scheme.
+TRANSPORT_SINK_NAMES = frozenset({
+    "requests.get", "requests.post", "requests.put", "requests.request",
+    "requests.Session.request", "session.get", "session.post", "session.put", "session.request",
+    "urllib.request.urlopen",
+})
+# Bare `get(...)`/`post(...)` only count when the name was imported from one of these modules,
+# because `get` is otherwise the most common identifier in Python.
+HTTP_VERB_MODULES = frozenset({"requests", "urllib3"})
+HTTP_BARE_VERBS = frozenset({"get", "post", "put", "request", "urlopen"})
+CLEARTEXT_SCHEME_PREFIX = "http://"
+# A loopback or placeholder host is not the same exposure as a routed name, and every safe corpus
+# spelling of a dynamic URL points at one of these.
+CLEARTEXT_HOST_ALLOWLIST = ("localhost", "127.0.0.1", "0.0.0.0", "testserver", "example.com", "dummy")
+# CWE-79: Jinja2 escapes only what it is told to. Both constructors default to *off*, so an explicit
+# `autoescape=False` is the configured vulnerability, not an oversight the renderer can undo.
+JINJA_ENVIRONMENT_SEGMENTS = frozenset({
+    "Environment", "SandboxedEnvironment", "ImmutableSandboxedEnvironment",
+    "AutoEscapeSelector",
+})
+# CWE-89: Airflow and GCP hooks run a query through a method that is not a DB-API cursor's, so the
+# cursor sink map never sees the call. `run`/`execute` alone would match half the codebase, so the
+# receiver must look like a database/hook object *and* the template must look like SQL.
+HOOK_QUERY_METHODS = frozenset({"execute", "run", "get_records"})
+HOOK_INSTANCE_RE = re.compile(
+    r"(?i)\b(hook|cursor|cur|conn|connection|browser|db|presto|hive|mysql|postgres|postgresql|"
+    r"oracle|mssql|vertica|clickhouse|jdbc|dbapi|metastore|snowflake|redshift)\w*\b")
+SQL_KEYWORD_RE = re.compile(
+    r"(?i)\b(select|insert\s+into|update|delete\s+from|drop\s+table|create\s+table|truncate|"
+    r"merge\s+into|where|from)\b")
+# The same builders the Phase 10.2 path already trusts: a `{}` filled by `sql.Identifier` is quoted
+# by the driver, so `sql.SQL("SELECT {} FROM t").format(sql.Identifier(x))` is composition, not the
+# string interpolation this rule reports. Names are the spellings used in real code, bare included.
+SQL_COMPOSITION_BUILDERS = frozenset({
+    "psycopg2.sql.Identifier", "sql.Identifier", "Identifier",
+    "psycopg2.sql.SQL", "sql.SQL",
+    "psycopg2.sql.Literal", "sql.Literal", "Literal",
+    "psycopg2.sql.Placeholder", "sql.Placeholder", "Placeholder",
+    "sqlalchemy.text", "text", "sqlalchemy.sql.bindparam", "bindparam",
+})
+
 # Filesystem reads that open a path string. Only the builtin spellings: `Path.open()` and
 # `csv.open()` are receivers we cannot resolve to a path, so they stay out.
 FILE_OPEN_FUNCS = frozenset({"open", "io.open", "builtins.open"})
@@ -8490,6 +8564,590 @@ class TaintTracker:
                 return False
             _start, _end, params = max(candidates, key=lambda scope: scope[0])
             return value.id in params
+        return False
+
+    # ── 7. CWE-209: exception detail packaged into an HTTP reply ───────────────────
+    def _collect_cwe209_stack_trace_exposure(self, tree, filename, source_lines):
+        """Report `jsonify(error="{}".format(err))` and `render_template(..., info=traceback.format_exc())`.
+
+        The structural except-handler rule already reports the *bare* forms - `return str(e)`,
+        `return e`, `return traceback.format_exc()` - at the `except` line, and `_is_bad_error_return`
+        is consulted here so those shapes are never counted twice. What was invisible is detail that
+        travels inside something: a keyword of `jsonify`, a dict payload, a `response = jsonify(...)`
+        that is returned two statements later. A logging call is not a reply, so `logger.error(str(e))`
+        is out of this rule by construction and belongs to CWE-532/CWE-117 instead.
+        """
+        table = self._blindspot_build_assignment_map(tree)
+        emitted = set()
+
+        def _returns(body):
+            """Every Return with a value inside *body*, descending If/For/While/With/Try."""
+            out = []
+            for stmt in body:
+                if isinstance(stmt, ast.Return) and stmt.value is not None:
+                    out.append(stmt)
+                elif isinstance(stmt, (ast.If, ast.For, ast.While, ast.With, ast.Try)):
+                    for part in (getattr(stmt, "body", None), getattr(stmt, "orelse", None),
+                                 getattr(stmt, "finalbody", None)):
+                        out.extend(_returns(part or []))
+                    for handler in getattr(stmt, "handlers", None) or []:
+                        out.extend(_returns(handler.body))
+            return out
+
+        def _emit(node):
+            if id(node) in emitted or self._blindspot_line_suppressed(source_lines, node):
+                return
+            emitted.add(id(node))
+            self._add_blindspot_sink(
+                node, filename, "CWE-209", "SENSITIVE_ERROR_EXPOSURE", "STACK_TRACE_EXPOSURE",
+                "CWE-209: Detailed exception or stack trace exposed in response",
+                "STACK_TRACE_EXPOSURE", reuse_existing=True)
+
+        for handler in [node for node in ast.walk(tree) if isinstance(node, ast.ExceptHandler)]:
+            names = self._c209_handler_names(handler)
+            for ret in _returns(handler.body):
+                if self._is_bad_error_return(ret, handler.name):
+                    continue
+                if self._c209_exposed_in_reply(ret.value, names, table, ret.lineno):
+                    _emit(ret)
+
+        for func in [node for node in ast.walk(tree)
+                     if isinstance(node, (ast.FunctionDef, ast.AsyncFunctionDef))
+                     and self._c209_is_web_handler(node)]:
+            for ret in _returns(func.body):
+                # No handler name in scope here, so only a real traceback helper qualifies.
+                if self._c209_exposed_in_reply(ret.value, frozenset(), table, ret.lineno):
+                    _emit(ret)
+
+    @staticmethod
+    def _c209_handler_names(handler):
+        """The caught name plus `err = e` aliases assigned straight from it."""
+        names = {handler.name} if getattr(handler, "name", None) else set()
+        for stmt in handler.body:
+            if isinstance(stmt, ast.Assign) and isinstance(stmt.value, ast.Name) \
+                    and stmt.value.id in names:
+                names.update(target.id for target in stmt.targets if isinstance(target, ast.Name))
+        return names
+
+    @staticmethod
+    def _c209_route_decorated(func):
+        """True when a decorator declares this def a framework endpoint (route/expose/errorhandler)."""
+        for decorator in func.decorator_list:
+            target = decorator.func if isinstance(decorator, ast.Call) else decorator
+            segment = (dotted_name(target)
+                       or getattr(target, "attr", "")
+                       or getattr(target, "id", "")).split(".")[-1]
+            if segment in WEB_HANDLER_DECORATOR_SEGMENTS:
+                return True
+        return False
+
+    @staticmethod
+    def _c209_is_web_handler(func):
+        """A function the framework invokes for a request: route/expose/errorhandler, or a `request` arg."""
+        return (TaintTracker._c209_route_decorated(func)
+                or any(argument.arg == "request" for argument in func.args.args))
+
+    def _c209_exposed_in_reply(self, value, names, table, use_lineno):
+        """True when *value* (or the call it was assigned from) ships exception detail to the client."""
+        if value is None:
+            return False
+        resolved = self._c22_path_expression(value, table, use_lineno)
+        for part in ([value] if resolved is value else [value, resolved]):
+            members = self._c209_members(part)
+            if not members:
+                continue
+            packaged = isinstance(part, ast.Call) and (dotted_name(part.func) or "") in RESPONSE_CONSTRUCTOR_NAMES
+            container = isinstance(part, (ast.Dict, ast.List, ast.Tuple, ast.Set,
+                                          ast.JoinedStr, ast.BinOp))
+            if not (packaged or container):
+                continue
+            if any(self._c209_carries_detail(member, names) for member in members):
+                return True
+        return False
+
+    @staticmethod
+    def _c209_members(node):
+        """The child expressions a returned container or call actually hands over."""
+        if isinstance(node, ast.Dict):
+            return [item for item in node.keys + node.values if item is not None]
+        if isinstance(node, (ast.List, ast.Tuple, ast.Set)):
+            return list(node.elts)
+        if isinstance(node, ast.JoinedStr):
+            return [field.value for field in node.values if isinstance(field, ast.FormattedValue)]
+        if isinstance(node, ast.BinOp):
+            return [node.left, node.right]
+        if isinstance(node, ast.Call):
+            return list(node.args) + [keyword.value for keyword in node.keywords]
+        return []
+
+    @staticmethod
+    def _c209_carries_detail(node, names):
+        """True when *node* reads a traceback helper, or the currently caught exception."""
+        for sub in ast.walk(node):
+            if isinstance(sub, ast.Call):
+                if (dotted_name(sub.func) or "") in TRACEBACK_FORMAT_FUNCS:
+                    return True
+                segment = (sub.func.attr if isinstance(sub.func, ast.Attribute)
+                           else (sub.func.id if isinstance(sub.func, ast.Name) else ""))
+                if segment in ("str", "repr", "format", "print") and names and any(
+                        isinstance(argument, ast.Name) and argument.id in names
+                        for argument in sub.args):
+                    return True
+            elif isinstance(sub, ast.Attribute):
+                if names and isinstance(sub.value, ast.Name) and sub.value.id in names \
+                        and sub.attr in EXCEPTION_DETAIL_ATTRIBUTES:
+                    return True
+            elif isinstance(sub, ast.Name) and sub.id in names:
+                return True
+        return False
+
+    # ── 8. CWE-117: client-controlled value written into a log line ────────────────
+    def _collect_cwe117_log_injection(self, tree, filename, source_lines):
+        """Report `log.info(error_message)` where *error_message* was built from request data.
+
+        Two widenings, both measured on apache/airflow rather than assumed. The sink side accepts
+        every spelling `_blindspot_is_log_call` already knows for CWE-532 (`log`, `logger`, `logging`,
+        `app.logger`, `current_app.logger`, plus `print` inside a function) instead of the three names
+        in the taint sink map. The source side follows Airflow's Flask idiom -
+        `data = request.get_json()`, `execution_date = data['execution_date']`, then
+        `error_message = '...{}'.format(execution_date)` - three hops of plain assignments, and also
+        counts a parameter of a route/expose/errorhandler view, because `dag_id` there is whatever the
+        client typed. Precision sits on the guards: a static literal or an int/len cast holds no
+        newline, and any named CRLF sanitizer (or an inline `replace`/`re.sub` on a `\r`/`\n`
+        pattern) anywhere in the derivation clears the value.
+        """
+        table = self._blindspot_build_assignment_map(tree)
+        func_ranges = [(start, end) for start, end, _params in self._c22_function_ranges(tree)]
+        endpoints = [
+            (func.lineno, func.end_lineno or func.lineno, params)
+            for func, params in self._c117_endpoint_scopes(tree)
+        ]
+        for node in ast.walk(tree):
+            if not isinstance(node, ast.Call) or not self._blindspot_is_log_call(node, func_ranges):
+                continue
+            arguments = list(node.args) + [
+                keyword.value for keyword in node.keywords
+                if keyword.arg in ("msg", "message", "extra")
+            ]
+            candidates = [argument for argument in arguments if not self._c117_inert(argument)]
+            if not candidates:
+                continue
+            if not any(self._c117_client_controlled(candidate, table, node.lineno, endpoints)
+                       and not self._c117_neutralized(candidate, table, node.lineno)
+                       for candidate in candidates):
+                continue
+            if self._blindspot_line_suppressed(source_lines, node):
+                continue
+            self._add_blindspot_sink(
+                node, filename, "CWE-117", "LOG_INJECTION", "LOG_INJECTION",
+                "CWE-117: Unsanitized user input written to log file",
+                "LOG_INJECTION", reuse_existing=True)
+
+    @staticmethod
+    def _c117_endpoint_scopes(tree):
+        """(function, parameter names) for every def that is a client-facing endpoint.
+
+        A parameter *named* `request` is not evidence on its own: google-api-python-client hands
+        `_poll_operation(request, response, ...)` a discovery-request object, and logging its server
+        response is not log injection (measured FP at gcp_mlengine_hook.py:38). Such a def counts
+        only when its own body actually reads a request container.
+        """
+        scopes = []
+        for func in ast.walk(tree):
+            if not isinstance(func, (ast.FunctionDef, ast.AsyncFunctionDef)):
+                continue
+            if not TaintTracker._c209_route_decorated(func) \
+                    and not TaintTracker._c117_request_read(func):
+                continue
+            scopes.append((func, {
+                argument.arg for argument in
+                list(func.args.args) + list(func.args.posonlyargs) + list(func.args.kwonlyargs)
+                if argument.arg not in ("self", "cls")
+            }))
+        return scopes
+
+    @staticmethod
+    def _c117_inert(arg):
+        """A literal, or a cast that can only produce a number - neither can carry CRLF."""
+        if isinstance(arg, ast.Constant):
+            return True
+        if isinstance(arg, ast.Call):
+            segment = (arg.func.attr if isinstance(arg.func, ast.Attribute)
+                       else (arg.func.id if isinstance(arg.func, ast.Name) else ""))
+            return segment in ("int", "float", "len", "bool", "abs", "ord")
+        return False
+
+    @staticmethod
+    def _c117_request_read(node):
+        """`request.args.get('dag_id')`, `request.get_json()`, `request.POST['x']` - client input read."""
+        containers = FLASK_REQUEST_CONTAINERS | CLIENT_INPUT_CONTAINERS
+        for sub in ast.walk(node):
+            if isinstance(sub, ast.Attribute) and isinstance(sub.value, ast.Name) \
+                    and sub.value.id == "request" and sub.attr in containers:
+                return True
+            if isinstance(sub, ast.Call):
+                name = dotted_name(sub.func) or ""
+                segments = name.split(".")
+                if len(segments) >= 2 and segments[0] == "request" and segments[1] in containers:
+                    return True
+                if name in ("request.get_json", "get_json", "request.data", "get_data"):
+                    return True
+        return False
+
+    def _c117_client_controlled(self, arg, table, use_lineno, endpoints, depth=3):
+        """True when the value reaches the log line from a request read or an endpoint parameter."""
+        if self._c117_request_read(arg) or self._blindspot_reads_client_input(arg, table, use_lineno):
+            return True
+        scope = [item for item in endpoints if item[0] <= use_lineno <= item[1]]
+        if scope:
+            _start, _end, params = max(scope, key=lambda item: item[0])
+            if self._c22_caller_supplied(arg, params, table, use_lineno):
+                return True
+        if depth <= 0:
+            return False
+        for sub in ast.walk(arg):
+            if not isinstance(sub, ast.Name):
+                continue
+            value = self._blindspot_latest_assignment(table, sub.id, use_lineno)
+            if value is not None and self._c117_client_controlled(
+                    value, table, use_lineno, endpoints, depth - 1):
+                return True
+        return False
+
+    def _c117_neutralized(self, arg, table, use_lineno):
+        """True when CR/LF is stripped anywhere in the derivation, by name or inline."""
+        sanitizers = SANITIZER_REGISTRY.get("CWE-117", set())
+        parts = [arg]
+        for sub in ast.walk(arg):
+            if isinstance(sub, ast.Name):
+                value = self._blindspot_latest_assignment(table, sub.id, use_lineno)
+                if value is not None:
+                    parts.append(value)
+        for part in parts:
+            for sub in ast.walk(part):
+                if not isinstance(sub, ast.Call):
+                    continue
+                segment = (sub.func.attr if isinstance(sub.func, ast.Attribute)
+                           else (sub.func.id if isinstance(sub.func, ast.Name) else ""))
+                if segment in sanitizers:
+                    return True
+                if segment in ("replace", "sub", "translate", "strip") and any(
+                        isinstance(literal, ast.Constant) and isinstance(literal.value, str)
+                        and any(marker in literal.value for marker in ("\r", "\n", r"\r", r"\n",
+                                                                       r"\x0d", r"\x0a"))
+                        for literal in ast.walk(sub)):
+                    return True
+        return False
+
+    # ── 9. CWE-601: user input hiding behind a framework-built redirect fallback ──────
+    def _collect_cwe601_open_redirect(self, tree, filename, source_lines):
+        """Report `redirect(request.args.get("next") or url_for("index"))`.
+
+        Measured on apache/airflow, the plain `redirect(request.args.get("next"))` form and a
+        variable assigned from `request.args.get(...) or url_for(...)` are both already reported by
+        the taint path, but the *inline* fallback form reported nothing: the `or url_for(...)` arm
+        made the whole argument look framework-generated. Four login views are exactly that shape
+        (`default_login.py:90`, `password_auth.py:178`, `kerberos_auth.py:160`, `ldap_auth.py:321`).
+        Only the fallback form is handled here, so a site the taint path already owns can never be
+        emitted twice.
+        """
+        table = self._blindspot_build_assignment_map(tree)
+        for node in ast.walk(tree):
+            target = self._c601_redirect_target(node)
+            if target is None:
+                continue
+            if self._c601_fallback_input(target, table, node.lineno) is None:
+                continue
+            if self._c601_validated(target, table, node.lineno):
+                continue
+            if self._blindspot_line_suppressed(source_lines, node):
+                continue
+            self._add_blindspot_sink(
+                node, filename, "CWE-601", "OPEN_REDIRECT", "OPEN_REDIRECT",
+                "CWE-601: Potential open redirect using unvalidated user input parameter",
+                "OPEN_REDIRECT", reuse_existing=True)
+
+    @staticmethod
+    def _c601_redirect_target(node):
+        """The Location expression of a redirect sink call, or None."""
+        if not isinstance(node, ast.Call):
+            return None
+        name = dotted_name(node.func) or (
+            node.func.attr if isinstance(node.func, ast.Attribute) else "")
+        if name not in REDIRECT_SINK_NAMES:
+            return None
+        if node.args:
+            return node.args[0]
+        for keyword in node.keywords:
+            if keyword.arg in ("url", "location", "to"):
+                return keyword.value
+        return None
+
+    def _c601_fallback_input(self, target, table, use_lineno):
+        """The client-controlled arm inside an `x or y` / ternary redirect target, else None."""
+        for sub in ast.walk(target):
+            if isinstance(sub, ast.BoolOp) and isinstance(sub.op, ast.Or):
+                arms = list(sub.values)
+            elif isinstance(sub, ast.IfExp):
+                arms = [sub.body, sub.orelse]
+            else:
+                continue
+            for arm in arms:
+                resolved = self._c22_path_expression(arm, table, use_lineno)
+                if self._c117_request_read(arm) or self._c117_request_read(resolved) \
+                        or self._blindspot_reads_client_input(arm, table, use_lineno):
+                    return arm
+        return None
+
+    def _c601_validated(self, target, table, use_lineno):
+        """True when a named redirect guard or a urlparse/urlsplit check sits in the derivation."""
+        parts = [target]
+        for sub in ast.walk(target):
+            if isinstance(sub, ast.Name):
+                value = self._blindspot_latest_assignment(table, sub.id, use_lineno)
+                if value is not None:
+                    parts.append(value)
+        guards = set(SANITIZER_REGISTRY.get("CWE-601", set())) | {"urlparse", "urlsplit"}
+        for part in parts:
+            for sub in ast.walk(part):
+                if not isinstance(sub, ast.Call):
+                    continue
+                segment = (sub.func.attr if isinstance(sub.func, ast.Attribute)
+                           else (sub.func.id if isinstance(sub.func, ast.Name) else ""))
+                if segment in guards:
+                    return True
+        return False
+
+    # ── 10. CWE-319: cleartext HTTP aimed at a host only known at runtime ─────────────
+    def _collect_cwe319_insecure_transport(self, tree, filename, source_lines):
+        """`requests.get(url)` where `url` was built as `f"http://{host}/log"` or `"http://{}:{}".format(...)`.
+
+        The scheme rule reads the literal sitting on the sink, so Airflow's
+        `url = os.path.join("http://{ti.hostname}:{worker_log_server_port}/log", path).format(...)`
+        followed by `requests.get(url, timeout=timeout)` at `file_task_handler.py:163` was invisible:
+        the `http://` never reaches the call. A test file is allowed to talk plain HTTP to a fixture
+        host, so the scope guard runs first, and a static literal stays with the rule that already
+        reports it.
+        """
+        if self._c319_test_scope(filename):
+            return
+        table = self._blindspot_build_assignment_map(tree)
+        bare_verbs = self._c319_imported_verbs(tree)
+        for node in ast.walk(tree):
+            if not isinstance(node, ast.Call) or not self._c319_is_transport_sink(node, bare_verbs):
+                continue
+            url_arg = node.args[0] if node.args else next(
+                (keyword.value for keyword in node.keywords
+                 if keyword.arg in ("url", "uri")), None)
+            if url_arg is None or isinstance(url_arg, ast.Constant):
+                continue
+            candidates = self._c319_resolutions(url_arg, table, node.lineno)
+            if not any(self._c319_cleartext_template(part) for part in candidates):
+                continue
+            if any(self._c319_allowlisted(part) for part in candidates):
+                continue
+            if self._blindspot_line_suppressed(source_lines, node):
+                continue
+            self._add_blindspot_sink(
+                node, filename, "CWE-319", "INSECURE_TRANSPORT", "INSECURE_TRANSPORT",
+                "CWE-319: Cleartext HTTP transmission directed to dynamic network host",
+                "INSECURE_TRANSPORT", reuse_existing=True)
+
+    @staticmethod
+    def _c319_test_scope(filename):
+        path = (filename or "").replace("\\", "/")
+        return "/tests/" in path or "/test/" in path or path.rsplit("/", 1)[-1].startswith("test_")
+
+    @staticmethod
+    def _c319_imported_verbs(tree):
+        """Bare `get`/`post` count only when imported from `requests`/`urllib`, else `get` is a dict."""
+        verbs = set()
+        for node in ast.walk(tree):
+            if isinstance(node, ast.ImportFrom) \
+                    and (node.module or "").split(".")[0] in HTTP_VERB_MODULES:
+                verbs.update(alias.name for alias in node.names)
+        return verbs & HTTP_BARE_VERBS
+
+    @staticmethod
+    def _c319_is_transport_sink(node, bare_verbs):
+        name = dotted_name(node.func) or (
+            node.func.attr if isinstance(node.func, ast.Attribute) else "")
+        if name in TRANSPORT_SINK_NAMES:
+            return True
+        if name in bare_verbs:
+            return True
+        return name == "urlopen" or name.startswith("urllib.request.")
+
+    def _c319_resolutions(self, expr, table, use_lineno, depth=2):
+        """The expression plus whatever the names inside it were last assigned, up to *depth* hops."""
+        parts = [expr]
+        for _ in range(depth):
+            for part in list(parts):
+                for sub in ast.walk(part):
+                    if not isinstance(sub, ast.Name):
+                        continue
+                    value = self._blindspot_latest_assignment(table, sub.id, use_lineno)
+                    if value is not None and all(value is not held for held in parts):
+                        parts.append(value)
+        return parts
+
+    @staticmethod
+    def _c319_cleartext_template(expr):
+        """`http://` spelled out in full, with a hole only the runtime can fill."""
+        for sub in ast.walk(expr):
+            if isinstance(sub, ast.JoinedStr):
+                head = next((item.value for item in sub.values
+                             if isinstance(item, ast.Constant) and isinstance(item.value, str)), "")
+                if head.lower().startswith(CLEARTEXT_SCHEME_PREFIX) and any(
+                        isinstance(item, ast.FormattedValue) for item in sub.values):
+                    return True
+            elif isinstance(sub, ast.Constant) and isinstance(sub.value, str):
+                text = sub.value
+                if not text.lower().startswith(CLEARTEXT_SCHEME_PREFIX):
+                    continue
+                if "{" in text and any(
+                        isinstance(inner, ast.Call) and isinstance(inner.func, ast.Attribute)
+                        and inner.func.attr == "format" for inner in ast.walk(expr)):
+                    return True
+                if "%" in text and any(
+                        isinstance(inner, ast.BinOp) and isinstance(inner.op, ast.Mod)
+                        for inner in ast.walk(expr)):
+                    return True
+        return False
+
+    @staticmethod
+    def _c319_allowlisted(expr):
+        return any(isinstance(sub, ast.Constant) and isinstance(sub.value, str)
+                   and any(marker in sub.value for marker in CLEARTEXT_HOST_ALLOWLIST)
+                   for sub in ast.walk(expr))
+
+    # ── 11. CWE-79: Jinja2 configured not to escape ───────────────────────────────────
+    def _collect_cwe79_insecure_jinja_config(self, tree, filename, source_lines):
+        """`jinja2.Environment(autoescape=False)` / `select_autoescape(default=False)`.
+
+        Only the explicit off-switch is reported. Jinja's own default is already "no escaping", so
+        flagging a bare `Environment()` would paint every template engine in a target - Airflow's
+        `dag.py:817 Environment(**jinja_env_options)` and `lineage/datasets.py Environment()` are the
+        measured examples - and the safe half of the CWE-79 corpus depends on that restraint.
+        """
+        for node in ast.walk(tree):
+            if not isinstance(node, ast.Call):
+                continue
+            name = dotted_name(node.func) or ""
+            segment = name.split(".")[-1]
+            if segment in JINJA_ENVIRONMENT_SEGMENTS:
+                disabled = self._c79_flag_false(node, "autoescape")
+            elif segment == "select_autoescape":
+                disabled = self._c79_flag_false(node, "default")
+            else:
+                disabled = False
+            if not disabled or self._blindspot_line_suppressed(source_lines, node):
+                continue
+            self._add_blindspot_sink(
+                node, filename, "CWE-79", "INSECURE_JINJA_CONFIG", "INSECURE_JINJA_CONFIG",
+                "CWE-79: Jinja2 environment configured with autoescape disabled",
+                "INSECURE_JINJA_CONFIG", reuse_existing=True)
+
+    @staticmethod
+    def _c79_flag_false(node, keyword):
+        """True when *node* passes `keyword=False` literally, directly or through the selector call."""
+        for kw in node.keywords:
+            if kw.arg == keyword and isinstance(kw.value, ast.Constant) and kw.value.value is False:
+                return True
+        if keyword == "autoescape":
+            for kw in node.keywords:
+                inner = kw.value
+                if kw.arg == keyword and isinstance(inner, ast.Call) \
+                        and (dotted_name(inner.func) or "").split(".")[-1] == "select_autoescape" \
+                        and TaintTracker._c79_flag_false(inner, "default"):
+                    return True
+        return False
+
+    # ── 12. CWE-89: query handed to a hook method instead of a cursor ─────────────────
+    def _collect_cwe89_hook_query_execution(self, tree, filename, source_lines):
+        """`hook.get_records(sql)` where sql was stitched together with %, `.format()` or an f-string.
+
+        The cursor sink map (`cursor.execute`, `session.execute`, `objects.raw`) cannot see these:
+        PrestoHook, DbApiHook and metastore_browser run statements through `run`/`get_records`/
+        `execute` on a hook object. Precision rests on three requirements at once - a hook-shaped
+        receiver, a SQL-shaped template, and no bind-parameter argument, because every safe corpus
+        spelling measured here is `execute("SELECT ... ?", (uid,))`, where the driver does the quoting.
+        """
+        table = self._blindspot_build_assignment_map(tree)
+        for node in ast.walk(tree):
+            if not isinstance(node, ast.Call) or not isinstance(node.func, ast.Attribute):
+                continue
+            if node.func.attr not in HOOK_QUERY_METHODS:
+                continue
+            if not HOOK_INSTANCE_RE.search(self._c89_receiver_text(node.func.value)):
+                continue
+            query = node.args[0] if node.args else next(
+                (keyword.value for keyword in node.keywords
+                 if keyword.arg in ("sql", "query", "hql", "statement")), None)
+            if query is None or isinstance(query, ast.Constant):
+                continue
+            if len(node.args) > 1 or any(keyword.arg in ("parameters", "params", "kv", "binds")
+                                         for keyword in node.keywords):
+                continue
+            candidates = self._c319_resolutions(query, table, node.lineno)
+            if not any(self._c89_formatted_statement(part) for part in candidates):
+                continue
+            if self._blindspot_line_suppressed(source_lines, node):
+                continue
+            self._add_blindspot_sink(
+                node, filename, "CWE-89", "SQL_QUERY_EXECUTION", "SQL_INJECTION",
+                "CWE-89: SQL query assembled by string interpolation in a hook call",
+                "SQL_INJECTION", reuse_existing=True)
+
+    @staticmethod
+    def _c89_receiver_text(receiver):
+        """Dotted text of a call receiver, so `self.conn.cursor` reads as a database object."""
+        if isinstance(receiver, ast.Attribute):
+            return f"{TaintTracker._c89_receiver_text(receiver.value)}.{receiver.attr}"
+        if isinstance(receiver, ast.Name):
+            return receiver.id
+        if isinstance(receiver, ast.Call):
+            return dotted_name(receiver.func) if isinstance(
+                receiver.func, (ast.Name, ast.Attribute)) else ""
+        if isinstance(receiver, ast.Subscript):
+            return TaintTracker._c89_receiver_text(receiver.value)
+        return ""
+
+    @staticmethod
+    def _c89_builder_composed(node):
+        """True when a psycopg2/SQLAlchemy object builder produces part of this expression."""
+        for sub in ast.walk(node):
+            if not isinstance(sub, ast.Call):
+                continue
+            name = dotted_name(sub.func) or ""
+            if name in SQL_COMPOSITION_BUILDERS \
+                    or name.split(".")[-1] in SQL_COMPOSITION_BUILDERS:
+                return True
+        return False
+
+    @staticmethod
+    def _c89_formatted_statement(expr):
+        """A SQL statement with a hole filled by string interpolation rather than by the driver."""
+        for sub in ast.walk(expr):
+            if TaintTracker._c89_builder_composed(sub):
+                continue
+            if isinstance(sub, ast.JoinedStr):
+                text = "".join(item.value for item in sub.values
+                               if isinstance(item, ast.Constant) and isinstance(item.value, str))
+                if SQL_KEYWORD_RE.search(text) and any(
+                        isinstance(item, ast.FormattedValue) for item in sub.values):
+                    return True
+            elif isinstance(sub, ast.Call) and isinstance(sub.func, ast.Attribute) \
+                    and sub.func.attr == "format":
+                text = " ".join(item.value for item in ast.walk(sub.func.value)
+                                 if isinstance(item, ast.Constant) and isinstance(item.value, str))
+                if SQL_KEYWORD_RE.search(text) and ("{" in text or sub.args or sub.keywords):
+                    return True
+            elif isinstance(sub, ast.BinOp) and isinstance(sub.op, ast.Mod) \
+                    and isinstance(sub.left, ast.Constant) \
+                    and isinstance(sub.left.value, str) and SQL_KEYWORD_RE.search(sub.left.value) \
+                    and not isinstance(sub.right, ast.Constant):
+                return True
         return False
 
     def _c20_is_form_valid_test(self, test):
@@ -17376,6 +18034,12 @@ class TaintTracker:
             self._collect_cwe22_parameter_path_sinks(_bs_tree, _bs_file, _bs_lines)
             self._collect_cwe94_python_source_writes(_bs_tree, _bs_file, _bs_lines)
             self._collect_cwe79_django_xss(_bs_tree, _bs_file, _bs_lines)
+            self._collect_cwe209_stack_trace_exposure(_bs_tree, _bs_file, _bs_lines)
+            self._collect_cwe117_log_injection(_bs_tree, _bs_file, _bs_lines)
+            self._collect_cwe601_open_redirect(_bs_tree, _bs_file, _bs_lines)
+            self._collect_cwe319_insecure_transport(_bs_tree, _bs_file, _bs_lines)
+            self._collect_cwe79_insecure_jinja_config(_bs_tree, _bs_file, _bs_lines)
+            self._collect_cwe89_hook_query_execution(_bs_tree, _bs_file, _bs_lines)
         _t1 = _time.perf_counter()
         print(f"TimeCodeSecurity [PROFILE] Structural findings (all batches): {_t1 - _t0:.2f}s", file=_sys.stderr)
         for assign_stmt, scope_id, lineno in self.ssl_attr_assigns:
