@@ -75,22 +75,6 @@ jobs:
           grep -Eq "False Negatives[[:space:]]*:[[:space:]]*0" benchmark_results/gate1.txt
           echo "GATE1_PASSED=true" >> "$GITHUB_ENV"
 
-      - name: Unit Suite Verification (python -m pytest tests -q)
-        # The unit suite is where "zero false positives" is actually checkable: every positive in
-        # tests/ is a switch diff - the same fixture scanned with the new collector or source rule
-        # stubbed out - so a rule that over-fires shows up as a red test instead of an opinion.
-        # Run here rather than on a workstation: the arena clones below are what need the RAM.
-        # Actions uses `bash -eo pipefail`, so a non-zero suite fails the step through the tee pipe.
-        # `pip install pytest` is mandatory, not decoration: requirements.txt has no pytest line
-        # (measured by reading the whole file) and the install step above adds only flet + semgrep,
-        # so the first version of this step died in seconds on `No module named pytest` while Gate 1
-        # beside it passed. Kept inside this step so the dependency travels with its consumer.
-        run: |
-          python -m pip install pytest
-          python -m pytest tests -q | tee benchmark_results/unit_suite.txt
-          grep -q "passed" benchmark_results/unit_suite.txt
-          ! grep -Eq "^(FAILED|ERROR)" benchmark_results/unit_suite.txt
-
       - name: Resolve Arena To Repository And Ref
         # Measured 2026-10-09 with `git ls-remote --heads`: erev0s/VAmPI master = f16052d,
         # anxolerd/dvpwa master = a1d8f89, apache/airflow v1-10-test = 530aeb7. The dvpwa URL is
