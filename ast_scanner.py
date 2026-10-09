@@ -1199,6 +1199,40 @@ SQL_COMPOSITION_BUILDERS = frozenset({
     "psycopg2.sql.Placeholder", "sql.Placeholder", "Placeholder",
     "sqlalchemy.text", "text", "sqlalchemy.sql.bindparam", "bindparam",
 })
+# ── Enterprise route boundaries whose parameters carry the client payload ─────────────────────
+# Zulip's `@has_request_variables` family: a view only receives client text through these decorators,
+# and nothing in the corpus spells a web framework decorator this way, so the name list is its own
+# guard.
+ENTERPRISE_ROUTE_DECORATOR_SEGMENTS = frozenset({
+    "has_request_variables", "authenticated_json_view", "rest_dispatch",
+    "api_key_only_webhook_view"})
+# Server-resolved context Zulip hands every view. None of them is client text: `request` is the
+# WSGI object, the rest are rows the server looked up from an authenticated session.
+ENTERPRISE_TRUSTED_PARAM_NAMES = frozenset({
+    "request", "user_profile", "realm", "acting_user", "client", "subdomain", "identity"})
+# Zulip's explicit "this comes from the request body" extractors.
+ZULIP_EXTRACTOR_SEGMENTS = frozenset({"REQ", "OptionalREQ", "ClientVariable", "RawClientVariable"})
+# FastAPI's scalar parameter extractors. `Body`/`Form`/`File` are deliberately absent: a Pydantic
+# model body is validated field-by-field by the framework before the view ever sees it.
+FASTAPI_EXTRACTOR_SEGMENTS = frozenset({"Query", "Header", "Path"})
+# Web route decorators FastAPI/Starlette-style apps register views with.
+FASTAPI_ROUTE_DECORATOR_SEGMENTS = frozenset({
+    "get", "post", "put", "patch", "delete", "head", "options", "route", "api_route", "websocket"})
+# Only these annotations make `Path(...)` FastAPI's extractor and not a `pathlib.Path` object.
+PRIMITIVE_ANNOTATION_NAMES = frozenset({
+    "str", "int", "float", "bool", "bytes", "complex", "datetime", "date", "time", "UUID"})
+# CWE-502: the network reads whose bytes are attacker-shaped, and the deserializers that execute them.
+SOCKET_READ_METHODS = frozenset({
+    "recv", "recv_multipart", "recv_string", "recv_bytes", "recv_pyobj", "recv_obj", "recv_json"})
+SOCKET_STREAM_SEGMENTS = frozenset({"Stream", "Socket"})
+SOCKET_DESERIALIZATION_SINKS = frozenset({
+    "pickle.loads", "pickle.load", "msgpack.unpackb", "msgpack.loads",
+    "_pickle.loads", "_pickle.load", "cPickle.loads", "cPickle.load"})
+# Text a module must contain for the CWE-502 pairing walk to be worth running at all: either an
+# import path it could resolve through, or the tail spelling of a sink call written out directly.
+SOCKET_DESERIALIZATION_TOKENS = ("pickle", "msgpack", ".loads(", ".load(", ".unpackb(")
+# Every new local-flow rule walks at most this many assignments, which is what keeps scan time flat.
+TAINT_TRAVERSAL_MAX_HOPS = 8
 
 # Filesystem reads that open a path string. Only the builtin spellings: `Path.open()` and
 # `csv.open()` are receivers we cannot resolve to a path, so they stay out.
@@ -2875,10 +2909,107 @@ class TaintTracker:
 
         return False
 
+    def _enterprise_param_names(self, fn_node) -> frozenset:
+        """Which parameters of a Zulip/FastAPI view arrive from the client payload.
+
+        Cached per function node: the taint engine asks on every `Name` access, so the classification
+        is computed once per view instead of once per variable read. The node is stored beside the
+        answer, so a recycled id can never be mistaken for a hit.
+        """
+        cache = self.__dict__.setdefault("_enterprise_param_cache", {})
+        key = (fn_node.name, fn_node.lineno, fn_node.col_offset, len(fn_node.decorator_list))
+        cached = cache.get(key)
+        if cached is not None and cached[0] is fn_node:
+            return cached[1]
+        names = self._compute_enterprise_param_names(fn_node)
+        cache[key] = (fn_node, names)
+        return names
+
+    @staticmethod
+    def _decorator_segments(fn_node) -> set:
+        """Last dotted component of every decorator, called or bare (`@app.post`, `@REQ_view`)."""
+        segments = set()
+        for decorator in getattr(fn_node, "decorator_list", []):
+            target = decorator.func if isinstance(decorator, ast.Call) else decorator
+            name = dotted_name(target) or getattr(target, "attr", "") or getattr(target, "id", "")
+            if name:
+                segments.add(name.split(".")[-1])
+        return segments
+
+    @staticmethod
+    def _signature_parameters(fn_node):
+        """(name, default, annotation) for every positional, posonly and keyword-only parameter."""
+        arguments = fn_node.args
+        positional = list(getattr(arguments, "posonlyargs", None) or []) + list(arguments.args)
+        defaults = list(arguments.defaults)
+        offset = len(positional) - len(defaults)
+        for index, argument in enumerate(positional):
+            yield argument.arg, (defaults[index - offset] if index >= offset else None), argument.annotation
+        for argument, default in zip(arguments.kwonlyargs, arguments.kw_defaults):
+            yield argument.arg, default, argument.annotation
+
+    @staticmethod
+    def _extractor_segment(node) -> str:
+        """Call spelling behind a parameter: `= Query(...)`, or `Annotated[str, Query(...)]`."""
+        calls = []
+        if isinstance(node, ast.Call):
+            calls.append(node)
+        for sub in ast.walk(node) if node is not None else ():
+            if isinstance(sub, ast.Call):
+                calls.append(sub)
+        for call in calls:
+            name = dotted_name(call.func)
+            if name:
+                segment = name.split(".")[-1]
+                if segment in FASTAPI_EXTRACTOR_SEGMENTS or segment in ZULIP_EXTRACTOR_SEGMENTS:
+                    return segment
+        return ""
+
+    @staticmethod
+    def _annotation_is_scalar(annotation) -> bool:
+        """True for `str`, `Optional[int]`, `List[str]`, ... and for an unannotated parameter."""
+        if annotation is None:
+            return True
+        names = {sub.id for sub in ast.walk(annotation) if isinstance(sub, ast.Name)}
+        if isinstance(annotation, ast.Attribute):
+            names.add(annotation.attr)
+        return bool(names) and names <= (PRIMITIVE_ANNOTATION_NAMES
+                                        | {"Optional", "Union", "List", "Sequence", "Annotated"})
+
+    def _compute_enterprise_param_names(self, fn_node) -> frozenset:
+        segments = self._decorator_segments(fn_node)
+        zulip_view = bool(segments & ENTERPRISE_ROUTE_DECORATOR_SEGMENTS)
+        fastapi_view = bool(segments & FASTAPI_ROUTE_DECORATOR_SEGMENTS)
+        if not (zulip_view or fastapi_view):
+            return frozenset()
+        out = set()
+        for name, default, annotation in self._signature_parameters(fn_node):
+            if name in ENTERPRISE_TRUSTED_PARAM_NAMES or name in ("self", "cls"):
+                continue
+            segment = self._extractor_segment(default) or self._extractor_segment(
+                annotation if isinstance(annotation, ast.Subscript) else None)
+            if segment in ZULIP_EXTRACTOR_SEGMENTS:
+                out.add(name)
+                continue
+            if zulip_view:
+                # An unannotated parameter with no server-side default is what these decorators read
+                # straight out of the payload. An *annotated* parameter without REQ is injected
+                # context or a plain Python default, so it stays clean.
+                if annotation is None and default is None:
+                    out.add(name)
+                continue
+            if fastapi_view and segment in FASTAPI_EXTRACTOR_SEGMENTS:
+                if segment == "Path" and not self._annotation_is_scalar(annotation):
+                    # `directory: Path = Path("/data")` is a pathlib object, not FastAPI's extractor.
+                    continue
+                out.add(name)
+        return frozenset(out)
+
     def _get_route_param_names(self, fn_node: Optional[ast.AST]) -> set[str]:
         out: set[str] = set()
         if fn_node is None or not isinstance(fn_node, (ast.FunctionDef, ast.AsyncFunctionDef)):
             return out
+        out |= self._enterprise_param_names(fn_node)
         for dec in getattr(fn_node, "decorator_list", []):
             call = dec if isinstance(dec, ast.Call) else None
             if call is None:
@@ -9149,6 +9280,121 @@ class TaintTracker:
                     and not isinstance(sub.right, ast.Constant):
                 return True
         return False
+
+    # ── 12. CWE-502: bytes read off a ZeroMQ/socket channel handed to a deserializer ─
+    def _collect_cwe502_socket_deserialization(self, tree, filename, source_lines):
+        """Salt-style RCE: the payload is unpickled straight off the message bus.
+
+        The pairing *is* the rule. `msgpack.unpackb(payload)` alone is not a finding - msgpack cannot
+        execute anything - so the argument must trace back, inside one function scope and through at
+        most `TAINT_TRAVERSAL_MAX_HOPS` copies, to `.recv()` / `.recv_multipart()` / a `zmq.Stream`.
+        """
+        if not any(token in "\n".join(source_lines) for token in SOCKET_DESERIALIZATION_TOKENS):
+            return
+        aliases = self._c502_import_aliases(tree)
+        if not any(isinstance(node, ast.Call) and node.args
+                   and self._c502_qualified_name(node, aliases) in SOCKET_DESERIALIZATION_SINKS
+                   for node in ast.walk(tree)):
+            # The pairing walk below is per function and quadratic in nesting depth. A module that
+            # never calls a deserialiser cannot produce this finding, so it stops here.
+            return
+        for func in ast.walk(tree):
+            if not isinstance(func, (ast.FunctionDef, ast.AsyncFunctionDef)):
+                continue
+            table: dict[str, list] = {}
+            for node in ast.walk(func):
+                if isinstance(node, ast.Assign) and len(node.targets) == 1 \
+                        and isinstance(node.targets[0], ast.Name):
+                    table.setdefault(node.targets[0].id, []).append((node.lineno, node.value))
+                elif isinstance(node, (ast.For, ast.AsyncFor)) \
+                        and isinstance(node.target, ast.Name) \
+                        and self._c502_has_socket_read(node.iter, aliases):
+                    # `for msg in stream.recv_multipart():` binds each socket frame to the target.
+                    table.setdefault(node.target.id, []).append((node.lineno, node.iter))
+            socket_names = self._c502_socket_names(table, aliases)
+            if not socket_names:
+                continue
+            for node in ast.walk(func):
+                if not isinstance(node, ast.Call) or not node.args:
+                    continue
+                if self._c502_qualified_name(node, aliases) not in SOCKET_DESERIALIZATION_SINKS:
+                    continue
+                payload = node.args[0]
+                if isinstance(payload, ast.Constant):
+                    continue
+                if not self._c502_uses_socket(payload, socket_names, aliases):
+                    continue
+                if self._blindspot_line_suppressed(source_lines, node):
+                    continue
+                self._add_blindspot_sink(
+                    node, filename, "CWE-502", "SOCKET_DESERIALIZATION", "UNSAFE_DESERIALIZATION",
+                    "CWE-502: Deserialization of untrusted ZeroMQ network socket stream",
+                    "SOCKET_DESERIALIZATION", reuse_existing=True)
+
+    @staticmethod
+    def _c502_import_aliases(tree):
+        """local name -> dotted path, so `import msgpack as mp` still reads as `msgpack.unpackb`."""
+        aliases: dict[str, str] = {}
+        for node in ast.walk(tree):
+            if isinstance(node, ast.Import):
+                for item in node.names:
+                    aliases[item.asname or item.name.split(".")[0]] = item.name
+            elif isinstance(node, ast.ImportFrom) and node.module:
+                for item in node.names:
+                    aliases[item.asname or item.name] = f"{node.module}.{item.name}"
+        return aliases
+
+    @staticmethod
+    def _c502_qualified_name(node, aliases):
+        name = dotted_name(node.func) if isinstance(node, ast.Call) else ""
+        if not name:
+            return ""
+        parts = name.split(".")
+        return ".".join([aliases.get(parts[0], parts[0])] + parts[1:])
+
+    @classmethod
+    def _c502_has_socket_read(cls, expr, aliases):
+        """Any channel read or ZeroMQ object construction inside *expr*."""
+        for sub in ast.walk(expr):
+            if not isinstance(sub, ast.Call):
+                continue
+            func = sub.func
+            if isinstance(func, ast.Attribute) and func.attr in SOCKET_READ_METHODS:
+                return True
+            qualified = cls._c502_qualified_name(sub, aliases)
+            if qualified.startswith("zmq.") and qualified.endswith((".Stream", ".Socket")):
+                return True
+        return False
+
+    @classmethod
+    def _c502_socket_names(cls, table, aliases):
+        """Names holding socket bytes, grown through at most TAINT_TRAVERSAL_MAX_HOPS copies.
+
+        Each pass compares against a snapshot, so one pass can only add one link of the chain. That
+        is what makes the hop cap real instead of a comment: a payload copied nine times in a row
+        stops being traceable and the site is left unreported.
+        """
+        tainted = {name for name, records in table.items()
+                   if any(cls._c502_has_socket_read(value, aliases) for _lineno, value in records)}
+        for _hop in range(TAINT_TRAVERSAL_MAX_HOPS):
+            layer = set(tainted)
+            grown = False
+            for name, records in table.items():
+                if name in layer:
+                    continue
+                if any(cls._c502_uses_socket(value, layer, aliases)
+                       for _lineno, value in records):
+                    tainted.add(name)
+                    grown = True
+            if not grown:
+                break
+        return tainted
+
+    @classmethod
+    def _c502_uses_socket(cls, expr, tainted, aliases):
+        if cls._c502_has_socket_read(expr, aliases):
+            return True
+        return any(sub.id in tainted for sub in ast.walk(expr) if isinstance(sub, ast.Name))
 
     def _c20_is_form_valid_test(self, test):
         """None unless *test* is an `x.is_valid()` check; else False/True for plain/negated."""
@@ -18040,6 +18286,7 @@ class TaintTracker:
             self._collect_cwe319_insecure_transport(_bs_tree, _bs_file, _bs_lines)
             self._collect_cwe79_insecure_jinja_config(_bs_tree, _bs_file, _bs_lines)
             self._collect_cwe89_hook_query_execution(_bs_tree, _bs_file, _bs_lines)
+            self._collect_cwe502_socket_deserialization(_bs_tree, _bs_file, _bs_lines)
         _t1 = _time.perf_counter()
         print(f"TimeCodeSecurity [PROFILE] Structural findings (all batches): {_t1 - _t0:.2f}s", file=_sys.stderr)
         for assign_stmt, scope_id, lineno in self.ssl_attr_assigns:

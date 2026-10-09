@@ -14,6 +14,9 @@ on:
           - 'vampi (Easy - Flask REST API & JWT)'
           - 'dvpwa (Medium - Flask & MongoDB NoSQL)'
           - 'cve_airflow (Hard - Real World CVE RCE)'
+          - 'saltstack (Ultra Hard - ZeroMQ & RCE CVE-2020-11651)'
+          - 'zulip (Hard - Enterprise Django/Tornado & Custom Decorators)'
+          - 'saleor (Medium - Modern GraphQL & Pydantic/Django)'
         default: 'vampi (Easy - Flask REST API & JWT)'
 
 # contents:read clones this repo. security-events:write is what codeql-action expects to see even
@@ -69,11 +72,27 @@ jobs:
           grep -Eq "False Negatives[[:space:]]*:[[:space:]]*0" benchmark_results/gate1.txt
           echo "GATE1_PASSED=true" >> "$GITHUB_ENV"
 
+      - name: Unit Suite Verification (python -m pytest tests -q)
+        # The unit suite is where "zero false positives" is actually checkable: every positive in
+        # tests/ is a switch diff - the same fixture scanned with the new collector or source rule
+        # stubbed out - so a rule that over-fires shows up as a red test instead of an opinion.
+        # Run here rather than on a workstation: the arena clones below are what need the RAM.
+        # Actions uses `bash -eo pipefail`, so a non-zero suite fails the step through the tee pipe.
+        run: |
+          python -m pytest tests -q | tee benchmark_results/unit_suite.txt
+          grep -q "passed" benchmark_results/unit_suite.txt
+          ! grep -Eq "^(FAILED|ERROR)" benchmark_results/unit_suite.txt
+
       - name: Resolve Arena To Repository And Ref
         # Measured 2026-10-09 with `git ls-remote --heads`: erev0s/VAmPI master = f16052d,
         # anxolerd/dvpwa master = a1d8f89, apache/airflow v1-10-test = 530aeb7. The dvpwa URL is
         # anxolerd/dvpwa because `appsecco/dvpwa` no longer resolves ("Repository not found"), and
         # it is the maintained home of the same lab.
+        # Same command, measured 2026-10-09 for the three new arenas: saltstack/salt v3000.1 is a
+        # tag = 67cf311 (the release CVE-2020-11651 was fixed in, so the vulnerable ZeroMQ load path
+        # is still in the tree), zulip/zulip main = de2dbb9. saleor has NO `3.14` branch or tag -
+        # `git ls-remote` lists only 3.14.0 / 3.14.1 / 3.14.10 style tags plus trunk lines 3.22, 3.23
+        # and main - so the pin is the tag `3.14.0` (1cda186), which is what `--branch` can resolve.
         run: |
           case "$ARENA" in
             vampi*)
@@ -91,6 +110,21 @@ jobs:
               REF="v1-10-test"
               LABEL="apache/airflow @ v1-10-test (historical 1.10 branch)"
               ;;
+            saltstack*)
+              REPO="https://github.com/saltstack/salt.git"
+              REF="v3000.1"
+              LABEL="saltstack/salt @ v3000.1 (ZeroMQ publish/anmin channels, CVE-2020-11651)"
+              ;;
+            zulip*)
+              REPO="https://github.com/zulip/zulip.git"
+              REF="main"
+              LABEL="zulip/zulip @ main (Django + Tornado, @has_request_variables views)"
+              ;;
+            saleor*)
+              REPO="https://github.com/saleor/saleor.git"
+              REF="3.14.0"
+              LABEL="saleor/saleor @ 3.14.0 (GraphQL + Django + Pydantic-style input models)"
+              ;;
             *)
               echo "unknown arena: $ARENA" >&2
               exit 1
@@ -104,6 +138,9 @@ jobs:
           echo "arena=$ARENA -> $REPO @ $REF"
 
       - name: Clone Target Arena (shallow, single branch)
+        # --depth 1 --single-branch keeps this to one snapshot, and deleting .git right after frees
+        # the object store before the engines start reading the tree. saleor/salt/zulip are far
+        # bigger than the labs above, so the checkout is the slowest step a human will see.
         run: |
           git clone --depth 1 --single-branch --branch "$REF" "$REPO" "$TARGET_DIR"
           rm -rf "$TARGET_DIR/.git"
@@ -118,11 +155,19 @@ jobs:
         # and airflow v1-10-test has no root requirements.txt at all (measured: the GitHub contents
         # API for that ref lists none, and the raw URL returns HTTP 404). A missing dependency set
         # must not cancel the benchmark; it only makes the note below true.
+        # saltstack keeps its pins in requirements/static/pip.txt rather than at the root, so that
+        # file is tried too. saleor@3.14.0 does ship a root requirements.txt (measured: the raw URL
+        # returns HTTP 200); zulip's is under root/requirements and is not attempted.
         continue-on-error: true
         run: |
-          if [ -f "$TARGET_DIR/requirements.txt" ]; then
-            pip install -r "$TARGET_DIR/requirements.txt"
-          else
+          for candidate in requirements.txt requirements/static/pip.txt; do
+            if [ -f "$TARGET_DIR/$candidate" ]; then
+              pip install -r "$TARGET_DIR/$candidate"
+              break
+            fi
+          done
+          if [ ! -f "$TARGET_DIR/requirements.txt" ] \
+             && [ ! -f "$TARGET_DIR/requirements/static/pip.txt" ]; then
             echo "no $TARGET_DIR/requirements.txt - skipping target installs"
           fi
 
