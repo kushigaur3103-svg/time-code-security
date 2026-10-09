@@ -1906,6 +1906,169 @@ REFLECTION_FAMILY_BY_KIND = {
     "namespace": ("CWE-95", "DYNAMIC_CODE_INVOCATION", "CODE_EXECUTION"),
 }
 
+# ─── Module 2: structural ReDoS analyzer (CWE-1333) ───
+# A pattern is catastrophic when the engine can re-split the same characters in an unbounded number
+# of ways. Two shapes do that: a repeat that multiplies nested inside another multiplying repeat,
+# and two repeats that can both start on the same character. Two shapes do not, even though a naive
+# AST walk flags them: a repeat whose body is forced to end on a separator the body cannot start
+# with (`(\d+,)*`, `(\d{1,3}\.){3}`) has exactly one split per separator, and a repeat with a small
+# concrete bound (`{3}`, `{1,3}`) multiplies into a constant number of paths, not an unbounded one.
+REGEX_MULTIPLYING_BOUND = 10
+REGEX_PARSE_DEPTH_LIMIT = 32
+REGEX_DIGIT_CHARS = frozenset(range(ord("0"), ord("9") + 1))
+
+
+def _regex_first_chars(tokens):
+    """Characters a parsed sre sequence can start with, or None when that is not knowable."""
+    for operation, argument in tokens:
+        if operation is re._constants.LITERAL:
+            return {argument}
+        if operation is re._constants.IN:
+            characters = set()
+            for member_op, member_arg in argument:
+                if member_op is re._constants.LITERAL:
+                    characters.add(member_arg)
+                elif member_op is re._constants.RANGE:
+                    start, end = member_arg
+                    if end - start <= 512:
+                        characters.update(range(start, end + 1))
+                    else:
+                        return None
+                elif member_op is re._constants.CATEGORY and member_arg is re._constants.CATEGORY_DIGIT:
+                    characters.update(REGEX_DIGIT_CHARS)
+                else:
+                    return None
+            return characters
+        if operation is re._constants.SUBPATTERN:
+            nested = _regex_first_chars(argument[-1])
+            if nested is not None:
+                return nested
+            return None
+        if operation in (re._constants.MAX_REPEAT, re._constants.MIN_REPEAT) or (
+            hasattr(re._constants, "POSSESSIVE_REPEAT")
+            and operation is re._constants.POSSESSIVE_REPEAT
+        ):
+            return _regex_first_chars(argument[2])
+        if operation is re._constants.BRANCH:
+            branches = [_regex_first_chars(branch) for branch in argument[1]]
+            if any(branch is None for branch in branches):
+                return None
+            return set().union(*branches)
+        if operation is re._constants.AT:
+            continue
+        return None
+    return set()
+
+
+def _regex_trailing_separator(tokens):
+    """Characters a repeated body must end with, or None when its tail is variable.
+
+    `(\d+,)` ends on a comma it can never start on, so the comma pins every iteration; `(a+)` ends
+    on the same `a` it started with, which is exactly the ambiguity that blows up.
+    """
+    if not tokens:
+        return None
+    operation, argument = tokens[-1]
+    if operation is re._constants.LITERAL:
+        return {argument}
+    if operation is re._constants.IN:
+        characters = set()
+        for member_op, member_arg in argument:
+            if member_op is re._constants.LITERAL:
+                characters.add(member_arg)
+            elif member_op is re._constants.RANGE:
+                start, end = member_arg
+                if end - start <= 512:
+                    characters.update(range(start, end + 1))
+                else:
+                    return None
+            else:
+                return None
+        return characters or None
+    if operation is re._constants.SUBPATTERN:
+        return _regex_trailing_separator(argument[-1])
+    return None
+
+
+def _regex_catastrophic_backtracking(tokens, inside_repeat=False, depth=0) -> bool:
+    """Walk a parsed sre tree looking for unbounded split ambiguity (exponential or polynomial)."""
+    if depth > REGEX_PARSE_DEPTH_LIMIT:
+        return False
+    repeat_ops = {re._constants.MAX_REPEAT, re._constants.MIN_REPEAT}
+    if hasattr(re._constants, "POSSESSIVE_REPEAT"):
+        repeat_ops.add(re._constants.POSSESSIVE_REPEAT)
+    previous_repeat_chars = None
+    previous_separator = None
+    previous_single_char = None
+    for operation, argument in tokens:
+        if operation in repeat_ops:
+            minimum, maximum, repeated_body = argument[0], argument[1], argument[2]
+            # A `?` (max == 1) contributes at most two paths and `{3}` a constant number, so only
+            # unbounded repeats or repeats bounded at/above REGEX_MULTIPLYING_BOUND can multiply.
+            multiplies = maximum is None or maximum >= REGEX_MULTIPLYING_BOUND
+            current_chars = _regex_first_chars(repeated_body)
+            separator = _regex_trailing_separator(repeated_body)
+            delimited = (separator is not None and current_chars is not None
+                         and not separator & current_chars)
+            if inside_repeat and multiplies and not delimited:
+                return True
+            if not delimited and _regex_catastrophic_backtracking(
+                    repeated_body, inside_repeat or multiplies, depth + 1):
+                return True
+            if previous_repeat_chars is not None and not (
+                previous_separator is not None and current_chars is not None
+                and not previous_separator & current_chars
+            ):
+                if (current_chars is None or previous_repeat_chars is None
+                        or previous_repeat_chars & current_chars):
+                    return True
+            if minimum > 0 or previous_repeat_chars is None:
+                previous_repeat_chars, previous_separator = current_chars, separator if delimited else None
+            elif current_chars is not None:
+                # An iteration that can match nothing keeps the following repeat adjacent to the
+                # one before it, which is what makes `[a-z]+[\._]?[a-z0-9]+` quadratic.
+                previous_repeat_chars = previous_repeat_chars | current_chars
+            continue
+        if operation is re._constants.SUBPATTERN:
+            if _regex_catastrophic_backtracking(argument[-1], inside_repeat, depth + 1):
+                return True
+        elif operation is re._constants.BRANCH:
+            branches = argument[1]
+            branch_starts = [_regex_first_chars(branch) for branch in branches]
+            # `re` factors a common prefix out of `(a|aa)` into `[a, BRANCH[[], [a]]]`, so the two
+            # alternatives look disjoint even though the run of `a`s splits two ways. Comparing the
+            # alternatives against the single character right before the branch recovers that.
+            if inside_repeat and previous_single_char is not None and any(
+                start and start & previous_single_char for start in branch_starts
+            ):
+                return True
+            for index, first in enumerate(branch_starts):
+                if first is None:
+                    continue
+                if any(first & other for other in branch_starts[index + 1:] if other is not None):
+                    if inside_repeat:
+                        return True
+            if any(_regex_catastrophic_backtracking(branch, inside_repeat, depth + 1)
+                   for branch in branches):
+                return True
+        elif operation in (re._constants.LITERAL, re._constants.IN):
+            previous_single_char = _regex_first_chars([(operation, argument)])
+        else:
+            previous_single_char = None
+        previous_repeat_chars = None
+        previous_separator = None
+    return False
+
+
+def _is_redos_vulnerable_pattern(pattern_str) -> bool:
+    """Structural CWE-1333 verdict for one regex source string; never raises, never imports `regex`."""
+    if not isinstance(pattern_str, str) or not pattern_str:
+        return False
+    try:
+        return _regex_catastrophic_backtracking(re._parser.parse(pattern_str, 0))
+    except Exception:
+        return False
+
 
 class TaintTracker:
     def __init__(self, files: dict[str, str] = None, source: str = None, file_path: str = "target.py", audit_all: bool = False, max_workers: Optional[int] = None):
@@ -16103,7 +16266,8 @@ class TaintTracker:
             "access_token", "private_key", "client_secret",
         }
         regex_sinks = {
-            "re.compile", "re.match", "re.search", "re.findall", "re.finditer", "re.sub",
+            "re.compile", "re.match", "re.search", "re.fullmatch", "re.findall", "re.finditer",
+            "re.sub",
         }
         credential_placeholders = {
             "changeme", "change_me", "change-this", "placeholder", "dummy",
@@ -16204,83 +16368,6 @@ class TaintTracker:
                 character_classes >= 2 or (len(normalized) >= 20 and entropy >= 3.3)
             )
 
-        def _first_chars(tokens) -> set[int] | None:
-            for operation, argument in tokens:
-                if operation is re._constants.LITERAL:
-                    return {argument}
-                if operation is re._constants.IN:
-                    characters = set()
-                    for member_op, member_arg in argument:
-                        if member_op is re._constants.LITERAL:
-                            characters.add(member_arg)
-                        elif member_op is re._constants.RANGE:
-                            start, end = member_arg
-                            if end - start <= 512:
-                                characters.update(range(start, end + 1))
-                            else:
-                                return None
-                        else:
-                            return None
-                    return characters
-                if operation is re._constants.SUBPATTERN:
-                    nested = _first_chars(argument[-1])
-                    if nested is not None:
-                        return nested
-                if operation is re._constants.BRANCH:
-                    branches = [_first_chars(branch) for branch in argument[1]]
-                    if any(branch is None for branch in branches):
-                        return None
-                    return set().union(*branches)
-                if operation is re._constants.AT:
-                    continue
-                return None
-            return set()
-
-        def _has_catastrophic_backtracking(tokens, inside_repeat: bool = False) -> bool:
-            """Detect regex patterns that can cause exponential backtracking (ReDoS)."""
-            repeat_ops = {
-                re._constants.MAX_REPEAT,
-                re._constants.MIN_REPEAT,
-            }
-            if hasattr(re._constants, "POSSESSIVE_REPEAT"):
-                repeat_ops.add(re._constants.POSSESSIVE_REPEAT)
-            previous_repeat_chars = None
-            for operation, argument in tokens:
-                if operation in repeat_ops:
-                    repeated_body = argument[2]
-                    # A `?` quantifier (max == 1) contributes at most two paths, so nesting it
-                    # inside another repeat stays linear. Only repeats that can iterate more
-                    # than once (`*`, `+`, `{n,m}` with m > 1) multiply into exponential paths.
-                    multiplies = argument[1] is None or argument[1] > 1
-                    if inside_repeat and multiplies:
-                        return True
-                    if _has_catastrophic_backtracking(repeated_body, inside_repeat or multiplies):
-                        return True
-                    current_chars = _first_chars(repeated_body)
-                    if previous_repeat_chars is not None and (
-                        current_chars is None or previous_repeat_chars is None
-                        or previous_repeat_chars & current_chars
-                    ):
-                        return True
-                    previous_repeat_chars = current_chars
-                    continue
-                if operation is re._constants.SUBPATTERN:
-                    if _has_catastrophic_backtracking(argument[-1], inside_repeat):
-                        return True
-                elif operation is re._constants.BRANCH:
-                    branches = argument[1]
-                    branch_starts = [_first_chars(branch) for branch in branches]
-                    for index, first in enumerate(branch_starts):
-                        if first is None:
-                            continue
-                        if any(first & other for other in branch_starts[index + 1:] if other is not None):
-                            if inside_repeat:
-                                return True
-                    if any(_has_catastrophic_backtracking(branch, inside_repeat) for branch in branches):
-                        return True
-                previous_repeat_chars = None
-            return False
-
         def _remove_existing(node: ast.AST, cwe: str, mod_name: str) -> None:
             node_location = location(node, self.file_paths.get(mod_name, "unknown.py"))
             removed = [
@@ -16369,11 +16456,7 @@ class TaintTracker:
                 value = _eval_static_constant(pattern, self.assignments_by_scope, scope_id, getattr(node, "lineno", 1))
                 if not isinstance(value, str):
                     continue
-                try:
-                    parsed = re._parser.parse(value, 0)
-                    vulnerable = _has_catastrophic_backtracking(parsed)
-                except (re.error, AttributeError, TypeError, ValueError):
-                    vulnerable = False
+                vulnerable = _is_redos_vulnerable_pattern(value)
                 if vulnerable:
                     _add_finding(
                         node, mod_name, scope_id, "CWE-1333", "REGULAR_EXPRESSION_DOS",
