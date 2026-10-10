@@ -2362,6 +2362,13 @@ class TaintTracker:
         self.class_field_assignments: dict[tuple[str, str], list[AssignmentRecord]] = {}
         self.classes: set[str] = set()
         self.sink_records: list[SinkRecord] = []
+        # Dedup index for `(location.file, location.line_start, metadata["cwe"])` -> first SecurityNode.
+        # Rebuilt whenever `sink_records` is rebound, shrinks, or the absorbed prefix changes (a
+        # deletion refilled to the same length); appends are absorbed from `_sink_index_len` onward.
+        self._sink_index: dict[tuple[str, int, object], "SecurityNode"] = {}
+        self._sink_index_list: Optional[list] = None
+        self._sink_index_len = 0
+        self._sink_index_tail: Optional[object] = None
         self.functions: dict[str, ast.FunctionDef] = {}
         self.returns_by_scope: dict[str, list[ast.Return]] = {}
         self.raw_calls: list[tuple[ast.Call, str, int]] = []
@@ -8349,6 +8356,51 @@ class TaintTracker:
                     return True
         return False
 
+    def _sink_index_key(self, record: "SinkRecord"):
+        """Dedup key for a sink record: the file, the first line and the CWE it reports.
+
+        None for a record whose node carries no CWE. No `_add_blindspot_sink` call site passes
+        cwe=None, so such a record can never be the match the scan returns; indexing it would only
+        add map entries.
+        """
+        node = record.security_node
+        cwe = node.metadata.get("cwe")
+        if cwe is None:
+            return None
+        return (node.location.file, node.location.line_start, cwe)
+
+    def _sink_index_find(self, filename: str, lineno: int, cwe) -> Optional["SecurityNode"]:
+        """Return the first `sink_records` entry keyed (filename, lineno, cwe), or None.
+
+        Replaces a linear walk of `sink_records` (O(sinks) per blindspot call, quadratic over a
+        repo). Equivalence with that walk, including which record wins when two share a key, holds
+        because records are absorbed in list order and an existing key is never overwritten.
+        Records with no CWE are not indexed: every `_add_blindspot_sink` call site passes a literal
+        CWE, so a query can never ask for one.
+        """
+        records = self.sink_records
+        absorbed = self._sink_index_len
+        # Identity catches a rebind (`self.sink_records = [r for r in ... if ...]`), the length
+        # catches an in-place shrink, and the tail catches a shrink that was refilled to the same
+        # size: the object at `absorbed - 1` is then no longer the one the index was built from, so
+        # a key set by a retired record would otherwise keep answering lookups forever.
+        if (records is not self._sink_index_list or absorbed > len(records)
+                or (absorbed and records[absorbed - 1] is not self._sink_index_tail)):
+            self._sink_index = {}
+            self._sink_index_list = records
+            start = 0
+        else:
+            start = absorbed
+        index = self._sink_index
+        for i in range(start, len(records)):
+            record = records[i]
+            key = self._sink_index_key(record)
+            if key is not None and key not in index:
+                index[key] = record.security_node
+        self._sink_index_len = len(records)
+        self._sink_index_tail = records[-1] if records else None
+        return index.get((filename, lineno, cwe))
+
     def _add_blindspot_sink(self, node, filename, cwe, operation, category, message, source_id,
                             reuse_existing=False):
         """Append a structural sink plus the synthetic source id that makes it reportable.
@@ -8359,10 +8411,7 @@ class TaintTracker:
         discarded, which is how a function whose caller is in another module still gets reported.
         """
         lineno = getattr(node, "lineno", 1)
-        existing = next((record.security_node for record in self.sink_records
-                         if record.security_node.location.file == filename
-                         and record.security_node.location.line_start == lineno
-                         and record.security_node.metadata.get("cwe") == cwe), None)
+        existing = self._sink_index_find(filename, lineno, cwe)
         if existing is not None:
             if not reuse_existing:
                 return
