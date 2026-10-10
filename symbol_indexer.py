@@ -56,7 +56,11 @@ class GlobalSymbolIndex:
         parts = list(rel.with_suffix("").parts)
         if parts and parts[-1] == "__init__":
             parts.pop()
-        return ".".join(parts)
+        # Interned because this name becomes the key of `modules`, `module_to_file` and every
+        # later import-resolution lookup. One canonical object per name means the interpreter
+        # hashes the string once instead of once per dict lookup, and equal names compare by
+        # pointer. The returned value is still the same dotted string.
+        return sys.intern(".".join(parts))
 
     def build(self) -> GlobalSymbolIndex:
         """Pass 1: Discover and index all Python definitions and imports."""

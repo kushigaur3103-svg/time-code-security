@@ -2,6 +2,7 @@ from __future__ import annotations
 import ast
 import math
 import re
+import sys
 from dataclasses import dataclass, field, asdict
 from enum import Enum
 from typing import Optional, List, Dict, Any, Union, Tuple
@@ -32,7 +33,7 @@ class ProvenanceState(str, Enum):
     UNKNOWN = "UNKNOWN"
     TAINTED = "TAINTED"
 
-@dataclass(frozen=True)
+@dataclass(frozen=True, slots=True)
 class ProvenanceValue:
     state: ProvenanceState
     confidence: float = 1.0
@@ -115,7 +116,7 @@ STD_INTERNAL_PATH_PRODUCERS: dict[str, dict] = {
     "argparse.ArgumentParser.parse_args": {"is_context_manager": False, "return_type": "namespace"},
 }
 
-@dataclass(frozen=True)
+@dataclass(frozen=True, slots=True)
 class CodeLocation:
     file: str
     line_start: int
@@ -123,7 +124,7 @@ class CodeLocation:
     column_start: int = 0
     column_end: int = 0
 
-@dataclass
+@dataclass(slots=True)
 class SecurityNode:
     id: str
     node_type: NodeType
@@ -145,7 +146,7 @@ class ProofNodeType(str, Enum):
     SANITIZER = "SANITIZER"
     SINK = "SINK"
 
-@dataclass(frozen=True)
+@dataclass(frozen=True, slots=True)
 class ProofNode:
     """
     Represents a single deterministic hop or operation in a ProofGraphIR.
@@ -164,7 +165,7 @@ class ProofNode:
     expression_snippet: str
     scope_id: str
 
-@dataclass(frozen=True)
+@dataclass(frozen=True, slots=True)
 class ProofEdge:
     from_node_id: str
     to_node_id: str
@@ -257,7 +258,7 @@ def render_proof_graph_ascii(proof_graph: ProofGraphIR) -> str:
     lines.append(f"└{'─' * inner_width}┘")
     return "\n".join(lines)
 
-@dataclass
+@dataclass(slots=True)
 class DataFlowEdge:
     source_id: str
     target_id: str
@@ -270,7 +271,7 @@ class DataFlowEdge:
     def proof_nodes(self) -> list[ProofNode]:
         return self.proof_graph.nodes if self.proof_graph else []
 
-@dataclass
+@dataclass(slots=True)
 class TaintValue:
     state: TaintState
     source_id: Optional[str] = None
@@ -287,7 +288,7 @@ class SecuritySlice:
     edges: list[DataFlowEdge]
     code: str
 
-@dataclass
+@dataclass(slots=True)
 class AssignmentRecord:
     target_name: str
     value_node: ast.AST
@@ -295,7 +296,7 @@ class AssignmentRecord:
     scope_id: str
     is_conditional: bool
 
-@dataclass
+@dataclass(slots=True)
 class SinkRecord:
     node: ast.Call
     security_node: SecurityNode
@@ -2197,6 +2198,9 @@ def _is_redos_vulnerable_pattern(pattern_str) -> bool:
 _PHASE2_PARENT_OWNED = frozenset({
     "files", "modules", "file_paths", "skipped_files", "parse_stats", "max_workers",
     "audit_all", "imports", "dead_node_ids", "_ast_cache", "_source_counter", "_sink_counter",
+    # Per-module derivation caches. They key on `id(tree)`, and a worker's trees are its own
+    # unpickled copies, so grafting them in would register ids of objects the parent never holds.
+    "_assignment_map_cache", "_function_ranges_cache",
 })
 
 
@@ -2327,6 +2331,15 @@ class TaintTracker:
                 "governor_events": 0,
                 "parse_mode": "inline",
             }
+        # Module names and file paths are re-compared and re-hashed for the rest of the run: every
+        # scope id is built from them, and every rule loop looks them up. Interning the two
+        # canonical tables once makes equal names the *same object*, so those comparisons become
+        # pointer checks. This changes no value: an interned string compares and hashes equal to
+        # the string it replaced. Both dicts are rebuilt by comprehension, which keeps insertion
+        # order, so the order every later phase iterates in is untouched.
+        self.modules = {sys.intern(_mod): _tree for _mod, _tree in self.modules.items()}
+        self.file_paths = {sys.intern(_mod): sys.intern(_path)
+                           for _mod, _path in self.file_paths.items()}
         self.dead_node_ids: set = self._compute_dead_node_ids()
         self.imports = {m: {} for m in self.modules}
         self.sources: list[SecurityNode] = []
@@ -8237,6 +8250,40 @@ class TaintTracker:
                 table.setdefault(node.targets[0].id, []).append((node.lineno, node.value))
         return table
 
+    def _memo_assignment_map(self, tree):
+        """`_blindspot_build_assignment_map(tree)` cached per module tree.
+
+        Nine CWE collectors ask for the same module's map during one run, and the builder is a
+        full `ast.walk` of that module each time. The result is read-only everywhere it is used -
+        callers only ever pass it to `_blindspot_latest_assignment`, which does `table.get(...)` -
+        so sharing one instance cannot change any answer.
+
+        The cache is keyed on `id(tree)` and the stored value carries the tree, so a hit is only
+        served when the cached object IS the requested tree. That makes id reuse after a
+        garbage-collection impossible to mistake for a hit, at the cost of one identity check.
+        """
+        cache = self.__dict__.setdefault("_assignment_map_cache", {})
+        entry = cache.get(id(tree))
+        if entry is not None and entry[0] is tree:
+            return entry[1]
+        table = TaintTracker._blindspot_build_assignment_map(tree)
+        cache[id(tree)] = (tree, table)
+        return table
+
+    def _memo_function_ranges(self, tree):
+        """`_c22_function_ranges(tree)` cached per module tree; same identity-guarded contract.
+
+        Three collectors request it per module. Callers only build filtered lists out of the
+        returned tuples, never mutate it, so one shared instance is behaviourally identical.
+        """
+        cache = self.__dict__.setdefault("_function_ranges_cache", {})
+        entry = cache.get(id(tree))
+        if entry is not None and entry[0] is tree:
+            return entry[1]
+        ranges = TaintTracker._c22_function_ranges(tree)
+        cache[id(tree)] = (tree, ranges)
+        return ranges
+
     @staticmethod
     def _blindspot_latest_assignment(table, name, use_lineno):
         """The value *name* held at *use_lineno*: its closest assignment above that line."""
@@ -8340,7 +8387,7 @@ class TaintTracker:
 
     # ── 1. CWE-78: subprocess with shell=True on a command built at runtime ────────
     def _collect_cwe78_subprocess_calls(self, tree, filename, source_lines):
-        table = self._blindspot_build_assignment_map(tree)
+        table = self._memo_assignment_map(tree)
         for node in ast.walk(tree):
             if not isinstance(node, ast.Call) or not isinstance(node.func, ast.AST):
                 continue
@@ -8436,7 +8483,7 @@ class TaintTracker:
 
     # ── 4. CWE-93: raw client input written into a response header or body ─────────
     def _collect_cwe93_header_injection(self, tree, filename, source_lines):
-        table = self._blindspot_build_assignment_map(tree)
+        table = self._memo_assignment_map(tree)
         for node in ast.walk(tree):
             # Only the values that actually land in the header are inspected: the receiver of
             # a method call and the subscript key are the response object's own names.
@@ -8533,8 +8580,8 @@ class TaintTracker:
         guards: a path sanitizer anywhere in the derivation, or a `name.startswith(root)`
         containment test on the same variable.
         """
-        table = self._blindspot_build_assignment_map(tree)
-        ranges = self._c22_function_ranges(tree)
+        table = self._memo_assignment_map(tree)
+        ranges = self._memo_function_ranges(tree)
         guarded = self._c22_guarded_names(tree)
         for node in ast.walk(tree):
             if not isinstance(node, ast.Call):
@@ -8653,7 +8700,7 @@ class TaintTracker:
         not be a literal - so `open('test.log', 'a')` log rotation and a static generated
         file stay silent.
         """
-        table = self._blindspot_build_assignment_map(tree)
+        table = self._memo_assignment_map(tree)
         with_opens = self._c94_handle_opens(tree)
         for node in ast.walk(tree):
             if not isinstance(node, ast.Call) or not node.args:
@@ -8734,8 +8781,8 @@ class TaintTracker:
         spells none of these wrappers, so its four new CWE-79 rows all come from the template
         rule in `html_auditor.py`.
         """
-        table = self._blindspot_build_assignment_map(tree)
-        ranges = self._c22_function_ranges(tree)
+        table = self._memo_assignment_map(tree)
+        ranges = self._memo_function_ranges(tree)
         for node in ast.walk(tree):
             if not isinstance(node, ast.Call) or not node.args:
                 continue
@@ -8817,7 +8864,7 @@ class TaintTracker:
         that is returned two statements later. A logging call is not a reply, so `logger.error(str(e))`
         is out of this rule by construction and belongs to CWE-532/CWE-117 instead.
         """
-        table = self._blindspot_build_assignment_map(tree)
+        table = self._memo_assignment_map(tree)
         emitted = set()
 
         def _returns(body):
@@ -8956,8 +9003,8 @@ class TaintTracker:
         newline, and any named CRLF sanitizer (or an inline `replace`/`re.sub` on a `\r`/`\n`
         pattern) anywhere in the derivation clears the value.
         """
-        table = self._blindspot_build_assignment_map(tree)
-        func_ranges = [(start, end) for start, end, _params in self._c22_function_ranges(tree)]
+        table = self._memo_assignment_map(tree)
+        func_ranges = [(start, end) for start, end, _params in self._memo_function_ranges(tree)]
         endpoints = [
             (func.lineno, func.end_lineno or func.lineno, params)
             for func, params in self._c117_endpoint_scopes(tree)
@@ -9091,7 +9138,7 @@ class TaintTracker:
         Only the fallback form is handled here, so a site the taint path already owns can never be
         emitted twice.
         """
-        table = self._blindspot_build_assignment_map(tree)
+        table = self._memo_assignment_map(tree)
         for node in ast.walk(tree):
             target = self._c601_redirect_target(node)
             if target is None:
@@ -9171,7 +9218,7 @@ class TaintTracker:
         """
         if self._c319_test_scope(filename):
             return
-        table = self._blindspot_build_assignment_map(tree)
+        table = self._memo_assignment_map(tree)
         bare_verbs = self._c319_imported_verbs(tree)
         for node in ast.walk(tree):
             if not isinstance(node, ast.Call) or not self._c319_is_transport_sink(node, bare_verbs):
@@ -9313,7 +9360,7 @@ class TaintTracker:
         receiver, a SQL-shaped template, and no bind-parameter argument, because every safe corpus
         spelling measured here is `execute("SELECT ... ?", (uid,))`, where the driver does the quoting.
         """
-        table = self._blindspot_build_assignment_map(tree)
+        table = self._memo_assignment_map(tree)
         for node in ast.walk(tree):
             if not isinstance(node, ast.Call) or not isinstance(node.func, ast.Attribute):
                 continue
