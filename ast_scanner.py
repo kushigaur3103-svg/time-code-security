@@ -1085,6 +1085,15 @@ STRUCTURAL_SYNTHETIC_SOURCES = {
     # Django form views that read the raw request.POST/FILES after form.is_valid() validated.
     "CWE-20": "IMPROPER_INPUT_VALIDATION",
 }
+
+# Sink metadata keys the graph-evaluation cascade checks before STRUCTURAL_SYNTHETIC_SOURCES. A sink
+# carrying any of them gets its edge from that earlier branch, so Stage-1 must leave it alone or the
+# winning source_id for its (file, line, cwe) group could change.
+STAGE1_DEFERRED_SOURCE_KEYS = (
+    "p11_source_id", "p10_source_id", "p9_source_id", "p8_source_id", "p7_source_id",
+    "p6_source_id", "p5_source_id", "p4_source_id", "p3_source_id",
+)
+
 CWE798_TARGET_RE = re.compile(r"(?i).*(password|passwd|secret_key|api_key|access_token|auth_token).*")
 # Django's unvalidated client-input containers. `is_valid()` fills `form.cleaned_data`, never
 # these, so a read of them inside a validated-form scope is the CWE-20 signal.
@@ -18198,6 +18207,67 @@ class TaintTracker:
                 gc.enable()
                 gc.collect()
 
+    def _emit_structural_edge(self, sink: SecurityNode) -> bool:
+        """Give a pure structural sink its synthetic source edge, once.
+
+        These edges need no taint resolution: the source id comes straight from the CWE. Emitting
+        them at collection time (see _flush_stage1_structural_edges) instead of only inside the
+        graph-evaluation cascade means a SIGTERM part-way through the cascade still writes every
+        single-file finding to SARIF.
+        """
+        cwe = sink.metadata.get("cwe")
+        if not cwe or cwe not in STRUCTURAL_SYNTHETIC_SOURCES:
+            return False
+        if any(sink.metadata.get(key) for key in STAGE1_DEFERRED_SOURCE_KEYS):
+            return False
+        emitted = getattr(self, "_stage1_edges", None)
+        if emitted is None:
+            emitted = self._stage1_edges = {}
+        if sink.id in emitted:
+            return False
+        op = sink.metadata.get("operation")
+        edge = DataFlowEdge(
+            source_id=STRUCTURAL_SYNTHETIC_SOURCES[cwe],
+            target_id=sink.id,
+            kind="CONFIRMED_DATA_FLOW",
+            confidence=1.0,
+            transform=op or f"{cwe.lower()}_structural_violation"
+        )
+        self.edges.append(edge)
+        emitted[sink.id] = edge
+        return True
+
+    def _flush_stage1_structural_edges(self) -> None:
+        """Stage-1 checkpoint: attach edges for every structural sink collected so far."""
+        for record in self.sink_records:
+            self._emit_structural_edge(record.security_node)
+
+    def _reconcile_stage1_edges(self) -> None:
+        """Drop an eager Stage-1 edge once graph evaluation gave that sink a better source.
+
+        Some collectors attach a `p<N>_source_id` to a structural sink after the checkpoint that
+        emitted its synthetic edge (CWE-1004 cookie flags do this), which would leave the sink with
+        two edges. Findings cannot tell them apart, but the graph stays byte-identical to the
+        cascade-only pipeline this way.
+        """
+        registry = getattr(self, "_stage1_edges", None)
+        if not registry:
+            return
+        seen_targets = set()
+        duplicated = set()
+        for edge in self.edges:
+            if edge.target_id in seen_targets:
+                duplicated.add(edge.target_id)
+            else:
+                seen_targets.add(edge.target_id)
+        stale = {tid: edge for tid, edge in registry.items() if tid in duplicated}
+        if not stale:
+            return
+        stale_ids = {id(edge) for edge in stale.values()}
+        self.edges = [edge for edge in self.edges if id(edge) not in stale_ids]
+        for tid in stale:
+            registry.pop(tid, None)
+
     def _analyze_pipeline(self):
         """Analyze all modules for security vulnerabilities with phase-level profiling."""
         import time as _time
@@ -18416,33 +18486,38 @@ class TaintTracker:
         _t1 = _time.perf_counter()
         print(f"TimeCodeSecurity [PROFILE] Source detection: {_t1 - _t0:.2f}s", file=_sys.stderr)
         
-        # Structural finding collection phases (batched for profiling)
+        # Structural finding collection phases (batched for profiling). Each collector is followed by
+        # a Stage-1 flush, so its single-file findings are edge-complete before the next one starts.
         _t0 = _time.perf_counter()
-        self._collect_batch2_structural_findings()
-        self._collect_batch3a_structural_findings()
-        self._collect_cwe319_variable_resolution_findings()
-        self._collect_batch3b_structural_findings()
-        self._collect_batch4_structural_findings()
-        self._collect_phase3_structural_findings()
-        self._collect_phase4_structural_findings()
-        self._collect_intra_file_call_bridge_findings()
-        self._collect_cwe89_driver_querybuilder_findings()
-        self._collect_phase5_structural_findings()
-        self._collect_phase6_structural_findings()
-        self._collect_phase7_structural_findings()
-        self._collect_phase8_structural_findings()
-        self._collect_phase9_structural_findings()
-        self._collect_response_write_findings()
-        self._collect_template_response_xss_findings()
-        self._collect_cwe79_xss_recovery_findings()
-        self._collect_cwe22_path_traversal_findings()
-        self._collect_cwe502_deserialization_findings()
-        self._collect_cluster1_structural_findings()
-        self._collect_cluster2_structural_findings()
-        self._collect_cluster3_structural_findings()
-        self._collect_django_post_validation_findings()
+        for _s1_collector in (
+            self._collect_batch2_structural_findings,
+            self._collect_batch3a_structural_findings,
+            self._collect_cwe319_variable_resolution_findings,
+            self._collect_batch3b_structural_findings,
+            self._collect_batch4_structural_findings,
+            self._collect_phase3_structural_findings,
+            self._collect_phase4_structural_findings,
+            self._collect_intra_file_call_bridge_findings,
+            self._collect_cwe89_driver_querybuilder_findings,
+            self._collect_phase5_structural_findings,
+            self._collect_phase6_structural_findings,
+            self._collect_phase7_structural_findings,
+            self._collect_phase8_structural_findings,
+            self._collect_phase9_structural_findings,
+            self._collect_response_write_findings,
+            self._collect_template_response_xss_findings,
+            self._collect_cwe79_xss_recovery_findings,
+            self._collect_cwe22_path_traversal_findings,
+            self._collect_cwe502_deserialization_findings,
+            self._collect_cluster1_structural_findings,
+            self._collect_cluster2_structural_findings,
+            self._collect_cluster3_structural_findings,
+            self._collect_django_post_validation_findings,
+        ):
+            _s1_collector()
+            self._flush_stage1_structural_edges()
         # Last, so their line+CWE dedup sees every sink the earlier phases already reported.
-        for _bs_mod, _bs_tree in sorted(self.modules.items()):
+        for _bs_idx, (_bs_mod, _bs_tree) in enumerate(sorted(self.modules.items())):
             _bs_file = self.file_paths.get(_bs_mod, "unknown.py")
             _bs_lines = self._source_lines_by_file.get(_bs_file, [])
             self._collect_cwe78_subprocess_calls(_bs_tree, _bs_file, _bs_lines)
@@ -18459,6 +18534,11 @@ class TaintTracker:
             self._collect_cwe79_insecure_jinja_config(_bs_tree, _bs_file, _bs_lines)
             self._collect_cwe89_hook_query_execution(_bs_tree, _bs_file, _bs_lines)
             self._collect_cwe502_socket_deserialization(_bs_tree, _bs_file, _bs_lines)
+            # Every 25 modules: a flush per module would rescan every sink record, which costs
+            # O(modules x sinks) on a large repo. This keeps the window at ~25 files.
+            if _bs_idx % 25 == 24:
+                self._flush_stage1_structural_edges()
+        self._flush_stage1_structural_edges()
         _t1 = _time.perf_counter()
         print(f"TimeCodeSecurity [PROFILE] Structural findings (all batches): {_t1 - _t0:.2f}s", file=_sys.stderr)
         for assign_stmt, scope_id, lineno in self.ssl_attr_assigns:
@@ -18647,13 +18727,10 @@ class TaintTracker:
                 continue
 
             if cwe in STRUCTURAL_SYNTHETIC_SOURCES:
-                self.edges.append(DataFlowEdge(
-                    source_id=STRUCTURAL_SYNTHETIC_SOURCES[cwe],
-                    target_id=sink.id,
-                    kind="CONFIRMED_DATA_FLOW",
-                    confidence=1.0,
-                    transform=op or f"{cwe.lower()}_structural_violation"
-                ))
+                # Already emitted at the Stage-1 checkpoint that followed the collector which
+                # recorded this sink; the call below is the idempotent backstop for any sink that
+                # appeared after the last checkpoint.
+                self._emit_structural_edge(sink)
                 continue
 
             if op == "UNBOUNDED_READ" or (cwe in ("CWE-400", "CWE-776") and isinstance(record.node, ast.Call) and isinstance(record.node.func, ast.Attribute) and record.node.func.attr == "read" and len(record.node.args) == 0):
@@ -18749,6 +18826,7 @@ class TaintTracker:
                 elif taint.state == TaintState.UNKNOWN:
                     self.edges.append(DataFlowEdge(source_id=taint.source_id or "UNKNOWN", target_id=sink.id, kind="POTENTIAL_DATA_FLOW", confidence=0.50, transform=full_path_str, proof_graph=pg))
 
+        self._reconcile_stage1_edges()
         _t_end = _time.perf_counter()
         _total_elapsed = _t_end - _phase_start
         print(f"TimeCodeSecurity [PROFILE] Total analyze() elapsed: {_total_elapsed:.2f}s", file=_sys.stderr)

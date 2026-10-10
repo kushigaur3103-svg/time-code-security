@@ -58,3 +58,43 @@ def test_scan_survives_default_recursion_limit():
     """Run under CI's stock limit of 1000 frames, which is what GitHub Actions uses."""
     assert sys.getrecursionlimit() >= 1000
     _analyze('cmd = cmd + "ls"\neval(cmd)\n')
+
+
+def _cwe_lines(source, cwe="CWE-78"):
+    """Lines carrying an edge into a sink of *cwe*, so each dataflow route is visible."""
+    _s, sinks, edges = TaintTracker(files={"t.py": source}).analyze()
+    by_id = {x.id: x for x in sinks}
+    return sorted(
+        by_id[e.target_id].location.line_start
+        for e in edges
+        if e.target_id in by_id and by_id[e.target_id].metadata.get("cwe") == cwe
+    )
+
+
+def test_second_sibling_route_into_same_helper_is_not_blocked():
+    """The cycle guard is path-scoped, so a sibling call to the same helper still resolves.
+
+    Both `wrap(...)` calls sit on one line and resolve to one callee scope, and the tainted route is
+    the second one. A callee-level "already visited" set that leaked between siblings would stop at
+    the clean first route and lose the payload behind the second: a false negative.
+    """
+    source = (
+        "import os\n"
+        "def wrap(v):\n"
+        "    return v\n"
+        "os.system(wrap('safe') + wrap(input()))\n"
+    )
+    assert _cwe_lines(source) == [4]
+
+
+def test_distinct_call_sites_into_one_helper_are_all_reported():
+    """Separate valid paths to the same function must each produce their own finding."""
+    source = (
+        "import os\n"
+        "def run(c):\n"
+        "    os.system(c)\n"
+        "run(input() + ' ls')\n"
+        "run(os.environ['CMD'])\n"
+    )
+    # Line 3 is the sink inside the helper, lines 4 and 5 are the two routes into it.
+    assert _cwe_lines(source) == [3, 4, 5]
