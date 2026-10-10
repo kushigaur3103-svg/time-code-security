@@ -18489,34 +18489,41 @@ class TaintTracker:
         # Structural finding collection phases (batched for profiling). Each collector is followed by
         # a Stage-1 flush, so its single-file findings are edge-complete before the next one starts.
         _t0 = _time.perf_counter()
-        for _s1_collector in (
-            self._collect_batch2_structural_findings,
-            self._collect_batch3a_structural_findings,
-            self._collect_cwe319_variable_resolution_findings,
-            self._collect_batch3b_structural_findings,
-            self._collect_batch4_structural_findings,
-            self._collect_phase3_structural_findings,
-            self._collect_phase4_structural_findings,
-            self._collect_intra_file_call_bridge_findings,
-            self._collect_cwe89_driver_querybuilder_findings,
-            self._collect_phase5_structural_findings,
-            self._collect_phase6_structural_findings,
-            self._collect_phase7_structural_findings,
-            self._collect_phase8_structural_findings,
-            self._collect_phase9_structural_findings,
-            self._collect_response_write_findings,
-            self._collect_template_response_xss_findings,
-            self._collect_cwe79_xss_recovery_findings,
-            self._collect_cwe22_path_traversal_findings,
-            self._collect_cwe502_deserialization_findings,
-            self._collect_cluster1_structural_findings,
-            self._collect_cluster2_structural_findings,
-            self._collect_cluster3_structural_findings,
-            self._collect_django_post_validation_findings,
+        # Observational only: never feeds a finding. Reset per pass so a reused tracker cannot
+        # carry stale timings.
+        self._collector_profile = {}
+        for _s1_name, _s1_collector in (
+            ("batch2", self._collect_batch2_structural_findings),
+            ("batch3a", self._collect_batch3a_structural_findings),
+            ("cwe319_vars", self._collect_cwe319_variable_resolution_findings),
+            ("batch3b", self._collect_batch3b_structural_findings),
+            ("batch4", self._collect_batch4_structural_findings),
+            ("phase3", self._collect_phase3_structural_findings),
+            ("phase4", self._collect_phase4_structural_findings),
+            ("intra_call_bridge", self._collect_intra_file_call_bridge_findings),
+            ("cwe89_querybuilder", self._collect_cwe89_driver_querybuilder_findings),
+            ("phase5", self._collect_phase5_structural_findings),
+            ("phase6", self._collect_phase6_structural_findings),
+            ("phase7", self._collect_phase7_structural_findings),
+            ("phase8", self._collect_phase8_structural_findings),
+            ("phase9", self._collect_phase9_structural_findings),
+            ("response_write", self._collect_response_write_findings),
+            ("template_xss", self._collect_template_response_xss_findings),
+            ("cwe79_recovery", self._collect_cwe79_xss_recovery_findings),
+            ("cwe22_traversal", self._collect_cwe22_path_traversal_findings),
+            ("cwe502_deser", self._collect_cwe502_deserialization_findings),
+            ("cluster1", self._collect_cluster1_structural_findings),
+            ("cluster2", self._collect_cluster2_structural_findings),
+            ("cluster3", self._collect_cluster3_structural_findings),
+            ("django_post", self._collect_django_post_validation_findings),
         ):
+            _s1_t0 = _time.perf_counter()
             _s1_collector()
+            self._collector_profile[_s1_name] = self._collector_profile.get(_s1_name, 0.0) + (
+                _time.perf_counter() - _s1_t0)
             self._flush_stage1_structural_edges()
         # Last, so their line+CWE dedup sees every sink the earlier phases already reported.
+        _bs_t0 = _time.perf_counter()
         for _bs_idx, (_bs_mod, _bs_tree) in enumerate(sorted(self.modules.items())):
             _bs_file = self.file_paths.get(_bs_mod, "unknown.py")
             _bs_lines = self._source_lines_by_file.get(_bs_file, [])
@@ -18539,8 +18546,14 @@ class TaintTracker:
             if _bs_idx % 25 == 24:
                 self._flush_stage1_structural_edges()
         self._flush_stage1_structural_edges()
+        self._collector_profile["blindspot_all"] = _time.perf_counter() - _bs_t0
+        print("TimeCodeSecurity [PROFILE] Collectors (s): " + " ".join(
+            f"{name}={secs:.2f}" for name, secs in
+            sorted(self._collector_profile.items(), key=lambda kv: (-kv[1], kv[0]))),
+            file=_sys.stderr)
         _t1 = _time.perf_counter()
         print(f"TimeCodeSecurity [PROFILE] Structural findings (all batches): {_t1 - _t0:.2f}s", file=_sys.stderr)
+        _t_cascade = _t1
         for assign_stmt, scope_id, lineno in self.ssl_attr_assigns:
             mod_name = scope_module(scope_id)
             file_path = self.file_paths.get(mod_name, "unknown.py")
@@ -18827,6 +18840,10 @@ class TaintTracker:
                     self.edges.append(DataFlowEdge(source_id=taint.source_id or "UNKNOWN", target_id=sink.id, kind="POTENTIAL_DATA_FLOW", confidence=0.50, transform=full_path_str, proof_graph=pg))
 
         self._reconcile_stage1_edges()
+        _t_cascade_end = _time.perf_counter()
+        print(f"TimeCodeSecurity [PROFILE] Graph evaluation (per-sink cascade): "
+              f"{_t_cascade_end - _t_cascade:.2f}s ({len(self.sink_records)} sink records)",
+              file=_sys.stderr)
         _t_end = _time.perf_counter()
         _total_elapsed = _t_end - _phase_start
         print(f"TimeCodeSecurity [PROFILE] Total analyze() elapsed: {_total_elapsed:.2f}s", file=_sys.stderr)
