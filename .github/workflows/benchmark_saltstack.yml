@@ -163,17 +163,21 @@ jobs:
         # step is still running.
         # The `timeout` wrapper is what makes the graceful flush reachable: Actions does not reliably
         # deliver SIGTERM to a child process when a step times out, it tears the runner's process tree
-        # down instead. coreutils sends a real SIGTERM at 900s, cli.py's handler writes the partial
+        # down instead. coreutils sends a real SIGTERM at 1200s, cli.py's handler writes the partial
         # SARIF/JSON, and --kill-after only fires if the handler itself ever hangs.
+        # 900s -> 1200s because the previous run proved the wrapper, not the engine, was the limit:
+        # all 2819 discovered files were read (scanned_files == total_discovered_files) and the scan
+        # was still alive in graph evaluation when SIGTERM arrived. 22 minutes of step budget leaves
+        # the 20-minute scan plus ~2 minutes for the flush, tee and artefact listing.
         # `|| echo` because Actions runs `bash -e`: a bare non-zero exit would abort the step before
         # the code is recorded, and the referee would report "not recorded" instead of the real number.
-        timeout-minutes: 20
+        timeout-minutes: 22
         continue-on-error: true
         env:
           PYTHONUNBUFFERED: "1"
         run: |
           set -o pipefail
-          timeout --signal=TERM --kill-after=30s 900s \
+          timeout --signal=TERM --kill-after=30s 1200s \
             python -u cli.py scan "$TARGET_DIR/" \
             --scope all \
             --format json \
@@ -470,13 +474,13 @@ jobs:
                  "- Clone: `git clone --depth 1 --single-branch --branch v3000.1`, `.git` removed.",
                  "- CodeQL: `security-extended`, `build-mode: none`, `upload: false`, config paths "
                  f"scoped to `{TARGET_DIR}`.",
-                 "- TCS: `timeout --signal=TERM --kill-after=30s 900s python -u cli.py scan "
+                 "- TCS: `timeout --signal=TERM --kill-after=30s 1200s python -u cli.py scan "
                  "target_arena/ --scope all --format json --sarif benchmark_results/tcs.sarif` "
                  "with `PYTHONUNBUFFERED=1`, stderr tee-ed to `benchmark_results/tcs_stdout.txt` so "
-                 "progress names the stalled file. A SIGTERM at 15 minutes makes cli.py's handler "
+                 "progress names the stalled file. A SIGTERM at 20 minutes makes cli.py's handler "
                  "flush the findings found so far instead of losing them.",
                  "- Semgrep OSS: `p/python` + `p/owasp-top-ten`, `--metrics=off`, SARIF out.",
-                 "- Step timeouts: CodeQL 10, TCS 20, Semgrep 10; job 35. Each engine step is "
+                 "- Step timeouts: CodeQL 10, TCS 22, Semgrep 10; job 35. Each engine step is "
                  "continue-on-error, so one timeout never cancels the others.",
                  "- Artifacts: `benchmark_results/` (three SARIF sets, stdout logs, target "
                  "inventory, this report).", ""]
