@@ -2184,9 +2184,10 @@ def _is_redos_vulnerable_pattern(pattern_str) -> bool:
 # scope ids, so the pass can run in a worker process and be grafted back. Three identities have
 # to survive the round trip, and each is handled explicitly:
 #
-#   * Container order. A serial run appends per module in `self.modules` iteration order, so the
-#     graft replays that same order. `ProcessPoolExecutor.map` yields results in input order
-#     regardless of which worker finished first, so chunking cannot reorder anything.
+#   * Container order. Both paths append in `_phase2_ordered_modules` order (path, then module
+#     name), so the graft replays the same sequence the serial loop used. `ProcessPoolExecutor.map`
+#     yields results in input order regardless of which worker finished first, so chunking cannot
+#     reorder anything.
 #   * Sink and source ids. `next_sink_id` / `next_source_id` number from a per-process counter, so
 #     every child restarts at 1. The parent re-issues both id series after the merge, in merged
 #     order, which reproduces the serial ids exactly instead of approximating them.
@@ -2197,6 +2198,18 @@ _PHASE2_PARENT_OWNED = frozenset({
     "files", "modules", "file_paths", "skipped_files", "parse_stats", "max_workers",
     "audit_all", "imports", "dead_node_ids", "_ast_cache", "_source_counter", "_sink_counter",
 })
+
+
+def _phase2_ordered_modules(tracker) -> list:
+    """Canonical Phase 2 order: file path, then module name as tie-break.
+
+    The walk that fills `tracker.modules` is not itself path-sorted, so the serial loop and the
+    worker pool both derive their order from this key rather than from dict insertion order. That
+    makes the two paths equal by construction, and keeps the SNK-/SRC- id series independent of
+    whatever order a directory tree happens to arrive in.
+    """
+    return sorted(tracker.modules,
+                  key=lambda mod: (tracker.file_paths.get(mod, ""), mod))
 
 
 def _phase2_worker_count(module_count: int) -> int:
@@ -2255,8 +2268,8 @@ def _phase2_collect_parallel(tracker, workers):
     """
     import concurrent.futures
 
-    payloads = [(tracker.file_paths[mod], mod, tree, tracker.audit_all)
-                for mod, tree in tracker.modules.items()]
+    payloads = [(tracker.file_paths[mod], mod, tracker.modules[mod], tracker.audit_all)
+                for mod in _phase2_ordered_modules(tracker)]
     chunksize = max(1, len(payloads) // (workers * 8))
     collected = []
     with concurrent.futures.ProcessPoolExecutor(max_workers=workers) as pool:
@@ -18173,11 +18186,13 @@ class TaintTracker:
                 _p2_workers = 1
                 print(f"TimeCodeSecurity [PROFILE] Phase 2 fan-out disabled "
                       f"({type(_p2_exc).__name__}: {_p2_exc}); serial collection", file=_sys.stderr)
-                for mod_name, tree in self.modules.items():
-                    self.collect_statements(tree.body, scope_id=f"{mod_name}:global", is_conditional=False)
+                for mod_name in _phase2_ordered_modules(self):
+                    self.collect_statements(self.modules[mod_name].body,
+                                            scope_id=f"{mod_name}:global", is_conditional=False)
         else:
-            for mod_name, tree in self.modules.items():
-                self.collect_statements(tree.body, scope_id=f"{mod_name}:global", is_conditional=False)
+            for mod_name in _phase2_ordered_modules(self):
+                self.collect_statements(self.modules[mod_name].body,
+                                        scope_id=f"{mod_name}:global", is_conditional=False)
         _t1 = _time.perf_counter()
         print(f"TimeCodeSecurity [PROFILE] Phase 2 (Statement collection): {_t1 - _t0:.2f}s "
               f"({_p2_workers} worker(s))", file=_sys.stderr)

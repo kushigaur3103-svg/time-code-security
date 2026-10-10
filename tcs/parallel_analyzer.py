@@ -30,7 +30,7 @@ import psutil
 
 ANALYSIS_WORKER_RAM_BUDGET_MB = 600  # Budget 600 MB per analysis worker
 HARD_SAFETY_THRESHOLD_MB = 900       # Drop to 1 worker if RAM < 900 MB
-CI_TWO_CORE_RAM_MB = 4000            # 2-core CI runner gets its second worker above this much RAM
+CI_TWO_CORE_RAM_MB = 1600            # 2-core CI runner gets its second worker above this much RAM
 
 
 def compute_analysis_workers() -> int:
@@ -51,9 +51,10 @@ def compute_analysis_workers() -> int:
             return 1
 
         # GitHub-hosted runners report 2 cores, and `cpu_count - 2` collapses that to a single
-        # worker, so a CI run never uses the machine it was given. On a 2-core runner with >= 4 GB
-        # available the second worker fits the per-worker RAM budget (600 MB) with room to spare,
-        # and the threshold above still forces 1 worker if free RAM ever drops.
+        # worker, so a CI run never uses the machine it was given. On a 2-core runner with >= 1.6 GB
+        # available the second worker fits the per-worker RAM budget (600 MB) twice over (2 x 600 =
+        # 1200 MB, plus headroom), and the 900 MB hard floor above still forces 1 worker if free RAM
+        # ever drops, so this only ever widens the pool on a machine that can hold it.
         if cpu_count == 2 and max_workers == 1 and free_ram_mb >= CI_TWO_CORE_RAM_MB:
             return 2
 

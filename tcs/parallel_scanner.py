@@ -27,7 +27,7 @@ HARD_SAFETY_THRESHOLD_MB = 900        # If available RAM < 900 MB, drop to 1 wor
 PER_FILE_TIMEOUT_S = 4.0              # Strict per-file watchdog timeout (seconds)
 BATCH_SIZE = 40                       # Files per batch (balance IPC vs overhead)
 MAX_WORKERS_CEILING = 12              # Allow up to 12 workers on cloud runners with ample RAM
-CI_TWO_CORE_RAM_MB = 4000             # 2-core CI runner gets its second worker above this much RAM
+CI_TWO_CORE_RAM_MB = 1600             # 2-core CI runner gets its second worker above this much RAM
 
 
 def compute_safe_workers() -> int:
