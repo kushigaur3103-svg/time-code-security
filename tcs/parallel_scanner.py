@@ -27,6 +27,7 @@ HARD_SAFETY_THRESHOLD_MB = 900        # If available RAM < 900 MB, drop to 1 wor
 PER_FILE_TIMEOUT_S = 4.0              # Strict per-file watchdog timeout (seconds)
 BATCH_SIZE = 40                       # Files per batch (balance IPC vs overhead)
 MAX_WORKERS_CEILING = 12              # Allow up to 12 workers on cloud runners with ample RAM
+CI_TWO_CORE_RAM_MB = 4000             # 2-core CI runner gets its second worker above this much RAM
 
 
 def compute_safe_workers() -> int:
@@ -61,7 +62,13 @@ def compute_safe_workers() -> int:
                 file=sys.stderr,
             )
             return 1
-        
+
+        # Same carve-out as `tcs/parallel_analyzer.compute_analysis_workers`: a 2-core runner would
+        # otherwise collapse to 1 worker through `cpu_count - MIN_FREE_CORES` and never use the
+        # machine CI gave it. The 900 MB floor above still wins whenever free RAM drops.
+        if cpu_count == 2 and max_workers == 1 and free_ram_mb >= CI_TWO_CORE_RAM_MB:
+            return 2
+
         return max_workers
         
     except Exception as exc:

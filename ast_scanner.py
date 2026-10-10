@@ -2178,6 +2178,102 @@ def _is_redos_vulnerable_pattern(pattern_str) -> bool:
         return False
 
 
+# ─── Deterministic per-module Phase 2 (statement collection) fan-out ────────────
+#
+# Phase 2 walks one module's AST at a time and writes only state keyed by that module's own
+# scope ids, so the pass can run in a worker process and be grafted back. Three identities have
+# to survive the round trip, and each is handled explicitly:
+#
+#   * Container order. A serial run appends per module in `self.modules` iteration order, so the
+#     graft replays that same order. `ProcessPoolExecutor.map` yields results in input order
+#     regardless of which worker finished first, so chunking cannot reorder anything.
+#   * Sink and source ids. `next_sink_id` / `next_source_id` number from a per-process counter, so
+#     every child restarts at 1. The parent re-issues both id series after the merge, in merged
+#     order, which reproduces the serial ids exactly instead of approximating them.
+#   * AST node identity. A child returns its tree and the state that points into that tree as ONE
+#     pickle payload, so pickle's memo keeps their shared references intact, and the parent then
+#     replaces its own copy of the tree. Two live copies of a module would count every sink twice.
+_PHASE2_PARENT_OWNED = frozenset({
+    "files", "modules", "file_paths", "skipped_files", "parse_stats", "max_workers",
+    "audit_all", "imports", "dead_node_ids", "_ast_cache", "_source_counter", "_sink_counter",
+})
+
+
+def _phase2_worker_count(module_count: int) -> int:
+    """Worker count for the Phase 2 fan-out, taken from the analysis RAM governor.
+
+    The 900 MB hard floor stays in charge: `compute_analysis_workers()` returns 1 below it, and any
+    import or measurement failure also returns 1, which leaves the serial loop in place.
+    """
+    if module_count < 2 or not PARALLEL_PARSING_AVAILABLE:
+        return 1
+    try:
+        from tcs.parallel_analyzer import compute_analysis_workers
+        return max(1, int(compute_analysis_workers()))
+    except Exception:
+        return 1
+
+
+def _phase2_module_batch(payload):
+    """Collect statements for one module inside this worker, and return its tree plus state."""
+    fpath, mod_name, tree, audit_all = payload
+    child = TaintTracker(files={fpath: ""}, audit_all=audit_all)
+    child.modules = {mod_name: tree}
+    child.file_paths = {mod_name: fpath}
+    child.collect_statements(tree.body, scope_id=f"{mod_name}:global", is_conditional=False)
+    state = {name: value for name, value in vars(child).items()
+             if name not in _PHASE2_PARENT_OWNED}
+    return mod_name, (tree, state)
+
+
+def _phase2_grant(tracker, mod_name, tree, state):
+    """Graft one worker's Phase 2 result onto the tracker without reordering anything."""
+    tracker.modules[mod_name] = tree
+    for name, value in state.items():
+        current = getattr(tracker, name, None)
+        if isinstance(current, list) and isinstance(value, list):
+            current.extend(value)
+        elif isinstance(current, dict) and isinstance(value, dict):
+            for key, item in value.items():
+                bucket = current.get(key)
+                if isinstance(bucket, list) and isinstance(item, list):
+                    bucket.extend(item)
+                else:
+                    current[key] = item
+        elif isinstance(current, set) and isinstance(value, set):
+            current.update(value)
+        else:
+            setattr(tracker, name, value)
+
+
+def _phase2_collect_parallel(tracker, workers):
+    """Run Phase 2 across `workers` and graft the results back in serial module order.
+
+    Returns True when every module was collected. On any failure the caller falls back to the
+    serial loop, which is safe because the graft only starts once the whole fan-out succeeded:
+    containers are appended in one pass, so no half-merged state can leak into later phases.
+    """
+    import concurrent.futures
+
+    payloads = [(tracker.file_paths[mod], mod, tree, tracker.audit_all)
+                for mod, tree in tracker.modules.items()]
+    chunksize = max(1, len(payloads) // (workers * 8))
+    collected = []
+    with concurrent.futures.ProcessPoolExecutor(max_workers=workers) as pool:
+        for mod_name, (tree, state) in pool.map(
+                _phase2_module_batch, payloads, chunksize=chunksize):
+            collected.append((mod_name, tree, state))
+
+    for mod_name, tree, state in collected:
+        _phase2_grant(tracker, mod_name, tree, state)
+    # Re-issue the id series in the serial order a single-process run would have produced.
+    for sink in tracker.sinks:
+        sink.id = tracker.next_sink_id()
+    for source in tracker.sources:
+        source.id = tracker.next_source_id()
+    return True
+
+
 class TaintTracker:
     def __init__(self, files: dict[str, str] = None, source: str = None, file_path: str = "target.py", audit_all: bool = False, max_workers: Optional[int] = None):
         self.files = files if files is not None else {file_path: source}
@@ -18067,10 +18163,24 @@ class TaintTracker:
         
         # Phase 2: Statement collection (per-module, parallelizable)
         _t0 = _time.perf_counter()
-        for mod_name, tree in self.modules.items():
-            self.collect_statements(tree.body, scope_id=f"{mod_name}:global", is_conditional=False)
+        _p2_workers = _phase2_worker_count(len(self.modules))
+        if _p2_workers > 1:
+            try:
+                _phase2_collect_parallel(self, _p2_workers)
+            except Exception as _p2_exc:
+                # A failed fan-out must not lose the pass: fall back to the serial loop. The graft
+                # only runs after every module came back, so nothing is half-merged here.
+                _p2_workers = 1
+                print(f"TimeCodeSecurity [PROFILE] Phase 2 fan-out disabled "
+                      f"({type(_p2_exc).__name__}: {_p2_exc}); serial collection", file=_sys.stderr)
+                for mod_name, tree in self.modules.items():
+                    self.collect_statements(tree.body, scope_id=f"{mod_name}:global", is_conditional=False)
+        else:
+            for mod_name, tree in self.modules.items():
+                self.collect_statements(tree.body, scope_id=f"{mod_name}:global", is_conditional=False)
         _t1 = _time.perf_counter()
-        print(f"TimeCodeSecurity [PROFILE] Phase 2 (Statement collection): {_t1 - _t0:.2f}s", file=_sys.stderr)
+        print(f"TimeCodeSecurity [PROFILE] Phase 2 (Statement collection): {_t1 - _t0:.2f}s "
+              f"({_p2_workers} worker(s))", file=_sys.stderr)
 
         # Phase 4.3: Extract function contracts after statement collection
         _t0 = _time.perf_counter()
