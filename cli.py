@@ -8,6 +8,7 @@ import os
 from pathlib import Path
 import re
 import shutil
+import signal
 import sys
 import subprocess
 import time
@@ -849,6 +850,88 @@ def _scan_failure(args, exc):
     return 2
 
 
+# A runner that kills the process at a step timeout leaves no SARIF at all, and the referee can only
+# report that as "0 findings" - indistinguishable from a clean scan. The handlers below turn that
+# truncation into a real (partial) report: whatever the scan already holds gets written to the
+# requested --sarif / --format json targets. Two limits are stated plainly: findings the engine has
+# not produced yet cannot be flushed, and GitHub's own step timeout does not reliably signal child
+# processes, so a caller must bound the run with `timeout --signal=TERM` to actually reach this path.
+_PARTIAL = {
+    "args": None,
+    "findings": [],
+    "tracker": None,
+    "files": None,
+    "written": False,
+}
+
+
+def _partial_findings():
+    """Findings as far as the scan has got: stage list first, live tracker index second."""
+    findings = list(_PARTIAL["findings"])
+    if findings:
+        return findings
+    tracker = _PARTIAL["tracker"]
+    if tracker is None:
+        return []
+    try:
+        return _findings_for(tracker, list(tracker.edges))
+    except Exception as exc:
+        # A half-built index must not hide the artefact: report an empty partial run instead.
+        print(f"[warning] Partial index unreadable: {type(exc).__name__}: {exc}",
+              file=sys.stderr, flush=True)
+        return []
+
+
+def _flush_partial(reason):
+    """Serialize the current scan state into the requested artefacts, once."""
+    args = _PARTIAL["args"]
+    if args is None or _PARTIAL["written"]:
+        return []
+    _PARTIAL["written"] = True
+    findings = _partial_findings()
+    files = _PARTIAL["files"] or {}
+    if getattr(args, "format", "") == "json":
+        print(json.dumps({
+            "scope": getattr(args, "scope", "all"),
+            "status": "partial",
+            "terminated_by": reason,
+            "total_discovered_files": len(files),
+            "scanned_files": len(files),
+            "findings": findings,
+        }, indent=2), flush=True)
+    if getattr(args, "sarif", None):
+        try:
+            document = bound_sarif_document(_sarif_document(findings, Path.cwd().resolve()))
+            atomic_write_text(Path(args.sarif), json.dumps(document, indent=2) + "\n")
+        except OSError as exc:
+            print(f"[warning] Partial SARIF write failed: {exc}", file=sys.stderr, flush=True)
+            return findings
+    print("[warning] Caught termination signal; flushed partial findings to SARIF",
+          file=sys.stderr, flush=True)
+    return findings
+
+
+def _install_partial_flush(args):
+    """Arm SIGTERM/SIGINT for this scan run, then let the caller work normally."""
+    _PARTIAL.update({"args": args, "findings": [], "tracker": None, "files": None,
+                     "written": False})
+
+    def _handle(signum, _frame):
+        reason = signal.Signals(signum).name
+        print(f"[warning] Caught {reason} mid-scan; flushing what is known so far",
+              file=sys.stderr, flush=True)
+        _flush_partial(reason)
+        # 128 + signum is the shell convention for "died of that signal": 143 SIGTERM, 130 SIGINT.
+        raise SystemExit(128 + signum)
+
+    for sig in (signal.SIGTERM, signal.SIGINT):
+        try:
+            signal.signal(sig, _handle)
+        except (AttributeError, OSError, ValueError):
+            # No such signal on this platform, or not the main thread.
+            pass
+
+
 def _parse_workers_arg(workers_str: Optional[str]) -> int:
     """Parse --workers argument into integer worker count.
     
@@ -892,6 +975,7 @@ def _parse_workers_arg(workers_str: Optional[str]) -> int:
 
 def _scan(args):
     scope = args.scope
+    _install_partial_flush(args)
     
     # Parse workers argument and pass to TaintTracker
     workers = _parse_workers_arg(getattr(args, "workers", None))
@@ -925,8 +1009,10 @@ def _scan(args):
         
         started = time.perf_counter()
         if files:
+            _PARTIAL["files"] = files
             _progress(f"parsing {len(files)} python file(s) with {workers} worker(s)")
             tracker = TaintTracker(files=files, max_workers=workers)
+            _PARTIAL["tracker"] = tracker
             for fpath, reason in sorted(tracker.skipped_files.items()):
                 print(f"Warning: skipping unparseable file {fpath}: {reason}", file=sys.stderr)
             _, _, edges = tracker.analyze()
@@ -970,10 +1056,12 @@ def _scan(args):
         }
         findings = _merge_findings(ast_findings, audit_templates(templates), audit_iac_files(iac))
         findings = consolidate_findings(findings)
+        _PARTIAL["findings"] = findings
         if scope in ("all", "python"):
             cross_findings, cross_engine = _run_cross_scan(args.path)
             findings = _suppress_cross_file_sanitized(findings, cross_engine)
             findings.extend(cross_findings)
+            _PARTIAL["findings"] = findings
 
         # Incremental scan: keep only diagnostics intersecting the modified lines.
         # Applied before autofix generation so patching work is scoped too.

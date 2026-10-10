@@ -18,7 +18,10 @@ jobs:
     runs-on: ubuntu-latest
     # Whole job: checkout, pip, Gate 1, the salt clone and all three engines. The engine steps carry
     # their own shorter timeouts so a runaway analyser costs its own budget, not the job's.
-    timeout-minutes: 30
+    # 30 -> 35: measured on saltstack v3000.1, TCS alone needed ~344s of Phase-2 statement collection
+    # plus call-site graph propagation, so the 12-minute engine step was killed before it could write
+    # its SARIF and the referee read that as 0 findings.
+    timeout-minutes: 35
 
     env:
       REPO: https://github.com/saltstack/salt.git
@@ -158,15 +161,20 @@ jobs:
         # flush=True, and the pipe to tee would otherwise block-buffer them, so a hung scan would show
         # nothing. Unbuffered + tee means the log names the exact file the scanner stuck on while the
         # step is still running.
+        # The `timeout` wrapper is what makes the graceful flush reachable: Actions does not reliably
+        # deliver SIGTERM to a child process when a step times out, it tears the runner's process tree
+        # down instead. coreutils sends a real SIGTERM at 900s, cli.py's handler writes the partial
+        # SARIF/JSON, and --kill-after only fires if the handler itself ever hangs.
         # `|| echo` because Actions runs `bash -e`: a bare non-zero exit would abort the step before
         # the code is recorded, and the referee would report "not recorded" instead of the real number.
-        timeout-minutes: 12
+        timeout-minutes: 20
         continue-on-error: true
         env:
           PYTHONUNBUFFERED: "1"
         run: |
           set -o pipefail
-          python -u cli.py scan "$TARGET_DIR/" \
+          timeout --signal=TERM --kill-after=30s 900s \
+            python -u cli.py scan "$TARGET_DIR/" \
             --scope all \
             --format json \
             --sarif benchmark_results/tcs.sarif \
@@ -196,10 +204,15 @@ jobs:
           import json
           import os
           import re
+          import sys
 
           CWE_RE = re.compile(r"\bcwe[/\s-]?(\d{1,4})\b", re.I)
           ENGINES = ("TimeCodeSecurity", "CodeQL", "Semgrep")
           NORMAL_SCAN_EXITS = {"", "0", "1"}
+          # cli.py's signal handler flushes the partial report and exits 128+signum; GNU timeout
+          # reports 124 when it sent that signal. Both mean "truncated but honest artefact", so the
+          # row keeps its findings and the run is not thrown away.
+          PARTIAL_FLUSH_EXITS = {"124", "130", "143"}
           # Symmetric join window: two findings belong to the same location when they are in the
           # same file and their start lines are within this many lines of each other.
           LINE_WINDOW = 5
@@ -376,8 +389,14 @@ jobs:
           ]
           for engine in ENGINES:
               code = os.environ.get(EXIT_KEYS[engine], "")
-              exit_label = ("not recorded (assumed 0/1)" if code == "" else
-                            code if code in NORMAL_SCAN_EXITS else f"**{code} (abnormal)**")
+              if code == "":
+                  exit_label = "not recorded (assumed 0/1)"
+              elif code in NORMAL_SCAN_EXITS:
+                  exit_label = code
+              elif code in PARTIAL_FLUSH_EXITS:
+                  exit_label = f"**{code} (partial flush: scan truncated by signal)**"
+              else:
+                  exit_label = f"**{code} (abnormal)**"
               slot_count = sum(1 for slot in slots_all if engine in slot["engines"])
               md.append(f"| {engine} | {len(findings[engine])} | {len(cwes_of(engine))} | "
                         f"{slot_count} | {statuses[engine]} | {exit_label} |")
@@ -451,11 +470,13 @@ jobs:
                  "- Clone: `git clone --depth 1 --single-branch --branch v3000.1`, `.git` removed.",
                  "- CodeQL: `security-extended`, `build-mode: none`, `upload: false`, config paths "
                  f"scoped to `{TARGET_DIR}`.",
-                 "- TCS: `python -u cli.py scan target_arena/ --scope all --format json "
-                 "--sarif benchmark_results/tcs.sarif` with `PYTHONUNBUFFERED=1`, stderr tee-ed to "
-                 "`benchmark_results/tcs_stdout.txt` so progress names the stalled file.",
+                 "- TCS: `timeout --signal=TERM --kill-after=30s 900s python -u cli.py scan "
+                 "target_arena/ --scope all --format json --sarif benchmark_results/tcs.sarif` "
+                 "with `PYTHONUNBUFFERED=1`, stderr tee-ed to `benchmark_results/tcs_stdout.txt` so "
+                 "progress names the stalled file. A SIGTERM at 15 minutes makes cli.py's handler "
+                 "flush the findings found so far instead of losing them.",
                  "- Semgrep OSS: `p/python` + `p/owasp-top-ten`, `--metrics=off`, SARIF out.",
-                 "- Step timeouts: CodeQL 10, TCS 12, Semgrep 10; job 30. Each engine step is "
+                 "- Step timeouts: CodeQL 10, TCS 20, Semgrep 10; job 35. Each engine step is "
                  "continue-on-error, so one timeout never cancels the others.",
                  "- Artifacts: `benchmark_results/` (three SARIF sets, stdout logs, target "
                  "inventory, this report).", ""]
@@ -475,9 +496,14 @@ jobs:
           if not usable:
               raise SystemExit("benchmark invalid: no engine produced a readable SARIF")
           abnormal = [f"{engine} exit {os.environ[key]}" for engine, key in EXIT_KEYS.items()
-                      if os.environ.get(key, "") not in NORMAL_SCAN_EXITS]
+                      if os.environ.get(key, "") not in NORMAL_SCAN_EXITS | PARTIAL_FLUSH_EXITS]
           if abnormal:
               raise SystemExit("benchmark incomplete: " + "; ".join(abnormal))
+          partial = [f"{engine} exit {os.environ[key]}" for engine, key in EXIT_KEYS.items()
+                     if os.environ.get(key, "") in PARTIAL_FLUSH_EXITS]
+          if partial:
+              print("[warning] partial run kept as indicative only: " + "; ".join(partial),
+                    file=sys.stderr)
           PY
 
       - name: Upload Benchmark Artifacts
