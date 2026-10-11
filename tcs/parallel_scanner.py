@@ -16,7 +16,14 @@ import time
 from concurrent.futures import ProcessPoolExecutor, as_completed
 from typing import Any, Dict, List, Optional, Tuple
 
-import psutil
+try:
+    import psutil
+except ImportError:
+    # `ast_scanner` imports this module inside `try/except ImportError` to set
+    # PARALLEL_PARSING_AVAILABLE, so one undeclared optional dependency here silently disabled
+    # parallel parsing *and* the Phase 2 fan-out that rides on it. RAM is read through
+    # `tcs.parallel_analyzer.available_ram_mb()`, which works with or without psutil.
+    psutil = None
 
 
 # ─── Hardware Governance Constants ───────────────────────────────────────────
@@ -43,8 +50,14 @@ def compute_safe_workers() -> int:
     - Budgets 550 MB per worker to prevent OOM
     """
     try:
-        mem = psutil.virtual_memory()
-        free_ram_mb = mem.available / (1024 * 1024)
+        from tcs.parallel_analyzer import available_ram_mb
+        free_ram_mb = available_ram_mb()
+        if free_ram_mb is None:
+            # No measurable free RAM means no evidence the pool fits, so the 900 MB floor is
+            # honoured by default rather than assumed.
+            print("TimeCodeSecurity [GOVERNOR] free RAM unmeasurable: staying on 1 worker.",
+                  file=sys.stderr)
+            return 1
         
         # Calculate capacity based on both CPU and RAM
         cpu_count = os.cpu_count() or 4

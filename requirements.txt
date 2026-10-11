@@ -20,3 +20,7 @@ celery
 redis
 pydantic
 psycopg[binary]
+# The RAM governor and the scan memory stats read free RAM through psutil. It was undeclared here
+# while `tcs/parallel_analyzer.py`, `tcs/parallel_scanner.py` and `cli.py` all import it, so a
+# runner that installed only requirements.txt lost the governor and Phase 2 ran single-worker.
+psutil>=5.9

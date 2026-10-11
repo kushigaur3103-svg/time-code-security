@@ -23,44 +23,61 @@ from concurrent.futures import ProcessPoolExecutor, as_completed
 from pathlib import Path
 from typing import Any, Dict, List, Optional, Set, Tuple
 
-import psutil
+try:
+    import psutil
+except ImportError:
+    # Declared optional on purpose. A hard module-level `import psutil` made this whole module
+    # unimportable wherever psutil was absent, and `ast_scanner._phase2_worker_count` then fell
+    # back to 1 worker silently -- that is how a 2-vCPU / 7 GB runner spent 283 s collecting
+    # statements serially. `available_ram_mb()` covers the same decision without it.
+    psutil = None
 
 
 # ─── Worker RAM Budget for Analysis ──────────────────────────────────────────
 
 ANALYSIS_WORKER_RAM_BUDGET_MB = 600  # Budget 600 MB per analysis worker
 HARD_SAFETY_THRESHOLD_MB = 900       # Drop to 1 worker if RAM < 900 MB
-CI_TWO_CORE_RAM_MB = 1600            # 2-core CI runner gets its second worker above this much RAM
+CI_TWO_CORE_RAM_MB = 1600            # Minimum free RAM before any second worker is opened
+MAX_PHASE2_WORKERS = 4               # Phase 2 caps here; the parent holds every parsed tree
+
+
+def available_ram_mb():
+    """Free RAM in MB, or None when it cannot be measured.
+
+    psutil is the accurate source. Without it, Linux reports the same number in
+    `/proc/meminfo` as MemAvailable. Other platforms without psutil return None, and every caller
+    treats "unknown" as "no evidence of headroom" and stays on one worker.
+    """
+    if psutil is not None:
+        return psutil.virtual_memory().available / (1024 * 1024)
+    try:
+        with open("/proc/meminfo", encoding="ascii") as handle:
+            for line in handle:
+                if line.startswith("MemAvailable:"):
+                    return float(line.split()[1]) / 1024.0
+    except (OSError, ValueError, IndexError):
+        return None
+    return None
 
 
 def compute_analysis_workers() -> int:
     """Compute safe worker count for analysis phase (heavier than parsing)."""
-    try:
-        mem = psutil.virtual_memory()
-        free_ram_mb = mem.available / (1024 * 1024)
-        
-        cpu_count = os.cpu_count() or 4
-        cpu_capacity = max(1, cpu_count - 2)  # Keep 2 cores free
-        ram_capacity = max(1, int(free_ram_mb // ANALYSIS_WORKER_RAM_BUDGET_MB))
-        
-        # Cap at 8 workers for analysis (more memory-intensive than parsing)
-        max_workers = max(1, min(cpu_capacity, ram_capacity, 8))
-        
-        # Hard safety threshold
-        if free_ram_mb < HARD_SAFETY_THRESHOLD_MB:
-            return 1
+    free_ram_mb = available_ram_mb()
+    if free_ram_mb is None:
+        return 1
+    # Hard safety threshold
+    if free_ram_mb < HARD_SAFETY_THRESHOLD_MB:
+        return 1
 
-        # GitHub-hosted runners report 2 cores, and `cpu_count - 2` collapses that to a single
-        # worker, so a CI run never uses the machine it was given. On a 2-core runner with >= 1.6 GB
-        # available the second worker fits the per-worker RAM budget (600 MB) twice over (2 x 600 =
-        # 1200 MB, plus headroom), and the 900 MB hard floor above still forces 1 worker if free RAM
-        # ever drops, so this only ever widens the pool on a machine that can hold it.
-        if cpu_count == 2 and max_workers == 1 and free_ram_mb >= CI_TWO_CORE_RAM_MB:
-            return 2
-
-        return max_workers
-    except Exception:
-        return 2
+    cpu_count = os.cpu_count() or 4
+    # The old rule kept 2 cores free (`cpu_count - 2`), which collapses a 2-vCPU GitHub runner to
+    # zero and then to one worker, so the runner never used the machine it was given. `cpu_count`
+    # capped at 4 keeps a core for the parent, and the RAM terms below still bound the pool:
+    # every worker needs ANALYSIS_WORKER_RAM_BUDGET_MB of its own, and multi-worker only starts
+    # once free RAM clears CI_TWO_CORE_RAM_MB.
+    cpu_capacity = min(cpu_count, MAX_PHASE2_WORKERS) if free_ram_mb >= CI_TWO_CORE_RAM_MB else 1
+    ram_capacity = max(1, int(free_ram_mb // ANALYSIS_WORKER_RAM_BUDGET_MB))
+    return max(1, min(cpu_capacity, ram_capacity))
 
 
 def _scan_file_batch(args: Tuple[List[str], str, Dict[str, Any]]) -> Dict[str, Any]:

@@ -2228,16 +2228,34 @@ def _phase2_ordered_modules(tracker) -> list:
 def _phase2_worker_count(module_count: int) -> int:
     """Worker count for the Phase 2 fan-out, taken from the analysis RAM governor.
 
-    The 900 MB hard floor stays in charge: `compute_analysis_workers()` returns 1 below it, and any
-    import or measurement failure also returns 1, which leaves the serial loop in place.
+    The 900 MB hard floor stays in charge: `compute_analysis_workers()` returns 1 below it and 1
+    when free RAM cannot be measured, and any import or measurement failure also returns 1, which
+    leaves the serial loop in place.
+
+    Every path that lands on 1 worker now says so on stderr. Phase 2 reported "1 worker(s)" after
+    283 s on a 2-vCPU / 7 GB runner with no hint which guard fired, and the three guards (corpus
+    size, `tcs.parallel_scanner` import, RAM) need different fixes.
     """
-    if module_count < 2 or not PARALLEL_PARSING_AVAILABLE:
+    if module_count < 2:
+        return 1
+    if not PARALLEL_PARSING_AVAILABLE:
+        print("TimeCodeSecurity [PHASE2] 1 worker: tcs.parallel_scanner is not importable",
+              file=sys.stderr)
         return 1
     try:
-        from tcs.parallel_analyzer import compute_analysis_workers
-        return max(1, int(compute_analysis_workers()))
-    except Exception:
+        from tcs.parallel_analyzer import available_ram_mb, compute_analysis_workers
+        workers = max(1, int(compute_analysis_workers()))
+    except Exception as exc:
+        print(f"TimeCodeSecurity [PHASE2] 1 worker: RAM governor failed "
+              f"({type(exc).__name__}: {exc})", file=sys.stderr)
         return 1
+    if workers == 1:
+        import os as _os
+        free = available_ram_mb()
+        print(f"TimeCodeSecurity [PHASE2] 1 worker: free RAM "
+              f"{'unmeasurable' if free is None else f'{free:.0f} MB'} "
+              f"across {_os.cpu_count()} CPU(s)", file=sys.stderr)
+    return workers
 
 
 def _phase2_module_batch(payload):

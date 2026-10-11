@@ -49,6 +49,7 @@ try:
         JS_TS_EXTENSIONS,
         js_ts_available,
         run_js_ts_scan_isolated,
+        warn_js_ts_unavailable,
     )
     _JS_TS_SCANNER_AVAILABLE = True
 except ImportError:
@@ -60,6 +61,10 @@ except ImportError:
 
     def run_js_ts_scan_isolated(target, base_dir=None, skipped_files=None):
         return []
+
+    def warn_js_ts_unavailable() -> None:
+        print("[TimeCodeSecurity-JS] WARNING: js_scanner is not importable; JS/TS scanning is disabled.",
+              file=sys.stderr)
 
 
 try:
@@ -1658,6 +1663,10 @@ def main(argv: Optional[List[str]] = None):
         # ---------------------------------------------------------
         # JS/TS Tree-sitter Security Scanner (Vector E)
         # ---------------------------------------------------------
+        # js_scanner no longer warns at import time (a Python-only scan must stay quiet), so the
+        # explicit --include-js request is what makes the missing grammar worth reporting here.
+        if getattr(args, "include_js", False) and not js_ts_available():
+            warn_js_ts_unavailable()
         if _JS_TS_SCANNER_AVAILABLE and js_ts_available() and getattr(args, "include_js", False):
             try:
                 _js_scanner_inst = JsTsScanner()

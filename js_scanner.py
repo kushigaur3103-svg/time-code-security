@@ -33,6 +33,7 @@ _JS_LANGUAGE = None
 _PARSER_TSX = None
 _PARSER_TS = None
 _PARSER_JS = None
+_TS_IMPORT_ERROR = None
 
 try:
     from tree_sitter import Language, Parser, Query, QueryCursor  # type: ignore
@@ -47,11 +48,9 @@ try:
     _PARSER_JS    = Parser(_JS_LANGUAGE)
     _TS_AVAILABLE = True
 except Exception as _e:
-    print(
-        f"[TimeCodeSecurity-JS] WARNING: tree-sitter or JS/TS grammar not available ({_e}). "
-        "JS/TS scanning is disabled. Run: pip install tree-sitter tree-sitter-javascript tree-sitter-typescript",
-        file=sys.stderr,
-    )
+    # Deferred: printing here warned about a missing grammar even when the scan was pure Python
+    # and `--include-js` was never asked for. `warn_js_ts_unavailable()` emits it on demand.
+    _TS_IMPORT_ERROR = _e
 
 # ---------------------------------------------------------------------------
 # Constants
@@ -759,6 +758,47 @@ def run_js_ts_scan(
 def js_ts_available() -> bool:
     """Returns True if tree-sitter JS/TS scanning is available."""
     return _TS_AVAILABLE
+
+
+def warn_js_ts_unavailable() -> None:
+    """Emit the grammar-missing warning now that the caller knows JS/TS was wanted.
+
+    No-op when the grammar imported fine; the message is the one the module used to print at
+    import time, unchanged so existing CI log greps still match.
+    """
+    if _TS_AVAILABLE:
+        return
+    print(
+        f"[TimeCodeSecurity-JS] WARNING: tree-sitter or JS/TS grammar not available ({_TS_IMPORT_ERROR}). "
+        "JS/TS scanning is disabled. Run: pip install tree-sitter tree-sitter-javascript tree-sitter-typescript",
+        file=sys.stderr,
+    )
+
+
+def has_js_ts_files(target_path) -> bool:
+    """True as soon as one scannable JS/TS file exists under `target_path`.
+
+    Early exit and no `stat()`, because the only caller wants a yes/no before deciding whether
+    to warn -- not a file list. Skips the same ignored directories `_discover_js_files` prunes.
+    """
+    try:
+        path = Path(target_path)
+        if path.is_file():
+            return path.suffix.lower() in JS_TS_EXTENSIONS
+        if not path.is_dir():
+            return False
+        for root, dirs, files in os.walk(path, followlinks=False):
+            dirs[:] = [
+                d for d in dirs
+                if d not in _SKIP_DIRS
+                and not d.startswith(".")
+                and not os.path.islink(os.path.join(root, d))
+            ]
+            if any(Path(name).suffix.lower() in JS_TS_EXTENSIONS for name in files):
+                return True
+    except OSError:
+        return False
+    return False
 
 
 # ---------------------------------------------------------------------------

@@ -25,7 +25,12 @@ from sarif_adapter import bound_sarif_document
 from sarif_exporter import atomic_write_text
 
 try:
-    from js_scanner import js_ts_available, run_js_ts_scan_isolated
+    from js_scanner import (
+        has_js_ts_files,
+        js_ts_available,
+        run_js_ts_scan_isolated,
+        warn_js_ts_unavailable,
+    )
     _JS_TS_SCANNER_AVAILABLE = True
 except ImportError:
     _JS_TS_SCANNER_AVAILABLE = False
@@ -36,10 +41,26 @@ except ImportError:
     def run_js_ts_scan_isolated(target, base_dir=None, skipped_files=None):
         return []
 
+    def has_js_ts_files(target_path) -> bool:
+        return False
+
+    def warn_js_ts_unavailable() -> None:
+        print("[TimeCodeSecurity-JS] WARNING: js_scanner is not importable; JS/TS scanning is disabled.",
+              file=sys.stderr)
+
 
 SARIF_SCHEMA = "https://raw.githubusercontent.com/oasis-tcs/sarif-spec/master/Schemata/sarif-schema-2.1.0.json"
 SEVERITIES = ("CRITICAL", "HIGH", "MEDIUM", "LOW", "UNKNOWN")
 IGNORED_DIRS = {".git", ".venv", "venv", "__pycache__", "node_modules", "build", "dist"}
+
+# Jinja interpolation tokens in a *path*, as opposed to its content: Salt formulae ship files like
+# `templates/{{module_name}}.py`, and that name alone guarantees `ast.parse` raises SyntaxError.
+TEMPLATE_INTERPOLATION_TOKENS = ("{{", "}}")
+
+# One flush per file is blocking pipe/disk I/O: a 2,819-file run paid 2,819 of those to say "I am
+# still here". Progress now logs every Nth file, and the in-flight name is kept in
+# `_PARTIAL["current_file"]` so a kill still reports where the scan was stuck.
+PROGRESS_FILE_EVERY = 250
 
 # Every finding belongs to exactly one analysis scope: template and IaC paths are routed to
 # their auditors, everything else is Python. --scope selects which collectors run.
@@ -101,11 +122,43 @@ def _is_excluded(path, root, exclude_patterns):
     return False
 
 
+def _is_template_interpolated(path, root):
+    """True when a path *component* carries a Jinja interpolation token.
+
+    Salt formulae ship files named `templates/{{module_name}}.py`: the name is a render-time
+    placeholder, so the bytes on disk are pre-render scaffolding and `ast.parse` on them usually
+    raises SyntaxError. Only components of the path are inspected, never file content, so a normal
+    module that merely uses `{{` inside a string is never mistaken for one.
+    """
+    try:
+        parts = path.relative_to(root).parts
+    except ValueError:
+        parts = path.parts
+    return any(token in part for part in parts for token in TEMPLATE_INTERPOLATION_TOKENS)
+
+
+def _parses_as_python(source):
+    """True when `ast.parse` accepts the text -- the gate that keeps a template file scannable.
+
+    A Jinja-named path alone is not proof of junk: measured on this repo, `templates/{{x}}.py`
+    holding `import os; os.system(p)` parses fine and reports CWE-78. Dropping on the path alone
+    would have turned that real finding into a false negative, so the skip requires the content to
+    be unparseable as well. One extra parse per interpolated-path file, nothing else pays for it.
+    """
+    try:
+        ast.parse(source)
+        return True
+    except (SyntaxError, ValueError):
+        return False
+
+
 def _progress(message):
     """Emit one progress line on stderr so a stalled scan names the file it stuck on.
 
     stderr keeps stdout parsable (`--format json` consumers read stdout only) and
     flush=True means the line lands even if the process is killed mid-file.
+    Callers throttle *how often* this runs (PROGRESS_FILE_EVERY); the in-flight file name
+    lives in `_PARTIAL["current_file"]` so the throttled gap stays diagnosable.
     """
     print(f"[progress] {message}", file=sys.stderr, flush=True)
 
@@ -142,11 +195,12 @@ def _collect_files(scan_path, exclude_patterns=None):
     cwd = Path.cwd().resolve()
     if not scan_path.exists():
         raise FileNotFoundError(f"Path does not exist: {scan_path}")
+    is_tree = scan_path.is_dir()
     if scan_path.is_file():
         if scan_path.suffix.lower() != ".py":
             raise ValueError(f"Expected a Python file: {scan_path}")
         paths = [scan_path]
-    elif scan_path.is_dir():
+    elif is_tree:
         paths = sorted(
             path for path in _iter_tree_files(scan_path)
             if path.suffix.lower() == ".py"
@@ -161,20 +215,32 @@ def _collect_files(scan_path, exclude_patterns=None):
 
     files = {}
     skipped = 0
+    templated = 0
     total = len(paths)
     _progress(f"discovered {total} python file(s) under {scan_path}")
     for index, path in enumerate(paths, 1):
-        _progress(f"reading python ({index}/{total}) {path}")
+        _PARTIAL["current_file"] = str(path)
+        if index == 1 or index == total or index % PROGRESS_FILE_EVERY == 0:
+            _progress(f"reading python ({index}/{total}) {path}")
         try:
-            files[_file_key(path, cwd)] = path.read_text(encoding="utf-8", errors="replace")
+            source = path.read_text(encoding="utf-8", errors="replace")
         except (OSError, ValueError, UnicodeDecodeError) as exc:
             # A single unreadable file must not abort the scan of the whole tree.
             skipped += 1
             print(f"Warning: skipping unreadable file {path}: {type(exc).__name__}: {exc}",
                   file=sys.stderr)
+            continue
+        # Only a tree walk drops files; a file named on the command line is always analysed.
+        if is_tree and _is_template_interpolated(path, scan_path) and not _parses_as_python(source):
+            templated += 1
+            continue
+        files[_file_key(path, cwd)] = source
+    if templated:
+        _progress(f"skipped {templated} unparseable Jinja-interpolated file(s) under {scan_path}")
     if skipped:
         print(f"Warning: skipped {skipped} of {len(paths)} Python files; "
               f"{len(files)} scanned.", file=sys.stderr)
+    _PARTIAL["current_file"] = None
     return files
 
 
@@ -213,11 +279,14 @@ def _collect_auxiliary_files(scan_path, exclude_patterns=None):
     total = len(buckets)
     _progress(f"discovered {total} template/IaC file(s) under {scan_path}")
     for index, (path, bucket) in enumerate(buckets.items(), 1):
-        _progress(f"reading auxiliary ({index}/{total}) {path}")
+        _PARTIAL["current_file"] = str(path)
+        if index == 1 or index == total or index % PROGRESS_FILE_EVERY == 0:
+            _progress(f"reading auxiliary ({index}/{total}) {path}")
         try:
             bucket[_file_key(path, cwd)] = path.read_text(encoding="utf-8", errors="replace")
         except OSError as exc:
             raise OSError(f"Unable to read {path}: {exc}") from exc
+    _PARTIAL["current_file"] = None
     return templates, iac
 
 
@@ -862,6 +931,7 @@ _PARTIAL = {
     "tracker": None,
     "files": None,
     "written": False,
+    "current_file": None,
 }
 
 
@@ -914,11 +984,15 @@ def _flush_partial(reason):
 def _install_partial_flush(args):
     """Arm SIGTERM/SIGINT for this scan run, then let the caller work normally."""
     _PARTIAL.update({"args": args, "findings": [], "tracker": None, "files": None,
-                     "written": False})
+                     "written": False, "current_file": None})
 
     def _handle(signum, _frame):
         reason = signal.Signals(signum).name
-        print(f"[warning] Caught {reason} mid-scan; flushing what is known so far",
+        # Progress lines are throttled to one per PROGRESS_FILE_EVERY files, so the file the scan
+        # is actually inside comes from _PARTIAL["current_file"] rather than the last log line.
+        current = _PARTIAL["current_file"]
+        where = f" while reading {current}" if current else " mid-scan"
+        print(f"[warning] Caught {reason}{where}; flushing what is known so far",
               file=sys.stderr, flush=True)
         _flush_partial(reason)
         # 128 + signum is the shell convention for "died of that signal": 143 SIGTERM, 130 SIGINT.
@@ -973,9 +1047,25 @@ def _parse_workers_arg(workers_str: Optional[str]) -> int:
             return 4
 
 
+def _maybe_warn_js_ts(args):
+    """Warn about a missing JS/TS grammar only when JS/TS was actually part of this run.
+
+    Pure-Python scans used to inherit an import-time warning from js_scanner that the user could
+    do nothing with. The grammar is already imported fine in most runs, so that case costs one
+    boolean; only a broken install pays the (early-exit) tree walk that decides whether the
+    target holds any JS/TS file.
+    """
+    if _JS_TS_SCANNER_AVAILABLE and js_ts_available():
+        return
+    if not getattr(args, "include_js", False) and not has_js_ts_files(args.path):
+        return
+    warn_js_ts_unavailable()
+
+
 def _scan(args):
     scope = args.scope
     _install_partial_flush(args)
+    _maybe_warn_js_ts(args)
     
     # Parse workers argument and pass to TaintTracker
     workers = _parse_workers_arg(getattr(args, "workers", None))
