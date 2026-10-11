@@ -11603,6 +11603,17 @@ class TaintTracker:
                 functions_by_module.setdefault(scope_module(func_scope), []).append(
                     (func_scope, func_node))
         func_explicit_guard_cache: dict[int, bool] = {}
+        # O(1) stand-in for the repo-wide assignment walk further down this collector. The
+        # assignment table is not written by anything batch3a calls -- every writer runs in a later
+        # collector -- so this one snapshot reproduces the walk's answer exactly, for every module.
+        _open_assigned_names: set[str] = set()
+        for scope_key, recs in self.assignments_by_scope.items():
+            for r in recs:
+                if isinstance(r.value_node, ast.Call):
+                    vn = dotted_name(r.value_node.func) or ""
+                    if vn == "open" or vn.endswith(".open"):
+                        _open_assigned_names.add(scope_key[1])
+
 
         for mod_name, tree in self.modules.items():
             file_path = self.file_paths.get(mod_name, "unknown.py")
@@ -11629,18 +11640,9 @@ class TaintTracker:
                 "user_passes_test", "django.contrib.auth.decorators.login_required",
             )
             guard_decorator_names: set[str] = set()
-            for def_node in ast.walk(tree):
-                if not isinstance(def_node, (ast.FunctionDef, ast.AsyncFunctionDef)):
-                    continue
-                body_is_guard = False
-                for sub in ast.walk(def_node):
-                    if isinstance(sub, ast.If):
-                        attrs_sub = {a.attr for a in ast.walk(sub.test) if isinstance(a, ast.Attribute)}
-                        if attrs_sub & set(AUTH_GUARD_ATTRS):
-                            body_is_guard = True
-                            break
-                if body_is_guard:
-                    guard_decorator_names.add(def_node.name)
+            # Collect per-function auth guards so CWE-862 can skip guarded views.
+            function_auth_guards: dict[str, bool] = {}
+            auth_guards_built = False
 
             def _decorator_is_verified_guard(dec) -> bool:
                 dec_expr = dec.func if isinstance(dec, ast.Call) else dec
@@ -11649,31 +11651,51 @@ class TaintTracker:
                     return True
                 return dec_name.split(".")[-1] in guard_decorator_names
 
-            # Collect per-function auth guards so CWE-862 can skip guarded views.
-            function_auth_guards: dict[str, bool] = {}
-            for scope_id_f, func_node in functions_by_module.get(mod_name, ()):
-                has_guard_in_func = False
-                
-                # Check decorators for auth guards
-                for dec in func_node.decorator_list:
-                    if _decorator_is_verified_guard(dec):
-                        has_guard_in_func = True
-                
-                # Walk ALL nodes in function body (not just direct children) to find auth guards
-                for node_in_func in ast.walk(func_node):
-                    if isinstance(node_in_func, ast.If):
-                        names_if = {n.id for n in ast.walk(node_in_func.test) if isinstance(n, ast.Name)}
-                        attrs_if = {a.attr for a in ast.walk(node_in_func.test) if isinstance(a, ast.Attribute)}
-                        if "is_authenticated" in attrs_if or "is_active" in attrs_if or "is_staff" in attrs_if:
+            # Both walks below only ever answer the CWE-862 guard questions, so they run on the first
+            # CWE-862 candidate call in this module rather than on every module up front. A module
+            # without such a call skips two full ast.walk passes; a module with several pays once.
+            def _ensure_auth_guards() -> None:
+                nonlocal auth_guards_built
+                if auth_guards_built:
+                    return
+                auth_guards_built = True
+                for def_node in ast.walk(tree):
+                    if not isinstance(def_node, (ast.FunctionDef, ast.AsyncFunctionDef)):
+                        continue
+                    body_is_guard = False
+                    for sub in ast.walk(def_node):
+                        if isinstance(sub, ast.If):
+                            attrs_sub = {a.attr for a in ast.walk(sub.test) if isinstance(a, ast.Attribute)}
+                            if attrs_sub & set(AUTH_GUARD_ATTRS):
+                                body_is_guard = True
+                                break
+                    if body_is_guard:
+                        guard_decorator_names.add(def_node.name)
+
+                for scope_id_f, func_node in functions_by_module.get(mod_name, ()):
+                    has_guard_in_func = False
+
+                    # Check decorators for auth guards
+                    for dec in func_node.decorator_list:
+                        if _decorator_is_verified_guard(dec):
                             has_guard_in_func = True
-                        if "request" in names_if and any("user" in a.lower() for a in attrs_if):
-                            has_guard_in_func = True
-                    if isinstance(node_in_func, ast.Call):
-                        cn = dotted_name(node_in_func.func) or ""
-                        if cn in ("login_required", "flask_login.login_required", "authenticate"):
-                            has_guard_in_func = True
-                
-                function_auth_guards[scope_id_f] = has_guard_in_func
+
+                    # Walk ALL nodes in function body (not just direct children) to find auth guards
+                    for node_in_func in ast.walk(func_node):
+                        if isinstance(node_in_func, ast.If):
+                            names_if = {n.id for n in ast.walk(node_in_func.test) if isinstance(n, ast.Name)}
+                            attrs_if = {a.attr for a in ast.walk(node_in_func.test) if isinstance(a, ast.Attribute)}
+                            if "is_authenticated" in attrs_if or "is_active" in attrs_if or "is_staff" in attrs_if:
+                                has_guard_in_func = True
+                            if "request" in names_if and any("user" in a.lower() for a in attrs_if):
+                                has_guard_in_func = True
+                        if isinstance(node_in_func, ast.Call):
+                            cn = dotted_name(node_in_func.func) or ""
+                            if cn in ("login_required", "flask_login.login_required", "authenticate"):
+                                has_guard_in_func = True
+
+                    function_auth_guards[scope_id_f] = has_guard_in_func
+
 
             for node in self._reachable_nodes(tree):
                 if isinstance(node, ast.Compare):
@@ -11807,6 +11829,7 @@ class TaintTracker:
 
                     # ─── CWE-862: Missing Authorization / IDOR ───
                     elif (name == "get_object_or_404" or name.endswith(".objects.get") or name.endswith(".query.get") or (name.endswith(".query.filter_by") or name == "filter_by") or canon.endswith(".objects.get") or canon.endswith(".query.get")):
+                        _ensure_auth_guards()
                         # Suppress if the enclosing function is guarded by authentication checks.
                         is_guarded = False
                         
@@ -11944,17 +11967,10 @@ class TaintTracker:
                                     is_file_handle = False
                                     if isinstance(node.func, ast.Attribute) and isinstance(node.func.value, ast.Name):
                                         receiver_name = node.func.value.id
-                                        # Check ALL scopes for this variable name
-                                        for scope_key, recs in self.assignments_by_scope.items():
-                                            if scope_key[1] == receiver_name:  # Match variable name
-                                                for r in recs:
-                                                    if isinstance(r.value_node, ast.Call):
-                                                        vn = dotted_name(r.value_node.func) or ""
-                                                        if vn == "open" or vn.endswith(".open"):
-                                                            is_file_handle = True
-                                                            break
-                                                if is_file_handle:
-                                                    break
+                                        # O(1) lookup in the once-built snapshot: same variable-name
+                                        # match, same open()-value test, no walk of the scope table.
+                                        is_file_handle = receiver_name in _open_assigned_names
+
                                     if not is_file_handle:
                                         # Find the correct scope (function-local or global)
                                         def _find_enclosing_scope(node, mod_name):
