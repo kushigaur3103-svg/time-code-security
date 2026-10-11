@@ -2387,6 +2387,14 @@ class TaintTracker:
         self._sink_index_list: Optional[list] = None
         self._sink_index_len = 0
         self._sink_index_tail: Optional[object] = None
+        # Node-identity dedup for the sink-detection re-scan of `raw_calls`: the set of `record.node`
+        # objects currently in `sink_records`. Same invalidation rules as `_sink_index` above, but the
+        # key is the AST node itself, because that scan asks "has *this exact call node* been recorded",
+        # which a (file, line, cwe) key cannot answer (two distinct calls share a line and a CWE).
+        self._sink_node_seen: set = set()
+        self._sink_node_list: Optional[list] = None
+        self._sink_node_len = 0
+        self._sink_node_tail: Optional[object] = None
         self.functions: dict[str, ast.FunctionDef] = {}
         self.returns_by_scope: dict[str, list[ast.Return]] = {}
         self.raw_calls: list[tuple[ast.Call, str, int]] = []
@@ -8418,6 +8426,34 @@ class TaintTracker:
         self._sink_index_len = len(records)
         self._sink_index_tail = records[-1] if records else None
         return index.get((filename, lineno, cwe))
+
+    def _sink_node_unrecorded(self, node) -> bool:
+        """True when no entry of `sink_records` holds this exact node -- O(1), was an O(sinks) scan.
+
+        Replaces `not any(r.node is node for r in self.sink_records)` inside the sink-detection
+        re-scan of `raw_calls`. That scan ran once per call site over a list that the same pass keeps
+        appending to: on a 231,815-call repo it averaged ~46 k records walked per call (2.712 ms/call,
+        58.7 ns/element measured), which is the whole 628.66 s of the profiled section.
+
+        Equivalence with the linear scan is exact -- membership over the *current* list, no ordering
+        or first-match semantics involved, because the old test only ever answered yes/no. The
+        invalidation rules mirror `_sink_index_find`: rebind (identity), shrink (length), and a
+        shrink refilled to the same size (the absorbed tail object) all force a rebuild, so a node
+        whose record was pruned away can never keep answering "already recorded".
+        """
+        records = self.sink_records
+        absorbed = self._sink_node_len
+        if (records is not self._sink_node_list or absorbed > len(records)
+                or (absorbed and records[absorbed - 1] is not self._sink_node_tail)):
+            self._sink_node_seen = {record.node for record in records}
+            self._sink_node_list = records
+        else:
+            seen = self._sink_node_seen
+            for i in range(absorbed, len(records)):
+                seen.add(records[i].node)
+        self._sink_node_len = len(records)
+        self._sink_node_tail = records[-1] if records else None
+        return node not in self._sink_node_seen
 
     def _add_blindspot_sink(self, node, filename, cwe, operation, category, message, source_id,
                             reuse_existing=False):
@@ -18529,7 +18565,7 @@ class TaintTracker:
                             scope_id=caller_scope,
                             call_context=ctx
                         ))
-            elif not any(r.node is call_node for r in self.sink_records):
+            elif self._sink_node_unrecorded(call_node):
                 if self.is_sink_call(call_node, caller_scope, lineno):
                     canon_name = self.resolve_canonical_name(call_node.func, caller_scope) or dotted_name(call_node.func) or ""
                     if not self.check_sink_safety(call_node, canon_name):
