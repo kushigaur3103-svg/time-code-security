@@ -2395,6 +2395,13 @@ class TaintTracker:
         self._sink_node_list: Optional[list] = None
         self._sink_node_len = 0
         self._sink_node_tail: Optional[object] = None
+        # Termination telemetry, read by the SIGTERM/SIGINT flush in cli.py before it writes the
+        # partial JSON/SARIF. Only `_analyze_pipeline` writes these and nothing in the engine reads
+        # them, so they cannot influence a sink, an edge or a finding.
+        self._checkpoint_phase = "pre-analysis (discovery/parse)"
+        self._checkpoint_collector: Optional[str] = None
+        self._checkpoint_t0: Optional[float] = None
+        self._collector_profile: dict[str, float] = {}
         self.functions: dict[str, ast.FunctionDef] = {}
         self.returns_by_scope: dict[str, list[ast.Return]] = {}
         self.raw_calls: list[tuple[ast.Call, str, int]] = []
@@ -18371,14 +18378,38 @@ class TaintTracker:
         for tid in stale:
             registry.pop(tid, None)
 
+    def termination_checkpoint(self) -> dict:
+        """Where the pipeline stands right now, for the SIGTERM/SIGINT flush in cli.py.
+
+        Purely observational. `_analyze_pipeline` is the only writer and nothing in the engine reads
+        these fields back, so the values cannot change a sink record, an edge or a finding. A run that
+        is killed mid-scan otherwise reports a number of findings with no way to tell whether it died
+        on the third file or during the final per-sink cascade.
+        """
+        import time as _time
+        elapsed = None
+        if self._checkpoint_t0 is not None:
+            elapsed = _time.perf_counter() - self._checkpoint_t0
+        profile = self._collector_profile or {}
+        phase = self._checkpoint_phase
+        if self._checkpoint_collector:
+            phase = f"{phase} [{self._checkpoint_collector}]"
+        return {
+            "phase": phase,
+            "collector_profile_s": dict(profile),
+            "analyze_elapsed_s": elapsed,
+        }
+
     def _analyze_pipeline(self):
         """Analyze all modules for security vulnerabilities with phase-level profiling."""
         import time as _time
         import sys as _sys
         
         _phase_start = _time.perf_counter()
+        self._checkpoint_t0 = _phase_start
         
         # Phase 1: Import resolution (per-module, parallelizable)
+        self._checkpoint_phase = "Phase 1 (Import resolution)"
         _t0 = _time.perf_counter()
         for mod_name, tree in self.modules.items():
             for node in self._reachable_nodes(tree):
@@ -18395,6 +18426,7 @@ class TaintTracker:
         print(f"TimeCodeSecurity [PROFILE] Phase 1 (Import resolution): {_t1 - _t0:.2f}s", file=_sys.stderr)
         
         # Phase 2: Statement collection (per-module, parallelizable)
+        self._checkpoint_phase = "Phase 2 (Statement collection)"
         _t0 = _time.perf_counter()
         _p2_workers = _phase2_worker_count(len(self.modules))
         if _p2_workers > 1:
@@ -18418,12 +18450,14 @@ class TaintTracker:
               f"({_p2_workers} worker(s))", file=_sys.stderr)
 
         # Phase 4.3: Extract function contracts after statement collection
+        self._checkpoint_phase = "Phase 4.3 (Function contracts)"
         _t0 = _time.perf_counter()
         self._extract_function_contracts()
         _t1 = _time.perf_counter()
         print(f"TimeCodeSecurity [PROFILE] Phase 4.3 (Function contracts): {_t1 - _t0:.2f}s", file=_sys.stderr)
 
         # Index call sites by target function scope
+        self._checkpoint_phase = "Call site indexing"
         _t0 = _time.perf_counter()
         for call_node, caller_scope, lineno in self.raw_calls:
             canon_name = self.resolve_canonical_name(call_node.func, caller_scope)
@@ -18436,6 +18470,7 @@ class TaintTracker:
         print(f"TimeCodeSecurity [PROFILE] Call site indexing: {_t1 - _t0:.2f}s ({len(self.raw_calls)} calls)", file=_sys.stderr)
 
         # Re-scan raw_calls for any sinks resolved after call-site indexing (higher-order callbacks)
+        self._checkpoint_phase = "Sink detection (callbacks+direct)"
         _t0 = _time.perf_counter()
         _sink_count_before = len(self.sink_records)
         for call_node, caller_scope, lineno in self.raw_calls:
@@ -18581,6 +18616,7 @@ class TaintTracker:
         print(f"TimeCodeSecurity [PROFILE] Sink detection (callbacks+direct): {_t1 - _t0:.2f}s ({_new_sinks} new sinks)", file=_sys.stderr)
 
         # Source detection
+        self._checkpoint_phase = "Source detection"
         _t0 = _time.perf_counter()
         for mod_name, tree in self.modules.items():
             for node in self._reachable_nodes(tree):
@@ -18595,6 +18631,7 @@ class TaintTracker:
         # Observational only: never feeds a finding. Reset per pass so a reused tracker cannot
         # carry stale timings.
         self._collector_profile = {}
+        self._checkpoint_phase = "Collectors (23 structural batches)"
         for _s1_name, _s1_collector in (
             ("batch2", self._collect_batch2_structural_findings),
             ("batch3a", self._collect_batch3a_structural_findings),
@@ -18620,16 +18657,20 @@ class TaintTracker:
             ("cluster3", self._collect_cluster3_structural_findings),
             ("django_post", self._collect_django_post_validation_findings),
         ):
+            self._checkpoint_collector = _s1_name
             _s1_t0 = _time.perf_counter()
             _s1_collector()
             self._collector_profile[_s1_name] = self._collector_profile.get(_s1_name, 0.0) + (
                 _time.perf_counter() - _s1_t0)
             self._flush_stage1_structural_edges()
         # Last, so their line+CWE dedup sees every sink the earlier phases already reported.
+        self._checkpoint_collector = None
+        self._checkpoint_phase = "Blindspot collectors (14 CWE passes per module)"
         _bs_t0 = _time.perf_counter()
         for _bs_idx, (_bs_mod, _bs_tree) in enumerate(sorted(self.modules.items())):
             _bs_file = self.file_paths.get(_bs_mod, "unknown.py")
             _bs_lines = self._source_lines_by_file.get(_bs_file, [])
+            self._checkpoint_collector = _bs_file
             self._collect_cwe78_subprocess_calls(_bs_tree, _bs_file, _bs_lines)
             self._collect_cwe532_logging_leaks(_bs_tree, _bs_file, _bs_lines)
             self._collect_cwe668_insecure_host_binding(_bs_tree, _bs_file, _bs_lines)
@@ -18649,6 +18690,7 @@ class TaintTracker:
             if _bs_idx % 25 == 24:
                 self._flush_stage1_structural_edges()
         self._flush_stage1_structural_edges()
+        self._checkpoint_collector = None
         self._collector_profile["blindspot_all"] = _time.perf_counter() - _bs_t0
         print("TimeCodeSecurity [PROFILE] Collectors (s): " + " ".join(
             f"{name}={secs:.2f}" for name, secs in
@@ -18657,6 +18699,7 @@ class TaintTracker:
         _t1 = _time.perf_counter()
         print(f"TimeCodeSecurity [PROFILE] Structural findings (all batches): {_t1 - _t0:.2f}s", file=_sys.stderr)
         _t_cascade = _t1
+        self._checkpoint_phase = "SSL verification-disabled sinks"
         for assign_stmt, scope_id, lineno in self.ssl_attr_assigns:
             mod_name = scope_module(scope_id)
             file_path = self.file_paths.get(mod_name, "unknown.py")
@@ -18678,6 +18721,7 @@ class TaintTracker:
                 transform="disabled_ssl_verification"
             ))
 
+        self._checkpoint_phase = "Graph evaluation cascade (per-sink taint resolution)"
         for record in self.sink_records:
             sink = record.security_node
             cwe = sink.metadata.get("cwe")
@@ -18948,6 +18992,7 @@ class TaintTracker:
               f"{_t_cascade_end - _t_cascade:.2f}s ({len(self.sink_records)} sink records)",
               file=_sys.stderr)
         _t_end = _time.perf_counter()
+        self._checkpoint_phase = "Analysis complete (reconcile/report serialization)"
         _total_elapsed = _t_end - _phase_start
         print(f"TimeCodeSecurity [PROFILE] Total analyze() elapsed: {_total_elapsed:.2f}s", file=_sys.stderr)
         print(f"TimeCodeSecurity [PROFILE] Summary: {len(self.modules)} modules, {len(self.sources)} sources, {len(self.sinks)} sinks, {len(self.edges)} edges", file=_sys.stderr)

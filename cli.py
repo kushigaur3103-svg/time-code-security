@@ -932,6 +932,7 @@ _PARTIAL = {
     "files": None,
     "written": False,
     "current_file": None,
+    "t0": None,
 }
 
 
@@ -952,12 +953,51 @@ def _partial_findings():
         return []
 
 
+def _print_termination_telemetry():
+    """Say where the scan stopped, on stderr, before the partial payload is emitted.
+
+    A partial SARIF/JSON file only carries the findings that existed at the moment of the
+    kill; it cannot say how far the engine had got. Without this line a timeout at file 3 of
+    9,000 and a timeout inside the final cascade look identical to whoever reads the artefact.
+    Everything here is observational: it writes to stderr and never touches the JSON shape or
+    the SARIF document.
+    """
+    tracker = _PARTIAL["tracker"]
+    point = None
+    if tracker is not None:
+        try:
+            point = tracker.termination_checkpoint()
+        except Exception as exc:
+            print(f"[telemetry] Checkpoint unavailable: {type(exc).__name__}: {exc}",
+                  file=sys.stderr, flush=True)
+    if point is None:
+        print("[telemetry] Active phase: pre-analysis (discovery/parse), analyze() not started",
+              file=sys.stderr, flush=True)
+    else:
+        print(f"[telemetry] Active phase: {point['phase']}", file=sys.stderr, flush=True)
+        profile = point.get("collector_profile_s") or {}
+        if profile:
+            ordered = sorted(profile.items(), key=lambda kv: (-kv[1], kv[0]))
+            print("[telemetry] Collector timings so far (s): "
+                  + " ".join(f"{name}={secs:.2f}" for name, secs in ordered),
+                  file=sys.stderr, flush=True)
+    t0 = _PARTIAL.get("t0")
+    if t0 is not None:
+        line = f"[telemetry] Elapsed since scan start: {time.perf_counter() - t0:.2f}s"
+        if point is not None and point.get("analyze_elapsed_s") is not None:
+            line += f" (analyze(): {point['analyze_elapsed_s']:.2f}s)"
+        print(line, file=sys.stderr, flush=True)
+
+
 def _flush_partial(reason):
     """Serialize the current scan state into the requested artefacts, once."""
     args = _PARTIAL["args"]
     if args is None or _PARTIAL["written"]:
         return []
     _PARTIAL["written"] = True
+    # Telemetry first: stdout carries the JSON payload, so the checkpoint has to be on stderr
+    # and flushed before it, or a consumer piping stdout never sees it in order.
+    _print_termination_telemetry()
     findings = _partial_findings()
     files = _PARTIAL["files"] or {}
     if getattr(args, "format", "") == "json":
@@ -984,7 +1024,7 @@ def _flush_partial(reason):
 def _install_partial_flush(args):
     """Arm SIGTERM/SIGINT for this scan run, then let the caller work normally."""
     _PARTIAL.update({"args": args, "findings": [], "tracker": None, "files": None,
-                     "written": False, "current_file": None})
+                     "written": False, "current_file": None, "t0": time.perf_counter()})
 
     def _handle(signum, _frame):
         reason = signal.Signals(signum).name
