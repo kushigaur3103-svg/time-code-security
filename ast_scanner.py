@@ -989,6 +989,13 @@ def _may_disable_ssl(node: ast.Call) -> bool:
     return False
 
 
+# Spellings that prove certificate validation is switched off. `_has_disabled_ssl()` carries them
+# inline; the call-site folder below needs them as data because it resolves the keyword value one
+# scope further out (module globals, then the caller's argument).
+SSL_DISABLED_VALUES = frozenset({"CERT_NONE", "NONE", "CERT_OPTIONAL", "OPTIONAL"})
+SSL_DISABLED_ATTRS = frozenset({"CERT_NONE", "CERT_OPTIONAL", "CERT_NO_CHECK"})
+
+
 def scope_module(scope_id: str) -> str:
     """Return the module prefix of a "<module>:<scope>" identifier.
 
@@ -1107,6 +1114,7 @@ STRUCTURAL_SYNTHETIC_SOURCES = {
     # ─── Phase 3 Cluster 1 (insecure-permission residuals, dangerous globals,
     #     disabled autoescape, empty-password policy) ───
     "CWE-276": "INSECURE_FILE_MODE_RESIDUAL",
+    "CWE-477": "DEPRECATED_TLS_WRAPPER_API",
     "CWE-96": "DANGEROUS_GLOBALS_USE",
     "CWE-116": "TEMPLATE_AUTOESCAPE_DISABLED",
     "CWE-521": "EMPTY_PASSWORD_POLICY",
@@ -1185,6 +1193,9 @@ EXCEPTION_DETAIL_ATTRIBUTES = frozenset({"message", "args", "traceback", "stack"
 # Decorators that make a function a client-facing endpoint (`@expose` is Airflow/Flask-Admin's own
 # spelling of `@route`), which is what turns a returned dict into an HTTP response body.
 WEB_HANDLER_DECORATOR_SEGMENTS = frozenset({"route", "expose", "errorhandler", "app_errorhandler"})
+# The two arguments a WSGI server hands an application object. Such a callable has no `request`, yet
+# its return value *is* the HTTP body, so CWE-209 treats it as a web handler.
+WSGI_HANDLER_ARGUMENTS = frozenset({"environ", "start_response"})
 # Flask/Werkzeug request containers. CLIENT_INPUT_CONTAINERS is Django-shaped and is shared with the
 # CWE-22/CWE-93 rules, so the Flask spellings live here instead of being bolted onto it.
 FLASK_REQUEST_CONTAINERS = frozenset({
@@ -1348,6 +1359,15 @@ CLUSTER1_TEMPLATE_CONTEXT_CALLS = {"render", "render_to_response", "render_to_st
 CLUSTER1_TEMPLATE_STRING_SINKS = {"render_template_string"}
 CLUSTER1_PASSWORD_NAME_RE = re.compile(r"(?i)(password|passwd|pwd)")
 CLUSTER1_AUTOESCAPE_KEYS = {"autoescape"}
+# CWE-477: the module-level `ssl.wrap_socket` was deprecated in 3.10 and removed in 3.12; the
+# replacement is `SSLContext.wrap_socket`. Keyed on the full dotted name so a context receiver
+# (`context.wrap_socket(...)`, which does validate the hostname) never matches.
+CLUSTER1_DEPRECATED_WRAP_SOCKET = {"ssl.wrap_socket"}
+# CWE-276: the tempfile module creates its file 0600 precisely because another user must not read
+# it. A mode with group/world read bits applied to that handle publishes it, and the public-mode
+# whitelist every permission predicate consults (0o644) hides it.
+CLUSTER1_TEMPFILE_FACTORIES = {"NamedTemporaryFile", "mkstemp"}
+CLUSTER1_TEMPFILE_PATH_ATTRS = {"name"}
 
 # ─── Phase 3 Cluster 2 structural rule constants ───
 # CWE-295: TLS clients whose verification cannot be trusted.
@@ -3416,6 +3436,87 @@ class TaintTracker:
                             curr_scope = curr_scope.rsplit(".", 1)[0]
                         else:
                             break
+        return False
+
+    def _ssl_scope_chain(self, scope_id: str) -> list[str]:
+        """The scopes a name written at *scope_id* can resolve in: lexical walk-up, then module globals.
+
+        `_has_disabled_ssl()` stops the moment the scope id holds no dot, which for the
+        "<module>:function:<Class>.<method>" spelling never reaches the module scope - exactly the
+        place a `some_flag = False` default lives.
+        """
+        chain: list[str] = []
+        curr = scope_id
+        seen: set[str] = set()
+        while curr and curr not in seen:
+            seen.add(curr)
+            chain.append(curr)
+            if "." in curr:
+                curr = curr.rsplit(".", 1)[0]
+            else:
+                break
+        module_global = f"{scope_module(scope_id)}:global"
+        if module_global not in seen:
+            chain.append(module_global)
+        return chain
+
+    def _ssl_expr_disables(self, node: ast.AST, scope_id: str, depth: int = 2) -> bool:
+        """True when *node* folds to a verification-disabling value along the scope chain."""
+        if isinstance(node, ast.Constant):
+            return node.value is False or (
+                isinstance(node.value, str) and node.value.upper() in SSL_DISABLED_VALUES)
+        if isinstance(node, ast.Attribute):
+            return node.attr in SSL_DISABLED_ATTRS
+        if isinstance(node, ast.Name):
+            if node.id in SSL_DISABLED_ATTRS:
+                return True
+            if depth <= 0:
+                return False
+            for probe_scope in self._ssl_scope_chain(scope_id):
+                for record in self.assignments_by_scope.get((probe_scope, node.id), []):
+                    if self._ssl_expr_disables(record.value_node, scope_id, depth - 1):
+                        return True
+        return False
+
+    def _ssl_param_bound_disabled(self, name: str, params: list[str], func_scope: str) -> bool:
+        """True when any recorded call of *func_scope* hands the parameter *name* a disabling value."""
+        index = params.index(name)
+        for call_node, call_scope, _call_lineno in self.call_sites_by_target.get(func_scope, []):
+            binding = None
+            for kw in getattr(call_node, "keywords", []):
+                if kw.arg == name:
+                    binding = kw.value
+                    break
+            if binding is None:
+                position = index - 1 if params and params[0] in ("self", "cls") else index
+                if 0 <= position < len(call_node.args):
+                    binding = call_node.args[position]
+            if binding is not None and self._ssl_expr_disables(binding, call_scope):
+                return True
+        return False
+
+    def _ssl_callsite_disabled(self, node: ast.Call, scope_id: str) -> bool:
+        """Provable CWE-295 at a call site, including a keyword fed by a module global or a caller.
+
+        `_has_disabled_ssl()` covers the literal and the same-scope variable, so two shapes stay
+        invisible: a module-level flag read from inside a method, and a `verify` parameter whose own
+        callers pass `verify=False`. Both fold here out of indexes the engine already builds
+        (`assignments_by_scope`, `call_sites_by_target`), so the cost is O(#keywords + #callers of
+        one function) and only ever paid for a call that carries an SSL keyword at all.
+        """
+        if self._has_disabled_ssl(node, scope_id):
+            return True
+        func_def = self.functions.get(scope_id)
+        params = ([argument.arg for argument in func_def.args.args]
+                  + [argument.arg for argument in getattr(func_def.args, "kwonlyargs", [])]) if func_def else []
+        for kw in getattr(node, "keywords", []):
+            if kw.arg not in _SSL_TRIGGER_KWARGS:
+                continue
+            if self._ssl_expr_disables(kw.value, scope_id):
+                return True
+            if (params and isinstance(kw.value, ast.Name) and kw.value.id in params
+                    and self._ssl_param_bound_disabled(kw.value.id, params, scope_id)):
+                return True
         return False
 
     def _is_security_sensitive_random(self, node: ast.Call, scope_id: str = "", lineno: int = 0) -> bool:
@@ -9028,7 +9129,7 @@ class TaintTracker:
         table = self._memo_assignment_map(tree)
         emitted = set()
 
-        def _returns(body):
+        def _returns(body, names_acc=None):
             """Every Return with a value inside *body*, descending If/For/While/With/Try."""
             out = []
             for stmt in body:
@@ -9037,9 +9138,11 @@ class TaintTracker:
                 elif isinstance(stmt, (ast.If, ast.For, ast.While, ast.With, ast.Try)):
                     for part in (getattr(stmt, "body", None), getattr(stmt, "orelse", None),
                                  getattr(stmt, "finalbody", None)):
-                        out.extend(_returns(part or []))
+                        out.extend(_returns(part or [], names_acc))
                     for handler in getattr(stmt, "handlers", None) or []:
-                        out.extend(_returns(handler.body))
+                        if names_acc is not None:
+                            names_acc.update(self._c209_handler_detail_names(handler))
+                        out.extend(_returns(handler.body, names_acc))
             return out
 
         def _emit(node):
@@ -9062,10 +9165,26 @@ class TaintTracker:
         for func in [node for node in ast.walk(tree)
                      if isinstance(node, (ast.FunctionDef, ast.AsyncFunctionDef))
                      and self._c209_is_web_handler(node)]:
-            for ret in _returns(func.body):
-                # No handler name in scope here, so only a real traceback helper qualifies.
-                if self._c209_exposed_in_reply(ret.value, frozenset(), table, ret.lineno):
+            # A WSGI/route callable assembles the body it returns from its handlers two statements
+            # earlier (`ret = str(exc)` inside `except`, `return (ret,)` outside), so the names the
+            # handlers detail-carry are in scope for the function-level return after all.
+            detail_names: set[str] = set()
+            for ret in _returns(func.body, detail_names):
+                if self._c209_exposed_in_reply(ret.value, detail_names, table, ret.lineno):
                     _emit(ret)
+
+    def _c209_handler_detail_names(self, handler):
+        """The caught name, its aliases, and every name the handler builds out of them.
+
+        `except TypeError as exc: ret = str(exc)` leaves the message in `ret`, and the reply is
+        assembled after the handler - so the derived name, not just the caught one, has to reach the
+        function-level return.
+        """
+        names = self._c209_handler_names(handler)
+        for stmt in handler.body:
+            if isinstance(stmt, ast.Assign) and self._c209_carries_detail(stmt.value, names):
+                names.update(target.id for target in stmt.targets if isinstance(target, ast.Name))
+        return names
 
     @staticmethod
     def _c209_handler_names(handler):
@@ -9091,9 +9210,10 @@ class TaintTracker:
 
     @staticmethod
     def _c209_is_web_handler(func):
-        """A function the framework invokes for a request: route/expose/errorhandler, or a `request` arg."""
+        """A function the framework invokes for a request: route/expose/errorhandler, a `request` arg, or a WSGI app."""
         return (TaintTracker._c209_route_decorated(func)
-                or any(argument.arg == "request" for argument in func.args.args))
+                or any(argument.arg == "request" or argument.arg in WSGI_HANDLER_ARGUMENTS
+                       for argument in func.args.args))
 
     def _c209_exposed_in_reply(self, value, names, table, use_lineno):
         """True when *value* (or the call it was assigned from) ships exception detail to the client."""
@@ -9856,7 +9976,7 @@ class TaintTracker:
 
             for node in reachable:
                 for cwe_meta in self._c1_cluster1_candidates(node, scope_id, ns_history,
-                                                            template_consumers):
+                                                            template_consumers, tree):
                     loc_node = cwe_meta.pop("loc_node", node)
                     dedupe_key = (cwe_meta["cwe"], getattr(loc_node, "lineno", 0),
                                   getattr(loc_node, "col_offset", 0))
@@ -9890,6 +10010,29 @@ class TaintTracker:
     @staticmethod
     def _c1_last(name: str) -> str:
         return name.rsplit(".", 1)[-1] if name else ""
+
+    def _c1_is_tempfile_path(self, expr, module_tree: ast.AST, lineno: int, depth: int = 3) -> bool:
+        """True when *expr* names a file the tempfile module created (`handle.name`, a mkstemp path).
+
+        Follows at most *depth* plain assignments through the module's memoized assignment table, so
+        the probe costs one dict lookup per hop and walks nothing. The precision is the factory test
+        at the end of the chain: `os.chmod(open(path).name, 0o644)` on an ordinary file stays clean.
+        """
+        table = self._memo_assignment_map(module_tree)
+        current = expr
+        while current is not None and depth > 0:
+            if isinstance(current, ast.Attribute):
+                if current.attr not in CLUSTER1_TEMPFILE_PATH_ATTRS:
+                    return False
+                current = current.value
+            elif isinstance(current, ast.Name):
+                current = self._blindspot_latest_assignment(table, current.id, lineno)
+            elif isinstance(current, ast.Call):
+                return self._c1_last(dotted_name(current.func) or "") in CLUSTER1_TEMPFILE_FACTORIES
+            else:
+                return False
+            depth -= 1
+        return False
 
     def _c1_is_namespace_expr(self, node: ast.AST) -> bool:
         """globals()/locals() call, or any `<expr>.__globals__` attribute read."""
@@ -9972,7 +10115,7 @@ class TaintTracker:
                 and "{" in base.value)
 
     def _c1_cluster1_candidates(self, node: ast.AST, scope_id: str, ns_history: dict,
-                                template_consumers: set) -> list[dict]:
+                                template_consumers: set, module_tree: ast.AST | None = None) -> list[dict]:
         lineno = getattr(node, "lineno", 0)
         out: list[dict] = []
 
@@ -10001,6 +10144,15 @@ class TaintTracker:
                     already_732 = bool(names & CLUSTER1_EXACT_732_CALLS) and resolved_world_bits
                     if insecure and not already_732:
                         add("INSECURE_FILE_MODE_RESIDUAL", "INSECURE_FILE_PERMISSIONS", "CWE-276")
+                    elif resolved_world_bits and not insecure and module_tree is not None:
+                        # A group/world-readable mode the public-mode whitelist accepts, applied to a
+                        # file tempfile created private. Neither the CWE-732 predicate (whitelists
+                        # 0o644) nor the branch above (write/exec bits only) can see it.
+                        path_node = node.args[0] if node.args else next(
+                            (kw.value for kw in node.keywords
+                             if kw.arg in ("path", "filename", "file", "fd")), None)
+                        if self._c1_is_tempfile_path(path_node, module_tree, lineno):
+                            add("INSECURE_FILE_MODE_RESIDUAL", "INSECURE_FILE_PERMISSIONS", "CWE-276")
 
             # A. CWE-276: os.umask() clearing the default restriction mask.
             elif last_names & {"umask"}:
@@ -10008,6 +10160,12 @@ class TaintTracker:
                     if node.args else None
                 if isinstance(mask, int) and not isinstance(mask, bool) and mask < CLUSTER1_UMASK_SAFE:
                     add("INSECURE_UMASK", "INSECURE_FILE_PERMISSIONS", "CWE-276")
+
+            # D. CWE-477: `ssl.wrap_socket(...)` - deprecated, no context object, and no hostname
+            #    check of its own. `SSLContext.wrap_socket` is the replacement and never matches,
+            #    because the probe keys on the dotted name rather than the trailing attribute.
+            elif names & CLUSTER1_DEPRECATED_WRAP_SOCKET:
+                add("DEPRECATED_TLS_WRAPPER_API", "VULNERABLE_OUTDATED_COMPONENTS", "CWE-477")
 
             # B. CWE-96: the whole namespace is handed to a template renderer.
             elif last_names & CLUSTER1_TEMPLATE_CONTEXT_CALLS:
@@ -18853,6 +19011,23 @@ class TaintTracker:
                 confidence=1.0,
                 transform="disabled_ssl_verification"
             ))
+
+        # CWE-295 needs no taint path: a call that provably switches certificate validation off is
+        # the whole finding. Every SSL-keyword call folds its argument here, and a hit reuses the
+        # sink the taint engine already registered on that line (or appends one) with the same
+        # INSECURE_CONFIGURATION source the attribute-assignment rule above uses.
+        for call_node, caller_scope, _call_lineno in self.raw_calls:
+            if not _may_disable_ssl(call_node):
+                continue
+            if not self._ssl_callsite_disabled(call_node, caller_scope):
+                continue
+            _ssl_file = self.file_paths.get(scope_module(caller_scope), "unknown.py")
+            if self._blindspot_line_suppressed(self._source_lines_by_file.get(_ssl_file, []), call_node):
+                continue
+            self._add_blindspot_sink(
+                call_node, _ssl_file, "CWE-295", "DISABLED_SSL_VERIFICATION", "INSECURE_TRANSPORT",
+                "CWE-295: TLS certificate verification disabled at this call; any certificate is accepted",
+                "INSECURE_CONFIGURATION", reuse_existing=True)
 
         self._checkpoint_phase = "Graph evaluation cascade (per-sink taint resolution)"
         for record in self.sink_records:
