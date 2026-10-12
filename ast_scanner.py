@@ -1024,21 +1024,49 @@ class AssignmentNameTable(dict):
     def __init__(self, *args, **kwargs):
         super().__init__(*args, **kwargs)
         self.names_by_module: Dict[str, set] = {}
+        self.records_by_name: Dict[str, list] = {}
         for key in self:
             self._index(key)
+            self._index_records(key, dict.__getitem__(self, key))
 
-    def _index(self, key) -> None:
+    @staticmethod
+    def _split(key):
+        """(scope, name) for a well-formed (str, str) key, else None."""
         if not (isinstance(key, tuple) and len(key) == 2):
-            return
+            return None
         scope, name = key
         if not isinstance(scope, str) or not isinstance(name, str):
+            return None
+        return scope, name
+
+    def _index(self, key) -> None:
+        split = self._split(key)
+        if split is None:
             return
-        self.names_by_module.setdefault(scope_module(scope) if scope else "", set()).add(name)
+        self.names_by_module.setdefault(
+            scope_module(split[0]) if split[0] else "", set()).add(split[1])
+
+    def _index_records(self, key, records) -> None:
+        """Bucket a key under its bare target name, in first-insertion order.
+
+        The cross-scope fallback in `_eval_static_constant` asks for every recorded
+        assignment of one name. Keys enter a bucket in the order they entered the table,
+        which is the order `dict.items()` would have yielded them, so the fallback still
+        collects its candidates in the same sequence and returns the same first value.
+        """
+        split = self._split(key)
+        if split is None:
+            return
+        self.records_by_name.setdefault(split[1], []).append((key, records))
 
     def setdefault(self, key, default=None):
-        if key not in self:
+        fresh = key not in self
+        if fresh:
             self._index(key)
-        return super().setdefault(key, default)
+        value = super().setdefault(key, default)
+        if fresh:
+            self._index_records(key, value)
+        return value
 
 
 # ─── Batch 2 structural synthetic edge sources (PURE_STRUCTURAL CWEs) ───
@@ -1817,7 +1845,17 @@ def _eval_static_constant(node, assignments_by_scope, scope_id="", lineno=0, vis
         # Cross-scope fallback: resolve when every recorded assignment for this
         # name evaluates to the same constant regardless of scope.
         candidates = []
-        for (rec_scope, rec_name), recs in assignments_by_scope.items():
+        # O(1) by target name instead of a walk of every key in the table. The bucket is
+        # snapshotted because the loop below folds recursively. When the table carries no
+        # index the filtered items() walk answers precisely what the old loop answered, so
+        # the result never depends on which form the table happens to be in.
+        by_name = getattr(assignments_by_scope, "records_by_name", None)
+        if by_name is None:
+            entries = [(key, recs) for key, recs in assignments_by_scope.items()
+                       if isinstance(key, tuple) and len(key) == 2 and key[1] == node.id]
+        else:
+            entries = list(by_name.get(node.id, ()))
+        for (rec_scope, rec_name), recs in entries:
             if rec_name != node.id or not recs:
                 continue
             usable = [r for r in recs if r.lineno <= lineno] if lineno else recs
@@ -2210,6 +2248,10 @@ _PHASE2_PARENT_OWNED = frozenset({
     # Per-module derivation caches. They key on `id(tree)`, and a worker's trees are its own
     # unpickled copies, so grafting them in would register ids of objects the parent never holds.
     "_assignment_map_cache", "_function_ranges_cache",
+    # Checkpoint telemetry. A child is a fresh tracker, so its `_checkpoint_t0` is still None and
+    # `_phase2_grant`'s scalar branch would stamp that over the parent's real start time, which
+    # `_analyze_pipeline` never writes again. Nothing in the engine reads these three back.
+    "_checkpoint_phase", "_checkpoint_collector", "_checkpoint_t0",
 })
 
 
@@ -16518,6 +16560,63 @@ class TaintTracker:
     def _collect_phase7_structural_findings(self) -> None:
         """Collect XXE and server-side template injection findings."""
         function_scopes = {id(function): scope for scope, function in self.functions.items()}
+        # One memo for the two pure resolvers this collector leans on. Nothing in this
+        # collector's line range writes assignments_by_scope, and neither folder has side
+        # effects, so one (kind, node, scope, line) cannot fold two different ways during a
+        # pass. The node is stored beside its value so a recycled id() can never answer for a
+        # different object, and no node is skipped by name or type -- a question still gets the
+        # full unconstrained fold, the memo only refuses to re-derive an answer it already has.
+        _phase7_fold_memo: dict[tuple, tuple] = {}
+
+        def _memo_fold(kind: str, folder, node, fold_scope: str, fold_lineno: int):
+            if not isinstance(node, ast.AST):
+                return folder(node, self.assignments_by_scope, fold_scope, fold_lineno)
+            memo_key = (kind, id(node), fold_scope, fold_lineno)
+            cached = _phase7_fold_memo.get(memo_key)
+            if cached is not None and cached[0] is node:
+                return cached[1]
+            value = folder(node, self.assignments_by_scope, fold_scope, fold_lineno)
+            _phase7_fold_memo[memo_key] = (node, value)
+            return value
+
+        def _fold7(node, fold_scope: str, fold_lineno: int):
+            return _memo_fold("const", _eval_static_constant, node, fold_scope, fold_lineno)
+
+        def _literal7(node, fold_scope: str, fold_lineno: int):
+            return _memo_fold("text", _literal_text, node, fold_scope, fold_lineno)
+
+        # Sink records bucketed by (file, line_start, column_start): a prefix of the exact
+        # CodeLocation that _remove_existing and _add_finding compare against, so every record
+        # either of them could match is necessarily in the bucket being read, and the full
+        # comparison still runs there. Buckets keep list order, which is what `removed = [...]`
+        # and `next(...)` depend on. The three checks below mirror _sink_index_find: a rebind
+        # (identity -- _remove_existing rebinds the list), a shrink (length) and a refill to the
+        # same size (tail object) each rebuild it, and plain appends are absorbed.
+        _sink_loc_index: dict[tuple, list] = {}
+        _loc_index_count = 0
+        _loc_index_list = None
+        _loc_index_tail = None
+
+        def _records_at(node_location: CodeLocation) -> list:
+            nonlocal _loc_index_count, _loc_index_list, _loc_index_tail
+            records = self.sink_records
+            if (records is not _loc_index_list or _loc_index_count > len(records)
+                    or (_loc_index_count and records[_loc_index_count - 1] is not _loc_index_tail)):
+                _sink_loc_index.clear()
+                _loc_index_list = records
+                _start = 0
+            else:
+                _start = _loc_index_count
+            for _index in range(_start, len(records)):
+                loc = records[_index].security_node.location
+                _sink_loc_index.setdefault(
+                    (loc.file, loc.line_start, loc.column_start), []).append(records[_index])
+            _loc_index_count = len(records)
+            _loc_index_tail = records[-1] if records else None
+            bucket_key = (node_location.file, node_location.line_start,
+                          node_location.column_start)
+            return [record for record in _sink_loc_index.get(bucket_key, ())
+                    if record.security_node.location == node_location]
         xml_sinks = {
             "lxml.etree.parse", "lxml.etree.fromstring",
             "xml.etree.ElementTree.parse", "xml.etree.ElementTree.fromstring",
@@ -16644,7 +16743,7 @@ class TaintTracker:
             keyword = next((kw for kw in call.keywords if kw.arg == keyword_name), None)
             if keyword is None:
                 return None
-            value = _eval_static_constant(keyword.value, self.assignments_by_scope, scope_id, lineno)
+            value = _fold7(keyword.value, scope_id, lineno)
             return value if isinstance(value, bool) else None
 
         def _is_defused(names: set[str]) -> bool:
@@ -16676,9 +16775,8 @@ class TaintTracker:
         def _remove_existing(node: ast.Call, cwes: set[str], mod_name: str) -> None:
             node_location = location(node, self.file_paths.get(mod_name, "unknown.py"))
             removed = [
-                record for record in self.sink_records
-                if record.security_node.location == node_location
-                and record.security_node.metadata.get("cwe") in cwes
+                record for record in _records_at(node_location)
+                if record.security_node.metadata.get("cwe") in cwes
             ]
             if not removed:
                 return
@@ -16707,7 +16805,7 @@ class TaintTracker:
         def _url_text(expr: ast.AST, scope_id: str, lineno: int, node=None):
             """A provably-known URL string: a literal, a constant-folded expression, or a
             parameter whose default is a literal."""
-            value = _eval_static_constant(expr, self.assignments_by_scope, scope_id, lineno)
+            value = _fold7(expr, scope_id, lineno)
             if isinstance(value, str):
                 return value
             if not isinstance(expr, ast.Name):
@@ -16781,7 +16879,7 @@ class TaintTracker:
                 return False
             path_arg = expr.args[0] if expr.args else next(
                 (kw.value for kw in expr.keywords if kw.arg in {"file", "path"}), None)
-            return _literal_text(path_arg, self.assignments_by_scope, scope_id, lineno) is not None
+            return _literal7(path_arg, scope_id, lineno) is not None
 
         seen: set[tuple[str, int, int]] = set()
 
@@ -16797,9 +16895,8 @@ class TaintTracker:
             seen.add(key)
             node_location = location(node, self.file_paths.get(mod_name, "unknown.py"))
             existing = next((
-                record for record in self.sink_records
-                if record.security_node.location == node_location
-                and record.security_node.metadata.get("cwe") == cwe
+                record for record in _records_at(node_location)
+                if record.security_node.metadata.get("cwe") == cwe
             ), None)
             if existing is not None:
                 existing.security_node.metadata["p7_source_id"] = source_id
@@ -16886,14 +16983,14 @@ class TaintTracker:
                 query_arg = node.args[0] if node.args else next(
                     (kw.value for kw in node.keywords
                      if kw.arg in {"statement", "sql", "query"}), None)
-                if _literal_text(query_arg, self.assignments_by_scope, scope_id, lineno) is not None:
+                if _literal7(query_arg, scope_id, lineno) is not None:
                     _remove_existing(node, {"CWE-89"}, mod_name)
 
                 # CWE-502: a payload that is a literal, or bytes read from a literal
                 # path, cannot carry attacker-controlled pickle/yaml structure.
                 payload_arg = node.args[0] if node.args else next(
                     (kw.value for kw in node.keywords if kw.arg in {"data", "file", "stream"}), None)
-                if (_literal_text(payload_arg, self.assignments_by_scope, scope_id, lineno)
+                if (_literal7(payload_arg, scope_id, lineno)
                         is not None or _fixed_path_read(payload_arg, scope_id, lineno)):
                     _remove_existing(node, {"CWE-502"}, mod_name)
 
@@ -16944,7 +17041,7 @@ class TaintTracker:
                             "XXE_INJECTION_VULNERABILITY", "XML_PARSING",
                         )
                     elif _parser_is_safe(parser_expr, scope_id, lineno) or isinstance(
-                        _eval_static_constant(input_expr, self.assignments_by_scope, scope_id, lineno),
+                        _fold7(input_expr, scope_id, lineno),
                         (str, bytes),
                     ):
                         _remove_existing(node, {"CWE-611"}, mod_name)
