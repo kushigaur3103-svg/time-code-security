@@ -11614,6 +11614,24 @@ class TaintTracker:
                     if vn == "open" or vn.endswith(".open"):
                         _open_assigned_names.add(scope_key[1])
 
+        # Node-level memo for the static folder, scoped to this batch3a run and dropped when it
+        # returns. _eval_static_constant is pure -- it only reads the assignment table, which no
+        # batch3a call writes (its writers all live in later collectors) -- so a given
+        # (node identity, scope, line) cannot fold to two different values during one pass. Every
+        # rule still gets the same unconstrained fold; the memo only refuses to re-derive an
+        # answer it already has for that exact node, and it never skips a node by name.
+        _folded_const_memo: dict[tuple, tuple] = {}
+
+        def _fold_static_constant(node, fold_scope: str, fold_lineno: int):
+            if not isinstance(node, ast.AST):
+                return _eval_static_constant(node, self.assignments_by_scope, fold_scope, fold_lineno)
+            memo_key = (id(node), fold_scope, fold_lineno)
+            cached = _folded_const_memo.get(memo_key)
+            if cached is not None and cached[0] is node:
+                return cached[1]
+            value = _eval_static_constant(node, self.assignments_by_scope, fold_scope, fold_lineno)
+            _folded_const_memo[memo_key] = (node, value)
+            return value
 
         for mod_name, tree in self.modules.items():
             file_path = self.file_paths.get(mod_name, "unknown.py")
@@ -11630,6 +11648,10 @@ class TaintTracker:
             has_auth_decorator = False
             module_csrf_disabled = False
             module_csrf_enabled = False
+            # Upload facts for the whole module, accumulated by the single pre-scan below.
+            # They replace two `ast.walk(tree)` descents that used to run once per .save() call.
+            module_has_upload_sink = False
+            module_has_upload_sanitizer = False
 
             # Decorators are only accepted as auth guards when their own definition
             # performs an explicit authentication branch check. Decorator names are
@@ -11712,21 +11734,29 @@ class TaintTracker:
                         has_csrf_form_validation = True
                     if cname in ("login_required", "flask_login.login_required"):
                         has_auth_decorator = True
+                    if "FILES" in cname or "UploadedFile" in cname:
+                        module_has_upload_sink = True
+                    if cname in CWE3A_UPLOAD_SANITIZERS or cname in CWE3A_UPLOAD_RANDOMIZERS:
+                        module_has_upload_sanitizer = True
 
                 elif isinstance(node, (ast.Assign, ast.AnnAssign)):
-                    val_c = _eval_static_constant(node.value, self.assignments_by_scope, scope_id, getattr(node, "lineno", 0))
                     targets = node.targets if isinstance(node, ast.Assign) else [node.target]
                     for target in targets:
-                        if isinstance(target, ast.Name) and target.id == "CSRF_ENABLED":
-                            if val_c is False:
-                                module_csrf_disabled = True
-                            elif val_c is True:
-                                module_csrf_enabled = True
-                        elif isinstance(target, ast.Subscript) and isinstance(target.slice, ast.Constant) and target.slice.value == "WTF_CSRF_ENABLED":
-                            if val_c is False:
-                                module_csrf_disabled = True
-                            elif val_c is True:
-                                module_csrf_enabled = True
+                        # On-demand: only these two CSRF tests ever read a folded assign value, and
+                        # both ignore anything that is not exactly False/True, so folding a target
+                        # that asks neither question is discarded work.
+                        csrf_target = (
+                            (isinstance(target, ast.Name) and target.id == "CSRF_ENABLED")
+                            or (isinstance(target, ast.Subscript)
+                                and isinstance(target.slice, ast.Constant)
+                                and target.slice.value == "WTF_CSRF_ENABLED"))
+                        if not csrf_target:
+                            continue
+                        val_c = _fold_static_constant(node.value, scope_id, getattr(node, "lineno", 0))
+                        if val_c is False:
+                            module_csrf_disabled = True
+                        elif val_c is True:
+                            module_csrf_enabled = True
 
             for node in self._reachable_nodes(tree):
                 cwe_meta = None
@@ -11803,24 +11833,12 @@ class TaintTracker:
                             if isinstance(recv, ast.Call) and isinstance(recv.func, ast.Name) and recv.func.id == "super":
                                 is_model_super_save = True
                         if is_model_super_save:
-                            has_upload_sink = False
-                            for tree_call in ast.walk(tree):
-                                if isinstance(tree_call, ast.Call):
-                                    tc_name = dotted_name(tree_call.func) or ""
-                                    if "FILES" in tc_name or "UploadedFile" in tc_name:
-                                        has_upload_sink = True
-                                        break
-                            if not has_upload_sink:
+                            # The pre-scan already visited every reachable call in this tree once,
+                            # so this branch needs no descent of the module at all.
+                            if not module_has_upload_sink:
                                 cwe_meta = None
                         else:
-                            has_sanitizer = False
-                            for tree_call in ast.walk(tree):
-                                if isinstance(tree_call, ast.Call):
-                                    tc_name = dotted_name(tree_call.func) or ""
-                                    if tc_name in CWE3A_UPLOAD_SANITIZERS or tc_name in CWE3A_UPLOAD_RANDOMIZERS:
-                                        has_sanitizer = True
-                                        break
-                            if not has_sanitizer and not has_extension_whitelist:
+                            if not module_has_upload_sanitizer and not has_extension_whitelist:
                                 cwe_meta = {"operation": "UNRESTRICTED_FILE_UPLOAD", "category": "UNRESTRICTED_FILE_UPLOAD", "cwe": "CWE-434"}
 
                     # ─── CWE-352: Cross-Site Request Forgery (Calls like csrf.exempt(func)) ───
@@ -11896,7 +11914,7 @@ class TaintTracker:
                     elif (names & CWE3A_NETWORK_SINKS) or any(name.startswith(ns) for ns in ("requests.", "httpx.", "urllib.request.")):
                         url_arg = node.args[0] if node.args else None
                         if url_arg:
-                            url_val = _eval_static_constant(url_arg, self.assignments_by_scope, scope_id, lineno)
+                            url_val = _fold_static_constant(url_arg, scope_id, lineno)
                             if isinstance(url_val, str) and url_val.startswith("http://"):
                                 is_whitelisted = False
                                 for host in CWE3A_LOCALHOST_HOSTS:
@@ -12049,7 +12067,7 @@ class TaintTracker:
                 # ─── 1b. SQL String Construction (CWE-89) ───
                 if not cwe_meta and isinstance(node, ast.BinOp) and isinstance(node.op, ast.Mod):
                     # Detect: "SELECT ... %s" % user_input or "INSERT INTO ..." % var
-                    left_str = _eval_static_constant(node.left, self.assignments_by_scope, scope_id, lineno)
+                    left_str = _fold_static_constant(node.left, scope_id, lineno)
                     if isinstance(left_str, str):
                         sql_keywords = ("SELECT ", "INSERT INTO ", "UPDATE ", "DELETE FROM ", "DROP ")
                         if any(kw in left_str.upper() for kw in sql_keywords):
@@ -12098,7 +12116,7 @@ class TaintTracker:
                 # ─── 2. Assignments ───
                 elif isinstance(node, (ast.Assign, ast.AnnAssign)):
                     val_node = node.value
-                    val_const = _eval_static_constant(val_node, self.assignments_by_scope, scope_id, lineno)
+                    val_const = _fold_static_constant(val_node, scope_id, lineno)
                     targets = node.targets if isinstance(node, ast.Assign) else [node.target]
 
                     for target in targets:
