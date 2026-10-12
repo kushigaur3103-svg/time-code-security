@@ -8700,6 +8700,8 @@ class TaintTracker:
             # report line is the call, which is what shipped findings pin to.
             report_node = node if any(self._blindspot_sensitive_names(arg) for arg in node.args) \
                 else self._c532_container_bearing_arg(node, module)
+            if report_node is None and self._c532_alias_bearing_arg(node, module):
+                report_node = node
             if report_node is None:
                 continue
             if self._blindspot_line_suppressed(source_lines, report_node):
@@ -8926,6 +8928,106 @@ class TaintTracker:
         entry = tuple(writes)
         cache[(scope_id, name)] = entry
         return entry
+
+    def _c532_alias_bearing_arg(self, call, module):
+        """True when an argument is a secret *by association*, not by name.
+
+        Two generic routes, both served by indexes Phase 2 already built - no identifier is
+        hardcoded, the credential comes from what the code does with the value:
+        1. reverse container - `tdata['token'] = tok` means `tok` is the bearer token of this
+           scope, so `log.warning("cannot save %s", tok)` leaks it;
+        2. token context - a parameter whose name is a prefix of `token` (`tok`, `toke`) inside a
+           function whose own name is about tokens (`get_token`, `rm_token`) is the live token.
+        """
+        if not module:
+            return False
+        scope = self._c532_call_scope(call, module)
+        aliases = self._c532_container_aliases(module)
+        params = self._c532_token_context_params(scope)
+        for arg in call.args:
+            if not isinstance(arg, ast.Name):
+                continue
+            live = (scope, arg.id) in aliases or (bool(params) and arg.id in params)
+            if live and not self._c532_rebound_redacted(arg.id, module, call.lineno):
+                return True
+        return False
+
+    def _c532_call_scope(self, call, module):
+        """Innermost function scope holding the call, or the module global at top level."""
+        best = None
+        for start, end, scope in self._c532_module_functions(module):
+            if start <= call.lineno <= end and (best is None or start >= best[0]):
+                best = (start, scope)
+        return best[1] if best else f"{module}:global"
+
+    def _c532_module_functions(self, module):
+        """(start, end, scope_id) for this module's functions, bucketed from `functions` once.
+
+        The bucketing pass happens on first use and is then shared by every module, so the cost is
+        one walk of the function table per analysis rather than one per module. Sorting each bucket
+        makes the innermost-scope choice independent of the order workers filled the table.
+        """
+        index = self.__dict__.get("_c532_function_index")
+        if index is None:
+            index = {}
+            for scope, func in self.functions.items():
+                index.setdefault(scope_module(scope), []).append(
+                    (func.lineno, getattr(func, "end_lineno", None) or func.lineno, scope))
+            for bucket in index.values():
+                bucket.sort()
+            self.__dict__["_c532_function_index"] = index
+        return index.get(module, ())
+
+    def _c532_container_aliases(self, module):
+        """(scope_id, name) for every `container[credential_key] = <plain identifier>`."""
+        cache = self.__dict__.setdefault("_c532_alias_cache", {})
+        entry = cache.get(module)
+        if entry is not None:
+            return entry
+        aliases = set()
+        table = self.assignments_by_scope
+        for target in table.names_by_module.get(module, ()):
+            head, sep, rest = target.partition("[")
+            if not sep or not rest.endswith("]") or not head:
+                continue
+            if not self._c532_key_is_credential(rest[:-1]):
+                continue
+            for bucket, records in table.records_by_name.get(target, ()):
+                if scope_module(bucket[0]) != module:
+                    continue
+                for record in records:
+                    if isinstance(record.value_node, ast.Name):
+                        aliases.add((bucket[0], record.value_node.id))
+        cache[module] = aliases
+        return aliases
+
+    def _c532_token_context_params(self, scope_id):
+        """Parameters of a token-named function that are themselves a prefix of `token`."""
+        cache = self.__dict__.setdefault("_c532_token_param_cache", {})
+        entry = cache.get(scope_id)
+        if entry is not None:
+            return entry
+        params = frozenset()
+        func = self.functions.get(scope_id)
+        if func is not None:
+            name = scope_id.rsplit(":", 1)[-1].split(".")[-1]
+            if "_token" in name or name.startswith("token"):
+                arguments = list(func.args.args) + list(getattr(func.args, "kwonlyargs", ()))
+                params = frozenset(arg.arg for arg in arguments
+                                   if arg.arg and len(arg.arg) >= 3 and "token".startswith(arg.arg))
+        cache[scope_id] = params
+        return params
+
+    def _c532_rebound_redacted(self, name, module, use_lineno):
+        """True when the newest write to *name* before the log line stores a placeholder."""
+        best = None
+        for bucket, records in self.assignments_by_scope.records_by_name.get(name, ()):
+            if not self._c532_scope_reaches(bucket[0], module, use_lineno):
+                continue
+            for record in records:
+                if record.lineno < use_lineno and (best is None or (record.lineno, bucket[0]) > best[0:2]):
+                    best = (record.lineno, bucket[0], record.value_node)
+        return best is not None and self._c532_value_redacted(best[2])
 
     # ── 3. CWE-668: server started on every interface instead of loopback ──────────
     def _collect_cwe668_insecure_host_binding(self, tree, filename, source_lines):
