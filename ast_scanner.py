@@ -14762,15 +14762,20 @@ class TaintTracker:
                 ))
                 emitted = True
 
+        # P1 edge-repair: registry-created CWE-89 sinks that never earned a source id.
+        # The stable filters run once over the whole list. The source-id test is not stable --
+        # a repair earlier in this loop adds the key -- so it stays inside the per-module loop,
+        # where it answers the same question the rebuilt list used to answer at the same moment.
+        repair_candidates = [
+            record for record in list(self.sink_records)
+            if record.security_node.metadata.get("cwe") == "CWE-89"
+            and isinstance(record.node, ast.Call)
+        ]
         for mod_name, tree in self.modules.items():
-            # P1 edge-repair: registry-created CWE-89 sinks that never earned a source id.
-            repair_candidates = [
-                record for record in list(self.sink_records)
-                if record.security_node.metadata.get("cwe") == "CWE-89"
-                and not any(key.endswith("source_id") for key in record.security_node.metadata)
-                and isinstance(record.node, ast.Call)
-            ]
+            mod_file = self.file_paths.get(mod_name, "")
             for record in repair_candidates:
+                if any(key.endswith("source_id") for key in record.security_node.metadata):
+                    continue
                 call = record.node
                 scope_id = record.scope_id
                 attr = call.func.attr if isinstance(call.func, ast.Attribute) else None
@@ -14787,14 +14792,11 @@ class TaintTracker:
                 if attr is None:
                     continue
                 call_line = getattr(node, "lineno", 1)
-                already = next((
-                    record for record in self.sink_records
-                    if record.security_node.location.file == self.file_paths.get(mod_name, "")
-                    and record.security_node.location.line_start == call_line
-                    and record.security_node.metadata.get("cwe") == "CWE-89"
-                ), None)
-                if already is not None and any(
-                        key.endswith("source_id") for key in already.security_node.metadata):
+                # O(1) by (file, line, CWE) -- same first-record-wins answer as the walk of
+                # self.sink_records this replaces, without the O(C_attr x R) re-scan.
+                already_node = self._sink_index_find(mod_file, call_line, "CWE-89")
+                if already_node is not None and any(
+                        key.endswith("source_id") for key in already_node.metadata):
                     continue  # already an established finding at this call
 
                 if attr in execute_attrs or attr in driver_attrs:
