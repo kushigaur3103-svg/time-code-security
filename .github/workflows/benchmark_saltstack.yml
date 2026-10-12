@@ -21,9 +21,10 @@ jobs:
     # 30 -> 35: measured on saltstack v3000.1, TCS alone needed ~344s of Phase-2 statement collection
     # plus call-site graph propagation, so the 12-minute engine step was killed before it could write
     # its SARIF and the referee read that as 0 findings.
-    # TEMP-UNCONSTRAINED-BASELINE: job raised 35 -> 150 so the engine step below can run to its own 55-minute
-    # wrapper instead of being cut off by the job. Revert with git revert of this commit.
-    timeout-minutes: 150
+    # TEMP-UNCONSTRAINED-BASELINE: job ceiling is GitHub's hard maximum, 360 minutes, and there is no
+    # shorter limit anywhere below it. Nothing but the runner itself can cut this scan off now. Revert
+    # with git revert of this commit.
+    timeout-minutes: 360
 
     env:
       REPO: https://github.com/saltstack/salt.git
@@ -173,16 +174,16 @@ jobs:
         # the 20-minute scan plus ~2 minutes for the flush, tee and artefact listing.
         # `|| echo` because Actions runs `bash -e`: a bare non-zero exit would abort the step before
         # the code is recorded, and the referee would report "not recorded" instead of the real number.
-        # TEMP-UNCONSTRAINED-BASELINE: step budget raised 22 -> 60 to capture the true unconstrained completion
-        # time. The 3300s wrapper still fires first, so the graceful-flush path stays reachable.
-        timeout-minutes: 60
+        # TEMP-UNCONSTRAINED-BASELINE: no wrapper and no short budget. 360 matches the job ceiling, so the
+        # step can only end when cli.py ends. `|| echo TCS_SCAN_EXIT=$?` below still records a non-zero exit
+        # and `continue-on-error: true` still lets the referee and the artefact upload run afterwards.
+        timeout-minutes: 360
         continue-on-error: true
         env:
           PYTHONUNBUFFERED: "1"
         run: |
           set -o pipefail
-          timeout --signal=TERM --kill-after=30s 3300s \
-            python -u cli.py scan "$TARGET_DIR/" \
+          python -u cli.py scan "$TARGET_DIR/" \
             --scope all \
             --format json \
             --sarif benchmark_results/tcs.sarif \
@@ -478,14 +479,14 @@ jobs:
                  "- Clone: `git clone --depth 1 --single-branch --branch v3000.1`, `.git` removed.",
                  "- CodeQL: `security-extended`, `build-mode: none`, `upload: false`, config paths "
                  f"scoped to `{TARGET_DIR}`.",
-                 "- TCS: `timeout --signal=TERM --kill-after=30s 3300s python -u cli.py scan "
+                 "- TCS: `python -u cli.py scan "
                  "target_arena/ --scope all --format json --sarif benchmark_results/tcs.sarif` "
                  "with `PYTHONUNBUFFERED=1`, stderr tee-ed to `benchmark_results/tcs_stdout.txt` so "
-                 "progress names the stalled file. This baseline run lifts the 20-minute cap "
-                 "(wrapper 3300s, step 60m); a SIGTERM at 55 minutes only ever makes cli.py's handler "
-                 "flush the findings found so far instead of losing them.",
+                 "progress names the stalled file. This baseline run is unconstrained: no `timeout` "
+                 "wrapper, no SIGTERM path, step and job both at GitHub's hard 360-minute ceiling, so "
+                 "the reported wall-clock is the engine's own natural completion time.",
                  "- Semgrep OSS: `p/python` + `p/owasp-top-ten`, `--metrics=off`, SARIF out.",
-                 "- Step timeouts: CodeQL 10, TCS 60 (wrapper 3300s), Semgrep 10; job 150. Each engine step is "
+                 "- Step timeouts: CodeQL 10, TCS 360 (no wrapper), Semgrep 10; job 360. Each engine step is "
                  "continue-on-error, so one timeout never cancels the others.",
                  "- Artifacts: `benchmark_results/` (three SARIF sets, stdout logs, target "
                  "inventory, this report).", ""]
