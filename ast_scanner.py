@@ -1599,6 +1599,10 @@ CWE3A_WEAK_HASH_NAMES = {
 CWE3A_PASSWORD_NAME_RE = re.compile(r"(?i).*(password|passwd|pwd|\bpw\b|user_pass|secret|pin|auth|credential).*")
 CWE3A_SALT_NAME_RE = re.compile(r"(?i)^(salt|pepper|nonce|iv)$")
 CWE3A_SENSITIVE_VALUE_RE = re.compile(r"(?i).*(password|passwd|pwd|secret|api_key|access_token|credential|token|secret_key).*")
+# A credential *label* inside a string that is about to be written to a file: `passwd: {passwd}`.
+# The value half of the rule reuses CWE3A_SENSITIVE_VALUE_RE, so the two stay in step.
+CWE3A_CREDENTIAL_LABEL_RE = re.compile(
+    r"(?i)\b(password|passwd|secret_key|api_key|access_token|auth_token|credential|token|secret|pwd)\b\s*[:=]")
 CWE3A_IDOR_MODELS = {"user", "account", "profile", "invoice", "order", "payment", "document", "token"}
 CWE3A_LOCALHOST_HOSTS = {"localhost", "127.0.0.1", "0.0.0.0", "::1"}
 CWE3A_SCHEMA_DOMAINS = {"w3.org", "schemas.microsoft.com", "xml.org", "docs.oasis-open.org", "schemas.xmlsoap.org", "json-schema.org"}
@@ -11786,6 +11790,70 @@ class TaintTracker:
                         _add(node, "HARDCODED_CREDENTIAL_IN_PAYLOAD", "HARDCODED_CREDENTIAL",
                              "CWE-522")
 
+    def _c312_format_pieces(self, value):
+        """(literal template, [substituted expressions]) for a `.format()` / f-string / `%` write.
+
+        Returns (None, []) for anything that is not a formatted string, so the caller never has to
+        re-test the shape. The literal half is the concatenated/interpolated text the parser already
+        folded into one Constant; the substituted half is every expression that fills a hole in it.
+        """
+        if isinstance(value, ast.Call) and isinstance(value.func, ast.Attribute) \
+                and value.func.attr == "format":
+            base = value.func.value
+            if not (isinstance(base, ast.Constant) and isinstance(base.value, str)):
+                return None, []
+            return base.value, list(value.args) + [kw.value for kw in value.keywords]
+        if isinstance(value, ast.JoinedStr):
+            template = "".join(part.value for part in value.values
+                               if isinstance(part, ast.Constant) and isinstance(part.value, str))
+            return template, [part.value for part in value.values
+                              if isinstance(part, ast.FormattedValue)]
+        if isinstance(value, ast.BinOp) and isinstance(value.op, ast.Mod) \
+                and isinstance(value.left, ast.Constant) and isinstance(value.left.value, str):
+            right = value.right
+            if isinstance(right, ast.Tuple):
+                return value.left.value, list(right.elts)
+            if isinstance(right, ast.Dict):
+                return value.left.value, list(right.values)
+            return value.left.value, [right]
+        return None, []
+
+    @staticmethod
+    def _c312_value_is_credential(expr) -> bool:
+        """True when *expr* reads a secret: a credential-named name/attribute, or a keyed read."""
+        if isinstance(expr, ast.Name):
+            return bool(CWE3A_SENSITIVE_VALUE_RE.match(expr.id))
+        if isinstance(expr, ast.Attribute):
+            return bool(CWE3A_SENSITIVE_VALUE_RE.match(expr.attr))
+        if isinstance(expr, ast.Subscript):
+            key = expr.slice
+            return (isinstance(key, ast.Constant) and isinstance(key.value, str)
+                    and bool(CWE3A_SENSITIVE_VALUE_RE.match(key.value)))
+        if isinstance(expr, ast.Call) and isinstance(expr.func, ast.Attribute) \
+                and expr.func.attr in ("get", "pop", "setdefault"):
+            # A mapping read - `<config>.get('ssh_passwd', '')` - names the secret in its key,
+            # whatever the object holding it is called.
+            argument = expr.args[0] if expr.args else None
+            return (isinstance(argument, ast.Constant) and isinstance(argument.value, str)
+                    and bool(CWE3A_SENSITIVE_VALUE_RE.match(argument.value)))
+        return False
+
+    def _c312_credential_in_formatted_write(self, value) -> bool:
+        """True when a formatted string hands a labelled credential to a file write.
+
+        `roster_fp.write("...\\n    passwd: {passwd}\\n".format(passwd=self.opts.get('ssh_passwd', '')))`
+        hides the secret behind a substitution, so the bare-name test the write sink uses only sees
+        `self` and the module objects and stays silent. Both halves are demanded: a credential
+        *label* in the literal, and a *substituted value* that is itself read out of a
+        credential-named variable, attribute or mapping key - `"user: {user}"` carries no secret.
+        """
+        template, substituted = self._c312_format_pieces(value)
+        if template is None or not substituted:
+            return False
+        if not CWE3A_CREDENTIAL_LABEL_RE.search(template):
+            return False
+        return any(self._c312_value_is_credential(expr) for expr in substituted)
+
     def _collect_batch3a_structural_findings(self) -> None:
         """
         Batch 3A PURE_STRUCTURAL visitors (data/cwe_blueprint_batch3a.json):
@@ -12242,6 +12310,12 @@ class TaintTracker:
                                             # Report at source assignment line for benchmark alignment
                                             report_lineno = source_lineno if source_lineno else lineno
                                             cwe_meta = {"operation": "HTTP_RESPONSE_SPLITTING", "category": "RESPONSE_INJECTION", "cwe": "CWE-93", "_report_lineno": report_lineno}
+
+                                # ─── CWE-312, second shape: the secret travels inside a substitution ───
+                                # Last in this branch, so a tainted-write CWE-93 finding above keeps precedence.
+                                if not cwe_meta and not is_sanitized \
+                                        and self._c312_credential_in_formatted_write(arg0):
+                                    cwe_meta = {"operation": "CLEARTEXT_SENSITIVE_STORAGE", "category": "CLEARTEXT_SENSITIVE_STORAGE", "cwe": "CWE-312"}
 
                     elif name == "json.dump" and len(node.args) >= 1:
                         dict_arg = node.args[0]
