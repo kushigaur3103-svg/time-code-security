@@ -1160,6 +1160,14 @@ SENSITIVE_NAME_EXEMPT_RE = re.compile(
 
 LOG_SINK_METHODS = frozenset({"info", "debug", "warning", "error", "exception", "critical", "log"})
 
+# A container entry that stores a stand-in instead of the secret. Salt's own idiom is
+# `logging_data['password'] = 'XXX-REDACTED-XXX'`, and `None`/`''` are placeholders too.
+CWE532_REDACTED_LITERAL_RE = re.compile(r"(?i)redact|mask|placeholder|dummy|xxx|\*{3,}|<[a-z!]")
+
+# `kwargs.clear()` / `.popitem()` empty the whole container; `.pop('password')` removes one key.
+CWE532_REMOVED_ALL_METHODS = frozenset({"clear", "popitem"})
+CWE532_REMOVED_KEY_METHODS = frozenset({"pop"})
+
 # `app.run(host='0.0.0.0')` listens on every interface the machine has, not just loopback.
 INSECURE_BIND_HOSTS = frozenset({"0.0.0.0", "::", "0:0:0:0:0:0:0:0"})
 BIND_METHOD_NAMES = frozenset({"run", "run_simple"})
@@ -8675,23 +8683,29 @@ class TaintTracker:
                 "OS_COMMAND_EXECUTION")
 
     # ── 2. CWE-532: credential value written into a log line or stdout ─────────────
-    def _collect_cwe532_logging_leaks(self, tree, filename, source_lines):
+    def _collect_cwe532_logging_leaks(self, tree, filename, source_lines, module=""):
         func_ranges = [
             (func.lineno, getattr(func, "end_lineno", None) or func.lineno)
             for func in ast.walk(tree)
             if isinstance(func, (ast.FunctionDef, ast.AsyncFunctionDef))
         ]
+        if not module:
+            module = next((mod for mod, path in self.file_paths.items() if path == filename), "")
         for node in ast.walk(tree):
             if not isinstance(node, ast.Call):
                 continue
             if not self._blindspot_is_log_call(node, func_ranges):
                 continue
-            if not any(self._blindspot_sensitive_names(arg) for arg in node.args):
+            # The identifier test first: it already covers `log.info("%s", password)` and its
+            # report line is the call, which is what shipped findings pin to.
+            report_node = node if any(self._blindspot_sensitive_names(arg) for arg in node.args) \
+                else self._c532_container_bearing_arg(node, module)
+            if report_node is None:
                 continue
-            if self._blindspot_line_suppressed(source_lines, node):
+            if self._blindspot_line_suppressed(source_lines, report_node):
                 continue
             self._add_blindspot_sink(
-                node, filename, "CWE-532", "SENSITIVE_DATA_LOGGING", "SENSITIVE_DATA_LOGGING",
+                report_node, filename, "CWE-532", "SENSITIVE_DATA_LOGGING", "SENSITIVE_DATA_LOGGING",
                 "CWE-532: Insertion of sensitive data into log entry",
                 "SENSITIVE_DATA_LOGGING")
 
@@ -8726,6 +8740,192 @@ class TaintTracker:
                 names.append(sub.slice.value)
         return [name for name in names
                 if SENSITIVE_VALUE_NAME_RE.search(name) and not SENSITIVE_NAME_EXEMPT_RE.search(name)]
+
+    def _c532_container_bearing_arg(self, call, module):
+        """The first log argument whose *contents* carry a credential, or None.
+
+        `log.info("etcd client %r", etcd_kwargs)` names no secret at all - the password sits in the
+        dict built a few lines earlier. The identifier test cannot see through that indirection, so
+        the container is proved from the tables Phase 2 already indexed (`assignments_by_scope`,
+        `returns_by_scope`); no extra walk of the module AST is done.
+        """
+        if not module:
+            return None
+        for arg in call.args:
+            if isinstance(arg, ast.Name) \
+                    and self._c532_live_credential_keys(arg.id, module, call.lineno):
+                return arg
+        return None
+
+    def _c532_live_credential_keys(self, name, module, use_lineno):
+        """Credential keys present in *name* when it reaches *use_lineno*.
+
+        A key survives unless it was taken out again (`name.pop('password')`, `del name['token']`,
+        or a `clear()` that empties the container) *after* its last write and *before* the log line,
+        which is what makes `kwargs.pop('password')` suppress only the entry it actually removes.
+        """
+        writes = {}
+        scopes = set()
+        for key, value, lineno, scope_id in self._c532_container_writes(name, module, use_lineno):
+            if not self._c532_key_is_credential(key) or self._c532_value_redacted(value):
+                continue
+            writes[key] = max(writes.get(key, 0), lineno)
+            scopes.add(scope_id)
+        if not writes:
+            return frozenset()
+        cleared = 0
+        removed_at = {}
+        for scope_id in scopes:
+            for lineno, removed_key in self._c532_removals(name, scope_id):
+                if lineno >= use_lineno:
+                    continue
+                if removed_key == "*":
+                    cleared = max(cleared, lineno)
+                else:
+                    removed_at[removed_key] = max(removed_at.get(removed_key, 0), lineno)
+        replaced = self._c532_rebinds(name, module, use_lineno)
+        return frozenset(key for key, written in writes.items()
+                         if written > max(cleared, removed_at.get(key, 0))
+                         and not any(lineno > written and key not in keys
+                                     for lineno, keys in replaced))
+
+    def _c532_rebinds(self, name, module, use_lineno):
+        """(lineno, keys) for `name = {...}` rewrites, so a fresh credential-free dict clears the old one."""
+        rebinds = []
+        for bucket, records in self.assignments_by_scope.records_by_name.get(name, ()):
+            if not self._c532_scope_reaches(bucket[0], module, use_lineno):
+                continue
+            for record in records:
+                if record.lineno >= use_lineno or not isinstance(record.value_node, ast.Dict):
+                    continue
+                rebinds.append((record.lineno, frozenset(
+                    key.value for key in record.value_node.keys
+                    if isinstance(key, ast.Constant) and isinstance(key.value, str))))
+        return rebinds
+
+    def _c532_container_writes(self, name, module, use_lineno):
+        """(key, value_node, lineno, scope_id) triples that put an entry into *name*.
+
+        Covers a dict literal assigned to the name, a `name['key'] = value` store (Phase 2 records
+        those under the composite key `name[key]`), and `name = helper(...)` for a helper defined in
+        the same module whose `return` is such a dict.
+        """
+        table = self.assignments_by_scope
+        for bucket, records in table.records_by_name.get(name, ()):
+            scope_id = bucket[0]
+            if not self._c532_scope_reaches(scope_id, module, use_lineno):
+                continue
+            for record in records:
+                if record.lineno >= use_lineno:
+                    continue
+                for key, value in self._c532_dict_entries(record.value_node, module):
+                    yield key, value, record.lineno, scope_id
+        for key in self._c532_subscript_keys(name, module):
+            for bucket, records in table.records_by_name.get(f"{name}[{key}]", ()):
+                scope_id = bucket[0]
+                if not self._c532_scope_reaches(scope_id, module, use_lineno):
+                    continue
+                for record in records:
+                    if record.lineno < use_lineno:
+                        yield key, record.value_node, record.lineno, scope_id
+
+    def _c532_dict_entries(self, value, module, depth=0):
+        """(literal key, value_node) pairs an expression can hand to a container."""
+        if isinstance(value, ast.Dict):
+            return [(key.value, item) for key, item in zip(value.keys, value.values)
+                    if isinstance(key, ast.Constant) and isinstance(key.value, str)]
+        if depth < 1 and isinstance(value, ast.Call):
+            scope = self._c532_callee_scope(dotted_name(value.func) or "", module)
+            if scope:
+                entries = []
+                for ret in self.returns_by_scope.get(scope, ()):
+                    entries.extend(self._c532_dict_entries(ret.value, module, depth + 1))
+                return entries
+        return []
+
+    def _c532_callee_scope(self, callee, module):
+        """Same-module helper called by `name = helper(...)`, or "" when it is not local."""
+        if not callee:
+            return ""
+        last = callee.split(".")[-1]
+        for candidate in (f"{module}:function:{callee}", f"{module}:function:{last}"):
+            if candidate in self.functions:
+                return candidate
+        return ""
+
+    def _c532_subscript_keys(self, name, module):
+        """Keys ever written as `name[key] = ...` in *module*, from the name index already built."""
+        cache = self.__dict__.setdefault("_c532_subscript_key_cache", {})
+        index = cache.get(module)
+        if index is None:
+            index = {}
+            for target in self.assignments_by_scope.names_by_module.get(module, ()):
+                head, sep, rest = target.partition("[")
+                if sep and rest.endswith("]") and head and head != target:
+                    index.setdefault(head, set()).add(rest[:-1])
+            cache[module] = index
+        return index.get(name, ())
+
+    @staticmethod
+    def _c532_key_is_credential(key) -> bool:
+        return bool(SENSITIVE_VALUE_NAME_RE.search(key)) and not SENSITIVE_NAME_EXEMPT_RE.search(key)
+
+    @staticmethod
+    def _c532_value_redacted(value) -> bool:
+        """True when the stored entry is a placeholder rather than the secret itself."""
+        if not isinstance(value, ast.Constant):
+            return False
+        if value.value is None or value.value == "":
+            return True
+        return isinstance(value.value, str) and bool(CWE532_REDACTED_LITERAL_RE.search(value.value))
+
+    def _c532_scope_reaches(self, scope_id, module, use_lineno) -> bool:
+        """True when an assignment made in *scope_id* can still be seen at *use_lineno*.
+
+        Module globals qualify; anything else has to be a function that lexically contains the log
+        line, which is exactly the same-function relationship the containers are written in.
+        """
+        if scope_module(scope_id) != module:
+            return False
+        if scope_id.endswith(":global"):
+            return True
+        func = self.functions.get(scope_id)
+        if func is None:
+            return False
+        return func.lineno <= use_lineno <= (getattr(func, "end_lineno", None) or func.lineno)
+
+    def _c532_removals(self, name, scope_id):
+        """(lineno, key) entries that take values out of *name* inside *scope_id*.
+
+        Only the top-level statements of the one function that owns the container are inspected,
+        once per (scope, name) - not a walk of the tree.
+        """
+        cache = self.__dict__.setdefault("_c532_removal_cache", {})
+        entry = cache.get((scope_id, name))
+        if entry is not None:
+            return entry
+        writes = []
+        func = self.functions.get(scope_id)
+        for stmt in getattr(func, "body", ()):
+            value = stmt.value if isinstance(stmt, ast.Expr) else None
+            if isinstance(value, ast.Call) and isinstance(value.func, ast.Attribute) \
+                    and isinstance(value.func.value, ast.Name) and value.func.value.id == name:
+                if value.func.attr in CWE532_REMOVED_ALL_METHODS:
+                    writes.append((value.lineno, "*"))
+                elif value.func.attr in CWE532_REMOVED_KEY_METHODS:
+                    first = value.args[0] if value.args else None
+                    if isinstance(first, ast.Constant) and isinstance(first.value, str):
+                        writes.append((value.lineno, first.value))
+            if isinstance(stmt, ast.Delete):
+                for target in stmt.targets:
+                    if isinstance(target, ast.Subscript) and isinstance(target.value, ast.Name) \
+                            and target.value.id == name:
+                        key = target.slice
+                        if isinstance(key, ast.Constant) and isinstance(key.value, str):
+                            writes.append((stmt.lineno, key.value))
+        entry = tuple(writes)
+        cache[(scope_id, name)] = entry
+        return entry
 
     # ── 3. CWE-668: server started on every interface instead of loopback ──────────
     def _collect_cwe668_insecure_host_binding(self, tree, filename, source_lines):
@@ -19037,7 +19237,7 @@ class TaintTracker:
             _bs_lines = self._source_lines_by_file.get(_bs_file, [])
             self._checkpoint_collector = _bs_file
             self._collect_cwe78_subprocess_calls(_bs_tree, _bs_file, _bs_lines)
-            self._collect_cwe532_logging_leaks(_bs_tree, _bs_file, _bs_lines)
+            self._collect_cwe532_logging_leaks(_bs_tree, _bs_file, _bs_lines, _bs_mod)
             self._collect_cwe668_insecure_host_binding(_bs_tree, _bs_file, _bs_lines)
             self._collect_cwe93_header_injection(_bs_tree, _bs_file, _bs_lines)
             self._collect_cwe22_parameter_path_sinks(_bs_tree, _bs_file, _bs_lines)
