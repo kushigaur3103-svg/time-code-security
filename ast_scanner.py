@@ -1182,6 +1182,12 @@ CWE532_REDACTED_LITERAL_RE = re.compile(r"(?i)redact|mask|placeholder|dummy|xxx|
 CWE532_REMOVED_ALL_METHODS = frozenset({"clear", "popitem"})
 CWE532_REMOVED_KEY_METHODS = frozenset({"pop"})
 
+# A one-argument builtin that rewraps a collection holds exactly the same elements, so
+# `log.info("%s", sorted(tokens))` leaks what `log.info("%s", tokens)` leaks.
+CWE532_COLLECTION_BUILTINS = frozenset({"sorted", "list", "set", "tuple", "iter"})
+# Reading a flag out of the caller's mapping leaves the escaping decided at runtime.
+CWE116_MAPPING_READ_METHODS = frozenset({"get", "pop", "setdefault"})
+
 # `app.run(host='0.0.0.0')` listens on every interface the machine has, not just loopback.
 INSECURE_BIND_HOSTS = frozenset({"0.0.0.0", "::", "0:0:0:0:0:0:0:0"})
 BIND_METHOD_NAMES = frozenset({"run", "run_simple"})
@@ -8720,6 +8726,10 @@ class TaintTracker:
                 else self._c532_container_bearing_arg(node, module)
             if report_node is None and self._c532_alias_bearing_arg(node, module):
                 report_node = node
+            # Last, and only for arguments that named nothing above: a builtin rewrapping the
+            # collection, so the test has to look through the wrapper rather than at it.
+            if report_node is None and self._c532_wrapped_collection_leaks(node, module):
+                report_node = node
             if report_node is None:
                 continue
             if self._blindspot_line_suppressed(source_lines, report_node):
@@ -9046,6 +9056,72 @@ class TaintTracker:
                 if record.lineno < use_lineno and (best is None or (record.lineno, bucket[0]) > best[0:2]):
                     best = (record.lineno, bucket[0], record.value_node)
         return best is not None and self._c532_value_redacted(best[2])
+
+    def _c532_wrapped_collection_leaks(self, call, module):
+        """True when `log.info("%s", sorted(secrets))` wraps a credential collection.
+
+        The routes the plain arguments already use, applied one level deeper: the operand's own
+        identifiers, a container built with credential keys, and the association route - a name the
+        surrounding code hands to a credential-named keyword (`filter(token__in=<name>)`) *is* the
+        credential list, whatever it happens to be called. Nothing here keys on a variable's name.
+        """
+        if not module:
+            return False
+        for arg in call.args:
+            inner = self._c532_collection_operand(arg)
+            if inner is None:
+                continue
+            if self._blindspot_sensitive_names(inner):
+                return True
+            if not isinstance(inner, ast.Name):
+                continue
+            if self._c532_live_credential_keys(inner.id, module, call.lineno):
+                return True
+            if inner.id in self._c532_credential_bound_names(self._c532_call_scope(call, module)):
+                return True
+        return False
+
+    @staticmethod
+    def _c532_collection_operand(arg):
+        """The value inside a one-argument collection builtin, else None."""
+        if not isinstance(arg, ast.Call) or not isinstance(arg.func, ast.Name):
+            return None
+        if arg.func.id not in CWE532_COLLECTION_BUILTINS or not arg.args:
+            return None
+        return arg.args[0]
+
+    def _c532_credential_bound_names(self, scope_id):
+        """Identifiers handed to a credential-named keyword argument inside *scope_id*.
+
+        `PushDeviceToken.objects.filter(token__in=deleted).delete()` can only mean `deleted` holds
+        tokens, and the variable is never named like one. The spelling is Django's field lookup
+        suffix (`token__in`, `lower_token__icontains`), so every `__`-separated segment is tested
+        instead of the whole key. One pass over the owning function's statements, cached per scope,
+        reached only from the wrapper route above.
+        """
+        cache = self.__dict__.setdefault("_c532_credential_kwarg_cache", {})
+        entry = cache.get(scope_id)
+        if entry is not None:
+            return entry
+        names = set()
+        func = self.functions.get(scope_id)
+        for stmt in getattr(func, "body", ()):
+            for sub in ast.walk(stmt):
+                if not isinstance(sub, ast.Call):
+                    continue
+                for keyword in sub.keywords:
+                    if keyword.arg and self._c532_field_is_credential(keyword.arg):
+                        names.update(node.id for node in ast.walk(keyword.value)
+                                     if isinstance(node, ast.Name))
+        entry = frozenset(names)
+        cache[scope_id] = entry
+        return entry
+
+    @classmethod
+    def _c532_field_is_credential(cls, field_name):
+        """A `token__in` style lookup names a credential when any of its segments does."""
+        return any(cls._c532_key_is_credential(segment)
+                   for segment in field_name.split("__") if segment)
 
     # ── 3. CWE-668: server started on every interface instead of loopback ──────────
     def _collect_cwe668_insecure_host_binding(self, tree, filename, source_lines):
@@ -9642,14 +9718,16 @@ class TaintTracker:
         A parameter *named* `request` is not evidence on its own: google-api-python-client hands
         `_poll_operation(request, response, ...)` a discovery-request object, and logging its server
         response is not log injection (measured FP at gcp_mlengine_hook.py:38). Such a def counts
-        only when its own body actually reads a request container.
+        only when its own body actually reads a request container, or when it forwards the request
+        object into another view-level call - the shape of an undecorated view helper.
         """
         scopes = []
         for func in ast.walk(tree):
             if not isinstance(func, (ast.FunctionDef, ast.AsyncFunctionDef)):
                 continue
             if not TaintTracker._c209_route_decorated(func) \
-                    and not TaintTracker._c117_request_read(func):
+                    and not TaintTracker._c117_request_read(func) \
+                    and not TaintTracker._c117_view_helper(func):
                 continue
             scopes.append((func, {
                 argument.arg for argument in
@@ -9657,6 +9735,36 @@ class TaintTracker:
                 if argument.arg not in ("self", "cls")
             }))
         return scopes
+
+    @staticmethod
+    def _c117_view_helper(func):
+        """A def that is not itself a route but works on the live request it was handed.
+
+        Zulip's social-auth views funnel through `_start_social_auth_flow(request, backend,
+        extra_arg, ...)`: undecorated, never touching `request.GET`, but it forwards the request
+        object into another view-level call (`config_error(request, ...)`) and logs a parameter that
+        came from the client upstream. A discovery-resource helper calls methods *on* its request
+        object (`request.execute()`) instead of passing it on, so it stays out.
+
+        A def carrying decorators is left to the two routes above, and a def that returns no response
+        is a side-effect utility whose parameters the caller built (a model object, a configured
+        rate-limit domain) rather than client text - `rate_limit_remote_server(...) -> None` is that
+        shape. Requiring the response type is what keeps the widening on the view path only.
+        """
+        if func.decorator_list or func.returns is None:
+            return False
+        if "response" not in (dotted_name(func.returns) or "").lower():
+            return False
+        params = list(func.args.args)
+        if not params or params[0].arg != "request":
+            return False
+        for sub in ast.walk(func):
+            if not isinstance(sub, ast.Call):
+                continue
+            for value in list(sub.args) + [kw.value for kw in sub.keywords]:
+                if isinstance(value, ast.Name) and value.id == "request":
+                    return True
+        return False
 
     @staticmethod
     def _c117_inert(arg):
@@ -10438,6 +10546,24 @@ class TaintTracker:
         return (isinstance(base, ast.Constant) and isinstance(base.value, str)
                 and "{" in base.value)
 
+    @staticmethod
+    def _c116_autoescape_is_dynamic(value: ast.AST) -> bool:
+        """True for `autoescape=options.pop("autoescape", True)` - escaping decided by the caller.
+
+        A literal `True` escapes and a literal `False` is what the CWE-79 Jinja config rule reports.
+        Reading the flag out of a mapping the factory receives moves the decision outside this module:
+        every caller that does not ask gets the default, and one that asks for `False` renders raw
+        HTML through an environment this file vouches for.
+        """
+        if not isinstance(value, ast.Call) or not isinstance(value.func, ast.Attribute):
+            return False
+        if value.func.attr not in CWE116_MAPPING_READ_METHODS:
+            return False
+        if not isinstance(value.func.value, ast.Name):
+            return False
+        first = value.args[0] if value.args else None
+        return isinstance(first, ast.Constant) and first.value in CLUSTER1_AUTOESCAPE_KEYS
+
     def _c1_cluster1_candidates(self, node: ast.AST, scope_id: str, ns_history: dict,
                                 template_consumers: set, module_tree: ast.AST | None = None) -> list[dict]:
         lineno = getattr(node, "lineno", 0)
@@ -10497,9 +10623,12 @@ class TaintTracker:
                 if any(self._c1_is_namespace_use(a, ns_history) for a in args):
                     add("GLOBALS_AS_TEMPLATE_CONTEXT", "CODE_INJECTION", "CWE-96")
 
-            # C. CWE-116: a Jinja2 environment built without an autoescape argument.
+            # C. CWE-116: a Jinja2 environment built without an autoescape argument, or with one
+            #    whose value is read out of the caller's options at runtime.
             elif last_names & {"Environment"}:
-                if not any(kw.arg in CLUSTER1_AUTOESCAPE_KEYS for kw in getattr(node, "keywords", [])):
+                flags = [kw.value for kw in getattr(node, "keywords", [])
+                         if kw.arg in CLUSTER1_AUTOESCAPE_KEYS]
+                if not flags or any(self._c116_autoescape_is_dynamic(flag) for flag in flags):
                     add("TEMPLATE_AUTOESCAPE_DISABLED", "XSS", "CWE-116")
 
             # B. CWE-96: dynamic lookup inside a globals()/locals() namespace.
