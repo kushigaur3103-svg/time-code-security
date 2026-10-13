@@ -1,0 +1,491 @@
+name: "Benchmark - Boss Arenas 3-in-1 Showdown (Superset / Airflow / Home Assistant)"
+
+# Manual only: no push, pull_request, schedule or workflow_run trigger exists in this file, so the
+# file itself costs zero runner minutes and every `[skip ci]` commit stays inert until a human picks
+# one of the three boss arenas and presses "Run workflow". One file, three targets, `arena` selects
+# exactly one - this is what keeps the next three showdowns off each other's credit bill.
+on:
+  workflow_dispatch:
+    inputs:
+      arena:
+        description: 'Select Boss Arena Target'
+        required: true
+        default: 'superset'
+        type: choice
+        options:
+          - 'superset'
+          - 'airflow'
+          - 'homeassistant'
+
+# contents:read clones this repo. security-events:write is what codeql-action expects to see even
+# though `upload: false` means no SARIF is ever sent to the code-scanning API.
+permissions:
+  contents: read
+  security-events: write
+
+jobs:
+  boss-arena-showdown:
+    runs-on: ubuntu-latest
+    # Hard credit cap for the whole job: clone, Gate 1, all three engines and the referee.
+    # 35 rather than the universal showdown's 30 because Home Assistant Core is ~4k .py files and
+    # Superset carries large generated JS/schema trees on top of its Python.
+    timeout-minutes: 35
+
+    env:
+      PYTHONUNBUFFERED: "1"
+      # The dispatched choice travels through the environment instead of being interpolated into a
+      # shell string, so the value cannot become a command.
+      ARENA: ${{ github.event.inputs.arena }}
+      TARGET_DIR: target_arena
+
+    steps:
+      - name: Checkout TimeCodeSecurity (HEAD)
+        uses: actions/checkout@v4
+
+      - name: Set up Python 3.11
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.11"
+          cache: "pip"
+
+      - name: Install Engine Dependencies
+        # requirements.txt first: Gate 1 and `python cli.py scan` both import from it.
+        # flet is not in requirements.txt, but `scripts/run_all_checks.py` imports tcs_gui, whose
+        # line 6 is `import flet as ft` - without it Gate 1 dies on ModuleNotFoundError (measured on
+        # the universal showdown before the same line was added there).
+        run: |
+          mkdir -p benchmark_results
+          python -m pip install --upgrade pip
+          if [ -f requirements.txt ]; then pip install -r requirements.txt; fi
+          pip install flet
+          python -c "import flet, tcs_gui; print('gate imports OK')"
+
+      - name: Setup Target Arena (shallow, single branch, .git removed)
+        # Refs verified 2026-10-13 with `git ls-remote --tags` before this file was written:
+        # apache/superset 3.0.0 = 40d9c4c, apache/airflow 2.7.3 = f124353,
+        # home-assistant/core 2023.11.0 = 0b8d423. All three are tags, so `--branch` resolves them.
+        # An empty $ARENA is the one input no pattern can match, so it is caught here with a plain
+        # message instead of surfacing later as a confusing `git clone` exit 1.
+        run: |
+          if [ -z "$ARENA" ]; then
+            echo "::error::arena is empty - run this workflow again and pick a target" >&2
+            exit 1
+          fi
+          case "$ARENA" in
+            superset)
+              REPO="https://github.com/apache/superset.git"
+              REF="3.0.0"
+              LABEL="apache/superset @ 3.0.0 (Flask + Celery + SQLAlchemy analytics BI)"
+              ;;
+            airflow)
+              REPO="https://github.com/apache/airflow.git"
+              REF="2.7.3"
+              LABEL="apache/airflow @ 2.7.3 (FastAPI + SQLAlchemy + Celery orchestrator)"
+              ;;
+            homeassistant)
+              REPO="https://github.com/home-assistant/core.git"
+              REF="2023.11.0"
+              LABEL="home-assistant/core @ 2023.11.0 (aiohttp + ~4k modules, 1800+ integrations)"
+              ;;
+            *)
+              echo "::error::Unknown arena: $ARENA" >&2
+              exit 1
+              ;;
+          esac
+          git clone --depth 1 --single-branch --branch "$REF" "$REPO" "$TARGET_DIR"
+          # Removing .git frees the object store before any engine reads the tree, and stops the
+          # walkers from descending into it.
+          rm -rf "$TARGET_DIR/.git"
+          {
+            echo "REPO=$REPO"
+            echo "REF=$REF"
+            echo "TARGET_REF_USED=$REF"
+            echo "ARENA_LABEL=$LABEL"
+            echo "TARGET_PY_FILES=$(find "$TARGET_DIR" -name '*.py' | wc -l)"
+            echo "TARGET_HTML_FILES=$(find "$TARGET_DIR" -name '*.html' | wc -l)"
+          } >> "$GITHUB_ENV"
+          echo "arena=$ARENA -> $REPO @ $REF"
+          echo "python files: $(find "$TARGET_DIR" -name '*.py' | wc -l)"
+          find "$TARGET_DIR" -type f | sort > benchmark_results/target_files.txt
+          echo "arena files: $(wc -l < benchmark_results/target_files.txt)"
+
+      - name: Gate 1 Hard Verification (prerequisite, 552 cases)
+        # No "|| true" and no continue-on-error: a red engine makes every number in the report
+        # worthless, so the job stops before a third-party tool is run. Actions runs the shell with
+        # `bash -eo pipefail`, so a non-zero gate fails the step through the tee pipe.
+        run: |
+          python scripts/run_all_checks.py | tee benchmark_results/gate1.txt
+          grep -Eq "Cases Evaluated[[:space:]]*:[[:space:]]*552" benchmark_results/gate1.txt
+          grep -Eq "False Positives[[:space:]]*:[[:space:]]*0" benchmark_results/gate1.txt
+          grep -Eq "False Negatives[[:space:]]*:[[:space:]]*0" benchmark_results/gate1.txt
+          echo "GATE1_PASSED=true" >> "$GITHUB_ENV"
+
+      - name: Execute TimeCodeSecurity Scan (guarded, 1380s)
+        # `timeout` is the runner-side credit cap: TERM at 1380s, KILL 30s later if the process
+        # ignores it. `|| echo` because Actions runs `bash -e` - a bare non-zero exit would abort the
+        # step before its code is recorded, and the referee would report "not recorded" instead of
+        # the real number (124 = timed out, 137 = killed).
+        continue-on-error: true
+        run: |
+          timeout --signal=TERM --kill-after=30s 1380s \
+            python -u cli.py scan "$TARGET_DIR/" --scope all --format json \
+              --sarif benchmark_results/tcs.sarif \
+            > benchmark_results/tcs_stdout.txt 2>&1 \
+            || echo "TCS_SCAN_EXIT=$?" >> "$GITHUB_ENV"
+
+      - name: Write CodeQL Config (target directory only)
+        # Without this, CodeQL analyses the whole workspace, which here means our own 17k-line engine
+        # too, and the comparison would not be on identical input. `config-file` and `queries` are
+        # mutually exclusive action inputs, so the suite is named inside the config.
+        # No `paths-ignore`: TCS and Semgrep get every file of the arena, so hiding the arena's tests
+        # from CodeQL alone would invent blind spots for it.
+        run: |
+          cat > benchmark_results/codeql_config.yml << CFG
+          name: "boss arena showdown: $TARGET_DIR only"
+          disable-default-queries: true
+          queries:
+            - uses: security-extended
+          paths:
+            - $TARGET_DIR
+          CFG
+          cat benchmark_results/codeql_config.yml
+
+      - name: Initialize CodeQL (python, security-extended, no build)
+        uses: github/codeql-action/init@v3
+        continue-on-error: true
+        with:
+          languages: python
+          build-mode: none
+          config-file: benchmark_results/codeql_config.yml
+
+      - name: Run CodeQL Analysis (no upload)
+        uses: github/codeql-action/analyze@v3
+        continue-on-error: true
+        with:
+          category: "/language:python"
+          output: benchmark_results/codeql_results
+          upload: false
+          cleanup-level: none
+
+      - name: Normalise CodeQL SARIF Path
+        # The exact SARIF file name inside `output:` is not documented per version, so it is
+        # discovered at run time rather than assumed, and then copied to the single name the referee
+        # reads. The missing/empty case stays visible instead of becoming "0 findings".
+        run: |
+          ls -la benchmark_results/codeql_results 2>/dev/null || echo "no codeql output directory"
+          CODEQL_SARIF=$(find benchmark_results/codeql_results -name '*.sarif' 2>/dev/null | head -1)
+          if [ -n "$CODEQL_SARIF" ]; then
+            cp "$CODEQL_SARIF" benchmark_results/codeql.sarif
+            echo "codeql sarif -> benchmark_results/codeql.sarif ($(wc -c < benchmark_results/codeql.sarif) bytes)"
+          else
+            echo "::warning::CodeQL produced no SARIF - the referee will report it as missing, not as zero"
+          fi
+
+      - name: Execute Semgrep OSS Scan (p/python + p/owasp-top-ten)
+        # pip first, as specified; pipx as the fallback the universal showdown proved is needed when
+        # semgrep's own dependency pins clash with the engine tree already installed.
+        continue-on-error: true
+        run: |
+          python -m pip install --quiet semgrep || pipx install semgrep
+          semgrep --version
+          semgrep scan --config "p/python" --config "p/owasp-top-ten" \
+            --metrics=off --sarif \
+            --output benchmark_results/semgrep.sarif \
+            "$TARGET_DIR/" \
+            > benchmark_results/semgrep_stdout.txt 2>&1 \
+            || echo "SEMGREP_SCAN_EXIT=$?" >> "$GITHUB_ENV"
+
+      # Boss-arena referee: the same scoreboard that `.github/workflows/benchmark_universal_showdown.yml`
+      # runs, reused so these three arenas are directly comparable with saltstack and zulip.
+      # (`scripts/generate_showdown_report.py` does not exist in this repo - verified 2026-10-13 -
+      # and the canonical referee here is inline so no engine file is touched.)
+      # Identical rules for all three engines: one loader, one CWE normalisation, one symmetric join.
+      - name: Generate 3-Way Showdown Report
+        if: always()
+        run: |
+          python - << 'PY'
+          import json
+          import os
+          import re
+
+          CWE_RE = re.compile(r"\bcwe[/\s-]?(\d{1,4})\b", re.I)
+          ENGINES = ("TimeCodeSecurity", "CodeQL", "Semgrep")
+          NORMAL_SCAN_EXITS = {"", "0", "1"}
+          # Symmetric join window: two findings belong to the same location when they are in the same
+          # file and their start lines are within this many lines of each other. Applied to every
+          # engine pair, never one-sided.
+          LINE_WINDOW = 5
+          MAX_ROWS = 120
+          TARGET_DIR = os.environ.get("TARGET_DIR", "target_arena")
+          PATHS = {
+              "TimeCodeSecurity": "benchmark_results/tcs.sarif",
+              "CodeQL": "benchmark_results/codeql.sarif",
+              "Semgrep": "benchmark_results/semgrep.sarif",
+          }
+          EXIT_KEYS = {"TimeCodeSecurity": "TCS_SCAN_EXIT", "CodeQL": "CODEQL_SCAN_EXIT",
+                       "Semgrep": "SEMGREP_SCAN_EXIT"}
+
+
+          def norm_path(uri):
+              """Map any tool's URI onto `path/inside/the/arena`, POSIX separators."""
+              text = (uri or "").replace("\\", "/").lstrip("./")
+              marker = "/" + TARGET_DIR.strip("/") + "/"
+              index = text.find(marker)
+              if index >= 0:
+                  return text[index + len(marker):]
+              if text.startswith(TARGET_DIR.strip("/") + "/"):
+                  return text[len(TARGET_DIR.strip("/") + "/"):]
+              return text
+
+
+          def _cwe_numbers(*values):
+              """Every CWE id in any mix of strings, lists and nested SARIF fragments."""
+              found = set()
+              stack = list(values)
+              while stack:
+                  item = stack.pop()
+                  if isinstance(item, str):
+                      for match in CWE_RE.finditer(item):
+                          number = int(match.group(1))
+                          if 0 < number < 10000:
+                              found.add(number)
+                  elif isinstance(item, (list, tuple, set)):
+                      stack.extend(item)
+                  elif isinstance(item, dict):
+                      stack.extend(item.values())
+              return found
+
+
+          def load_sarif(path):
+              """(status, data). A missing file is reported as missing, never as zero findings."""
+              if not path or not os.path.exists(path):
+                  return "no SARIF produced (step failed, timed out or wrote nothing)", {}
+              if os.path.getsize(path) == 0:
+                  return "SARIF file is empty", {}
+              try:
+                  with open(path, encoding="utf-8") as handle:
+                      return "ok", json.load(handle)
+              except (OSError, ValueError) as exc:
+                  return f"SARIF unreadable: {type(exc).__name__}", {}
+
+
+          def rows_of(path):
+              """One row per finding: (file, line, cwe, ruleId, category, message)."""
+              status, data = load_sarif(path)
+              rows = []
+              for run in data.get("runs", []):
+                  rules = run.get("tool", {}).get("driver", {}).get("rules", []) or []
+                  # Join on ruleId: Semgrep OSS SARIF results carry `ruleIndex: None`, so an
+                  # index-only lookup loses every CWE stored in the rule metadata.
+                  catalog = {rule.get("id"): rule for rule in rules
+                             if isinstance(rule, dict) and rule.get("id")}
+                  for res in run.get("results", []):
+                      rule = catalog.get(res.get("ruleId", "")) or {}
+                      uri, line = "?", 0
+                      for loc in res.get("locations", []):
+                          place = loc.get("physicalLocation", {})
+                          uri = norm_path(place.get("artifactLocation", {}).get("uri", uri))
+                          line = place.get("region", {}).get("startLine", line) or 0
+                          break
+                      cwes = _cwe_numbers(
+                          res.get("ruleId"), res.get("rule"),
+                          (res.get("properties") or {}).get("cwe"),
+                          (res.get("properties") or {}).get("tags"),
+                          (rule.get("properties") or {}).get("cwe"),
+                          (rule.get("properties") or {}).get("tags"),
+                          (rule.get("properties") or {}).get("subcategories"),
+                          rule.get("id"), rule.get("name"),
+                          (rule.get("shortDescription") or {}).get("text"),
+                          rule.get("taxonomies"),
+                      )
+                      category = ((rule.get("shortDescription") or {}).get("text")
+                                  or rule.get("name") or "")
+                      message = " ".join((res.get("message", {}).get("text", "")
+                                          or "").replace("|", "/").split())[:90]
+                      rows.append((uri, int(line), min(cwes) if cwes else None,
+                                   res.get("ruleId", "") or rule.get("id", "") or "?",
+                                   " ".join(category.split())[:48], message))
+              return status, sorted(rows, key=lambda row: (row[0], row[1], str(row[2])))
+
+
+          statuses, findings = {}, {}
+          for engine in ENGINES:
+              statuses[engine], findings[engine] = rows_of(PATHS[engine])
+
+
+          def cwes_of(engine):
+              return {row[2] for row in findings[engine] if row[2] is not None}
+
+
+          def matched(engine, row):
+              """Any finding of `engine` in the same file within LINE_WINDOW lines of `row`."""
+              return any(other[0] == row[0] and abs(other[1] - row[1]) <= LINE_WINDOW
+                         for other in findings[engine])
+
+
+          def cluster():
+              """Group every finding into location slots (same file, lines within LINE_WINDOW)."""
+              slots = []
+              for engine in ENGINES:
+                  for row in findings[engine]:
+                      for slot in slots:
+                          if slot["uri"] == row[0] and abs(slot["line"] - row[1]) <= LINE_WINDOW:
+                              slot["line"] = min(slot["line"], row[1])
+                              slot["engines"].add(engine)
+                              slot["rows"].append((engine, row))
+                              break
+                      else:
+                          slots.append({"uri": row[0], "line": row[1], "engines": {engine},
+                                        "rows": [(engine, row)]})
+              return sorted(slots, key=lambda slot: (slot["uri"], slot["line"]))
+
+
+          def join_sorted(values):
+              return ", ".join(sorted(set(values))) or "-"
+
+
+          def cwe_cell(slot):
+              return join_sorted("CWE-" + str(row[2]) for _e, row in slot["rows"]
+                                 if row[2] is not None)
+
+
+          slots_all = cluster()
+          consensus = [slot for slot in slots_all if len(slot["engines"]) == len(ENGINES)]
+          tcs_only = [slot for slot in slots_all if slot["engines"] == {"TimeCodeSecurity"}]
+          blind = [slot for slot in slots_all if "TimeCodeSecurity" not in slot["engines"]]
+          per_engine_gaps = ", ".join(
+              "{}: {}".format(engine, sum(1 for slot in blind if engine in slot["engines"]))
+              for engine in ("CodeQL", "Semgrep"))
+
+          md = [
+              "# Boss Arena 3-Way Showdown: TimeCodeSecurity vs CodeQL vs Semgrep OSS",
+              "",
+              "Arena: **{}** - `{}` @ `{}`, {} `.py` and {} `.html` files.".format(
+                  os.environ.get("ARENA_LABEL", os.environ.get("ARENA", "n/a")),
+                  os.environ.get("REPO", "n/a"),
+                  os.environ.get("TARGET_REF_USED", "n/a"),
+                  os.environ.get("TARGET_PY_FILES", "n/a"),
+                  os.environ.get("TARGET_HTML_FILES", "n/a")),
+              "",
+              "Referee rules, identical for all three engines: locations join on "
+              "`(same file, |line difference| <= {})`; CWEs are normalised from `ruleId`, "
+              "`*.properties.cwe`, `*.properties.tags`, `properties.subcategories`, an embedded "
+              "`result.rule`, rule `id`/`name`/`shortDescription` and `taxonomies`. No ground-truth "
+              "file is used, so nothing below is a precision or recall number - it is agreement and "
+              "disagreement between three independent analysers.".format(LINE_WINDOW),
+              "",
+              "## Headline",
+              "",
+              "| Engine | Findings | Distinct CWEs | Slots | SARIF | Process exit |",
+              "| :--- | ---: | ---: | ---: | :--- | :--- |",
+          ]
+          for engine in ENGINES:
+              code = os.environ.get(EXIT_KEYS[engine], "")
+              exit_label = ("not recorded (assumed 0/1)" if code == "" else
+                            code if code in NORMAL_SCAN_EXITS else f"**{code} (abnormal)**")
+              slot_count = sum(1 for slot in slots_all if engine in slot["engines"])
+              md.append(f"| {engine} | {len(findings[engine])} | {len(cwes_of(engine))} | "
+                        f"{slot_count} | {statuses[engine]} | {exit_label} |")
+          md.append("")
+
+          usable = [engine for engine in ENGINES if statuses[engine] == "ok"]
+          if len(usable) < len(ENGINES):
+              missing = ", ".join(e for e in ENGINES if e not in usable)
+              md += [f"> Engines with no usable SARIF: **{missing}**. Every agreement count below "
+                     f"is computed only over the engines that actually reported, so it is not a "
+                     f"head-to-head result until all three rows say `ok`.", ""]
+
+          md += [
+              "## TimeCodeSecurity blind spots (caught by CodeQL or Semgrep, missed by TCS)",
+              "",
+              f"**{len(blind)}** of {len(slots_all)} distinct locations were flagged by CodeQL "
+              f"and/or Semgrep with no TCS finding within {LINE_WINDOW} lines "
+              f"({per_engine_gaps}).",
+              "",
+              "| # | File | Line | CWE | Caught by | Rule(s) |",
+              "| --: | :--- | ---: | :--- | :--- | :--- |",
+          ]
+          for number, slot in enumerate(blind[:MAX_ROWS], 1):
+              md.append(f"| {number} | {slot['uri']} | {slot['line']} | {cwe_cell(slot)} | "
+                        f"{'+'.join(sorted(slot['engines']))} | "
+                        f"{join_sorted(f'{e}:{row[3]}' for e, row in slot['rows'])} |")
+          if len(blind) > MAX_ROWS:
+              md.append(f"| ... | *{len(blind) - MAX_ROWS} further locations are in the uploaded "
+                        f"`boss-arena-results` artifact* | | | | | |")
+          md.append("")
+
+          md += [
+              "## Shared consensus",
+              "",
+              f"- **{len(consensus)}** of {len(slots_all)} locations found by **all three** engines",
+              f"- **{len(tcs_only)}** locations found **only** by TimeCodeSecurity - extra yield, "
+              f"not verified true positives",
+              f"- **{len(blind)}** locations found by CodeQL and/or Semgrep but **not** by TCS",
+              "",
+              "| Pair | Agreement (rows of the left engine matched) |",
+              "| :--- | :--- |",
+          ]
+          for left, right in (("TimeCodeSecurity", "CodeQL"), ("TimeCodeSecurity", "Semgrep"),
+                              ("CodeQL", "Semgrep")):
+              total = len(findings[left])
+              hits = sum(1 for row in findings[left] if matched(right, row))
+              pct = f"{hits / total * 100:.0f}%" if total else "n/a"
+              md.append(f"| {left} -> {right} | {hits} / {total} ({pct}) |")
+          md.append("")
+
+          matrix = {engine: cwes_of(engine) for engine in ENGINES}
+          md += ["", "## CWE coverage matrix", "",
+                 "| CWE | TCS | CodeQL | Semgrep | Status |",
+                 "| :--- | :---: | :---: | :---: | :--- |"]
+          for cwe in sorted(set().union(*matrix.values()) if matrix else set()):
+              marks = {engine: cwe in matrix[engine] for engine in ENGINES}
+              if all(marks.values()):
+                  label = "all three"
+              elif marks["TimeCodeSecurity"]:
+                  friends = [e for e in ENGINES[1:] if marks[e]]
+                  label = ("TCS + " + "+".join(friends)) if friends else "TCS only"
+              else:
+                  label = "**TCS blind spot (CWE family never reported)**"
+              md.append(f"| CWE-{cwe} | " + " | ".join("Y" if marks[e] else "-" for e in ENGINES) +
+                        f" | {label} |")
+
+          md += ["", "## Reproducibility", "",
+                 "- Engine commit: `" + os.environ.get("GITHUB_SHA", "n/a")[:7] + "`",
+                 "- Gate 1 (`scripts/run_all_checks.py`, 552 cases, 0 FP, 0 FN): enforced as a hard "
+                 "prerequisite before any third-party tool ran.",
+                 "- Clone: `git clone --depth 1 --single-branch --branch <ref>`, `.git` removed.",
+                 "- CodeQL: `security-extended`, `build-mode: none`, `upload: false`, config paths "
+                 f"scoped to `{TARGET_DIR}`.",
+                 "- TimeCodeSecurity: `timeout --signal=TERM --kill-after=30s 1380s python -u cli.py "
+                 f"scan {TARGET_DIR}/ --scope all --format json --sarif benchmark_results/tcs.sarif`.",
+                 "- Job timeout: 35 minutes, Gate 1 first, then the three engines share what is left.",
+                 "- Artifacts: `benchmark_results/` (three SARIF sets, engine logs, target inventory, "
+                 "this report).", ""]
+
+          text = "\n".join(md)
+          os.makedirs("benchmark_results", exist_ok=True)
+          with open("benchmark_results/summary.md", "w", encoding="utf-8") as handle:
+              handle.write(text)
+          summary_path = os.environ.get("GITHUB_STEP_SUMMARY")
+          if summary_path:
+              with open(summary_path, "a", encoding="utf-8") as handle:
+                  handle.write(text)
+          print(text)
+
+          # A tool that produced nothing is a reported fact, not a job failure. Only a run where
+          # nothing usable came out at all, or where an engine died abnormally, is invalid.
+          if not usable:
+              raise SystemExit("benchmark invalid: no engine produced a readable SARIF")
+          abnormal = [f"{engine} exit {os.environ[key]}" for engine, key in EXIT_KEYS.items()
+                      if os.environ.get(key, "") not in NORMAL_SCAN_EXITS]
+          if abnormal:
+              raise SystemExit("benchmark incomplete: " + "; ".join(abnormal))
+          PY
+
+      - name: Upload Benchmark Artifacts
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: boss-arena-${{ github.event.inputs.arena }}-results
+          path: benchmark_results/
+          if-no-files-found: warn
