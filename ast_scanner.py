@@ -10261,6 +10261,143 @@ class TaintTracker:
                     return True
         return False
 
+    # ── 13. CWE-312: configuration value written to a file stream in clear text ──────────
+    # Numbered 13 and invoked last in the collector loop; a new pass placed earlier would shift the
+    # sink ids the existing passes hand out. A config *getter* is the source; what it returns for any
+    # one option is a secret until the code proves otherwise. Receivers are matched structurally (a
+    # real `open()` binding or a parameter annotated as a stream), never from a list of handle names.
+    CWE312_CONFIG_GETTER_RE = re.compile(
+        r"^(?:(?:self|cls|conf|config|configuration|settings|environ|env)"
+        r"\.(?:get|getint|getfloat|getboolean|getpassword|getraw)"
+        r"|os\.environ\.get|os\.getenv|getenv)$")
+    CWE312_STREAM_ANNOTATION_RE = re.compile(r"\b(?:IO|TextIO|BinaryIO|BufferedWriter|StreamWriter"
+                                             r"|StringIO|BufferedRWPair)\b")
+    # The same masking the inline clear-text rule trusts, plus a placeholder in the written text.
+    CWE312_MASKING_SUFFIXES = ("encrypt", "hashpw", "mask_secret", "sha256", "sha512", "redact",
+                               "hidden", "masked")
+
+    def _collect_cwe312_config_stream_writes(self, tree, filename, source_lines):
+        """Report `file.write(f"{option} = {value}\\n")` where `value` came from a config getter.
+
+        Measured on apache/airflow 2.7.3: `_write_value` (`airflow/configuration.py:612`) reads
+        `value = self.get(section_to_write, option, fallback=default_value, raw=True)` at :628 and
+        writes it to the config file at :634 and :636, with no masking anywhere in the function -
+        so `[core] secret_key`, `fernet_key` and `sql_alchemy_password` leave as plain text. The
+        option name is a *variable* here, so no literal `password` ever appears in the line, which is
+        exactly why the existing name-based clear-text rule could not see it. Both the source test (a
+        config getter) and the sink test (a real file stream) are structural, and masked output stays
+        silent.
+        """
+        table = self._memo_assignment_map(tree)
+        with_opens = self._c94_handle_opens(tree)
+        scopes = self._c312_stream_scopes(tree)
+        for node in ast.walk(tree):
+            if not isinstance(node, ast.Call) or not node.args:
+                continue
+            if not isinstance(node.func, ast.Attribute) or node.func.attr not in ("write", "writelines"):
+                continue
+            if not isinstance(node.func.value, ast.Name):
+                continue
+            handle = node.func.value.id
+            if self._c94_open_call(handle, table, node.lineno, with_opens) is None \
+                    and not self._c312_is_stream_parameter(handle, node.lineno, scopes):
+                continue
+            if self._blindspot_line_suppressed(source_lines, node):
+                continue
+            if not self._c312_clear_text_payload(node.args[0], table, node.lineno):
+                continue
+            self._add_blindspot_sink(
+                node, filename, "CWE-312", "CLEARTEXT_SENSITIVE_STORAGE", "CLEARTEXT_SENSITIVE_STORAGE",
+                "CWE-312: Clear-text configuration value written to a file stream",
+                "CLEARTEXT_SENSITIVE_STORAGE")
+
+    @staticmethod
+    def _c312_stream_scopes(tree):
+        """(start, end, stream-annotated parameter names) for every def that takes a stream."""
+        scopes = []
+        for func in [node for node in ast.walk(tree)
+                     if isinstance(node, (ast.FunctionDef, ast.AsyncFunctionDef))]:
+            names = {argument.arg for argument in
+                     list(func.args.posonlyargs) + list(func.args.args) + list(func.args.kwonlyargs)
+                     if argument.annotation is not None
+                     and TaintTracker.CWE312_STREAM_ANNOTATION_RE.search(ast.unparse(argument.annotation))}
+            if names:
+                scopes.append((func.lineno, getattr(func, "end_lineno", None) or func.lineno, names))
+        return scopes
+
+    @staticmethod
+    def _c312_is_stream_parameter(handle, use_lineno, scopes):
+        """True when *handle* is a stream-annotated parameter of the function holding this line."""
+        return any(start <= use_lineno <= end and handle in names for start, end, names in scopes)
+
+    @staticmethod
+    def _c312_written_pieces(expr):
+        """The interpolated values a written string actually carries."""
+        if isinstance(expr, ast.JoinedStr):
+            return [field.value for field in expr.values if isinstance(field, ast.FormattedValue)]
+        if isinstance(expr, ast.BinOp) and isinstance(expr.op, ast.Mod):
+            right = expr.right
+            return list(right.elts) if isinstance(right, (ast.Tuple, ast.List)) else [right]
+        if isinstance(expr, ast.Call):
+            segment = expr.func.attr if isinstance(expr.func, ast.Attribute) \
+                else (expr.func.id if isinstance(expr.func, ast.Name) else "")
+            if segment == "format":
+                return list(expr.args) + [keyword.value for keyword in expr.keywords]
+        return [expr]
+
+    def _c312_config_source(self, piece, table, use_lineno, depth=2, seen=None):
+        """True when *piece* is built - within *depth* assignments - from an unmasked config read.
+
+        Masking is decided for the whole derivation: `mask_secret(value)` is silent even though
+        `value` itself resolves to `self.get(...)`, because the value that reaches the file is the
+        masked one.
+        """
+        if seen is None:
+            seen = set()
+        if self._c312_masked(piece):
+            return False
+        resolved = self._c22_path_expression(piece, table, use_lineno)
+        for candidate in ([piece] if resolved is piece else [piece, resolved]):
+            if self._c312_masked(candidate):
+                continue
+            for sub in ast.walk(candidate):
+                if isinstance(sub, ast.Call) and self.CWE312_CONFIG_GETTER_RE.match(
+                        dotted_name(sub.func) or ""):
+                    return True
+        if depth <= 0:
+            return False
+        for sub in ast.walk(piece):
+            if not isinstance(sub, ast.Name) or sub.id in seen:
+                continue
+            seen.add(sub.id)
+            value = self._blindspot_latest_assignment(table, sub.id, use_lineno)
+            if value is not None and self._c312_config_source(
+                    value, table, use_lineno, depth - 1, seen):
+                return True
+        return False
+
+    def _c312_clear_text_payload(self, payload, table, use_lineno):
+        """True when at least one interpolated value is a clear-text config read."""
+        for piece in self._c312_written_pieces(payload):
+            if isinstance(piece, ast.Constant):
+                continue
+            if self._c312_config_source(piece, table, use_lineno):
+                return True
+        return False
+
+    def _c312_masked(self, expr) -> bool:
+        """True when the written value is encrypted, hashed, masked, or a placeholder literal."""
+        for sub in ast.walk(expr):
+            if isinstance(sub, ast.Call):
+                name = dotted_name(sub.func) or ""
+                if name in CWE3A_STORAGE_SANITIZERS \
+                        or any(name.endswith(suffix) for suffix in self.CWE312_MASKING_SUFFIXES):
+                    return True
+            elif isinstance(sub, ast.Constant) and isinstance(sub.value, str) \
+                    and CWE532_REDACTED_LITERAL_RE.search(sub.value):
+                return True
+        return False
+
     # ── 9. CWE-601: user input hiding behind a framework-built redirect fallback ──────
     def _collect_cwe601_open_redirect(self, tree, filename, source_lines):
         """Report `redirect(request.args.get("next") or url_for("index"))`.
@@ -19979,6 +20116,7 @@ class TaintTracker:
             # the sink ids those passes hand out, and parity is measured on those ids.
             self._collect_cwe89_sqlalchemy_text_interpolation(_bs_tree, _bs_file, _bs_lines)
             self._collect_cwe117_handler_echo_logging(_bs_tree, _bs_file, _bs_lines)
+            self._collect_cwe312_config_stream_writes(_bs_tree, _bs_file, _bs_lines)
             # Every 25 modules: a flush per module would rescan every sink record, which costs
             # O(modules x sinks) on a large repo. This keeps the window at ~25 files.
             if _bs_idx % 25 == 24:
