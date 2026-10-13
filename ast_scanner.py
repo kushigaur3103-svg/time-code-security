@@ -9776,6 +9776,7 @@ class TaintTracker:
             (func.lineno, func.end_lineno or func.lineno, params)
             for func, params in self._c117_endpoint_scopes(tree)
         ]
+        crud = self._c117_crud_param_scopes(tree, filename)
         for node in ast.walk(tree):
             if not isinstance(node, ast.Call) or not self._blindspot_is_log_call(node, func_ranges):
                 continue
@@ -9786,7 +9787,7 @@ class TaintTracker:
             candidates = [argument for argument in arguments if not self._c117_inert(argument)]
             if not candidates:
                 continue
-            if not any(self._c117_client_controlled(candidate, table, node.lineno, endpoints)
+            if not any(self._c117_client_controlled(candidate, table, node.lineno, endpoints, crud=crud)
                        and not self._c117_neutralized(candidate, table, node.lineno)
                        for candidate in candidates):
                 continue
@@ -9796,6 +9797,35 @@ class TaintTracker:
                 node, filename, "CWE-117", "LOG_INJECTION", "LOG_INJECTION",
                 "CWE-117: Unsanitized user input written to log file",
                 "LOG_INJECTION", reuse_existing=True)
+
+    # Root cause A, measured on apache/airflow 2.7.3: a public CRUD / model method gets its
+    # identifiers straight from an API caller, and logs them unsanitized -
+    #   airflow/api/common/delete_dag.py:49   log.info("Deleting DAG: %s", dag_id)
+    #   airflow/models/variable.py:244        log.warning("... {key} ...".format(key=key, ...))
+    # Neither def is a decorated route nor reads `request`, so `_c117_endpoint_scopes` cannot see
+    # them. Two narrow gates keep this from tainting every parameter in every repository:
+    #   * the module must sit inside an `api/` or `models/` package, and
+    #   * only these five caller-named identifiers count as client-controlled.
+    CWE117_PARAM_SOURCE_NAMES = frozenset({"dag_id", "key", "filename", "user", "query"})
+    CWE117_PARAM_SOURCE_PACKAGES = frozenset({"api", "models"})
+
+    def _c117_crud_param_scopes(self, tree, filename):
+        """(start, end, params) for public api/models functions taking a caller-named identifier."""
+        directories = {part for part in filename.replace("\\", "/").split("/")[:-1]}
+        if not directories & self.CWE117_PARAM_SOURCE_PACKAGES:
+            return []
+        scopes = []
+        for func in ast.walk(tree):
+            if not isinstance(func, (ast.FunctionDef, ast.AsyncFunctionDef)):
+                continue
+            if func.name.startswith("_"):
+                continue
+            names = {arg.arg for arg in
+                     list(func.args.args) + list(func.args.posonlyargs) + list(func.args.kwonlyargs)}
+            caller_named = names & self.CWE117_PARAM_SOURCE_NAMES
+            if caller_named:
+                scopes.append((func.lineno, func.end_lineno or func.lineno, caller_named))
+        return scopes
 
     @staticmethod
     def _c117_endpoint_scopes(tree):
@@ -9880,7 +9910,26 @@ class TaintTracker:
                     return True
         return False
 
-    def _c117_client_controlled(self, arg, table, use_lineno, endpoints, depth=3):
+    def _c117_scope_supplied(self, arg, params, table, scope_start, use_lineno):
+        """True when a caller-named parameter reaches the log line untouched inside its own scope.
+
+        `_c22_caller_supplied` asks the whole file whether the name was ever assigned, and a
+        class-level binding then shadows the method parameter: `key = Column(...)` at
+        airflow/models/variable.py:48 made the `key` of `check_for_write_conflict(key)` at :229
+        look reassigned, so the `.format(key=key, ...)` log at :244 stayed silent. Only a binding
+        inside the enclosing scope can override a parameter, so the lookup is bounded below by
+        that scope's first line.
+        """
+        for sub in ast.walk(arg):
+            if not isinstance(sub, ast.Name) or sub.id not in params:
+                continue
+            value = self._blindspot_latest_assignment(table, sub.id, use_lineno)
+            bound = getattr(value, "lineno", None) if value is not None else None
+            if bound is None or bound < scope_start:
+                return True
+        return False
+
+    def _c117_client_controlled(self, arg, table, use_lineno, endpoints, depth=3, crud=None):
         """True when the value reaches the log line from a request read or an endpoint parameter."""
         if self._c117_request_read(arg) or self._blindspot_reads_client_input(arg, table, use_lineno):
             return True
@@ -9889,6 +9938,12 @@ class TaintTracker:
             _start, _end, params = max(scope, key=lambda item: item[0])
             if self._c22_caller_supplied(arg, params, table, use_lineno):
                 return True
+        if crud:
+            covered = [item for item in crud if item[0] <= use_lineno <= item[1]]
+            if covered:
+                start, _end, params = max(covered, key=lambda item: item[0])
+                if self._c117_scope_supplied(arg, params, table, start, use_lineno):
+                    return True
         if depth <= 0:
             return False
         for sub in ast.walk(arg):
@@ -9896,7 +9951,7 @@ class TaintTracker:
                 continue
             value = self._blindspot_latest_assignment(table, sub.id, use_lineno)
             if value is not None and self._c117_client_controlled(
-                    value, table, use_lineno, endpoints, depth - 1):
+                    value, table, use_lineno, endpoints, depth - 1, crud=crud):
                 return True
         return False
 
