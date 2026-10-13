@@ -9671,6 +9671,7 @@ class TaintTracker:
         """
         table = self._memo_assignment_map(tree)
         emitted = set()
+        emitted_lines: set[int] = set()
 
         def _returns(body, names_acc=None):
             """Every Return with a value inside *body*, descending If/For/While/With/Try."""
@@ -9688,10 +9689,15 @@ class TaintTracker:
                         out.extend(_returns(handler.body, names_acc))
             return out
 
-        def _emit(node):
+        def _emit(node, once_per_line=False):
             if id(node) in emitted or self._blindspot_line_suppressed(source_lines, node):
                 return
+            # The dispatcher route names the helper's reply line, which an earlier rule may already
+            # have claimed for the same leak. Two findings on one line would be noise, not evidence.
+            if once_per_line and node.lineno in emitted_lines:
+                return
             emitted.add(id(node))
+            emitted_lines.add(node.lineno)
             self._add_blindspot_sink(
                 node, filename, "CWE-209", "SENSITIVE_ERROR_EXPOSURE", "STACK_TRACE_EXPOSURE",
                 "CWE-209: Detailed exception or stack trace exposed in response",
@@ -9715,6 +9721,101 @@ class TaintTracker:
             for ret in _returns(func.body, detail_names):
                 if self._c209_exposed_in_reply(ret.value, detail_names, table, ret.lineno):
                     _emit(ret)
+
+        dispatchers = self._c209_reply_dispatcher_scopes(tree)
+        if dispatchers:
+            for handler in [node for node in ast.walk(tree) if isinstance(node, ast.ExceptHandler)]:
+                # Python unbinds the caught name when the handler ends, so a call that is not lexically
+                # inside a handler cannot be carrying this handler's detail.
+                names = self._c209_handler_detail_names(handler)
+                if not names:
+                    continue
+                for call in [node for node in ast.walk(handler) if isinstance(node, ast.Call)]:
+                    response_node = self._c209_dispatcher_reply(call, dispatchers, names, table)
+                    if response_node is not None:
+                        _emit(response_node, once_per_line=True)
+
+    CWE209_REPLY_PAYLOAD_KEYWORDS = frozenset(
+        {"response", "msg", "message", "error", "detail", "data", "body"})
+
+    @staticmethod
+    def _c209_is_response_call(node) -> bool:
+        """A framework reply constructor, by full dotted name or by its last segment."""
+        name = dotted_name(node.func) or ""
+        if name in RESPONSE_CONSTRUCTOR_NAMES:
+            return True
+        return bool(name) and name.rsplit(".", 1)[-1] in RESPONSE_CONSTRUCTOR_NAMES
+
+    def _c209_reply_dispatcher_scopes(self, tree):
+        """helper name -> (positional params, all param names, params that become the reply body,
+        the response node, is-a-method).
+
+        `redirect_or_json(origin, msg, status="", status_code=200)` (airflow/www/views.py:607) is
+        neither a decorated route nor does it read `request`, so both loops above skip it - yet
+        `Response(response=msg, ...)` at :616 is exactly where its caller's text reaches the client.
+        Any local def that hands one of its own parameters to a reply body is a dispatcher, whatever
+        it is called; the name list is derived from the code, never hardcoded.
+
+        Most modules build no reply at all, so the walk stops there instead of descending into every
+        function body: `airflow/www/views.py` has ~200 defs and one pass over its reply calls costs
+        the same as one pass over the file.
+        """
+        calls = [node for node in ast.walk(tree)
+                 if isinstance(node, ast.Call) and self._c209_is_response_call(node)]
+        if not calls:
+            return {}
+        functions = [node for node in ast.walk(tree)
+                     if isinstance(node, (ast.FunctionDef, ast.AsyncFunctionDef))]
+        owned: dict[int, list] = {}
+        for call in calls:
+            enclosing = [func for func in functions
+                         if func.lineno <= call.lineno <= (getattr(func, "end_lineno", None)
+                                                           or func.lineno)]
+            if enclosing:
+                owner = max(enclosing, key=lambda func: func.lineno)
+                owned.setdefault(id(owner), []).append(call)
+        dispatchers = {}
+        for func in functions:
+            inner = owned.get(id(func))
+            if not inner:
+                continue
+            positional = [argument.arg for argument in
+                          list(func.args.posonlyargs) + list(func.args.args)]
+            names = set(positional) | {argument.arg for argument in func.args.kwonlyargs}
+            payload_params: set[str] = set()
+            for call in inner:
+                body_arguments = list(call.args[:1]) + [
+                    keyword.value for keyword in call.keywords
+                    if keyword.arg in self.CWE209_REPLY_PAYLOAD_KEYWORDS]
+                for argument in body_arguments:
+                    if isinstance(argument, ast.Name) and argument.id in names:
+                        payload_params.add(argument.id)
+            if payload_params:
+                # A def whose first parameter is `self`/`cls` is a method: called as `obj.m(x)`, the
+                # receiver fills that slot, so the call's positionals line up with positional[1:].
+                bound = bool(positional) and positional[0] in ("self", "cls")
+                dispatchers[func.name] = (positional, names, payload_params, inner[0], bound)
+        return dispatchers
+
+    def _c209_dispatcher_reply(self, call, dispatchers, names, table):
+        """The dispatcher's response node, when this call feeds it caught-exception detail."""
+        callee = (dotted_name(call.func) or "").rsplit(".", 1)[-1]
+        entry = dispatchers.get(callee)
+        if entry is None:
+            return None
+        positional, _names, payload_params, response_node, bound = entry
+        slots = positional[1:] if (bound and isinstance(call.func, ast.Attribute)) else positional
+        fed = [(slots[index], argument) for index, argument in enumerate(call.args)
+               if index < len(slots)]
+        fed += [(keyword.arg, keyword.value) for keyword in call.keywords if keyword.arg]
+        for parameter, argument in fed:
+            if parameter not in payload_params:
+                continue
+            resolved = self._c22_path_expression(argument, table, call.lineno)
+            for part in ([argument] if resolved is argument else [argument, resolved]):
+                if self._c209_carries_detail(part, names):
+                    return response_node
+        return None
 
     def _c209_handler_detail_names(self, handler):
         """The caught name, its aliases, and every name the handler builds out of them.
