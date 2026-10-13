@@ -1276,6 +1276,10 @@ SQL_COMPOSITION_BUILDERS = frozenset({
     "psycopg2.sql.Placeholder", "sql.Placeholder", "Placeholder",
     "sqlalchemy.text", "text", "sqlalchemy.sql.bindparam", "bindparam",
 })
+# CWE-89: the wrapper prefixes that make a call `text(...)` mean SQLAlchemy's raw-SQL wrapper.
+# `from sqlalchemy import text` and `import sqlalchemy as sa` are the two spellings real code uses.
+SQLALCHEMY_TEXT_ALIASES = frozenset({"sqlalchemy", "sa"})
+SQLALCHEMY_TEXT_NAME = "text"
 # ── Enterprise route boundaries whose parameters carry the client payload ─────────────────────
 # Zulip's `@has_request_variables` family: a view only receives client text through these decorators,
 # and nothing in the corpus spells a web framework decorator this way, so the name list is its own
@@ -10148,6 +10152,60 @@ class TaintTracker:
                     and isinstance(sub.left.value, str) and SQL_KEYWORD_RE.search(sub.left.value) \
                     and not isinstance(sub.right, ast.Constant):
                 return True
+        return False
+
+    # ── 12b. CWE-89: raw SQL assembled by interpolation inside sqlalchemy text() ──────
+    def _collect_cwe89_sqlalchemy_text_interpolation(self, tree, filename, source_lines):
+        """`text(f"CREATE TABLE {name} (...)")` gives the driver a statement with no hole left.
+
+        The safe spelling of raw SQLAlchemy SQL is a literal template plus bind parameters
+        (`text("... WHERE id = :id"), id=value`), which is exactly what Superset's own Hive DDL does
+        for `LOCATION :location` on the very line it interpolates a table name into. When the
+        argument is an f-string, a `%` template or a `.format()` call the text was stitched together
+        before the driver saw it, so nothing quotes the filled holes - and the taint path stays
+        silent because the interpolated values are identifiers (a DataFrame's column names, a model's
+        table name) that never carried a source. This rule reads the construction, never the source.
+        """
+        for node in ast.walk(tree):
+            if not isinstance(node, ast.Call) or not self._c89_is_sqlalchemy_text(node.func):
+                continue
+            statement = node.args[0] if node.args else next(
+                (keyword.value for keyword in node.keywords
+                 if keyword.arg in ("sql", "text", "statement")), None)
+            if statement is None or not self._c89_interpolated_statement(statement):
+                continue
+            if self._blindspot_line_suppressed(source_lines, node):
+                continue
+            self._add_blindspot_sink(
+                node, filename, "CWE-89", "SQL_QUERY_EXECUTION", "SQL_INJECTION",
+                "CWE-89: raw SQL assembled by string interpolation inside sqlalchemy text()",
+                "SQL_INJECTION", reuse_existing=True)
+
+    @staticmethod
+    def _c89_is_sqlalchemy_text(func):
+        """True for `text(...)`, `sqlalchemy.text(...)` and the `sa.text(...)` alias spelling."""
+        if not isinstance(func, (ast.Name, ast.Attribute)):
+            return False
+        name = dotted_name(func) or ""
+        parts = name.split(".")
+        if parts[-1] != SQLALCHEMY_TEXT_NAME:
+            return False
+        return not parts[:-1] or bool(set(parts[:-1]) & SQLALCHEMY_TEXT_ALIASES)
+
+    @staticmethod
+    def _c89_interpolated_statement(statement):
+        """An argument built at runtime: an f-string with a hole, `%`, or `.format(...)`.
+
+        A `Constant`, and an `f"SELECT 1"` that interpolates nothing, are static templates and stay
+        unreported - the rule is about a hole that was filled by string building, not about `text()`.
+        """
+        if isinstance(statement, ast.JoinedStr):
+            return any(isinstance(item, ast.FormattedValue) for item in statement.values)
+        if isinstance(statement, ast.BinOp) and isinstance(statement.op, ast.Mod):
+            return not isinstance(statement.right, ast.Constant)
+        if isinstance(statement, ast.Call) and isinstance(statement.func, ast.Attribute) \
+                and statement.func.attr == "format":
+            return bool(statement.args or statement.keywords)
         return False
 
     # ── 12. CWE-502: bytes read off a ZeroMQ/socket channel handed to a deserializer ─
@@ -19499,6 +19557,9 @@ class TaintTracker:
             self._collect_cwe79_insecure_jinja_config(_bs_tree, _bs_file, _bs_lines)
             self._collect_cwe89_hook_query_execution(_bs_tree, _bs_file, _bs_lines)
             self._collect_cwe502_socket_deserialization(_bs_tree, _bs_file, _bs_lines)
+            # Appended last on purpose: a new collector inserted earlier would shift the sink ids the
+            # passes above hand out, and parity is measured on those ids.
+            self._collect_cwe89_sqlalchemy_text_interpolation(_bs_tree, _bs_file, _bs_lines)
             # Every 25 modules: a flush per module would rescan every sink record, which costs
             # O(modules x sinks) on a large repo. This keeps the window at ~25 files.
             if _bs_idx % 25 == 24:
