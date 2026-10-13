@@ -1187,6 +1187,15 @@ CWE532_REMOVED_KEY_METHODS = frozenset({"pop"})
 CWE532_COLLECTION_BUILTINS = frozenset({"sorted", "list", "set", "tuple", "iter"})
 # Reading a flag out of the caller's mapping leaves the escaping decided at runtime.
 CWE116_MAPPING_READ_METHODS = frozenset({"get", "pop", "setdefault"})
+# CWE-117: the two error paths whose logged text is still raw client bytes. A parse failure echoes
+# the payload that failed to parse, and a caught query-execution error still carries the submitted
+# statement - in both cases the newline arrived from the client, not from the code.
+CWE117_PARSE_ERROR_TYPES = frozenset({"JSONDecodeError", "ValueError", "TypeError"})
+CWE117_PARSE_CALLS = frozenset({"loads", "load"})
+# Payload mappings are spelled `params` / `*_params` in this idiom, and the read is `params.get(key)`.
+CWE117_PAYLOAD_NAME_PREFIX = "params"
+CWE117_QUERY_CALL_PREFIX = "execute_sql"
+CWE117_QUERY_CALL_NAMES = frozenset({"execute_query", "run_query"})
 
 # `app.run(host='0.0.0.0')` listens on every interface the machine has, not just loopback.
 INSECURE_BIND_HOSTS = frozenset({"0.0.0.0", "::", "0:0:0:0:0:0:0:0"})
@@ -9840,6 +9849,129 @@ class TaintTracker:
                         and any(marker in literal.value for marker in ("\r", "\n", r"\r", r"\n",
                                                                        r"\x0d", r"\x0a"))
                         for literal in ast.walk(sub)):
+                    return True
+        return False
+
+    # ── 8b. CWE-117: an error handler echoes the payload that failed, or the statement ─
+    def _collect_cwe117_handler_echo_logging(self, tree, filename, source_lines):
+        """Two error paths whose logged text is still exactly what the client sent.
+
+        Both sit one hop from client to log file, and the taint graph never sees them because the
+        value that lands in the log is produced by the handler, not by a source assignment:
+
+        `json.loads(query_params.get("templateParams"))` in the try and `logger.warning(...,
+        str(query_params.get("templateParams")))` in the matching `except` (Superset's
+        `sqllab_execution_context.py:99`) logs the raw bytes that just failed to parse, so a CR/LF
+        typed into that request field becomes a forged log line.
+
+        `except Exception as ex: logger.debug("Query %d: %s", query_id, ex)` around a call that runs
+        a statement (`sql_lab.py:188`) prints the driver's error text, which quotes the submitted
+        multi-line SQL.
+
+        Precision sits on the pairing, not on the handler alone: the payload route needs the *same*
+        `params.get(key)` read feeding the *same* parse call inside the *same* try, and the error
+        route needs a dynamic query call in that try body and a handler that actually binds the name
+        being logged. A named or inline CRLF sanitizer still clears the value, and no other
+        `except ... as e` in the tree is marked as anything. The report point is the argument node
+        that writes the text, so a multi-line logger call reports where its payload is.
+        """
+        table = self._memo_assignment_map(tree)
+        func_ranges = [(start, end) for start, end, _params in self._memo_function_ranges(tree)]
+        for try_node in ast.walk(tree):
+            if not isinstance(try_node, ast.Try):
+                continue
+            parsed_reads = self._c117_parsed_payload_reads(try_node.body)
+            runs_query = self._c117_runs_dynamic_query(try_node.body)
+            if not parsed_reads and not runs_query:
+                continue
+            for handler in try_node.handlers:
+                self._c117_report_handler_echoes(handler, parsed_reads, runs_query, table,
+                                                 func_ranges, filename, source_lines)
+
+    def _c117_report_handler_echoes(self, handler, parsed_reads, runs_query, table,
+                                    func_ranges, filename, source_lines):
+        """Report the log arguments this handler echoes straight back from the client."""
+        bare = handler.type is None
+        caught = [handler.type] if not isinstance(handler.type, ast.Tuple) \
+            else list(handler.type.elts)
+        parse_caught = bool(parsed_reads) and (bare or any(
+            (dotted_name(item) or "").split(".")[-1] in CWE117_PARSE_ERROR_TYPES
+            for item in caught))
+        error_name = handler.name if runs_query else None
+        if not parse_caught and not error_name:
+            return
+        for node in ast.walk(handler):
+            if not isinstance(node, ast.Call) or not self._blindspot_is_log_call(node, func_ranges):
+                continue
+            values = list(node.args)
+            if values and isinstance(values[0], ast.Constant) \
+                    and isinstance(values[0].value, str):
+                values = values[1:]
+            values += [keyword.value for keyword in node.keywords
+                       if keyword.arg in ("msg", "message", "extra")]
+            leaked = next((value for value in values
+                           if error_name and isinstance(value, ast.Name)
+                           and value.id == error_name), None)
+            if leaked is None and parse_caught:
+                leaked = next((value for value in values
+                               if self._c117_payload_read_shape(value) in parsed_reads), None)
+            if leaked is None or self._c117_inert(leaked):
+                continue
+            if self._c117_neutralized(leaked, table, node.lineno):
+                continue
+            if self._blindspot_line_suppressed(source_lines, node):
+                continue
+            self._add_blindspot_sink(
+                leaked, filename, "CWE-117", "LOG_INJECTION", "LOG_INJECTION",
+                "CWE-117: Unsanitized user input written to log file",
+                "LOG_INJECTION", reuse_existing=True)
+
+    @staticmethod
+    def _c117_parsed_payload_reads(body):
+        """The `params.get(key)` reads this try hands straight to a JSON parse call."""
+        reads = set()
+        for statement in body:
+            for sub in ast.walk(statement):
+                if not isinstance(sub, ast.Call) or not sub.args:
+                    continue
+                segments = (dotted_name(sub.func) or "").split(".")
+                if segments[-1] not in CWE117_PARSE_CALLS:
+                    continue
+                if len(segments) > 1 and segments[0] != "json":
+                    continue
+                for item in ast.walk(sub.args[0]):
+                    read = TaintTracker._c117_payload_read_shape(item)
+                    if read is not None:
+                        reads.add(read)
+        return frozenset(reads)
+
+    @staticmethod
+    def _c117_payload_read_shape(node):
+        """`params.get("k")` or `str(params.get("k"))` on a client payload mapping -> (name, key)."""
+        if isinstance(node, ast.Call) and isinstance(node.func, ast.Name) \
+                and node.func.id == "str" and node.args:
+            node = node.args[0]
+        if not isinstance(node, ast.Call) or not isinstance(node.func, ast.Attribute) \
+                or node.func.attr != "get" or not isinstance(node.func.value, ast.Name):
+            return None
+        container = node.func.value.id
+        if container != CWE117_PAYLOAD_NAME_PREFIX \
+                and not container.endswith("_" + CWE117_PAYLOAD_NAME_PREFIX):
+            return None
+        key = node.args[0] if node.args else None
+        if not isinstance(key, ast.Constant) or not isinstance(key.value, str):
+            return None
+        return (container, key.value)
+
+    @staticmethod
+    def _c117_runs_dynamic_query(body):
+        """True when the try body runs a statement: `execute_sql_*`, `execute_query`, `run_query`."""
+        for statement in body:
+            for sub in ast.walk(statement):
+                if not isinstance(sub, ast.Call):
+                    continue
+                name = (dotted_name(sub.func) or "").split(".")[-1]
+                if name.startswith(CWE117_QUERY_CALL_PREFIX) or name in CWE117_QUERY_CALL_NAMES:
                     return True
         return False
 
@@ -19557,9 +19689,10 @@ class TaintTracker:
             self._collect_cwe79_insecure_jinja_config(_bs_tree, _bs_file, _bs_lines)
             self._collect_cwe89_hook_query_execution(_bs_tree, _bs_file, _bs_lines)
             self._collect_cwe502_socket_deserialization(_bs_tree, _bs_file, _bs_lines)
-            # Appended last on purpose: a new collector inserted earlier would shift the sink ids the
-            # passes above hand out, and parity is measured on those ids.
+            # Appended after the passes above on purpose: a new collector inserted earlier would shift
+            # the sink ids those passes hand out, and parity is measured on those ids.
             self._collect_cwe89_sqlalchemy_text_interpolation(_bs_tree, _bs_file, _bs_lines)
+            self._collect_cwe117_handler_echo_logging(_bs_tree, _bs_file, _bs_lines)
             # Every 25 modules: a flush per module would rescan every sink record, which costs
             # O(modules x sinks) on a large repo. This keeps the window at ~25 files.
             if _bs_idx % 25 == 24:
