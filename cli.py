@@ -269,6 +269,7 @@ def _collect_auxiliary_files(scan_path, exclude_patterns=None):
     templates = {}
     iac = {}
     buckets = {}
+    skipped = 0
     for path in paths:
         relative = str(path).replace("\\", "/")
         if is_template_path(relative):
@@ -285,7 +286,16 @@ def _collect_auxiliary_files(scan_path, exclude_patterns=None):
         try:
             bucket[_file_key(path, cwd)] = path.read_text(encoding="utf-8", errors="replace")
         except OSError as exc:
-            raise OSError(f"Unable to read {path}: {exc}") from exc
+            # Same contract as _collect_files above: one unreadable template or IaC file is a
+            # local fault, so it is reported and skipped. Re-raising here used to abort the whole
+            # tree scan and exit 2, losing every Python finding in the repository.
+            skipped += 1
+            print(f"Warning: skipping unreadable auxiliary file {path}: "
+                  f"{type(exc).__name__}: {exc}", file=sys.stderr)
+            continue
+    if skipped:
+        print(f"Warning: skipped {skipped} of {total} auxiliary files; "
+              f"{len(templates) + len(iac)} scanned.", file=sys.stderr)
     _PARTIAL["current_file"] = None
     return templates, iac
 

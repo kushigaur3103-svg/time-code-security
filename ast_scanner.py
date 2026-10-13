@@ -2436,12 +2436,22 @@ class TaintTracker:
         self.max_workers = max_workers
         
         # TimeCodeSecurity: Use safe parallel parsing with hardware governance
+        _parallel_parsing_failed = False
         if PARALLEL_PARSING_AVAILABLE and len(self.files) > 10:
             # Only use parallel parsing for larger workloads (>10 files)
-            (self.modules, self.file_paths, self.skipped_files,
-             self.parse_stats) = parse_files_parallel(self.files, max_workers=max_workers)
-        else:
-            # Fallback to sequential parsing for small workloads or if parallel unavailable
+            try:
+                (self.modules, self.file_paths, self.skipped_files,
+                 self.parse_stats) = parse_files_parallel(self.files, max_workers=max_workers)
+            except Exception as _ps_exc:
+                # A dead worker pool or an expired batch deadline is a machine fault, not a reason
+                # to lose the whole scan: the serial loop below parses the identical file set with
+                # the identical `ast.parse` + parent-linking, so no finding can differ.
+                _parallel_parsing_failed = True
+                print(f"TimeCodeSecurity [GOVERNOR] parallel parsing disabled "
+                      f"({type(_ps_exc).__name__}: {_ps_exc}); serial parse", file=sys.stderr)
+        if _parallel_parsing_failed or not getattr(self, "parse_stats", None):
+            # Fallback to sequential parsing for small workloads, when parallel is unavailable,
+            # or when the parallel fan-out raised.
             self.modules: dict[str, ast.AST] = {}
             self.file_paths: dict[str, str] = {}
             self.skipped_files: dict[str, str] = {}
