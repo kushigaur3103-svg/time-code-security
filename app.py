@@ -1918,6 +1918,15 @@ def background_scan_task(job_id: str, email: str, redacted_code: str, system_pro
     finally:
         db.close()
 
+def _extract_scan_target_code(text: str) -> str:
+    """Strip markdown fences and highlight spans so every re-scan sees the exact emitted bytes."""
+    raw = (text or "").strip()
+    blocks = re.findall(r'```(?:[a-zA-Z0-9_\-\+]*\n)?(.*?)```', raw, re.DOTALL)
+    if blocks:
+        raw = max(blocks, key=len).strip()
+    return re.sub(r'<span[^>]*>(.*?)</span>', r'\1', raw)
+
+
 def extract_remediation_advice(cwe: str, sink_symbol: str) -> str:
     remediations = {
         "CWE-95": "Avoid passing untrusted input to eval(). Use ast.literal_eval() for parsing Python literals, or parse structured data using json.loads().",
@@ -1932,6 +1941,12 @@ def extract_remediation_advice(cwe: str, sink_symbol: str) -> str:
         "CWE-327": "Use hashlib.sha256() / sha512() or bcrypt/argon2 instead of MD5/SHA1/DES for security contexts, or explicitly pass usedforsecurity=False for non-security checksums/cache keys.",
         "CWE-328": "Use hashlib.sha256() / sha512() or bcrypt/argon2 instead of weak cryptographic hashes, or explicitly pass usedforsecurity=False for non-security checksums.",
         "CWE-338": "Use secrets.token_hex(), secrets.token_urlsafe(), or secrets.randbelow() instead of the random module specifically for authentication tokens, cookies, passwords, and password resets.",
+        # Not style advice: these strings tell the generator what the audit actually accepts.
+        # CWE-117 clears on a registry sanitizer name (SANITIZER_REGISTRY['CWE-117'],
+        # ast_scanner.py:484) or on a real CR/LF strip; CWE-352 clears only on the structural
+        # guards matched at ast_scanner.py:13524-13562. Keep them in sync with the scanner.
+        "CWE-117": "Strip CR/LF from untrusted values before they reach the logger. Either call a sanitizer the AST registry recognises - sanitize_log_input(value), sanitize_log_message(value), replace_crlf(value) or re_sub_crlf(value), e.g. log.info('login for %s', sanitize_log_input(user_id)) - or remove the control characters outright (value.replace('\\r', '').replace('\\n', '') / re.sub(r'[\\r\\n]', '', value)). A look-alike sanitizer does NOT clear the finding, whatever the variable is called: user_id.strip() and truncation such as sanitized_user_id = user_id[:64] are still reported.",
+        "CWE-352": "Give every state-changing view a CSRF guard the checker can see: decorate it with @csrf_protect (from flask_wtf.csrf import csrf_protect), or validate a FlaskForm with form.validate_on_submit(), or enable CSRF module-wide (CSRFProtect(app) with app.config['WTF_CSRF_ENABLED'] = True / CSRF_ENABLED = True). Removing @csrf_exempt alone is NOT a fix: the same POST/PUT route is then reported for having no guard at all.",
         "CWE-295": "Enable SSL/TLS certificate verification (verify=True or default) and remove AutoAddPolicy. Never set verify=False.",
         "CWE-400": "Escape regex input with re.escape() and enforce chunked/bounded reads with safe_read_chunked() or read(MAX_SIZE).",
         "CWE-776": "Escape regex input with re.escape() and enforce chunked/bounded reads with safe_read_chunked().",
@@ -2617,6 +2632,8 @@ async def fix_code(payload: CodePayload, request: Request, authorization: str = 
                     "11. CWE-338 Insecure Randomness: Use 'secrets' module (secrets.token_hex, secrets.choice, secrets.randbelow) specifically for authentication tokens, cookies, passwords, and password resets instead of 'random'.\n"
                     "12. CWE-295 Disabled SSL: Always enforce SSL/TLS verification (verify=True or omit parameter). Never pass verify=False or cert_reqs='CERT_NONE'.\n"
                     "13. CWE-400 / CWE-776 Resource Exhaustion & ReDoS: Escape regex inputs with 're.escape()' and enforce bounded chunked reads (f.read(MAX_SIZE)).\n"
+                    "14. CWE-117 Log Injection: Before an untrusted value reaches the logger it MUST have its carriage returns and line feeds removed. Either call a sanitizer by one of these exact registry names - 'sanitize_log_input(value)', 'sanitize_log_message(value)', 'replace_crlf(value)', 're_sub_crlf(value)' - e.g. log.info('login for %s', sanitize_log_input(user_id)), or remove the control characters outright: value.replace('\\r', '').replace('\\n', '') or re.sub(r'[\\r\\n]', '', value). A look-alike sanitizer is still reported no matter how you name the variable: 'sanitized_user_id = user_id.strip()', 'sanitized_user_id = user_id[:64]' and 'clean = re.sub(r\"[^a-z]\", \"\", value)' do NOT clear the finding.\n"
+                    "15. CWE-352 CSRF: Every state-changing route (methods=['POST'/'PUT'/'DELETE']) must carry a guard the audit can see: decorate the view with '@csrf_protect' (or 'csrf.protect'), or validate the form with 'form.validate_on_submit()'. Deleting '@csrf_exempt' is NOT a fix - the same route is then reported for having no CSRF protection at all. Also never set 'WTF_CSRF_ENABLED = False' or 'CSRF_ENABLED = False'; if the module enables CSRF, use 'CSRF_ENABLED = True' / \"app.config['WTF_CSRF_ENABLED'] = True\".\n"
                     "Return ONLY the cleanly corrected, fully hardened secure code inside a markdown code block. Do not include boilerplate explanations or unit tests."
                 )
                 fixed_code = get_cached_or_generate_ai(redacted_code, standalone_prompt, is_fix=True, db=db, user_id=user.id)
@@ -2627,11 +2644,7 @@ async def fix_code(payload: CodePayload, request: Request, authorization: str = 
 
             for attempt in range(max_attempts):
                 # Clean markdown fences to yield raw Python source code for AST analysis
-                raw_code = current_code.strip()
-                code_blocks = re.findall(r'```(?:[a-zA-Z0-9_\-\+]*\n)?(.*?)```', raw_code, re.DOTALL)
-                if code_blocks:
-                    raw_code = max(code_blocks, key=len).strip()
-                raw_code = re.sub(r'<span[^>]*>(.*?)</span>', r'\1', raw_code)
+                raw_code = _extract_scan_target_code(current_code)
 
                 if not raw_code:
                     break
@@ -2679,6 +2692,43 @@ async def fix_code(payload: CodePayload, request: Request, authorization: str = 
                 else:
                     break
 
+            # Teacher verdict (STRICT): the loop above can leave the run with the last candidate
+            # never scanned (attempts exhausted) or with flaws still open, and a file that does not
+            # even parse reports zero findings. So nothing is published as confirmed secure until
+            # this final re-scan proves an empty flaw list, no syntax errors and a 100/100 score.
+            final_code = _extract_scan_target_code(current_code)
+            roundtrip = execute_tcs_ast_scan({'fixed_target.py': final_code}) if final_code else None
+            roundtrip_findings = list((roundtrip or {}).get('findings', []))
+            residual_findings = [f for f in roundtrip_findings if not f.get('suppressed', False)]
+            syntax_errors = list((roundtrip or {}).get('syntax_errors', []))
+            roundtrip_score = (roundtrip or {}).get('summary', {}).get('security_score', 0)
+            roundtrip_stats = {
+                "total_flaws": len(roundtrip_findings),
+                "active_flaws": len(residual_findings),
+                "suppressed_flaws": len(roundtrip_findings) - len(residual_findings),
+                "security_score": roundtrip_score,
+                "syntax_errors": syntax_errors,
+                "residual": [f"{f.get('cwe')} at line {f.get('line_number')}" for f in residual_findings],
+            }
+            is_valid = bool(final_code) and not residual_findings and not syntax_errors and roundtrip_score == 100
+
+            if not is_valid:
+                # REJECTED: the fix is returned to no one as secure code - it is not cached as
+                # healed output, not stored in the CodeVault, and the caller gets the reason.
+                reason = (
+                    "No parseable Python code was generated."
+                    if not final_code else
+                    f"the hardened code still fails the deterministic re-scan with "
+                    f"{len(residual_findings)} active flaw(s) "
+                    f"({', '.join(roundtrip_stats['residual']) or 'none'}) and "
+                    f"{len(syntax_errors)} syntax error(s), security score {roundtrip_score}/100"
+                )
+                return {
+                    "roundtrip_validated": False,
+                    "roundtrip": roundtrip_stats,
+                    "error": f"Generated fix REJECTED: {reason}",
+                }
+
             fixed_code = current_code
             if fixed_code and not fixed_code.startswith("```"):
                 fixed_code = f"```python\n{fixed_code.strip()}\n```"
@@ -2714,7 +2764,11 @@ async def fix_code(payload: CodePayload, request: Request, authorization: str = 
                 except VaultRestorationError:
                     fixed_code = SecretVault.restore(fixed_code, vault_map, fallback_on_error=True)
                 
-            return {"fixed_code": fixed_code}
+            return {"fixed_code": fixed_code,
+                    "roundtrip_validated": True,
+                    "roundtrip": roundtrip_stats,
+                    "security_score": roundtrip_score,
+                    "total_flaws": roundtrip_stats["total_flaws"]}
         except HTTPException as he:
             raise he
         except Exception as e:

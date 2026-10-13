@@ -65,6 +65,36 @@ def scan_source_for_verification(file_path: str, source_code: str) -> List[Dict[
     return findings
 
 
+def roundtrip_validate(file_path: str, patched_source: str) -> Tuple[bool, str, Dict[str, Any]]:
+    """
+    Strict teacher gate for a completed fix: the whole patched file must re-scan clean.
+
+    `RemediationVerifier.verify` proves two narrower things - the target finding disappeared and
+    no pre-existing finding was lost - so a patch that trades one flaw for another (a CWE-117
+    "sanitized" variable the sanitizer registry does not recognise, or a route that drops
+    `@csrf_exempt` but still has no CSRF guard) still passes it. Zero active findings is the same
+    condition the published score is built from (app.py derives security_score purely from active
+    findings, so 0 active <=> 100/100), which makes this the honest backing for a "confirmed
+    secure" claim.
+
+    Returns (is_valid, rejection_reason, stats).
+    """
+    findings = scan_source_for_verification(file_path, patched_source)
+    residual = [f for f in findings if not f.get("suppressed", False)]
+    stats: Dict[str, Any] = {
+        "total_flaws": len(findings),
+        "active_flaws": len(residual),
+        "suppressed_flaws": len(findings) - len(residual),
+        "residual": [
+            f"{f.get('cwe')} at line {f.get('line_number')} ({f.get('code_snippet', '')})"
+            for f in residual
+        ],
+    }
+    if residual:
+        return False, "Residual flaw(s) after roundtrip re-scan: " + "; ".join(stats["residual"]), stats
+    return True, "", stats
+
+
 class RemediationVerifier:
     """
     Closed-loop re-scan verifier using Vector B engine.

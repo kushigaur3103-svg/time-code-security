@@ -261,6 +261,11 @@ def extract_remediation_advice(cwe: str, sink_symbol: str) -> str:
         "CWE-327": "Use hashlib.sha256() / sha512() or bcrypt/argon2 instead of MD5/SHA1/DES. Avoid broken cryptographic hashes.",
         "CWE-328": "Use hashlib.sha256() / sha512() or bcrypt/argon2 instead of weak cryptographic hashes.",
         "CWE-338": "Use secrets.token_hex(), secrets.token_urlsafe(), or secrets.choice() instead of random module for security-sensitive tokens.",
+        # These two tell the fix generator what the audit actually accepts: registry sanitizer names
+        # from SANITIZER_REGISTRY['CWE-117'] and the CSRF guards matched at
+        # ast_scanner.py:13524-13562. Keep them in sync with the scanner.
+        "CWE-117": "Strip CR/LF from untrusted values before they reach the logger, either with a registry sanitizer call - sanitize_log_input(value), sanitize_log_message(value), replace_crlf(value) or re_sub_crlf(value), e.g. log.info('login for %s', sanitize_log_input(user_id)) - or by removing the control characters outright (value.replace('\\r', '').replace('\\n', '') / re.sub(r'[\\r\\n]', '', value)). A look-alike sanitizer is still reported whatever the variable is named: user_id.strip() or truncated values such as sanitized_user_id = user_id[:64] do not clear the finding.",
+        "CWE-352": "Guard every state-changing view: decorate it with @csrf_protect, validate a FlaskForm with form.validate_on_submit(), or enable CSRF module-wide (CSRFProtect(app) with WTF_CSRF_ENABLED / CSRF_ENABLED set to True). Removing @csrf_exempt alone is not a fix - the POST/PUT route is then reported for having no CSRF protection.",
         "CWE-295": "Enable SSL/TLS certificate verification (verify=True or default) and remove AutoAddPolicy. Never set verify=False.",
         "CWE-400": "Escape regex input with re.escape() and enforce chunked/bounded reads with safe_read_chunked() or read(MAX_SIZE).",
         "CWE-776": "Escape regex input with re.escape() and enforce chunked/bounded reads with safe_read_chunked().",

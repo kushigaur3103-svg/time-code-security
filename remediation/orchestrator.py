@@ -15,6 +15,7 @@ from typing import Any, Callable, Dict, List, Optional, Tuple
 
 from remediation.contracts import PatchStatus, RemediationRecord
 from remediation.patch_engine import RemediationEngine
+from remediation.verification import roundtrip_validate
 
 try:
     from verification_engine import verify_fix, Patch, get_stable_signature
@@ -291,6 +292,7 @@ def remediate_project(
     written_files: List[str] = []
     stale_files: List[str] = []
     unwritten_eligible_files: List[str] = []
+    roundtrip_results: Dict[str, Dict[str, Any]] = {}
     findings_by_file: Dict[str, List[Dict[str, Any]]] = {}
 
     engine = RemediationEngine()
@@ -378,6 +380,26 @@ def remediate_project(
             else:
                 file_success = False
                 break
+
+        # Teacher roundtrip gate: a file counts as fixed only when the fully patched file re-scans
+        # with zero flaws. Each per-finding gate above proves its own target is gone; none of them
+        # can see a flaw the patch itself introduced, which is exactly how a "sanitized" variable
+        # that the sanitizer registry does not recognise used to reach disk as confirmed secure code.
+        if file_success and current_content != orig_content:
+            roundtrip_ok, roundtrip_err, roundtrip_stats = roundtrip_validate(rel_file, current_content)
+            roundtrip_results[rel_file] = roundtrip_stats
+            if not roundtrip_ok:
+                file_success = False
+                per_file_records = [
+                    dataclasses.replace(
+                        r,
+                        patch_status=PatchStatus.FAILED_VERIFICATION,
+                        verification_passed=False,
+                        patched_source=None,
+                        limitations=tuple(list(r.limitations) + [f"Roundtrip re-scan failed: {roundtrip_err}"])
+                    ) if r.patch_status == PatchStatus.SUCCESS else r
+                    for r in per_file_records
+                ]
 
         if is_write and not file_success:
             updated_records = []
@@ -504,6 +526,8 @@ def remediate_project(
         "unwritten_eligible_files": unwritten_eligible_files,
         "is_write": is_write,
         "is_dry_run": not is_write,
+        "roundtrip": roundtrip_results,
+        "roundtrip_rejected_files": sorted(f for f, s in roundtrip_results.items() if s["active_flaws"]),
     }
 
     return ProjectRemediationResult(
