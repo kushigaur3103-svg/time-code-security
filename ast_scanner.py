@@ -1075,6 +1075,20 @@ class AssignmentNameTable(dict):
             self._index_records(key, value)
         return value
 
+    def graft(self, other) -> None:
+        """Adopt another table's keys *through* `setdefault` so the side indexes follow.
+
+        `_phase2_grant`'s generic dict branch does `current[key] = item`, which is invisible to
+        `_index` and `_index_records`. A parallel Phase 2 therefore grafted every assignment record
+        while leaving `names_by_module` and `records_by_name` empty, so in a 4-worker run each of
+        those indexes' consumers silently saw "no such name": constant folding's cross-scope
+        fallback, and the CWE-532 container/alias routes. Serial and parallel then disagreed
+        wherever an index is consulted. Insertion order is the order the grafted tables are walked
+        in, which `_phase2_collect_parallel` already drives in canonical module order.
+        """
+        for key, records in other.items():
+            self.setdefault(key, []).extend(records)
+
 
 # ─── Batch 2 structural synthetic edge sources (PURE_STRUCTURAL CWEs) ───
 STRUCTURAL_SYNTHETIC_SOURCES = {
@@ -2352,6 +2366,10 @@ def _phase2_grant(tracker, mod_name, tree, state):
         if isinstance(current, list) and isinstance(value, list):
             current.extend(value)
         elif isinstance(current, dict) and isinstance(value, dict):
+            if isinstance(current, AssignmentNameTable):
+                # Side-index-preserving path; see `AssignmentNameTable.graft`.
+                current.graft(value)
+                continue
             for key, item in value.items():
                 bucket = current.get(key)
                 if isinstance(bucket, list) and isinstance(item, list):
