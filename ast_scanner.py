@@ -1178,6 +1178,14 @@ LOG_SINK_METHODS = frozenset({"info", "debug", "warning", "error", "exception", 
 # `logging_data['password'] = 'XXX-REDACTED-XXX'`, and `None`/`''` are placeholders too.
 CWE532_REDACTED_LITERAL_RE = re.compile(r"(?i)redact|mask|placeholder|dummy|xxx|\*{3,}|<[a-z!]")
 
+# `id_token`, `access_token`, `bearer_token`, `jwt_token`, `raw_token` are invisible to
+# SENSITIVE_VALUE_NAME_RE: its `\btoken\b` demands a non-word character on both sides and `_` *is* a
+# word character, so `log.debug(str(id_token))` at airflow/www/fab_security/manager.py:583 named a
+# credential out loud and stayed silent. Match the compound form instead - a qualified name ending
+# in `_token` / `_tokens`. Names that only *describe* a token (`token_type`, `token_count`,
+# `token_url`) are excluded on purpose: they hold "Bearer" or a number, not the secret bytes.
+CWE532_COMPOUND_TOKEN_NAME_RE = re.compile(r"^[A-Za-z0-9]+(?:_[A-Za-z0-9]+)*_tokens?$")
+
 # `kwargs.clear()` / `.popitem()` empty the whole container; `.pop('password')` removes one key.
 CWE532_REMOVED_ALL_METHODS = frozenset({"clear", "popitem"})
 CWE532_REMOVED_KEY_METHODS = frozenset({"pop"})
@@ -8816,6 +8824,10 @@ class TaintTracker:
             # collection, so the test has to look through the wrapper rather than at it.
             if report_node is None and self._c532_wrapped_collection_leaks(node, module):
                 report_node = node
+            # And only if every route above stayed silent: a *qualified* credential name. Runs last
+            # so no existing report node or line can be displaced.
+            if report_node is None and self._c532_compound_token_arg(node, self._memo_assignment_map(tree)):
+                report_node = node
             if report_node is None:
                 continue
             if self._blindspot_line_suppressed(source_lines, report_node):
@@ -8824,6 +8836,51 @@ class TaintTracker:
                 report_node, filename, "CWE-532", "SENSITIVE_DATA_LOGGING", "SENSITIVE_DATA_LOGGING",
                 "CWE-532: Insertion of sensitive data into log entry",
                 "SENSITIVE_DATA_LOGGING")
+
+    def _c532_live_compound_token_nodes(self, expr, table, use_lineno):
+        """`id_token`-family names *expr* reads, minus the ones already replaced by a placeholder."""
+        live = []
+        for sub in ast.walk(expr):
+            if isinstance(sub, ast.Name):
+                name = sub.id
+            elif isinstance(sub, ast.Attribute):
+                name = sub.attr
+            elif isinstance(sub, ast.Subscript) and isinstance(sub.slice, ast.Constant) \
+                    and isinstance(sub.slice.value, str):
+                name = sub.slice.value
+            else:
+                continue
+            if not CWE532_COMPOUND_TOKEN_NAME_RE.match(name) \
+                    or SENSITIVE_NAME_EXEMPT_RE.search(name):
+                continue
+            value = self._blindspot_latest_assignment(table, name, use_lineno)
+            if value is not None and self._c532_value_redacted(value):
+                continue
+            live.append(sub)
+        return live
+
+    def _c532_compound_token_arg(self, call, table):
+        """True when a logger argument carries a raw `*_token` credential: named, wrapped, or a hop away.
+
+        `log.debug(str(id_token))` (airflow/www/fab_security/manager.py:583) needs only the name test,
+        because `ast.walk` steps through the `str()` wrapper by itself. `log.debug("Parse JWT token :
+        %s", me)` (:585) logs `me`, whose value came from `_azure_jwt_token_parse(id_token)` one line
+        earlier, so the same test runs again on the latest assignment of each plain name in the
+        argument. That hop only follows an assignment the map already places above the log line.
+        """
+        for arg in list(call.args) + [
+                keyword.value for keyword in call.keywords
+                if keyword.arg in ("msg", "message", "extra")]:
+            if self._c532_live_compound_token_nodes(arg, table, call.lineno):
+                return True
+            for sub in ast.walk(arg):
+                if not isinstance(sub, ast.Name):
+                    continue
+                value = self._blindspot_latest_assignment(table, sub.id, call.lineno)
+                if value is not None and self._c532_live_compound_token_nodes(
+                        value, table, call.lineno):
+                    return True
+        return False
 
     @staticmethod
     def _blindspot_is_log_call(node, func_ranges):
