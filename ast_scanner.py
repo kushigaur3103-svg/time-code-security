@@ -2849,10 +2849,31 @@ class TaintTracker:
                     break
         return None
 
-    def resolve_canonical_name(self, node: ast.AST, scope_id: str = "", visited: Optional[set[str]] = None) -> Optional[str]:
+    # Alias-resolution hop budget.
+    # `resolve_canonical_name` follows `f0 = f1`, `f1 = f2`, ... one Python frame per hop. With
+    # `sys.setrecursionlimit(1000)` a long enough chain (measured: 1200 links) exhausts the stack
+    # inside `scan_for_sinks` -> `is_sink_call` and kills the whole scan with exit code 2
+    # (Apache Airflow CI). 25 hops is far beyond any real alias chain, and the cap makes the walk
+    # bounded no matter what the recursion limit is.
+    RESOLVE_MAX_DEPTH = 25
+
+    def resolve_canonical_name(self, node: ast.AST, scope_id: str = "", visited: Optional[set[str]] = None,
+                               depth: int = 0) -> Optional[str]:
         if visited is None:
             visited = set()
         mod_name = scope_module(scope_id) if scope_id else ""
+
+        # Two independent brakes, because the hop budget alone is not enough:
+        #  * depth  - unbounded *chains* (a -> b -> c -> ...), the Airflow shape.
+        #  * node_key - unbounded *cycles* (a -> b -> a) that cross scopes, where the per-name
+        #    `var_key` guard is re-keyed by scope_id and therefore never fires.
+        if depth > self.RESOLVE_MAX_DEPTH:
+            self.resolve_depth_capped = getattr(self, "resolve_depth_capped", 0) + 1
+            return None
+        node_key = f"@node:{id(node)}:{scope_id}"
+        if node_key in visited:
+            return None
+        visited.add(node_key)
 
         if isinstance(node, ast.Name):
             if node.id == "__builtins__":
@@ -2883,7 +2904,8 @@ class TaintTracker:
                         break
 
                 if found_record:
-                    resolved = self.resolve_canonical_name(found_record.value_node, found_record.scope_id, visited)
+                    resolved = self.resolve_canonical_name(found_record.value_node, found_record.scope_id, visited,
+                                                           depth=depth + 1)
                     if resolved:
                         return resolved
                     if node.id in ("exec", "eval", "open"):
@@ -2917,7 +2939,8 @@ class TaintTracker:
                                     if p_key not in visited:
                                         v_copy = visited.copy()
                                         v_copy.add(p_key)
-                                        resolved_param = self.resolve_canonical_name(arg_expr, caller_scope, v_copy)
+                                        resolved_param = self.resolve_canonical_name(arg_expr, caller_scope, v_copy,
+                                                                                     depth=depth + 1)
                                         if resolved_param:
                                             return resolved_param
                         break
@@ -2933,7 +2956,7 @@ class TaintTracker:
                 unrolled = unroll_chained_call(node)
                 if unrolled:
                     return unrolled
-            base_canon = self.resolve_canonical_name(node.value, scope_id, visited)
+            base_canon = self.resolve_canonical_name(node.value, scope_id, visited, depth=depth + 1)
             if base_canon:
                 full_name = f"{base_canon}.{node.attr}"
                 if mod_name and mod_name in self.imports and full_name in self.imports[mod_name]:
@@ -2946,7 +2969,8 @@ class TaintTracker:
 
             # 1. getattr(target, attr_name) dynamic resolution
             if (call_name in ("getattr", "builtins.getattr") or (call_name and call_name.endswith(".getattr"))) and len(node.args) >= 2:
-                target_canon = self.resolve_canonical_name(node.args[0], scope_id, visited) or dotted_name(node.args[0])
+                target_canon = (self.resolve_canonical_name(node.args[0], scope_id, visited, depth=depth + 1)
+                                or dotted_name(node.args[0]))
                 attr_str = self._eval_const_str_with_params(node.args[1], scope_id, visited)
                 if target_canon and attr_str:
                     return f"{target_canon}.{attr_str}"
@@ -2975,7 +2999,8 @@ class TaintTracker:
                             if recs:
                                 uncond = [r for r in recs if not r.is_conditional]
                                 found = uncond[-1] if uncond else recs[-1]
-                                resolved = self.resolve_canonical_name(found.value_node, found.scope_id, visited)
+                                resolved = self.resolve_canonical_name(found.value_node, found.scope_id, visited,
+                                                                       depth=depth + 1)
                                 if resolved:
                                     return resolved
                                 break
@@ -2995,10 +3020,12 @@ class TaintTracker:
                     visited.add(func_scope)
                     returns = self.returns_by_scope.get(func_scope, [])
                     if returns:
-                        ret_canons = [self.resolve_canonical_name(r.value, func_scope, visited) for r in returns if r.value]
+                        ret_canons = [self.resolve_canonical_name(r.value, func_scope, visited,
+                                                                 depth=depth + 1)
+                                      for r in returns if r.value]
                         if ret_canons and all(c == ret_canons[0] and c is not None for c in ret_canons):
                             return ret_canons[0]
-                canon_func = self.resolve_canonical_name(node.func, scope_id, visited)
+                canon_func = self.resolve_canonical_name(node.func, scope_id, visited, depth=depth + 1)
                 if canon_func:
                     cls_name = canon_func.split(".")[-1]
                     if cls_name and cls_name[0].isupper():
@@ -3022,7 +3049,8 @@ class TaintTracker:
                         if recs:
                             uncond = [r for r in recs if not r.is_conditional]
                             found = uncond[-1] if uncond else recs[-1]
-                            resolved = self.resolve_canonical_name(found.value_node, found.scope_id, visited)
+                            resolved = self.resolve_canonical_name(found.value_node, found.scope_id, visited,
+                                                                   depth=depth + 1)
                             if resolved:
                                 return resolved
                             break
@@ -3038,7 +3066,8 @@ class TaintTracker:
 
             # X.__dict__["name"] -> X.name (module / builtins reflection)
             if isinstance(node.value, ast.Attribute) and node.value.attr == "__dict__":
-                base_canon = self.resolve_canonical_name(node.value.value, scope_id, visited)
+                base_canon = self.resolve_canonical_name(node.value.value, scope_id, visited,
+                                                         depth=depth + 1)
                 dict_key = self._extract_subscript_key(node.slice, scope_id)
                 if base_canon and dict_key is not None:
                     return f"{base_canon}.{dict_key}"
@@ -3072,7 +3101,8 @@ class TaintTracker:
                     if sub_key not in visited:
                         v_copy = visited.copy()
                         v_copy.add(sub_key)
-                        resolved = self.resolve_canonical_name(found_record.value_node, found_record.scope_id, v_copy)
+                        resolved = self.resolve_canonical_name(found_record.value_node, found_record.scope_id, v_copy,
+                                                               depth=depth + 1)
                         if resolved:
                             return resolved
 
@@ -3102,12 +3132,14 @@ class TaintTracker:
                         for k, v in zip(val_node.keys, val_node.values):
                             k_val = self._extract_subscript_key(k, found_record.scope_id)
                             if k_val == key:
-                                resolved = self.resolve_canonical_name(v, found_record.scope_id, visited)
+                                resolved = self.resolve_canonical_name(v, found_record.scope_id, visited,
+                                                                       depth=depth + 1)
                                 if resolved:
                                     return resolved
                     elif isinstance(val_node, (ast.List, ast.Tuple)) and isinstance(key, int):
                         if -len(val_node.elts) <= key < len(val_node.elts):
-                            resolved = self.resolve_canonical_name(val_node.elts[key], found_record.scope_id, visited)
+                            resolved = self.resolve_canonical_name(val_node.elts[key], found_record.scope_id, visited,
+                                                                   depth=depth + 1)
                             if resolved:
                                 return resolved
 
@@ -3116,12 +3148,13 @@ class TaintTracker:
                 for k, v in zip(node.value.keys, node.value.values):
                     k_val = self._extract_subscript_key(k, scope_id)
                     if k_val == key:
-                        resolved = self.resolve_canonical_name(v, scope_id, visited)
+                        resolved = self.resolve_canonical_name(v, scope_id, visited, depth=depth + 1)
                         if resolved:
                             return resolved
             elif isinstance(node.value, (ast.List, ast.Tuple)) and isinstance(key, int):
                 if -len(node.value.elts) <= key < len(node.value.elts):
-                    resolved = self.resolve_canonical_name(node.value.elts[key], scope_id, visited)
+                    resolved = self.resolve_canonical_name(node.value.elts[key], scope_id, visited,
+                                                           depth=depth + 1)
                     if resolved:
                         return resolved
 
@@ -4613,7 +4646,14 @@ class TaintTracker:
             return False
         
         name = dotted_name(node.func) or ""
-        canon = self.resolve_canonical_name(node.func, scope_id) if scope_id else name
+        try:
+            canon = self.resolve_canonical_name(node.func, scope_id) if scope_id else name
+        except RecursionError:
+            # Circuit breaker at the caller boundary. The hop budget inside the resolver already
+            # bounds the walk, so this only fires if some other path exhausts the stack: degrade to
+            # the bare leaf name (which is what an unresolved alias resolves to anyway) and keep the
+            # sink, instead of letting one expression abort the whole scan with exit code 2.
+            canon = getattr(node.func, "id", None) or getattr(node.func, "attr", None)
 
         if (canon and canon.startswith("defusedxml.")) or (name and name.startswith("defusedxml.")):
             return False
@@ -5817,7 +5857,13 @@ class TaintTracker:
                 continue
             call_lineno = getattr(subnode, "lineno", lineno)
             if isinstance(subnode, ast.Call) and self.is_sink_call(subnode, scope_id, call_lineno):
-                canon_name = self.resolve_canonical_name(subnode.func, scope_id) or dotted_name(subnode.func) or ""
+                try:
+                    canon_name = self.resolve_canonical_name(subnode.func, scope_id)
+                except RecursionError:
+                    # Same caller-boundary breaker as is_sink_call: keep the sink on its leaf name.
+                    canon_name = (getattr(subnode.func, "id", None)
+                                  or getattr(subnode.func, "attr", None))
+                canon_name = canon_name or dotted_name(subnode.func) or ""
                 if not self.check_sink_safety(subnode, canon_name):
                     sink_node = self.get_or_create_sink(subnode, file_path, scope_id)
                     self.sink_records.append(SinkRecord(node=subnode, security_node=sink_node, lineno=call_lineno, scope_id=scope_id))
