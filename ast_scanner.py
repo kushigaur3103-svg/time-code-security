@@ -2436,19 +2436,34 @@ class TaintTracker:
         self.max_workers = max_workers
         
         # TimeCodeSecurity: Use safe parallel parsing with hardware governance
+        # `execution_mode` is the authoritative answer to "did the fault-tolerant fan-out run?"
+        #   "parallel"        - parse_files_parallel returned normally (its own `parse_mode` field
+        #                       still says whether it took the internal sequential shortcut)
+        #   "serial_fallback" - the fan-out raised, so every file was re-parsed here, serially
+        #   "inline"          - the fan-out was never attempted (<= 10 files or module unavailable)
+        self.execution_mode = "inline"
+        self.parallel_fallback_reason = None
         _parallel_parsing_failed = False
         if PARALLEL_PARSING_AVAILABLE and len(self.files) > 10:
             # Only use parallel parsing for larger workloads (>10 files)
             try:
                 (self.modules, self.file_paths, self.skipped_files,
                  self.parse_stats) = parse_files_parallel(self.files, max_workers=max_workers)
+                self.execution_mode = "parallel"
+                self.parse_stats["execution_mode"] = self.execution_mode
+                self.parse_stats["parallel_fallback_reason"] = None
             except Exception as _ps_exc:
                 # A dead worker pool or an expired batch deadline is a machine fault, not a reason
                 # to lose the whole scan: the serial loop below parses the identical file set with
                 # the identical `ast.parse` + parent-linking, so no finding can differ.
+                # Never silent: the mode and the reason are published to engine state and to the
+                # scan summary, so a slower serial re-parse is visible without digging through logs.
                 _parallel_parsing_failed = True
+                self.execution_mode = "serial_fallback"
+                self.parallel_fallback_reason = f"{type(_ps_exc).__name__}: {_ps_exc}"
                 print(f"TimeCodeSecurity [GOVERNOR] parallel parsing disabled "
-                      f"({type(_ps_exc).__name__}: {_ps_exc}); serial parse", file=sys.stderr)
+                      f"({self.parallel_fallback_reason}); serial re-parse of all "
+                      f"{len(self.files)} file(s)", file=sys.stderr)
         if _parallel_parsing_failed or not getattr(self, "parse_stats", None):
             # Fallback to sequential parsing for small workloads, when parallel is unavailable,
             # or when the parallel fan-out raised.
@@ -2478,6 +2493,8 @@ class TaintTracker:
                 "workers_used": 1,
                 "governor_events": 0,
                 "parse_mode": "inline",
+                "execution_mode": self.execution_mode,
+                "parallel_fallback_reason": self.parallel_fallback_reason,
             }
         # Module names and file paths are re-compared and re-hashed for the rest of the run: every
         # scope id is built from them, and every rule loop looks them up. Interning the two

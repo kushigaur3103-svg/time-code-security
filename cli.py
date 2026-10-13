@@ -757,6 +757,13 @@ def _print_summary(file_count, duration_ms, findings, file_counts=None,
         print(f"Parser: {parse_governor.get('parse_mode', 'unknown')} mode, "
               f"{workers} worker(s), "
               f"{parse_governor.get('governor_events', 0)} governor reduction(s)")
+        if parse_governor.get("execution_mode") == "serial_fallback":
+            # A degraded run must announce itself on stdout: the reason, and the fact that
+            # coverage did not shrink. Silent serial re-parsing would look like a normal scan.
+            print(f"[!] EXECUTION MODE: serial_fallback - the parallel parse pool failed "
+                  f"({parse_governor.get('parallel_fallback_reason')}). All "
+                  f"{file_count} scanned file(s) were re-parsed serially; coverage unchanged, "
+                  f"scan slower.")
     print(f"Scan duration: {duration_ms:.2f} ms")
     print("Findings by severity: " + ", ".join(f"{severity.title()}: {counts[severity]}" for severity in SEVERITIES))
     print("Findings by scope: " + ", ".join(
@@ -1191,9 +1198,14 @@ def _scan(args):
         parse_governor = {
             key: parse_stats[key]
             for key in ("parse_mode", "workers_used", "workers_initial",
-                        "workers_final", "governor_events")
+                        "workers_final", "governor_events",
+                        "execution_mode", "parallel_fallback_reason")
             if key in parse_stats
         }
+        # The engine attribute is the authority; parse_stats carries it only when a tracker ran.
+        parse_governor.setdefault("execution_mode", getattr(tracker, "execution_mode", "not_started"))
+        parse_governor.setdefault("parallel_fallback_reason",
+                                  getattr(tracker, "parallel_fallback_reason", None))
         findings = _merge_findings(ast_findings, audit_templates(templates), audit_iac_files(iac))
         findings = consolidate_findings(findings)
         _PARTIAL["findings"] = findings
@@ -1254,6 +1266,8 @@ def _scan(args):
             "unparseable_files": unparseable_files,
             "scope_breakdown": scope_breakdown,
             "parse_governor": parse_governor,
+            "execution_mode": parse_governor.get("execution_mode", "not_started"),
+            "parallel_fallback_reason": parse_governor.get("parallel_fallback_reason"),
             "duration_ms": round(duration_ms, 2),
             "findings_by_scope": _scope_breakdown(findings),
             "findings": findings,
@@ -1290,7 +1304,8 @@ def _scan(args):
             print("TimeCodeSecurity - Performance Metrics", file=sys.stderr)
             print("="*70, file=sys.stderr)
             print(f"Wall-Clock Scan Time:     {duration_ms/1000:.2f}s ({duration_ms:.0f}ms)", file=sys.stderr)
-            print(f"Parser Mode:              {parse_governor.get('parse_mode', 'unknown')}", file=sys.stderr)
+            print(f"Parser Mode:              {parse_governor.get('parse_mode', 'unknown')}"
+                  f"  (execution: {parse_governor.get('execution_mode', 'unknown')})", file=sys.stderr)
             print(f"Worker Count Utilized:    {parse_governor.get('workers_final', parse_governor.get('workers_used', 'n/a'))}"
                   f" (governor start: {parse_governor.get('workers_initial', parse_governor.get('workers_used', 'n/a'))}, "
                   f"reductions: {parse_governor.get('governor_events', 0)})", file=sys.stderr)
