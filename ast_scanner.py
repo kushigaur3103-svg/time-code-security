@@ -1,9 +1,11 @@
 from __future__ import annotations
 import ast
+import io
 import math
 import os
 import re
 import sys
+import tokenize
 from dataclasses import dataclass, field, asdict
 from enum import Enum
 from typing import Optional, List, Dict, Any, Union, Tuple
@@ -2681,6 +2683,118 @@ def _sink_gate_parallel(tracker, workers):
     return candidates
 
 
+# ─── Tolerant AST recovery - runs only after `ast.parse` has already raised SyntaxError ─────────
+# `ast.parse` is all-or-nothing. One statement this interpreter does not understand - a PEP 695
+# `type X = int`, a PEP 701 nested-quote f-string, a half-written function - throws away every other
+# function in the file; Home Assistant alone lost two files that way. Nothing below is consulted for a
+# file that parses: the fast path stays one bare `ast.parse` call, with no pre-scan, no regex sweep and
+# no wrapper, so recovery cannot cost a valid file anything at all.
+#
+# Recovery works on whole top-level statements. `tokenize` reports where each logical line starts and
+# ends, which gives the spans a parser understands; the span owning the reported error line is swapped
+# for `pass` at its own line and its own indent (plus that statement's indented suite, because an
+# orphaned body would only move the error), and the rest of the span becomes blank lines. The line
+# count never changes, so every surviving node keeps its real source line and every finding coordinate
+# stays truthful.
+TOLERANT_PARSE_MAX_BLOCKS = 32
+
+
+def _tolerant_block_indent(text: str) -> int:
+    """Visual indent of a line, tabs counted the way CPython counts them."""
+    expanded = text.expandtabs()
+    return len(expanded) - len(expanded.lstrip())
+
+
+def _tolerant_line_spans(source: str) -> list:
+    """1-based inclusive (start, end) spans of the file's top-level statements.
+
+    Falls back to one span per non-blank line when `tokenize` cannot read the file at all - the usual
+    case is an unclosed bracket, whose continuation lines are indented, so the substitution step still
+    sweeps the whole broken construct.
+    """
+    lines = source.splitlines()
+    spans: list = []
+    start: Optional[int] = None
+    complete = True
+    try:
+        for tok in tokenize.generate_tokens(io.StringIO(source).readline):
+            if tok.type == tokenize.NEWLINE:
+                if start is not None:
+                    spans.append((start, tok.end[0]))
+                    start = None
+            elif tok.type in (tokenize.NL, tokenize.COMMENT, tokenize.INDENT,
+                              tokenize.DEDENT, tokenize.ENDMARKER, tokenize.ENCODING):
+                continue
+            elif start is None:
+                start = tok.start[0]
+    except (tokenize.TokenError, IndentationError, SyntaxError):
+        # An unclosed bracket swallows every line after it, so the pending statement would stretch to
+        # end-of-file and its replacement would delete valid functions that merely *follow* the break.
+        # Discard the partial scan and locate the blocks one line at a time instead.
+        complete = False
+        spans = []
+        start = None
+    if complete and start is not None:
+        spans.append((start, max(start, len(lines))))
+    if not spans:
+        spans = [(i, i) for i, text in enumerate(lines, 1) if text.strip()]
+    return spans
+
+
+def _tolerant_substitute(lines: list, start: int, end: int) -> list:
+    """Copy of `lines` with the block [start, end] and its indented suite replaced by one `pass`."""
+    first = lines[start - 1]
+    indent = first[: len(first) - len(first.lstrip())]
+    base = _tolerant_block_indent(first)
+    limit = end
+    while limit < len(lines):
+        following = lines[limit]
+        if not following.strip():
+            limit += 1
+            continue
+        if _tolerant_block_indent(following) > base:
+            limit += 1
+        else:
+            break
+    out = list(lines)
+    for i in range(start - 1, min(limit, len(lines))):
+        newline = "\n" if lines[i].endswith("\n") or lines[i].endswith("\r") else ""
+        out[i] = indent + "pass" + newline if i == start - 1 else newline
+    return out
+
+
+def parse_source_tolerant(source: str, filename: str):
+    """`ast.parse`, then - only if that raised SyntaxError - the same parse with bad blocks removed.
+
+    Returns `(tree | None, bypassed_block_start_lines)`. `None` means the file is as unparseable as it
+    was before: recovery never invents a module it cannot prove parses, and never presents a partial
+    file as a whole one.
+    """
+    try:
+        return ast.parse(source, filename=filename), []
+    except SyntaxError:
+        pass
+    lines = source.splitlines(keepends=True)
+    if not lines:
+        return None, []
+    spans = _tolerant_line_spans(source)
+    if not spans:
+        return None, []
+    replaced: list = []
+    current = lines
+    for _round in range(TOLERANT_PARSE_MAX_BLOCKS):
+        try:
+            return ast.parse("".join(current), filename=filename), sorted(replaced)
+        except SyntaxError as exc:
+            lineno = exc.lineno or 0
+            span = next((s for s in spans if s[0] <= lineno <= s[1]), None)
+            if span is None or span[0] in replaced:
+                return None, sorted(replaced)
+            current = _tolerant_substitute(current, span[0], span[1])
+            replaced.append(span[0])
+    return None, sorted(replaced)
+
+
 class TaintTracker:
     def __init__(self, files: dict[str, str] = None, source: str = None, file_path: str = "target.py", audit_all: bool = False, max_workers: Optional[int] = None):
         self.files = files if files is not None else {file_path: source}
@@ -2748,6 +2862,47 @@ class TaintTracker:
                 "execution_mode": self.execution_mode,
                 "parallel_fallback_reason": self.parallel_fallback_reason,
             }
+        # ─── Syntax recovery: a file `ast.parse` rejected gets one block-level retry ───
+        # This is the whole cost on a healthy corpus: an empty dict, so the loop body never runs. The
+        # retry lives here rather than inside each parse site because all three of them - the parallel
+        # fan-out, its serial twin and the inline loop above - report failures the same way, through
+        # `skipped_files`, and they all report them to *this* process. Phase 2 children are handed the
+        # parent's tree (see `_phase2_module_batch`), so a recovered module analyses identically at any
+        # worker count. Only SyntaxError is retried: a NUL byte (`ValueError`) or an undecodable file is
+        # not a syntax problem and no partial module would be honest.
+        self.recovered_files: dict[str, list] = {}
+        for _fpath, _reason in list(self.skipped_files.items()):
+            if not _reason.startswith("SyntaxError"):
+                continue
+            _src = self.files.get(_fpath)
+            if not isinstance(_src, str):
+                continue
+            _tree, _bypassed = parse_source_tolerant(_src, _fpath)
+            if _tree is None:
+                continue
+            _mod = _fpath.replace("\\\\", "/").replace(".py", "").replace("/", ".")
+            if _mod.endswith(".__init__"):
+                _mod = _mod[:-9]
+            if _mod in self.modules:
+                # A name already taken by a file that parsed cleanly: two modules with one name would
+                # silently shadow it, so the broken file stays skipped.
+                continue
+            for _p in ast.walk(_tree):
+                for _child in ast.iter_child_nodes(_p):
+                    _child.parent = _p
+            self.modules[_mod] = _tree
+            self.file_paths[_mod] = _fpath
+            del self.skipped_files[_fpath]
+            self.recovered_files[_fpath] = _bypassed
+            print(f"TimeCodeSecurity [RECOVERED] {_fpath}: bypassed unparseable line "
+                  f"{_bypassed[0] if _bypassed else 0} "
+                  f"({len(_bypassed)} block(s) replaced by pass: {','.join(map(str, _bypassed)) or '-'})",
+                  file=sys.stderr)
+        if self.recovered_files:
+            # Counters stay truthful: a recovered file was never parsed *and* is not unparseable now.
+            self.parse_stats["recovered"] = len(self.recovered_files)
+            self.parse_stats["parsed"] = len(self.modules)
+            self.parse_stats["unparseable"] = len(self.skipped_files)
         # Module names and file paths are re-compared and re-hashed for the rest of the run: every
         # scope id is built from them, and every rule loop looks them up. Interning the two
         # canonical tables once makes equal names the *same object*, so those comparisons become
