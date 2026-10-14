@@ -1183,6 +1183,21 @@ STAGE1_DEFERRED_SOURCE_KEYS = (
 )
 
 CWE798_TARGET_RE = re.compile(r"(?i).*(password|passwd|secret_key|api_key|access_token|auth_token).*")
+# A module constant named after a credential is not always a credential. Home Assistant stores its
+# per-request data under string keys (`DATA_API_PASSWORD: Final = "api_password"`,
+# `DATA_SIGN_SECRET: Final = "http.auth.sign_secret"`) and the *key* is what the literal holds. Such a
+# value names its field out loud: lowercase identifier segments joined by `.` or `_`, one of which is
+# a credential word. A real secret never reads that way - `sk_live_51abcdef` carries no credential
+# segment and `hunter2secret` carries no separator at all. Tested on the value's shape only; whether
+# the shape is evidence of a key is decided with the file's own use of the name
+# (`TaintTracker._c798_value_is_storage_key`).
+CWE798_FIELD_PATH_VALUE_RE = re.compile(r"^[a-z][a-z0-9]*(?:[._][a-z0-9]+)+$")
+
+# The `if`/`elif` that grants `authenticated = True` is a bypass only when nothing was checked. A
+# callee that says what it does - `validate`, `verify`, `authenticate`, `authorize`, with Home
+# Assistant's `async_` prefix allowed for - is that check (`_c287_branch_verifies`).
+CWE287_VERIFIER_CALL_RE = re.compile(
+    r"(?i)(?:^|_)(?:async_)?(?:validate|verify|authenticat|authoriz)")
 # Django's unvalidated client-input containers. `is_valid()` fills `form.cleaned_data`, never
 # these, so a read of them inside a validated-form scope is the CWE-20 signal.
 DJANGO_RAW_POST_ATTRS = frozenset({"POST", "FILES"})
@@ -8674,6 +8689,46 @@ class TaintTracker:
         return any(states.get(flag) in ("configured", "unknown")
                    for flag in ("secure", "httponly", "samesite"))
 
+    @staticmethod
+    def _c798_value_is_storage_key(value: str, target_name: str,
+                                   key_used: set, loaded: set) -> bool:
+        """True when a credential-named constant holds a mapping key, not the secret it names.
+
+        Two proofs, and both are required, so a weak real password cannot talk its way out:
+        (1) the literal's own shape - `api_password`, `http.auth.sign_secret` (see
+        `CWE798_FIELD_PATH_VALUE_RE`);
+        (2) what the file does with the name. Either it indexes something with it
+        (`hass.data[DATA_SIGN_SECRET]`, `hass.data.get(DATA_SIGN_SECRET)`) or nothing in the file ever
+        *reads* it, so there is no code path that could hand the literal to anything as a value.
+        `password = "admin_password"` followed by `connect(password)` fails (2) - the name is read as a
+        value - and is still reported.
+        """
+        if not CWE798_FIELD_PATH_VALUE_RE.match(value):
+            return False
+        if not any(SENSITIVE_VALUE_NAME_RE.search(segment)
+                   for segment in re.split(r"[._]", value)):
+            return False
+        return target_name in key_used or target_name not in loaded
+
+    @staticmethod
+    def _c287_branch_verifies(guard: Optional[ast.If]) -> bool:
+        """True when the `If` that owns this assignment calls something that says it checks.
+
+        Only the `if` body is consulted, never `else`: a grant taken when the test *fails*
+        (`if verify(token): ... else: authenticated = True`) is the bypass this rule exists to find.
+        """
+        if guard is None:
+            return False
+        for sub in ast.walk(guard.test):
+            if not isinstance(sub, ast.Call):
+                continue
+            func = sub.func
+            leaf = func.attr if isinstance(func, ast.Attribute) else \
+                (func.id if isinstance(func, ast.Name) else "")
+            if leaf and CWE287_VERIFIER_CALL_RE.search(leaf):
+                return True
+        return False
+
     def _collect_batch2_structural_findings(self) -> None:
         """
         Batch 2 PURE_STRUCTURAL visitors (data/cwe_blueprint_batch2.json):
@@ -13539,6 +13594,16 @@ class TaintTracker:
             # CWE-862 function-level debounce: id(enclosing FunctionDef) already charged. The AST
             # trees live in self.modules for the whole pass, so these ids stay valid.
             authz_emitted_funcs: set[int] = set()
+            # Branch guard for the `authenticated = True` rule below: id(assignment) -> the `If` whose
+            # own body holds it. An elif chain nests an `If` inside the previous `orelse`, so the
+            # *inner* node - the one whose test the branch actually ran - is what gets recorded.
+            # Only bodies are mapped: a grant taken in an `else` is taken because the test failed,
+            # which is the bypass this rule hunts, never a verification.
+            assignment_guard: dict[int, ast.If] = {}
+            for _if_node in (n for n in ast.walk(tree) if isinstance(n, ast.If)):
+                for _stmt in _if_node.body:
+                    if isinstance(_stmt, (ast.Assign, ast.AnnAssign)):
+                        assignment_guard.setdefault(id(_stmt), _if_node)
 
             # Pre-scan module for extension whitelist, sanitizers, CSRF config, auth settings
             has_extension_whitelist = False
@@ -14079,8 +14144,15 @@ class TaintTracker:
 
                         # CWE-287: authenticated = True / AUTH_ENABLED = False
                         if t_str == "authenticated" and val_const is True:
-                            cwe_meta = {"operation": "IMPROPER_AUTHENTICATION", "category": "IMPROPER_AUTHENTICATION", "cwe": "CWE-287"}
-                            break
+                            # A grant taken *because* a check passed is not a bypass. Home Assistant's
+                            # auth middleware (`http/auth.py:229`, `:239`) sets the flag inside
+                            # `elif async_validate_auth_header(request):` / `elif ... and
+                            # async_validate_signed_request(request):`, and the corpus' own bad case is
+                            # a bare module-level `authenticated = True` with no branch above it - that
+                            # one has no guard to consult and still reports.
+                            if not self._c287_branch_verifies(assignment_guard.get(id(node))):
+                                cwe_meta = {"operation": "IMPROPER_AUTHENTICATION", "category": "IMPROPER_AUTHENTICATION", "cwe": "CWE-287"}
+                                break
                         if t_str == "AUTH_ENABLED" and val_const is False:
                             cwe_meta = {"operation": "IMPROPER_AUTHENTICATION", "category": "IMPROPER_AUTHENTICATION", "cwe": "CWE-287"}
                             break
@@ -19603,6 +19675,23 @@ class TaintTracker:
         for mod_name, tree in self.modules.items():
             seen.clear()
             scoped_nodes = [(node, _scope_for(node, mod_name)) for node in self._reachable_nodes(tree)]
+            # Proof (2) of `_c798_value_is_storage_key`: what the file does with the name. Names are
+            # lower-cased here because `_target_name()` lower-cases them.
+            key_used: set = set()
+            loaded: set = set()
+            for sub in ast.walk(tree):
+                if isinstance(sub, ast.Subscript) and isinstance(sub.slice, (ast.Name, ast.Attribute)):
+                    key_used.add((sub.slice.id if isinstance(sub.slice, ast.Name)
+                                  else sub.slice.attr).lower())
+                elif (isinstance(sub, ast.Call) and isinstance(sub.func, ast.Attribute)
+                      and sub.func.attr == "get" and len(sub.args) == 1
+                      and isinstance(sub.args[0], (ast.Name, ast.Attribute))):
+                    key_used.add((sub.args[0].id if isinstance(sub.args[0], ast.Name)
+                                  else sub.args[0].attr).lower())
+                if isinstance(sub, ast.Name) and isinstance(sub.ctx, ast.Load):
+                    loaded.add(sub.id.lower())
+                elif isinstance(sub, ast.Attribute) and isinstance(sub.ctx, ast.Load):
+                    loaded.add(sub.attr.lower())
             for node, scope_id in scoped_nodes:
                 if isinstance(node, (ast.Assign, ast.AnnAssign)):
                     value_node = node.value
@@ -19611,7 +19700,8 @@ class TaintTracker:
                     if not sensitive:
                         continue
                     if isinstance(value_node, ast.Constant) and isinstance(value_node.value, str):
-                        if _credential_is_concrete(value_node.value):
+                        if _credential_is_concrete(value_node.value) and not self._c798_value_is_storage_key(
+                                value_node.value, _target_name(sensitive[0]), key_used, loaded):
                             _add_finding(
                                 node, mod_name, scope_id, "CWE-798", "HARDCODED_CREDENTIALS",
                                 "HARDCODED_CREDENTIAL", "HARDCODED_CREDENTIAL_LEAK",
