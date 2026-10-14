@@ -63,7 +63,15 @@ def run(files, phase2_workers):
 
 
 def fingerprint(tracker):
-    """Everything a fan-out could plausibly disturb: counts, id series, finding set."""
+    """Everything a fan-out could plausibly disturb: counts, id series, finding set.
+
+    `aliases` is here because the first version of this gate was blind to the drift it was written
+    to catch. It compared findings on `(file, line, cwe)`, and a fan-out that lost the Phase 1
+    import table reported `Markup` where the serial path resolved `markupsafe.Markup` - same file,
+    same line, same CWE, so the check passed while the sink symbol, its operation and its category
+    had all changed. The resolved name is what every rule downstream keys on, so it is part of the
+    fingerprint, and so are the full finding fields the report actually prints.
+    """
     return {
         "modules": len(tracker.modules),
         "sources": len(tracker.sources),
@@ -72,7 +80,11 @@ def fingerprint(tracker):
         "edges": len(tracker.edges),
         "source_ids": [source.id for source in tracker.sources],
         "sink_ids": [sink.id for sink in tracker.sinks],
-        "findings": {(item["file"], item["line"], item["cwe"])
+        "aliases": sorted(f"{sink.location.file}:{sink.location.line_start} "
+                          f"{sink.symbol} {sink.operation}" for sink in tracker.sinks),
+        "edges_linked": sorted(f"{edge.target_id} <- {edge.source_id}" for edge in tracker.edges),
+        "findings": {(item["file"], item["line"], item["cwe"], item["severity"],
+                      item["category"], item["message"])
                      for item in _findings_for(tracker, tracker.edges)},
     }
 
@@ -96,12 +108,18 @@ def main(argv=None):
         failures += not same
         rows.append(f"{key:<14} serial={serial[key]:<7} parallel={parallel[key]:<7} "
                     f"{'equal' if same else 'DIFFERENT'}")
-    for key in ("source_ids", "sink_ids"):
+    for key in ("source_ids", "sink_ids", "aliases", "edges_linked"):
         same = serial[key] == parallel[key]
         failures += not same
-        rows.append(f"{key:<14} identical series: {same} "
-                    f"({len(serial[key])} ids, first diff at "
-                    f"{next((i for i, (a, b) in enumerate(zip(serial[key], parallel[key])) if a != b), '-')})")
+        if key.endswith("_ids"):
+            rows.append(f"{key:<14} identical series: {same} "
+                        f"({len(serial[key])} ids, first diff at "
+                        f"{next((i for i, (a, b) in enumerate(zip(serial[key], parallel[key])) if a != b), '-')})")
+        else:
+            diffs = [i for i, (a, b) in enumerate(zip(serial[key], parallel[key]))
+                     if a != b] if len(serial[key]) == len(parallel[key]) else [-1]
+            rows.append(f"{key:<14} identical: {same} ({len(serial[key])} entries, "
+                        f"{len(diffs)} differ){': ' + str(serial[key][diffs[0]]) + ' != ' + str(parallel[key][diffs[0]]) if diffs and diffs[0] >= 0 else ''}")
     missing = serial["findings"] - parallel["findings"]
     extra = parallel["findings"] - serial["findings"]
     rows.append(f"{'findings':<14} serial={len(serial['findings'])} parallel={len(parallel['findings'])} "

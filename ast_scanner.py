@@ -1040,7 +1040,7 @@ class AssignmentNameTable(dict):
     def __init__(self, *args, **kwargs):
         super().__init__(*args, **kwargs)
         self.names_by_module: Dict[str, set] = {}
-        self.names_by_scope: Dict[str, set] = {}
+        self.names_by_scope: Optional[Dict[str, set]] = {}
         self.records_by_name: Dict[str, list] = {}
         for key in self:
             self._index(key)
@@ -1062,7 +1062,34 @@ class AssignmentNameTable(dict):
             return
         self.names_by_module.setdefault(
             scope_module(split[0]) if split[0] else "", set()).add(split[1])
-        self.names_by_scope.setdefault(split[0], set()).add(split[1])
+        # `names_by_scope` is None once the sink pass has released it (see `release_scratch_indexes`).
+        # A later insert then simply does not index, which is correct: `names_in_scope` rebuilds the
+        # whole map from the live keys, so it cannot miss a name that was added while it was down.
+        if self.names_by_scope is not None:
+            self.names_by_scope.setdefault(split[0], set()).add(split[1])
+
+    def names_in_scope(self, scope_id: str) -> set:
+        """Target names assigned in `scope_id`, rebuilt from the keys if it was released."""
+        if self.names_by_scope is None:
+            self.rebuild_scope_index()
+        return self.names_by_scope.get(scope_id, ())
+
+    def rebuild_scope_index(self) -> None:
+        """Rebuild `names_by_scope` from the live keys, in table order.
+
+        Same result as maintaining it: `_index` adds each key's name to that scope's set, and set
+        membership does not depend on the order the names arrived in.
+        """
+        index: Dict[str, set] = {}
+        for key in self:
+            split = self._split(key)
+            if split is not None:
+                index.setdefault(split[0], set()).add(split[1])
+        self.names_by_scope = index
+
+    def release_scratch_indexes(self) -> None:
+        """Drop `names_by_scope`; `names_in_scope` rebuilds it if anything asks again."""
+        self.names_by_scope = None
 
     def _index_records(self, key, records) -> None:
         """Bucket a key under its bare target name, in first-insertion order.
@@ -1172,9 +1199,11 @@ SUBPROCESS_SHELL_FUNCS = frozenset({
 # Credential-bearing *names* passed to a log/print call. Applied to identifier text only
 # (variable, attribute, subscript key), never to message literals, so
 # `logger.info("password reset complete")` stays clean while `logger.info("hi", password)`
-# and `print(f"token {tok}")` are reported.
+# and `print(f"token {tok}")` are reported. `pin` is a credential word in Home Assistant: the
+# HomeKit/Somfy pairing code a component logs at setup (`_LOGGER.info("Homekit pin %s", pin)`) is the
+# same code an attacker needs to pair, and `CONF_PIN` normalises to it.
 SENSITIVE_VALUE_NAME_RE = re.compile(
-    r"(?i)\b(password|passwd|secret|token|api_key|auth_token|credit_card|private_key)\b")
+    r"(?i)\b(password|passwd|secret|token|api_key|auth_token|credit_card|private_key|pin)\b")
 
 # A name that only *talks about* a credential - a boolean flag, a form column label, a schema
 # key - holds no secret value, so it is not a log leak.
@@ -1189,6 +1218,21 @@ LOG_SINK_METHODS = frozenset({"info", "debug", "warning", "error", "exception", 
 # `logging_data['password'] = 'XXX-REDACTED-XXX'`, and `None`/`''` are placeholders too.
 CWE532_REDACTED_LITERAL_RE = re.compile(r"(?i)redact|mask|placeholder|dummy|xxx|\*{3,}|<[a-z!]")
 
+# Home Assistant keeps component configuration in `entry.data` / `config` mappings whose keys are
+# named constants (`CONF_PASSWORD`, `CONF_API_KEY`, `CONF_ACCESS_TOKEN`). `SENSITIVE_VALUE_NAME_RE`
+# asks for a word boundary on both sides, and `_` is a word character, so `CONF_PASSWORD` names a
+# credential out loud and matches nothing. Stripping the prefix is an identifier *normalisation*, not
+# a name list: the credential words themselves stay the single source of truth in
+# `SENSITIVE_VALUE_NAME_RE`, and a lowercase `password` is returned unchanged.
+CWE532_CONFIG_CONSTANT_RE = re.compile(r"^(?:CONF|CONFIG|OPTION|OPTIONS|PARAM|PARAMS)_[A-Z0-9_]+$")
+
+# A call that swaps secret bytes for a stand-in on the way to the log - Home Assistant's
+# `async_redact_data`, Salt's `mask_output`, anything named that way. Tested on the callee's leaf
+# name, so trusting a wrapper still requires it to say what it does; the secret itself, logged
+# without that wrapper, is still reported.
+CWE532_REDACTION_CALL_RE = re.compile(
+    r"(?i)(?:^|_)(?:async_)?(?:redact|mask|scrub|sanitiz|anonymiz|desensitiz)")
+
 # `id_token`, `access_token`, `bearer_token`, `jwt_token`, `raw_token` are invisible to
 # SENSITIVE_VALUE_NAME_RE: its `\btoken\b` demands a non-word character on both sides and `_` *is* a
 # word character, so `log.debug(str(id_token))` at airflow/www/fab_security/manager.py:583 named a
@@ -1196,6 +1240,13 @@ CWE532_REDACTED_LITERAL_RE = re.compile(r"(?i)redact|mask|placeholder|dummy|xxx|
 # in `_token` / `_tokens`. Names that only *describe* a token (`token_type`, `token_count`,
 # `token_url`) are excluded on purpose: they hold "Bearer" or a number, not the secret bytes.
 CWE532_COMPOUND_TOKEN_NAME_RE = re.compile(r"^[A-Za-z0-9]+(?:_[A-Za-z0-9]+)*_tokens?$")
+
+# `client_secret` loses the same fight `id_token` lost: the credential word is spelled out, but `_`
+# glues it to its qualifier, so `\bsecret\b` finds no boundary. Mirror the compound form for the
+# suffixes that can only mean a credential - `_secret`, `_password`, `_credential`. `_key` is left
+# out on purpose: `cache_key`, `sort_key` and `primary_key` name a lookup, not a secret.
+CWE532_COMPOUND_CREDENTIAL_NAME_RE = re.compile(
+    r"(?i)^[A-Za-z0-9]+(?:_[A-Za-z0-9]+)*_(?:secrets?|passwords?|credentials?)$")
 
 # `kwargs.clear()` / `.popitem()` empty the whole container; `.pop('password')` removes one key.
 CWE532_REMOVED_ALL_METHODS = frozenset({"clear", "popitem"})
@@ -1223,6 +1274,18 @@ BIND_METHOD_NAMES = frozenset({"run", "run_simple"})
 # Django/DRF containers that return raw, unvalidated client input.
 CLIENT_INPUT_CONTAINERS = frozenset(
     {"GET", "POST", "COOKIES", "META", "data", "headers", "body", "query_params"})
+# aiohttp's `web.Request` hands the client's bytes over under different names than Flask: `rel_url`
+# and `raw_path` for the URL as received, `query` for the query string, `remote` for the peer an
+# attacker picks via `Forwarded-For` (Home Assistant's forwarded middleware rewrites it), `host` for
+# the `Host` header, `method` for the verb the client typed (`curl -X` sends any string it likes),
+# `content` for the body stream, and `text()` / `read()` / `post()` / `multipart()` for the body.
+# Consulted by
+# CWE-117's request-read test only, which requires the root identifier to be literally `request`, so
+# a `headers` or `query` attribute on any other object is not client input by this rule.
+AIOHTTP_REQUEST_ATTRIBUTES = frozenset({
+    "rel_url", "raw_path", "path_url", "query", "remote", "host",
+    "text", "read", "post", "multipart", "reader", "method", "content",
+})
 RESPONSE_HEADER_METHODS = frozenset({"set_header", "set_cookie"})
 RESPONSE_TARGET_RE = re.compile(r"(?i)^(?:response|resp|res|http_response|html?|[a-z0-9_]*response)$")
 # Attributes that *are* the reply payload: assigning to them replaces the bytes the browser reads.
@@ -2326,6 +2389,14 @@ def _is_redos_vulnerable_pattern(pattern_str) -> bool:
 #   * AST node identity. A child returns its tree and the state that points into that tree as ONE
 #     pickle payload, so pickle's memo keeps their shared references intact, and the parent then
 #     replaces its own copy of the tree. Two live copies of a module would count every sink twice.
+#   * Read-only Phase 1 context. Collection does not only write per-module state, it also *reads*
+#     tables Phase 1 filled: `imports` for alias resolution and `dead_node_ids` for dead-branch
+#     pruning. `files` / `modules` / `imports` / `dead_node_ids` are all parent-owned, so a child
+#     that constructs itself from an empty source cannot see them. It must be handed the same
+#     frozen context the serial loop has, otherwise the two paths disagree on the resolved sink
+#     symbol (`Markup` instead of `markupsafe.Markup`) and collect statements the serial path
+#     prunes. Both tables are written only before Phase 2 starts, so sharing them changes nothing
+#     about the merge: the graft never reads them back out of the child.
 _PHASE2_PARENT_OWNED = frozenset({
     "files", "modules", "file_paths", "skipped_files", "parse_stats", "max_workers",
     "audit_all", "imports", "dead_node_ids", "_ast_cache", "_source_counter", "_sink_counter",
@@ -2384,12 +2455,32 @@ def _phase2_worker_count(module_count: int) -> int:
     return workers
 
 
+# A worker's copy of the parent's Phase 1 import table, installed by `_phase2_child_context`.
+_PHASE2_CHILD_IMPORTS: Dict[str, Dict[str, str]] = {}
+
+
+def _phase2_child_context(imports):
+    """Pool initializer: hand every worker the parent's frozen Phase 1 import table.
+
+    Pickled once per worker process, not once per task, so the fan-out does not re-send the whole
+    corpus' import map with every module.
+    """
+    global _PHASE2_CHILD_IMPORTS
+    _PHASE2_CHILD_IMPORTS = imports
+
+
 def _phase2_module_batch(payload):
     """Collect statements for one module inside this worker, and return its tree plus state."""
     fpath, mod_name, tree, audit_all = payload
     child = TaintTracker(files={fpath: ""}, audit_all=audit_all)
     child.modules = {mod_name: tree}
     child.file_paths = {mod_name: fpath}
+    # The two Phase 1 tables collection reads. `imports` arrives whole from the pool initializer
+    # (read-only during Phase 2, so sharing one dict across a worker's tasks is safe);
+    # `dead_node_ids` has to be rebuilt here because it keys on `id(node)` of *this* tree, and the
+    # child's unpickled copy has different addresses than the parent's.
+    child.imports = _PHASE2_CHILD_IMPORTS
+    child.dead_node_ids = child._compute_dead_node_ids()
     child.collect_statements(tree.body, scope_id=f"{mod_name}:global", is_conditional=False)
     state = {name: value for name, value in vars(child).items()
              if name not in _PHASE2_PARENT_OWNED}
@@ -2433,13 +2524,20 @@ def _phase2_collect_parallel(tracker, workers):
                 for mod in _phase2_ordered_modules(tracker)]
     chunksize = max(1, len(payloads) // (workers * 8))
     collected = []
-    with concurrent.futures.ProcessPoolExecutor(max_workers=workers) as pool:
+    with concurrent.futures.ProcessPoolExecutor(
+            max_workers=workers, initializer=_phase2_child_context,
+            initargs=(tracker.imports,)) as pool:
         for mod_name, (tree, state) in pool.map(
                 _phase2_module_batch, payloads, chunksize=chunksize):
             collected.append((mod_name, tree, state))
 
     for mod_name, tree, state in collected:
         _phase2_grant(tracker, mod_name, tree, state)
+    # Every tree in `tracker.modules` is now the worker's unpickled copy, so the id() set Phase 1
+    # built points at addresses the discarded trees leave behind - and a freed address can be handed
+    # to an unrelated node, which would prune live code at random. Rebuild it against the live trees
+    # before any downstream phase reads it.
+    tracker.dead_node_ids = tracker._compute_dead_node_ids()
     # Re-issue the id series in the serial order a single-process run would have produced.
     for sink in tracker.sinks:
         sink.id = tracker.next_sink_id()
@@ -2639,11 +2737,22 @@ class TaintTracker:
         # scope id is built from them, and every rule loop looks them up. Interning the two
         # canonical tables once makes equal names the *same object*, so those comparisons become
         # pointer checks. This changes no value: an interned string compares and hashes equal to
-        # the string it replaced. Both dicts are rebuilt by comprehension, which keeps insertion
-        # order, so the order every later phase iterates in is untouched.
-        self.modules = {sys.intern(_mod): _tree for _mod, _tree in self.modules.items()}
-        self.file_paths = {sys.intern(_mod): sys.intern(_path)
-                           for _mod, _path in self.file_paths.items()}
+        # the string it replaced.
+        #
+        # The rebuild also puts both tables in canonical (file path, then module name) order, which
+        # is the one thing the parse fan-out cannot give them: `tcs.parallel_scanner` collects batch
+        # results with `as_completed`, so `modules` arrives in *completion* order and two runs of the
+        # identical corpus can hand back two different insertion orders. Roughly thirty rule loops
+        # iterate `self.modules.items()` directly, source detection included, so an unstable order
+        # here makes the SRC- id series move between runs with nothing else changed - measured: the
+        # same `pickle.loads` source numbered SRC-038 in some runs and SRC-039 in others, in serial
+        # and parallel Phase 2 alike. Sorting is the whole fix: the same files, the same values, one
+        # order. It is also the order `_phase2_ordered_modules` already uses, so Phase 2's two paths
+        # and every later phase now read from a single canonical sequence.
+        _ordered = sorted(self.modules, key=lambda m: (self.file_paths.get(m, ""), m))
+        self.modules = {sys.intern(_mod): self.modules[_mod] for _mod in _ordered}
+        self.file_paths = {sys.intern(_mod): sys.intern(self.file_paths[_mod])
+                           for _mod in _ordered}
         self.dead_node_ids: set = self._compute_dead_node_ids()
         self.imports = {m: {} for m in self.modules}
         self.sources: list[SecurityNode] = []
@@ -3824,7 +3933,7 @@ class TaintTracker:
         # 2. Check assignments_by_scope fallback
         if scope_id:
             table = self.assignments_by_scope
-            for var_name in table.names_by_scope.get(scope_id, ()):
+            for var_name in table.names_in_scope(scope_id):
                 if not is_security_identifier(var_name):
                     continue
                 for r in table[(scope_id, var_name)]:
@@ -4018,7 +4127,7 @@ class TaintTracker:
         # 3. Fallback check via assignments_by_scope
         if scope_id:
             table = self.assignments_by_scope
-            for var_name in table.names_by_scope.get(scope_id, ()):
+            for var_name in table.names_in_scope(scope_id):
                 if not any(kw in var_name.lower() for kw in CWE327_NON_CRYPTO_KEYWORDS):
                     continue
                 for r in table[(scope_id, var_name)]:
@@ -8864,6 +8973,41 @@ class TaintTracker:
         self._sink_node_tail = records[-1] if records else None
         return node not in self._sink_node_seen
 
+    def _callback_contract(self, arg_node, fn_canon: str = ""):
+        """Contract of the function this argument references, or None.
+
+        Read-only over `function_contracts`, which Phase 4.3 finishes before this pass starts, so the
+        answer cannot depend on what the pass has already recorded.
+        """
+        if not self.function_contracts:
+            return None
+        for name in (fn_canon, dotted_name(arg_node) if isinstance(
+                arg_node, (ast.Name, ast.Attribute)) else ""):
+            if not name:
+                continue
+            contract = self.function_contracts.get(name) or \
+                self.function_contracts.get(name.rsplit(".", 1)[-1])
+            if contract is not None:
+                return contract
+        return None
+
+    def _callback_reference_argument(self, call_node) -> bool:
+        """True when an argument is a reference to a wrapper that reaches a known sink.
+
+        `custom_runner(sink_holder_fn, data)` passes the reference; the invocation that consumes it is
+        `fn(data)` inside `custom_runner`. The gate is asked to cover both ends of that pair, so this
+        site is a candidate on its own terms instead of only through the callee's own sink-ness.
+        """
+        if not self.function_contracts:
+            return False
+        for arg in list(call_node.args) + [kw.value for kw in call_node.keywords]:
+            if not isinstance(arg, (ast.Name, ast.Attribute)):
+                continue
+            leaf = arg.id if isinstance(arg, ast.Name) else arg.attr
+            if leaf in self.function_contracts:
+                return True
+        return False
+
     def _callback_parameter(self, call_node, caller_scope, lineno, func_def):
         """Name of the enclosing function's parameter this call invokes, or None.
 
@@ -8893,6 +9037,11 @@ class TaintTracker:
           match a rule against each recorded call site of that function.
         * `"direct"` - `is_sink_call` holds, i.e. a possible sink, regardless of whether an earlier
           call in this same pass already recorded it.
+        * `"callback"` also when an argument is a reference to a wrapper whose own body reaches a known
+          sink (`_callback_reference_argument`). The work for that pattern happens at the wrapper's
+          invocation site, which is gated by the first rule; this arm keeps the site that *passes the
+          reference* in the candidate set too, so a call whose argument carries a sink into a wrapper is
+          never decided only by whether the outer callee is a recognised sink name.
         * `None` - the body would take no action at all for this call.
 
         Why this is a sound over-approximation (zero false negatives), stated per input:
@@ -8924,6 +9073,8 @@ class TaintTracker:
             return "callback"
         if self.is_sink_call(call_node, caller_scope, lineno):
             return "direct"
+        if self._callback_reference_argument(call_node):
+            return "callback"
         return None
 
     def _warm_sink_gate_indexes(self) -> None:
@@ -8945,6 +9096,25 @@ class TaintTracker:
             self._module_alias_names(mod)
         for _call_node, scope_id, _lineno in self.raw_calls:
             self._enclosing_param_names(scope_id)
+
+    def release_sink_gate_scratch(self) -> None:
+        """Free the read-only indices the sink pass existed to serve.
+
+        Three structures are built only to answer `is_sink_call` quickly: the scope-name index, the
+        per-module import-alias key sets, and the per-scope parameter names. `is_sink_call` is reached
+        from exactly four places -- `scan_for_sinks` (Phase 2), `_sink_candidate_kind` and
+        `_resolve_sink_candidate` (this pass), and `check_sink_safety`, whose own callers are the same
+        three -- so once Sink Detection is over, nothing queries them again. Releasing them at the
+        phase boundary keeps the largest transient of the scan off the resident set for the 23
+        collector batches and the graph cascade that follow.
+
+        Each release is also self-healing, so this is a memory decision and never a behavioural one:
+        the alias and parameter caches rebuild themselves on the next miss, and `names_in_scope`
+        re-derives its map from the live assignment keys.
+        """
+        self.assignments_by_scope.release_scratch_indexes()
+        self._alias_name_cache.clear()
+        self._param_name_cache = None
 
     def _resolve_sink_candidate(self, call_node, caller_scope, lineno):
         """Sink-detection body for one call site -- the statements the serial `raw_calls` loop ran.
@@ -8985,8 +9155,21 @@ class TaintTracker:
                 if not fn_canon:
                     continue
 
+                sink_name = fn_canon
                 matched_rule = match_sink_rule(call_node, dotted_name(arg_for_fn) or "", fn_canon)
-                if matched_rule and not self.check_sink_safety(call_node, fn_canon):
+                if matched_rule is None:
+                    # One hop out: the argument names a wrapper the contract pass already proved feeds
+                    # one of its own parameters into a known sink, so `custom_runner(sink_holder_fn,
+                    # data)` reaches the `eval(payload)` inside `sink_holder_fn`. No rule bank knows a
+                    # project's own wrapper name, so the classification comes from the contract's
+                    # target sink; the safety check, the taint of the wrapper's remaining parameters and
+                    # the recorded node below are untouched.
+                    contract = self._callback_contract(arg_for_fn, fn_canon)
+                    if contract is None:
+                        continue
+                    sink_name = contract.target_sink
+                    matched_rule = match_sink_rule(call_node, contract.func_name, contract.target_sink)
+                if matched_rule and not self.check_sink_safety(call_node, sink_name):
                     ctx = {}
                     for idx, p_name in enumerate(param_names):
                         p_expr = None
@@ -9238,18 +9421,47 @@ class TaintTracker:
                 root = root.value
             root_name = root.id if isinstance(root, ast.Name) else ""
             # `app.logger.info(...)` binds the logger on an object instead of a `logger` name.
-            receiver_is_logger = isinstance(func.value, ast.Attribute) and func.value.attr == "logger"
+            receiver_is_logger = (isinstance(func.value, ast.Attribute)
+                                  and func.value.attr.lower() == "logger")
+            # Case-folded: a module-level logger is spelled `_LOGGER = logging.getLogger(__name__)`
+            # across Home Assistant, and `LOGGER` / `_logger` are the same object with the same
+            # meaning. `logger`, `logging` and `log` already matched in lowercase, and the
+            # `_logger` suffix now catches `_LOGGER`, `MY_LOGGER` and `request_logger` alike.
+            receiver = root_name.lower()
             return func.attr in LOG_SINK_METHODS and (
-                root_name in ("logger", "logging", "log") or root_name.endswith("_logger")
+                receiver in ("logger", "logging", "log") or receiver.endswith("_logger")
                 or receiver_is_logger)
         if isinstance(func, ast.Name) and func.id == "print":
             return any(start <= node.lineno <= end for start, end in func_ranges)
         return False
 
+    @staticmethod
+    def _c532_config_constant_key(name: str) -> str:
+        """`CONF_PASSWORD` -> `PASSWORD`; any other identifier unchanged."""
+        if CWE532_CONFIG_CONSTANT_RE.match(name):
+            return name.split("_", 1)[1]
+        return name
+
+    @staticmethod
+    def _c532_redacted_subtrees(arg):
+        """Node ids the argument hides behind a call that says it redacts or masks."""
+        covered = set()
+        for sub in ast.walk(arg):
+            if not isinstance(sub, ast.Call):
+                continue
+            leaf = (sub.func.attr if isinstance(sub.func, ast.Attribute)
+                    else (sub.func.id if isinstance(sub.func, ast.Name) else ""))
+            if leaf and CWE532_REDACTION_CALL_RE.search(leaf):
+                covered.update(id(node) for node in ast.walk(sub))
+        return covered
+
     def _blindspot_sensitive_names(self, arg):
         """Credential words found in the *identifiers* an argument reads, not in its text."""
+        redacted = self._c532_redacted_subtrees(arg)
         names = []
         for sub in ast.walk(arg):
+            if id(sub) in redacted:
+                continue
             if isinstance(sub, ast.Name):
                 names.append(sub.id)
             elif isinstance(sub, ast.Attribute):
@@ -9257,8 +9469,19 @@ class TaintTracker:
             elif isinstance(sub, ast.Subscript) and isinstance(sub.slice, ast.Constant) \
                     and isinstance(sub.slice.value, str):
                 names.append(sub.slice.value)
-        return [name for name in names
-                if SENSITIVE_VALUE_NAME_RE.search(name) and not SENSITIVE_NAME_EXEMPT_RE.search(name)]
+            elif isinstance(sub, ast.Subscript) and isinstance(
+                    sub.slice, (ast.Name, ast.Attribute)):
+                # `entry.data[CONF_PASSWORD]`: the key is a named constant, not a string literal, so
+                # the subscript route that reads `Constant` slices never sees it. `config.get(
+                # CONF_API_KEY)` needs no branch of its own - `ast.walk` steps through the call and
+                # hands the same `Name` to the plain identifier test below.
+                names.append(sub.slice.id if isinstance(sub.slice, ast.Name) else sub.slice.attr)
+        return [self._c532_config_constant_key(name) for name in names
+                if (SENSITIVE_VALUE_NAME_RE.search(self._c532_config_constant_key(name))
+                    or CWE532_COMPOUND_CREDENTIAL_NAME_RE.match(
+                        self._c532_config_constant_key(name)))
+                and not SENSITIVE_NAME_EXEMPT_RE.search(name)
+                and not SENSITIVE_NAME_EXEMPT_RE.search(self._c532_config_constant_key(name))]
 
     def _c532_container_bearing_arg(self, call, module):
         """The first log argument whose *contents* carry a credential, or None.
@@ -10400,7 +10623,7 @@ class TaintTracker:
     @staticmethod
     def _c117_request_read(node):
         """`request.args.get('dag_id')`, `request.get_json()`, `request.POST['x']` - client input read."""
-        containers = FLASK_REQUEST_CONTAINERS | CLIENT_INPUT_CONTAINERS
+        containers = FLASK_REQUEST_CONTAINERS | CLIENT_INPUT_CONTAINERS | AIOHTTP_REQUEST_ATTRIBUTES
         for sub in ast.walk(node):
             if isinstance(sub, ast.Attribute) and isinstance(sub.value, ast.Name) \
                     and sub.value.id == "request" and sub.attr in containers:
@@ -20272,6 +20495,10 @@ class TaintTracker:
               f"({_new_sinks} new sinks, {len(self.raw_calls)} calls gated, "
               f"{len(_gated) if _gated is not None else len(self.raw_calls)} resolved, "
               f"{_sg_workers} worker(s))", file=_sys.stderr)
+        # Sink detection is the last phase that consults `is_sink_call`, so the three read-only
+        # indices it exists to serve are released here rather than held through the 23 collector
+        # batches and the graph cascade. See `release_sink_gate_scratch`.
+        self.release_sink_gate_scratch()
 
         # Source detection
         self._checkpoint_phase = "Source detection"
