@@ -27,9 +27,11 @@ jobs:
   boss-arena-showdown:
     runs-on: ubuntu-latest
     # Hard credit cap for the whole job: clone, Gate 1, all three engines and the referee.
-    # 35 rather than the universal showdown's 30 because Home Assistant Core is ~4k .py files and
-    # Superset carries large generated JS/schema trees on top of its Python.
-    timeout-minutes: 35
+    # 60 rather than 35 because the TCS arena step alone is allowed 2700s (45 min) on Home Assistant
+    # Core: 10,648 files and 327,473 call sites, where the sink-detection pass needed >1130s even
+    # after being parallelised. Gate 1 (~5 min) plus setup (~3 min) leaves the rest for CodeQL,
+    # Semgrep and the referee, which are capped per step and normally finish far inside it.
+    timeout-minutes: 60
 
     env:
       PYTHONUNBUFFERED: "1"
@@ -120,14 +122,19 @@ jobs:
           grep -Eq "False Negatives[[:space:]]*:[[:space:]]*0" benchmark_results/gate1.txt
           echo "GATE1_PASSED=true" >> "$GITHUB_ENV"
 
-      - name: Execute TimeCodeSecurity Scan (guarded, 1380s)
-        # `timeout` is the runner-side credit cap: TERM at 1380s, KILL 30s later if the process
-        # ignores it. `|| echo` because Actions runs `bash -e` - a bare non-zero exit would abort the
+      - name: Execute TimeCodeSecurity Scan (guarded, 2700s)
+        # `timeout` is the runner-side credit cap: TERM at 2700s, KILL 30s later if the process
+        # ignores it. Raised from 1380s because Home Assistant Core is 10,648 files / 327,473 call
+        # sites, and its sink-detection pass ran >1130s there serially - the 1380s cap killed it at
+        # 1379s with ~0s of headroom for the remaining phases. The pass is now fanned out over the
+        # RAM governor's 4 workers on this runner, but the cap has to cover the worst case, not the
+        # expected one: no call site is skipped, so the corpus still costs a full resolution.
+        # `|| echo` because Actions runs `bash -e` - a bare non-zero exit would abort the
         # step before its code is recorded, and the referee would report "not recorded" instead of
         # the real number (124 = timed out, 137 = killed).
         continue-on-error: true
         run: |
-          timeout --signal=TERM --kill-after=30s 1380s \
+          timeout --signal=TERM --kill-after=30s 2700s \
             python -u cli.py scan "$TARGET_DIR/" --scope all --format json \
               --sarif benchmark_results/tcs.sarif \
             > benchmark_results/tcs_stdout.txt 2>&1 \
@@ -456,9 +463,10 @@ jobs:
                  "- Clone: `git clone --depth 1 --single-branch --branch <ref>`, `.git` removed.",
                  "- CodeQL: `security-extended`, `build-mode: none`, `upload: false`, config paths "
                  f"scoped to `{TARGET_DIR}`.",
-                 "- TimeCodeSecurity: `timeout --signal=TERM --kill-after=30s 1380s python -u cli.py "
+                 "- TimeCodeSecurity: `timeout --signal=TERM --kill-after=30s 2700s python -u cli.py "
                  f"scan {TARGET_DIR}/ --scope all --format json --sarif benchmark_results/tcs.sarif`.",
-                 "- Job timeout: 35 minutes, Gate 1 first, then the three engines share what is left.",
+                 "- Job timeout: 60 minutes (45 of them available to the TCS scan), Gate 1 first, "
+                 "then the three engines share what is left.",
                  "- Artifacts: `benchmark_results/` (three SARIF sets, engine logs, target inventory, "
                  "this report).", ""]
 

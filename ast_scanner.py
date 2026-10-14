@@ -1,6 +1,7 @@
 from __future__ import annotations
 import ast
 import math
+import os
 import re
 import sys
 from dataclasses import dataclass, field, asdict
@@ -2435,6 +2436,122 @@ def _phase2_collect_parallel(tracker, workers):
     for source in tracker.sources:
         source.id = tracker.next_source_id()
     return True
+
+
+# ─── Deterministic read-only sink-detection gate fan-out ────────────────────────
+#
+# Sink detection re-scans every call site (`raw_calls`) and that scan, not the sinks it finds, is
+# the cost: on a 327,473-call repo the serial pass ran >1130 s and was killed by the arena SIGTERM.
+# Splitting it is safe here because the expensive half of each iteration is pure read-only
+# resolution -- `TaintTracker._sink_candidate_kind` -- while the cheap half is the mutation that
+# has to stay ordered (`_resolve_sink_candidate`, which appends sinks and issues SNK- ids).
+#
+# Workers therefore only *gate*; the parent replays every gated call site through the unchanged body
+# in ascending index order. Three properties follow:
+#
+#   * Zero false negatives: no call site is skipped, filtered, or name-pruned. The gate runs the
+#     body's own entry conditions for all of `raw_calls`, and it is an over-approximation, so a
+#     call the serial loop would have acted on is always in the candidate set.
+#   * Determinism: sink/source ids and `sink_records` order come from the parent's ordered replay,
+#     exactly as in the serial pass, so SARIF and the CLI's `sorted(findings, key=(file, line, cwe))`
+#     emission are byte-stable across runs. `ProcessPoolExecutor.map` yields in input order, so the
+#     chunk layout cannot reorder the candidate list either.
+#   * Memory: the pass uses the `fork` start method, so children read the parent's already-built
+#     state (ASTs, function tables, assignment maps) through copy-on-write pages instead of
+#     receiving a serialized copy of it. Where fork does not exist (Windows) the gate stays in the
+#     main process and the serial loop runs, so a laptop with no fork and 400 MB free behaves
+#     exactly as it did before this pass existed.
+_SINK_GATE_STATE = None
+_SINK_GATE_MIN_CALLS = 20_000
+
+
+def _sink_gate_chunk(payload):
+    """Gate indices `[start, stop)` of `raw_calls` in this worker; return the candidate indices."""
+    start, stop = payload
+    tracker = _SINK_GATE_STATE
+    if tracker is None:
+        # Cannot happen under fork, but a worker that lost its inherited state must fail loudly so
+        # the caller falls back to the serial gate rather than reporting a silently empty scan.
+        raise RuntimeError("sink-gate worker has no inherited tracker state")
+    calls = tracker.raw_calls
+    out = []
+    for i in range(start, min(stop, len(calls))):
+        call_node, caller_scope, lineno = calls[i]
+        try:
+            kind = tracker._sink_candidate_kind(call_node, caller_scope, lineno)
+        except RecursionError:
+            # Same degradation as the serial body: keep the call, let the parent resolve it.
+            kind = "direct"
+        if kind:
+            out.append(i)
+    return out
+
+
+def _sink_gate_worker_count(call_count: int) -> int:
+    """Worker count for the sink gate, from the same analysis RAM governor as Phase 2.
+
+    Returns 1 -- serial gate, identical results -- when the corpus is too small for a fan-out to
+    pay for itself, when fork is unavailable, when the governor measures too little free RAM, or on
+    any measurement failure. `TCS_SINK_GATE_WORKERS` overrides the count for verification runs only.
+    """
+    import multiprocessing
+
+    if call_count < _SINK_GATE_MIN_CALLS:
+        return 1
+    try:
+        multiprocessing.get_context("fork")
+    except (ValueError, RuntimeError):
+        print("TimeCodeSecurity [SINKGATE] 1 worker: fork start method unavailable",
+              file=sys.stderr)
+        return 1
+    override = os.environ.get("TCS_SINK_GATE_WORKERS")
+    if override:
+        try:
+            return max(1, min(int(override), os.cpu_count() or 1))
+        except ValueError:
+            print(f"TimeCodeSecurity [SINKGATE] ignoring TCS_SINK_GATE_WORKERS={override!r}",
+                  file=sys.stderr)
+    if not PARALLEL_PARSING_AVAILABLE:
+        print("TimeCodeSecurity [SINKGATE] 1 worker: tcs.parallel_scanner is not importable",
+              file=sys.stderr)
+        return 1
+    try:
+        from tcs.parallel_analyzer import available_ram_mb, compute_analysis_workers
+        workers = max(1, int(compute_analysis_workers()))
+    except Exception as exc:
+        print(f"TimeCodeSecurity [SINKGATE] 1 worker: RAM governor failed "
+              f"({type(exc).__name__}: {exc})", file=sys.stderr)
+        return 1
+    if workers == 1:
+        free = available_ram_mb()
+        print(f"TimeCodeSecurity [SINKGATE] 1 worker: free RAM "
+              f"{'unmeasurable' if free is None else f'{free:.0f} MB'}", file=sys.stderr)
+    return workers
+
+
+def _sink_gate_parallel(tracker, workers):
+    """Gate every call site across `workers` forked processes; return candidate indices ascending.
+
+    Raises on any fan-out failure; the caller then runs the serial gate. No sink state is written
+    here, so a mid-flight failure cannot leave a half-merged scan.
+    """
+    import concurrent.futures
+    import multiprocessing
+
+    total = len(tracker.raw_calls)
+    step = max(1, total // (workers * 8))
+    chunks = [(start, start + step) for start in range(0, total, step)]
+    global _SINK_GATE_STATE
+    _SINK_GATE_STATE = tracker
+    candidates = []
+    try:
+        ctx = multiprocessing.get_context("fork")
+        with concurrent.futures.ProcessPoolExecutor(max_workers=workers, mp_context=ctx) as pool:
+            for part in pool.map(_sink_gate_chunk, chunks, chunksize=1):
+                candidates.extend(part)
+    finally:
+        _SINK_GATE_STATE = None
+    return candidates
 
 
 class TaintTracker:
@@ -8734,6 +8851,187 @@ class TaintTracker:
         self._sink_node_len = len(records)
         self._sink_node_tail = records[-1] if records else None
         return node not in self._sink_node_seen
+
+    def _callback_parameter(self, call_node, caller_scope, lineno, func_def):
+        """Name of the enclosing function's parameter this call invokes, or None.
+
+        Read-only: consults `functions` / `assignments_by_scope`, both complete before sink
+        detection, so the answer cannot depend on what the pass has already recorded.
+        """
+        param_names = [a.arg for a in func_def.args.args]
+        cand = call_node.func.id if isinstance(call_node.func, ast.Name) else None
+        if not cand:
+            return None
+        if cand in param_names:
+            return cand
+        recs = self.assignments_by_scope.get((caller_scope, cand), [])
+        recs_before = [r for r in recs if r.lineno < lineno]
+        if recs_before and isinstance(recs_before[-1].value_node, ast.Name) \
+                and recs_before[-1].value_node.id in param_names:
+            return recs_before[-1].value_node.id
+        return None
+
+    def _sink_candidate_kind(self, call_node, caller_scope, lineno):
+        """Read-only gate for one call site: "callback", "direct", or None.
+
+        Mirrors the branch structure of `_resolve_sink_candidate` exactly, with no side effects, so
+        it can run in a worker before any sink exists:
+
+        * `"callback"` - the call invokes a parameter of the enclosing function. The candidate does
+          not promise a sink; the body still has to match a rule against each call site.
+        * `"direct"` - `_sink_node_unrecorded` and `is_sink_call` both hold, which is the body's
+          whole entry condition for the direct branch.
+        * `None` - the body would take no action at all for this call.
+
+        Soundness as an over-approximation, which is what keeps the parallel pass free of false
+        negatives: the gate reads only state frozen before sink detection (function tables,
+        assignment maps, contracts, imports), and its one mutable input - `sink_records` - only
+        grows during the pass, so a call that is "unrecorded" at gate time is a superset of the
+        calls that are still unrecorded when the serial loop reaches it. Nothing is filtered by
+        name, path, or leaf: every call site is gated, and a gated call site always re-runs the
+        full body, which re-derives its own conditions.
+        """
+        func_def = self.functions.get(caller_scope)
+        if func_def and self._callback_parameter(call_node, caller_scope, lineno, func_def):
+            return "callback"
+        if self._sink_node_unrecorded(call_node) and self.is_sink_call(call_node, caller_scope, lineno):
+            return "direct"
+        return None
+
+    def _resolve_sink_candidate(self, call_node, caller_scope, lineno):
+        """Sink-detection body for one call site -- the statements the serial `raw_calls` loop ran.
+
+        Kept verbatim from the inline loop so both execution paths (serial over every call, parallel
+        over the gated candidates) resolve and record sinks identically, in ascending call order.
+        """
+        # Check if this call is a parameter callback (higher-order function invocation)
+        func_def = self.functions.get(caller_scope)
+        p_fn_name = None
+        if func_def:
+            p_fn_name = self._callback_parameter(call_node, caller_scope, lineno, func_def)
+
+        if p_fn_name and func_def:
+            param_names = [a.arg for a in func_def.args.args]
+            p_fn_idx = param_names.index(p_fn_name)
+            call_sites = self.call_sites_by_target.get(caller_scope, [])
+            mod_name = scope_module(caller_scope)
+            file_path = self.file_paths.get(mod_name, "unknown.py")
+
+            for cs_call, cs_scope, cs_lineno in call_sites:
+                arg_for_fn = None
+                for kw in getattr(cs_call, "keywords", []):
+                    if kw.arg == p_fn_name:
+                        arg_for_fn = kw.value
+                        break
+                if arg_for_fn is None:
+                    pos_idx = p_fn_idx
+                    if param_names and param_names[0] in ("self", "cls"):
+                        pos_idx = p_fn_idx - 1
+                    if 0 <= pos_idx < len(cs_call.args):
+                        arg_for_fn = cs_call.args[pos_idx]
+
+                if arg_for_fn is None:
+                    continue
+
+                fn_canon = self.resolve_canonical_name(arg_for_fn, cs_scope) or dotted_name(arg_for_fn)
+                if not fn_canon:
+                    continue
+
+                matched_rule = match_sink_rule(call_node, dotted_name(arg_for_fn) or "", fn_canon)
+                if matched_rule and not self.check_sink_safety(call_node, fn_canon):
+                    ctx = {}
+                    for idx, p_name in enumerate(param_names):
+                        p_expr = None
+                        for kw in getattr(cs_call, "keywords", []):
+                            if kw.arg == p_name:
+                                p_expr = kw.value
+                                break
+                        if p_expr is None:
+                            p_pos = idx
+                            if param_names and param_names[0] in ("self", "cls"):
+                                p_pos = idx - 1
+                            if 0 <= p_pos < len(cs_call.args):
+                                p_expr = cs_call.args[p_pos]
+                        if p_expr is not None:
+                            p_taint = self.resolve_expression(p_expr, None, cs_scope, cs_lineno)
+                            if p_taint.state != TaintState.CLEAN:
+                                caller_file = cs_scope.split(":", 1)[0] if ":" in cs_scope else file_path
+                                call_func_symbol = dotted_name(cs_call.func) if hasattr(cs_call, "func") else "call"
+                                call_snippet = self.get_source_snippet(caller_file, cs_lineno, cs_lineno, cs_call) or f"{call_func_symbol}(...)"
+                                step_idx = len(p_taint.proof_nodes)
+                                cs_pn = self.create_proof_node(
+                                    step_index=step_idx,
+                                    node_type=ProofNodeType.CALL_SITE,
+                                    file_path=caller_file,
+                                    node=cs_call,
+                                    symbol=call_func_symbol,
+                                    scope_id=cs_scope,
+                                    lineno=cs_lineno,
+                                    override_snippet=call_snippet
+                                )
+                                callee_line = func_def.lineno if func_def else lineno
+                                param_pn = self.create_proof_node(
+                                    step_index=step_idx + 1,
+                                    node_type=ProofNodeType.PARAM_BINDING,
+                                    file_path=file_path,
+                                    node=func_def,
+                                    symbol=p_name,
+                                    scope_id=caller_scope,
+                                    lineno=callee_line,
+                                    override_snippet=self.get_source_snippet(file_path, callee_line, callee_line, func_def) or f"def {func_def.name}(..., {p_name}, ...)"
+                                )
+                                new_edges = list(p_taint.proof_edges)
+                                if p_taint.proof_nodes:
+                                    new_edges.append(ProofEdge(from_node_id=p_taint.proof_nodes[-1].node_id, to_node_id=cs_pn.node_id, edge_type="CALL_SITE"))
+                                new_edges.append(ProofEdge(from_node_id=cs_pn.node_id, to_node_id=param_pn.node_id, edge_type="PARAM_BINDING"))
+                                p_taint = TaintValue(
+                                    state=p_taint.state,
+                                    source_id=p_taint.source_id,
+                                    confidence=p_taint.confidence,
+                                    path=[*p_taint.path, f"call:{call_func_symbol}", f"{file_path}:{p_name}"],
+                                    last_operation=f"param:{p_name}",
+                                    proof_nodes=[*p_taint.proof_nodes, cs_pn, param_pn],
+                                    proof_edges=new_edges
+                                )
+                            ctx[p_name] = p_taint
+                        else:
+                            ctx[p_name] = TaintValue(state=TaintState.CLEAN, confidence=1.0)
+
+                    sink_id = self.next_sink_id()
+                    sink_meta = {
+                        "operation": matched_rule.operation,
+                        "category": matched_rule.category,
+                        "cwe": matched_rule.cwe_id,
+                        "sink_type": matched_rule.category,
+                    }
+                    loc = location(call_node, file_path)
+                    sink_node = SecurityNode(
+                        id=sink_id,
+                        node_type=NodeType.SINK,
+                        symbol=fn_canon,
+                        operation=matched_rule.operation,
+                        location=loc,
+                        metadata=sink_meta
+                    )
+                    self.sinks.append(sink_node)
+                    self.sink_records.append(SinkRecord(
+                        node=call_node,
+                        security_node=sink_node,
+                        lineno=lineno,
+                        scope_id=caller_scope,
+                        call_context=ctx
+                    ))
+        elif self._sink_node_unrecorded(call_node):
+            if self.is_sink_call(call_node, caller_scope, lineno):
+                canon_name = self.resolve_canonical_name(call_node.func, caller_scope) or dotted_name(call_node.func) or ""
+                if not self.check_sink_safety(call_node, canon_name):
+                    mod_name = scope_module(caller_scope)
+                    file_path = self.file_paths.get(mod_name, "unknown.py")
+                    sink_node = self.get_or_create_sink(call_node, file_path, caller_scope)
+                    self.sink_records.append(SinkRecord(node=call_node, security_node=sink_node, lineno=lineno, scope_id=caller_scope))
+                    if sink_node.metadata.get("cwe") != "CWE-295" and self._has_disabled_ssl(call_node, caller_scope):
+                        ssl_sink = self.get_or_create_sink(call_node, file_path, caller_scope, force_cwe="CWE-295")
+                        self.sink_records.append(SinkRecord(node=call_node, security_node=ssl_sink, lineno=lineno, scope_id=caller_scope))
 
     def _add_blindspot_sink(self, node, filename, cwe, operation, category, message, source_id,
                             reuse_existing=False):
@@ -19900,152 +20198,46 @@ class TaintTracker:
         self._checkpoint_phase = "Sink detection (callbacks+direct)"
         _t0 = _time.perf_counter()
         _sink_count_before = len(self.sink_records)
-        for call_node, caller_scope, lineno in self.raw_calls:
-            # Check if this call is a parameter callback (higher-order function invocation)
-            func_def = self.functions.get(caller_scope)
-            p_fn_name = None
-            if func_def:
-                param_names = [a.arg for a in func_def.args.args]
-                cand = call_node.func.id if isinstance(call_node.func, ast.Name) else None
-                if cand:
-                    if cand in param_names:
-                        p_fn_name = cand
-                    else:
-                        recs = self.assignments_by_scope.get((caller_scope, cand), [])
-                        recs_before = [r for r in recs if r.lineno < lineno]
-                        if recs_before and isinstance(recs_before[-1].value_node, ast.Name) and recs_before[-1].value_node.id in param_names:
-                            p_fn_name = recs_before[-1].value_node.id
-
-            if p_fn_name and func_def:
-                param_names = [a.arg for a in func_def.args.args]
-                p_fn_idx = param_names.index(p_fn_name)
-                call_sites = self.call_sites_by_target.get(caller_scope, [])
-                mod_name = scope_module(caller_scope)
-                file_path = self.file_paths.get(mod_name, "unknown.py")
-
-                for cs_call, cs_scope, cs_lineno in call_sites:
-                    arg_for_fn = None
-                    for kw in getattr(cs_call, "keywords", []):
-                        if kw.arg == p_fn_name:
-                            arg_for_fn = kw.value
-                            break
-                    if arg_for_fn is None:
-                        pos_idx = p_fn_idx
-                        if param_names and param_names[0] in ("self", "cls"):
-                            pos_idx = p_fn_idx - 1
-                        if 0 <= pos_idx < len(cs_call.args):
-                            arg_for_fn = cs_call.args[pos_idx]
-
-                    if arg_for_fn is None:
-                        continue
-
-                    fn_canon = self.resolve_canonical_name(arg_for_fn, cs_scope) or dotted_name(arg_for_fn)
-                    if not fn_canon:
-                        continue
-
-                    matched_rule = match_sink_rule(call_node, dotted_name(arg_for_fn) or "", fn_canon)
-                    if matched_rule and not self.check_sink_safety(call_node, fn_canon):
-                        ctx = {}
-                        for idx, p_name in enumerate(param_names):
-                            p_expr = None
-                            for kw in getattr(cs_call, "keywords", []):
-                                if kw.arg == p_name:
-                                    p_expr = kw.value
-                                    break
-                            if p_expr is None:
-                                p_pos = idx
-                                if param_names and param_names[0] in ("self", "cls"):
-                                    p_pos = idx - 1
-                                if 0 <= p_pos < len(cs_call.args):
-                                    p_expr = cs_call.args[p_pos]
-                            if p_expr is not None:
-                                p_taint = self.resolve_expression(p_expr, None, cs_scope, cs_lineno)
-                                if p_taint.state != TaintState.CLEAN:
-                                    caller_file = cs_scope.split(":", 1)[0] if ":" in cs_scope else file_path
-                                    call_func_symbol = dotted_name(cs_call.func) if hasattr(cs_call, "func") else "call"
-                                    call_snippet = self.get_source_snippet(caller_file, cs_lineno, cs_lineno, cs_call) or f"{call_func_symbol}(...)"
-                                    step_idx = len(p_taint.proof_nodes)
-                                    cs_pn = self.create_proof_node(
-                                        step_index=step_idx,
-                                        node_type=ProofNodeType.CALL_SITE,
-                                        file_path=caller_file,
-                                        node=cs_call,
-                                        symbol=call_func_symbol,
-                                        scope_id=cs_scope,
-                                        lineno=cs_lineno,
-                                        override_snippet=call_snippet
-                                    )
-                                    callee_line = func_def.lineno if func_def else lineno
-                                    param_pn = self.create_proof_node(
-                                        step_index=step_idx + 1,
-                                        node_type=ProofNodeType.PARAM_BINDING,
-                                        file_path=file_path,
-                                        node=func_def,
-                                        symbol=p_name,
-                                        scope_id=caller_scope,
-                                        lineno=callee_line,
-                                        override_snippet=self.get_source_snippet(file_path, callee_line, callee_line, func_def) or f"def {func_def.name}(..., {p_name}, ...)"
-                                    )
-                                    new_edges = list(p_taint.proof_edges)
-                                    if p_taint.proof_nodes:
-                                        new_edges.append(ProofEdge(from_node_id=p_taint.proof_nodes[-1].node_id, to_node_id=cs_pn.node_id, edge_type="CALL_SITE"))
-                                    new_edges.append(ProofEdge(from_node_id=cs_pn.node_id, to_node_id=param_pn.node_id, edge_type="PARAM_BINDING"))
-                                    p_taint = TaintValue(
-                                        state=p_taint.state,
-                                        source_id=p_taint.source_id,
-                                        confidence=p_taint.confidence,
-                                        path=[*p_taint.path, f"call:{call_func_symbol}", f"{file_path}:{p_name}"],
-                                        last_operation=f"param:{p_name}",
-                                        proof_nodes=[*p_taint.proof_nodes, cs_pn, param_pn],
-                                        proof_edges=new_edges
-                                    )
-                                ctx[p_name] = p_taint
-                            else:
-                                ctx[p_name] = TaintValue(state=TaintState.CLEAN, confidence=1.0)
-
-                        sink_id = self.next_sink_id()
-                        sink_meta = {
-                            "operation": matched_rule.operation,
-                            "category": matched_rule.category,
-                            "cwe": matched_rule.cwe_id,
-                            "sink_type": matched_rule.category,
-                        }
-                        loc = location(call_node, file_path)
-                        sink_node = SecurityNode(
-                            id=sink_id,
-                            node_type=NodeType.SINK,
-                            symbol=fn_canon,
-                            operation=matched_rule.operation,
-                            location=loc,
-                            metadata=sink_meta
-                        )
-                        self.sinks.append(sink_node)
-                        self.sink_records.append(SinkRecord(
-                            node=call_node,
-                            security_node=sink_node,
-                            lineno=lineno,
-                            scope_id=caller_scope,
-                            call_context=ctx
-                        ))
-            elif self._sink_node_unrecorded(call_node):
-                if self.is_sink_call(call_node, caller_scope, lineno):
-                    canon_name = self.resolve_canonical_name(call_node.func, caller_scope) or dotted_name(call_node.func) or ""
-                    if not self.check_sink_safety(call_node, canon_name):
-                        mod_name = scope_module(caller_scope)
-                        file_path = self.file_paths.get(mod_name, "unknown.py")
-                        sink_node = self.get_or_create_sink(call_node, file_path, caller_scope)
-                        self.sink_records.append(SinkRecord(node=call_node, security_node=sink_node, lineno=lineno, scope_id=caller_scope))
-                        if sink_node.metadata.get("cwe") != "CWE-295" and self._has_disabled_ssl(call_node, caller_scope):
-                            ssl_sink = self.get_or_create_sink(call_node, file_path, caller_scope, force_cwe="CWE-295")
-                            self.sink_records.append(SinkRecord(node=call_node, security_node=ssl_sink, lineno=lineno, scope_id=caller_scope))
+        _sg_workers = _sink_gate_worker_count(len(self.raw_calls))
+        _gated = None
+        if _sg_workers > 1:
+            try:
+                _gated = _sink_gate_parallel(self, _sg_workers)
+            except Exception as _sg_exc:
+                _sg_workers = 1
+                _gated = None
+                print(f"TimeCodeSecurity [SINKGATE] fan-out disabled "
+                      f"({type(_sg_exc).__name__}: {_sg_exc}); serial gate", file=_sys.stderr)
+        if _gated is None:
+            for call_node, caller_scope, lineno in self.raw_calls:
+                self._resolve_sink_candidate(call_node, caller_scope, lineno)
+        else:
+            # Only the gated candidates run the body, in ascending call-site order. Calls the gate
+            # returned nothing for provably take no action in the body either, so the recorded sink
+            # sequence is the serial one. See `_sink_candidate_kind`.
+            for _idx in _gated:
+                call_node, caller_scope, lineno = self.raw_calls[_idx]
+                self._resolve_sink_candidate(call_node, caller_scope, lineno)
         _t1 = _time.perf_counter()
         _new_sinks = len(self.sink_records) - _sink_count_before
-        print(f"TimeCodeSecurity [PROFILE] Sink detection (callbacks+direct): {_t1 - _t0:.2f}s ({_new_sinks} new sinks)", file=_sys.stderr)
+        print(f"TimeCodeSecurity [PROFILE] Sink detection (callbacks+direct): {_t1 - _t0:.2f}s "
+              f"({_new_sinks} new sinks, {len(self.raw_calls)} calls gated, "
+              f"{len(_gated) if _gated is not None else len(self.raw_calls)} resolved, "
+              f"{_sg_workers} worker(s))", file=_sys.stderr)
 
         # Source detection
         self._checkpoint_phase = "Source detection"
         _t0 = _time.perf_counter()
-        for mod_name, tree in self.modules.items():
+        # Walked in the canonical module order rather than `self.modules` insertion order.
+        # `get_or_create_source` numbers SRC- ids on first sight, so the whole id series inherits
+        # whatever order this loop uses. Insertion order is not a contract: `parse_files_parallel`
+        # appends results inside `as_completed` (tcs/parallel_scanner.py:357) and never re-sorts
+        # them, so with the arena's 4 workers over 10,648 files the order is the scheduler's. On the
+        # 60-file local corpus it happens to equal sorted order (measured, 5 fresh processes), which
+        # is exactly the kind of accidental stability that breaks on a bigger machine. Sinks already
+        # come out of sorted passes; this makes sources the same.
+        for mod_name in _phase2_ordered_modules(self):
+            tree = self.modules[mod_name]
             for node in self._reachable_nodes(tree):
                 if isinstance(node, ast.Call) and self.is_source_call(node, f"{mod_name}:global"):
                     self.get_or_create_source(node, self.file_paths.get(mod_name, "unknown.py"), f"{mod_name}:global")
