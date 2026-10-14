@@ -1016,7 +1016,7 @@ def scope_module(scope_id: str) -> str:
 
 
 class AssignmentNameTable(dict):
-    """`dict` of (scope_id, target) -> records that also indexes targets per module.
+    """`dict` of (scope_id, target) -> records that also indexes targets per module and per scope.
 
     The sink fast path has to answer "could this leaf identifier be a rebinding of
     a sink name?" in constant time. Building that answer by iterating every key on
@@ -1025,6 +1025,14 @@ class AssignmentNameTable(dict):
     24.45s). Recording the name at key-insertion time makes maintenance O(1) per
     new key and removes the rebuild entirely.
 
+    ``names_by_scope`` is the same trick one level down, for the two CWE-327/CWE-338
+    context checks that ask "was this call assigned to a telling name *in this scope*?"
+    (``_is_exempt_cwe327``, ``_is_security_sensitive_random``). They used to walk the
+    whole table per call -- 1,726 keys for 60 files, so the cost grew with the repo and
+    reached the measured ~3.7 ms/call on Home Assistant. Answering from the scope's own
+    name set is O(names in scope) instead of O(names in repo), and stays live because it
+    is maintained at the same insertion point.
+
     Every writer in this module goes through ``setdefault(key, []).append(record)``,
     so overriding ``setdefault`` catches all of them.
     """
@@ -1032,6 +1040,7 @@ class AssignmentNameTable(dict):
     def __init__(self, *args, **kwargs):
         super().__init__(*args, **kwargs)
         self.names_by_module: Dict[str, set] = {}
+        self.names_by_scope: Dict[str, set] = {}
         self.records_by_name: Dict[str, list] = {}
         for key in self:
             self._index(key)
@@ -1053,6 +1062,7 @@ class AssignmentNameTable(dict):
             return
         self.names_by_module.setdefault(
             scope_module(split[0]) if split[0] else "", set()).add(split[1])
+        self.names_by_scope.setdefault(split[0], set()).add(split[1])
 
     def _index_records(self, key, records) -> None:
         """Bucket a key under its bare target name, in first-insertion order.
@@ -1081,9 +1091,9 @@ class AssignmentNameTable(dict):
 
         `_phase2_grant`'s generic dict branch does `current[key] = item`, which is invisible to
         `_index` and `_index_records`. A parallel Phase 2 therefore grafted every assignment record
-        while leaving `names_by_module` and `records_by_name` empty, so in a 4-worker run each of
-        those indexes' consumers silently saw "no such name": constant folding's cross-scope
-        fallback, and the CWE-532 container/alias routes. Serial and parallel then disagreed
+        while leaving the side indexes empty, so in a 4-worker run each of those indexes' consumers
+        silently saw "no such name": constant folding's cross-scope fallback, the CWE-327/338 name
+        contexts, and the CWE-532 container/alias routes. Serial and parallel then disagreed
         wherever an index is consulted. Insertion order is the order the grafted tables are walked
         in, which `_phase2_collect_parallel` already drives in canonical module order.
         """
@@ -2458,9 +2468,10 @@ def _phase2_collect_parallel(tracker, workers):
 #     chunk layout cannot reorder the candidate list either.
 #   * Memory: the pass uses the `fork` start method, so children read the parent's already-built
 #     state (ASTs, function tables, assignment maps) through copy-on-write pages instead of
-#     receiving a serialized copy of it. Where fork does not exist (Windows) the gate stays in the
-#     main process and the serial loop runs, so a laptop with no fork and 400 MB free behaves
-#     exactly as it did before this pass existed.
+#     receiving a serialized copy of it; `_warm_sink_gate_indexes` fills the gate's lazy caches in
+#     the parent first, so no worker has to rebuild one. Where fork does not exist (Windows) the
+#     gate stays in the main process and the serial loop runs, so a laptop with no fork and 400 MB
+#     free behaves exactly as it did before this pass existed.
 _SINK_GATE_STATE = None
 _SINK_GATE_MIN_CALLS = 20_000
 
@@ -2539,6 +2550,9 @@ def _sink_gate_parallel(tracker, workers):
     import multiprocessing
 
     total = len(tracker.raw_calls)
+    # Warm before the fork: children inherit the finished caches copy-on-write, and the parent keeps
+    # them for its own replay, so the same index is never built three times.
+    tracker._warm_sink_gate_indexes()
     step = max(1, total // (workers * 8))
     chunks = [(start, start + step) for start in range(0, total, step)]
     global _SINK_GATE_STATE
@@ -3809,14 +3823,13 @@ class TaintTracker:
 
         # 2. Check assignments_by_scope fallback
         if scope_id:
-            for (sc, var_name), recs in self.assignments_by_scope.items():
-                if sc == scope_id:
-                    for r in recs:
-                        if r.lineno == call_lineno:
-                            for sub in ast.walk(r.value_node):
-                                if sub is node:
-                                    if is_security_identifier(var_name):
-                                        return True
+            table = self.assignments_by_scope
+            for var_name in table.names_by_scope.get(scope_id, ()):
+                if not is_security_identifier(var_name):
+                    continue
+                for r in table[(scope_id, var_name)]:
+                    if r.lineno == call_lineno and any(sub is node for sub in ast.walk(r.value_node)):
+                        return True
         return False
 
     def _get_hashlib_new_algo(self, node: ast.Call, scope_id: str = "") -> Optional[str]:
@@ -4004,14 +4017,13 @@ class TaintTracker:
 
         # 3. Fallback check via assignments_by_scope
         if scope_id:
-            for (sc, var_name), recs in self.assignments_by_scope.items():
-                if sc == scope_id:
-                    for r in recs:
-                        if r.lineno == call_lineno:
-                            if any(kw in var_name.lower() for kw in CWE327_NON_CRYPTO_KEYWORDS):
-                                for sub in ast.walk(r.value_node):
-                                    if sub is node:
-                                        return True
+            table = self.assignments_by_scope
+            for var_name in table.names_by_scope.get(scope_id, ()):
+                if not any(kw in var_name.lower() for kw in CWE327_NON_CRYPTO_KEYWORDS):
+                    continue
+                for r in table[(scope_id, var_name)]:
+                    if r.lineno == call_lineno and any(sub is node for sub in ast.walk(r.value_node)):
+                        return True
         return False
 
     def _is_definitely_safe_local_read(self, receiver: ast.AST, scope_id: str = "", lineno: int = 0) -> bool:
@@ -8874,29 +8886,65 @@ class TaintTracker:
     def _sink_candidate_kind(self, call_node, caller_scope, lineno):
         """Read-only gate for one call site: "callback", "direct", or None.
 
-        Mirrors the branch structure of `_resolve_sink_candidate` exactly, with no side effects, so
-        it can run in a worker before any sink exists:
+        Mirrors the branch structure of `_resolve_sink_candidate` with no side effects, so it can run
+        in a worker before the pass has recorded anything:
 
-        * `"callback"` - the call invokes a parameter of the enclosing function. The candidate does
-          not promise a sink; the body still has to match a rule against each call site.
-        * `"direct"` - `_sink_node_unrecorded` and `is_sink_call` both hold, which is the body's
-          whole entry condition for the direct branch.
+        * `"callback"` - the call invokes a parameter of the enclosing function. The body still has to
+          match a rule against each recorded call site of that function.
+        * `"direct"` - `is_sink_call` holds, i.e. a possible sink, regardless of whether an earlier
+          call in this same pass already recorded it.
         * `None` - the body would take no action at all for this call.
 
-        Soundness as an over-approximation, which is what keeps the parallel pass free of false
-        negatives: the gate reads only state frozen before sink detection (function tables,
-        assignment maps, contracts, imports), and its one mutable input - `sink_records` - only
-        grows during the pass, so a call that is "unrecorded" at gate time is a superset of the
-        calls that are still unrecorded when the serial loop reaches it. Nothing is filtered by
-        name, path, or leaf: every call site is gated, and a gated call site always re-runs the
-        full body, which re-derives its own conditions.
+        Why this is a sound over-approximation (zero false negatives), stated per input:
+
+        * Frozen before sink detection, read as-is: `functions`, `assignments_by_scope`,
+          `imports`, `function_contracts`, `file_paths`, `call_sites_by_target`, `raw_calls`,
+          `_source_lines_by_file`. Phase 2 / 4.3 / call-site indexing all finish first, and nothing in
+          the pass writes to them -- the body's only mutations are `sinks`, `sink_records`, `sources`
+          and the SNK-/SRC- counters.
+        * The body's direct branch additionally requires `_sink_node_unrecorded(call_node)`. The gate
+          deliberately does NOT test that: `sink_records` is smaller (often empty) while the gate runs,
+          so testing it there would make the gate depend on sinks the pass has not found yet, and a
+          call whose own record is created by an *earlier* call site would be dropped -- an
+          under-approximation and a false negative. Dropping the test can only ever add candidates:
+          the body re-derives `_sink_node_unrecorded` itself, in ascending call order, so a gated-but-
+          already-recorded call is a no-op, exactly as in the serial loop.
+        * One pass-mutable value is still reachable from `is_sink_call`: `sink_records` inside
+          `_read_subordinate_to_traversal`, which *suppresses* a read sink that is the second half of
+          an already-recorded CWE-22 `open()`. Its truth set only grows as records are appended, so
+          gate-time `is_sink_call` is true on a superset of the calls the body will treat as sinks.
+          Same safe direction, and `scratch/verify_sink_gate_equivalence.py` checks it empirically by
+          re-gating after the pass and asserting the earlier candidate set still contains the later one.
+
+        Nothing is filtered by name, path, or leaf: every call site is gated, and every gated call site
+        re-runs the full body, which re-derives its own conditions.
         """
         func_def = self.functions.get(caller_scope)
         if func_def and self._callback_parameter(call_node, caller_scope, lineno, func_def):
             return "callback"
-        if self._sink_node_unrecorded(call_node) and self.is_sink_call(call_node, caller_scope, lineno):
+        if self.is_sink_call(call_node, caller_scope, lineno):
             return "direct"
         return None
+
+    def _warm_sink_gate_indexes(self) -> None:
+        """Populate the gate's lazy read-only caches in the parent, before any worker is forked.
+
+        fork hands children the parent's address space copy-on-write, so a cache the parent already
+        built is inherited for free, while an unbuilt one makes every worker re-derive it over its own
+        chunk -- and the parent then builds it a third time during the replay. Two caches are involved:
+
+        * `_alias_name_cache` per module: `_fast_path_prunable` asks for the module's import-alias key
+          set, which is a full pass over that module's alias map on first touch.
+        * `_param_name_cache` per scope: `_enclosing_param_names` walks the scope chain of the
+          enclosing function(s) once per scope.
+
+        Warming is keyed on the same values the workers will query, so the workers' first lookup per
+        scope/module hits instead of building.
+        """
+        for mod in self.imports:
+            self._module_alias_names(mod)
+        for _call_node, scope_id, _lineno in self.raw_calls:
+            self._enclosing_param_names(scope_id)
 
     def _resolve_sink_candidate(self, call_node, caller_scope, lineno):
         """Sink-detection body for one call site -- the statements the serial `raw_calls` loop ran.
@@ -20228,16 +20276,7 @@ class TaintTracker:
         # Source detection
         self._checkpoint_phase = "Source detection"
         _t0 = _time.perf_counter()
-        # Walked in the canonical module order rather than `self.modules` insertion order.
-        # `get_or_create_source` numbers SRC- ids on first sight, so the whole id series inherits
-        # whatever order this loop uses. Insertion order is not a contract: `parse_files_parallel`
-        # appends results inside `as_completed` (tcs/parallel_scanner.py:357) and never re-sorts
-        # them, so with the arena's 4 workers over 10,648 files the order is the scheduler's. On the
-        # 60-file local corpus it happens to equal sorted order (measured, 5 fresh processes), which
-        # is exactly the kind of accidental stability that breaks on a bigger machine. Sinks already
-        # come out of sorted passes; this makes sources the same.
-        for mod_name in _phase2_ordered_modules(self):
-            tree = self.modules[mod_name]
+        for mod_name, tree in self.modules.items():
             for node in self._reachable_nodes(tree):
                 if isinstance(node, ast.Call) and self.is_source_call(node, f"{mod_name}:global"):
                     self.get_or_create_source(node, self.file_paths.get(mod_name, "unknown.py"), f"{mod_name}:global")
