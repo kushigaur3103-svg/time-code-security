@@ -25,6 +25,12 @@ jobs:
 
       - name: Install Dependencies
         run: |
+          python -m pip install --upgrade pip
+          # requirements.txt first: this job runs the engine itself
+          # (`python cli.py scan django_target/django`), so its deps - including the tree-sitter wheels
+          # the Phase 2 rescue shield needs - come from here, not from the competitor tool below.
+          if [ -f requirements.txt ]; then pip install -r requirements.txt; fi
+          # semgrep stays a benchmark competitor, not an engine dependency.
           pip install semgrep
 
       - name: Clone Django Core

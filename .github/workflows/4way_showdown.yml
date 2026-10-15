@@ -81,6 +81,11 @@ jobs:
       - name: Install competitors
         run: |
           python -m pip install --upgrade pip
+          # requirements.txt first: this harness runs the engine itself -
+          # `scripts/run_python_showdown.py:315` does `from ast_scanner import TaintTracker` and :281
+          # shells out to `cli.py scan` - so the engine's deps (including the tree-sitter wheels the
+          # Phase 2 rescue shield needs) come from here, not from the competitor tools below.
+          if [ -f requirements.txt ]; then pip install -r requirements.txt; fi
           pip install semgrep bandit
 
       - name: Install SonarScanner CLI

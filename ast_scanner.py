@@ -2293,7 +2293,7 @@ def _regex_first_chars(tokens):
 
 
 def _regex_trailing_separator(tokens):
-    """Characters a repeated body must end with, or None when its tail is variable.
+    r"""Characters a repeated body must end with, or None when its tail is variable.
 
     `(\d+,)` ends on a comma it can never start on, so the comma pins every iteration; `(a+)` ends
     on the same `a` it started with, which is exactly the ambiguity that blows up.
