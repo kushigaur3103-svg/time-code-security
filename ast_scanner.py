@@ -1370,6 +1370,29 @@ CLEARTEXT_SCHEME_PREFIX = "http://"
 # A loopback or placeholder host is not the same exposure as a routed name, and every safe corpus
 # spelling of a dynamic URL points at one of these.
 CLEARTEXT_HOST_ALLOWLIST = ("localhost", "127.0.0.1", "0.0.0.0", "testserver", "example.com", "dummy")
+# CWE-319, raw-socket half: an integration that talks TCP itself (`socket.create_connection`, or a
+# `socket.socket(...)` it then `connect()`s) puts the bytes on the wire with no scheme to inspect and
+# no `http://` literal for the URL rules above to read. A socket is only proven encrypted when the same
+# scope hands it to `wrap_socket`/`wrap_bio` or calls `starttls()` on it; anything else is cleartext by
+# construction. `AF_INET`/`AF_INET6`/`SOCK_STREAM` mark the explicit-family spelling only - a bare
+# `socket.socket()` is left alone because that spelling is what the resource-exhaustion corpus uses and
+# guessing there would trade a real find for a false one.
+RAW_SOCKET_ADDRESS_CALLS = frozenset({"socket.create_connection", "create_connection"})
+RAW_SOCKET_CONSTRUCTORS = frozenset({"socket.socket", "socket"})
+RAW_SOCKET_CONNECT_METHODS = frozenset({"connect", "connect_ex"})
+RAW_SOCKET_TLS_WRAPPING_METHODS = frozenset({"wrap_socket", "wrap_bio"})
+RAW_SOCKET_EXPLICIT_FAMILIES = frozenset({"AF_INET", "AF_INET6", "SOCK_STREAM"})
+# CWE-605: `socket.INADDR_ANY` is the numeric spelling of "every interface" (0.0.0.0) and is what
+# Home Assistant's own zeroconf/mqtt fixtures write, but it never resolves to a string, so the
+# interface-value set above cannot see it. Matched by attribute name, not by value.
+INSECURE_BIND_ANY_ATTRIBUTES = frozenset({"INADDR_ANY"})
+
+
+def _is_bind_any_host(node):
+    """CWE-605: `bind((socket.INADDR_ANY, port))` is `0.0.0.0` spelled as the constant it is."""
+    if isinstance(node, ast.Attribute):
+        return node.attr in INSECURE_BIND_ANY_ATTRIBUTES
+    return isinstance(node, ast.Name) and node.id in INSECURE_BIND_ANY_ATTRIBUTES
 # CWE-79: Jinja2 escapes only what it is told to. Both constructors default to *off*, so an explicit
 # `autoescape=False` is the configured vulnerability, not an oversight the renderer can undo.
 JINJA_ENVIRONMENT_SEGMENTS = frozenset({
@@ -11522,6 +11545,114 @@ class TaintTracker:
                    and any(marker in sub.value for marker in CLEARTEXT_HOST_ALLOWLIST)
                    for sub in ast.walk(expr))
 
+    # ── 10b. CWE-319: a raw socket that reaches the peer in the clear ────────────────
+    def _collect_cwe319_raw_socket_cleartext(self, tree, filename, source_lines):
+        """Report `socket.create_connection(...)` and `sock.connect(...)` that no TLS ever touches.
+
+        The transport collector above reads URL strings, so it is blind to an integration that opens
+        the TCP socket itself - the idiom a Home Assistant sensor uses to poll a device. Precision
+        comes from three narrow gates, none of which touch the existing taint machinery: the socket
+        must be *spelled out* as an internet stream socket (`create_connection`, or
+        `socket.socket(socket.AF_INET, socket.SOCK_STREAM)`; a bare `socket.socket()` is left to the
+        rules that already graded it), the peer must not be a loopback or documentation host, and the
+        scope's own `wrap_socket` / `wrap_bio` / `starttls` evidence clears the handle it is applied
+        to. In a scope that does use TLS, a socket whose handle cannot be resolved is suppressed:
+        inside an SSL-wiring function, guessing is more likely to be wrong than right. Test paths are
+        declined by `_c319_test_scope`, the same convention its URL sibling already uses.
+        """
+        if self._c319_test_scope(filename):
+            return
+        table = self._memo_assignment_map(tree)
+        scopes = [(start, end) for start, end, _params in self._memo_function_ranges(tree)]
+        tls_scopes, secured_names = self._c319_raw_socket_tls_evidence(tree, scopes)
+        for node in ast.walk(tree):
+            if not isinstance(node, ast.Call):
+                continue
+            segments = (dotted_name(node.func) or "").split(".")
+            if segments == [""]:
+                continue
+            handle = None
+            if segments[-1] in RAW_SOCKET_ADDRESS_CALLS and len(segments) <= 2:
+                target = node
+            elif segments[-1] in RAW_SOCKET_CONNECT_METHODS and len(segments) == 2 \
+                    and isinstance(node.func.value, ast.Name) \
+                    and self._c319_is_explicit_raw_socket(table, node.func.value, node.lineno):
+                target, handle = node, segments[0]
+            else:
+                continue
+            if not target.args or self._c319_allowlisted(target.args[0]):
+                continue
+            key = self._c319_scope_of(target.lineno, scopes)
+            if key in tls_scopes:
+                # A scope that does wire up TLS either names this handle as encrypted, or the
+                # handle is not resolvable and the wrapping is assumed to cover it.
+                if handle is None or handle in secured_names.get(key, frozenset()):
+                    continue
+            if self._blindspot_line_suppressed(source_lines, target):
+                continue
+            self._add_blindspot_sink(
+                target, filename, "CWE-319", "INSECURE_TRANSPORT", "INSECURE_TRANSPORT",
+                "CWE-319: Cleartext socket connection to a remote peer without TLS",
+                "INSECURE_TRANSPORT", reuse_existing=True)
+
+    @staticmethod
+    def _c319_raw_socket_tls_evidence(tree, scopes):
+        """Per-scope: which scopes do any TLS wrapping, and which socket handles the wrapping names."""
+        tls_scopes, secured = set(), {}
+        for node in ast.walk(tree):
+            if not isinstance(node, ast.Call):
+                continue
+            segments = (dotted_name(node.func) or "").split(".")
+            verb = segments[-1]
+            if verb == "starttls":
+                # `sock.starttls()` encrypts the receiver in place, so the receiver is the handle -
+                # `node.func`, not `node.func.value`, would name the method instead of the socket.
+                handles = [TaintTracker._c319_handle_name(
+                    node.func.value if isinstance(node.func, ast.Attribute) else node.func)]
+            elif verb in RAW_SOCKET_TLS_WRAPPING_METHODS:
+                # `ctx.wrap_socket(sock, ...)` names the plaintext socket positionally.
+                handles = [TaintTracker._c319_handle_name(argument) for argument in node.args]
+            else:
+                continue
+            key = TaintTracker._c319_scope_of(node.lineno, scopes)
+            tls_scopes.add(key)
+            secured.setdefault(key, set()).update(name for name in handles if name)
+        return tls_scopes, secured
+
+    @staticmethod
+    def _c319_handle_name(node):
+        """`s` for a Name, `self.sock` for an attribute chain, otherwise nothing to match on."""
+        if isinstance(node, ast.Name):
+            return node.id
+        if isinstance(node, ast.Attribute):
+            return dotted_name(node) or ""
+        return ""
+
+    @staticmethod
+    def _c319_scope_of(lineno, scopes):
+        """The innermost function that owns *lineno*, or None for module level."""
+        best = None
+        for start, end in scopes:
+            if start <= lineno <= (end or start) and (best is None or start > best[0]):
+                best = (start, end)
+        return best
+
+    @staticmethod
+    def _c319_is_explicit_raw_socket(table, name_node, use_lineno):
+        """True when this name was last bound to `socket.socket(AF_INET[, SOCK_STREAM])`."""
+        value = TaintTracker._blindspot_latest_assignment(table, name_node.id, use_lineno)
+        if not isinstance(value, ast.Call):
+            return False
+        segments = (dotted_name(value.func) or "").split(".")
+        if segments[-1] not in RAW_SOCKET_CONSTRUCTORS or len(segments) > 2:
+            return False
+        spellings = {dotted_name(argument) or "" for argument in list(value.args)
+                     + [keyword.value for keyword in value.keywords]}
+        spellings |= {argument.attr for argument in ast.walk(value)
+                      if isinstance(argument, ast.Attribute)}
+        return bool(spellings & {f"socket.{family}" for family in RAW_SOCKET_EXPLICIT_FAMILIES}
+                    or spellings & RAW_SOCKET_EXPLICIT_FAMILIES)
+
     # ── 11. CWE-79: Jinja2 configured not to escape ───────────────────────────────────
     def _collect_cwe79_insecure_jinja_config(self, tree, filename, source_lines):
         """`jinja2.Environment(autoescape=False)` / `select_autoescape(default=False)`.
@@ -14959,7 +15090,8 @@ class TaintTracker:
                                         host_vn = _get_assigned_value(tup.elts[0].id, lineno)
                                         if host_vn and isinstance(host_vn, ast.Constant):
                                             host_val = host_vn.value
-                                    if host_val in CWE3B_INSECURE_INTERFACES:
+                                    if host_val in CWE3B_INSECURE_INTERFACES \
+                                            or _is_bind_any_host(tup.elts[0]):
                                         insecure_bind = True
                         elif "start_server" in name:
                             h_arg = node.args[1] if len(node.args) >= 2 else None
@@ -14972,7 +15104,8 @@ class TaintTracker:
                                     host_vn = _get_assigned_value(h_arg.id, lineno)
                                     if host_vn and isinstance(host_vn, ast.Constant):
                                         host_val = host_vn.value
-                                if host_val in CWE3B_INSECURE_INTERFACES:
+                                if host_val in CWE3B_INSECURE_INTERFACES \
+                                        or _is_bind_any_host(h_arg):
                                     insecure_bind = True
                         if insecure_bind:
                             cwe_meta = {"operation": "INSECURE_SOCKET_BINDING", "category": "INSECURE_NETWORK_BINDING", "cwe": "CWE-605"}
@@ -20983,6 +21116,9 @@ class TaintTracker:
             self._collect_cwe89_sqlalchemy_text_interpolation(_bs_tree, _bs_file, _bs_lines)
             self._collect_cwe117_handler_echo_logging(_bs_tree, _bs_file, _bs_lines)
             self._collect_cwe312_config_stream_writes(_bs_tree, _bs_file, _bs_lines)
+            # Appended last for the same reason as the passes above: the sink ids they hand out are
+            # parity-measured, so a new collector can only ever sit after them.
+            self._collect_cwe319_raw_socket_cleartext(_bs_tree, _bs_file, _bs_lines)
             # Every 25 modules: a flush per module would rescan every sink record, which costs
             # O(modules x sinks) on a large repo. This keeps the window at ~25 files.
             if _bs_idx % 25 == 24:

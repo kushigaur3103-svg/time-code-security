@@ -23,6 +23,19 @@ runs:
       with:
         python-version: "3.11"
 
+    - name: Install scanner dependencies
+      shell: bash
+      # `github.action_path` is where Actions checked *this* action out. The requirements are read
+      # from there, never from the consumer's workspace: installing a target repo's dependencies into
+      # the scanner's environment would both change the scan and run arbitrary code from the PR.
+      # Without this step the tree-sitter wheels are absent, so the syntax-rescue shield logs
+      # "No module named 'tree_sitter'" and every newer-syntax file falls back to block recovery.
+      run: |
+        python -m pip install --upgrade pip
+        if [ -f "${{ github.action_path }}/requirements.txt" ]; then
+          pip install -r "${{ github.action_path }}/requirements.txt"
+        fi
+
     - name: Run TimeCodeSecurity scan
       shell: bash
       env:
