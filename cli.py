@@ -15,7 +15,7 @@ import time
 import traceback
 from typing import Optional
 from cross_file_engine import CrossFileTaintEngine
-from ast_scanner import TaintTracker
+from ast_scanner import TaintTracker, PARSER_MODES, DEFAULT_PARSER_MODE
 from ci_reporter import sanitize_symbol_display
 from html_auditor import audit_templates, is_template_path
 from iac_auditor import audit_iac_files, is_iac_path
@@ -1063,6 +1063,17 @@ def _install_partial_flush(args):
             pass
 
 
+def _parse_parser_arg(parser_str: Optional[str]) -> str:
+    """Normalise --parser into one of PARSER_MODES. Anything unexpected is the default, never a crash.
+
+    argparse restricts the choices for a real command line; this exists for callers that build an args
+    namespace themselves, where `getattr(args, "parser", None)` comes back None.
+    """
+    if isinstance(parser_str, str) and parser_str.strip().lower() in PARSER_MODES:
+        return parser_str.strip().lower()
+    return DEFAULT_PARSER_MODE
+
+
 def _parse_workers_arg(workers_str: Optional[str]) -> int:
     """Parse --workers argument into integer worker count.
     
@@ -1157,8 +1168,12 @@ def _scan(args):
         started = time.perf_counter()
         if files:
             _PARTIAL["files"] = files
-            _progress(f"parsing {len(files)} python file(s) with {workers} worker(s)")
-            tracker = TaintTracker(files=files, max_workers=workers)
+            _parser_mode = _parse_parser_arg(getattr(args, "parser", None))
+            # Default mode keeps the progress line byte-for-byte as it was; a chosen mode names itself,
+            # because "with 8 worker(s)" is not what `treesitter` is doing (it runs single-process).
+            _progress(f"parsing {len(files)} python file(s) with {workers} worker(s)"
+                      + ("" if _parser_mode == DEFAULT_PARSER_MODE else f", parser={_parser_mode}"))
+            tracker = TaintTracker(files=files, max_workers=workers, parser_mode=_parser_mode)
             _PARTIAL["tracker"] = tracker
             for fpath, reason in sorted(tracker.skipped_files.items()):
                 print(f"Warning: skipping unparseable file {fpath}: {reason}", file=sys.stderr)
@@ -1199,7 +1214,10 @@ def _scan(args):
             key: parse_stats[key]
             for key in ("parse_mode", "workers_used", "workers_initial",
                         "workers_final", "governor_events",
-                        "execution_mode", "parallel_fallback_reason")
+                        "execution_mode", "parallel_fallback_reason",
+                        # Phase 3: which reader was allowed, and how many modules it actually produced
+                        # (a shadow run can be checked against those two numbers instead of a log).
+                        "parser_mode", "parsed_by_packer")
             if key in parse_stats
         }
         # The engine attribute is the authority; parse_stats carries it only when a tracker ran.
@@ -1556,6 +1574,14 @@ def main(argv=None):
     scan_parser.add_argument(
         "--exclude", type=str, default=None,
         help="Comma-separated glob patterns to exclude from scanning (e.g., tests,test_*,*_test.py,migrations)",
+    )
+    scan_parser.add_argument(
+        "--parser", choices=PARSER_MODES, default=DEFAULT_PARSER_MODE,
+        help="Which reader builds the ASTs. 'hybrid' (default) = native ast.parse, with the "
+             "tree-sitter rescue shield only on a file that raises SyntaxError; 'treesitter' = the "
+             "tolerant tree-sitter CST reader for every file, single-process, CPython still catches "
+             "what it declines; 'ast' = native ast.parse and the block-level sweep, tree-sitter "
+             "never invoked",
     )
     compare_parser = commands.add_parser("compare", help="Compare TimeCodeSecurity findings with Semgrep or Bandit")
     compare_parser.add_argument("path", type=Path, help="Python file or directory to compare")

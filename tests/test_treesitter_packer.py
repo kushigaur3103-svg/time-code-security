@@ -256,15 +256,26 @@ def test_treesitter_packer_phase_one():
     # Only stdlib plus its own optional grammar wheels - never the engine it is meant to feed.
     allowed = {"__future__", "ast", "threading", "typing", "tree_sitter", "tree_sitter_python"}
     assert set(imports) <= allowed, sorted(set(imports) - allowed)
-    # Phase 2 wired the shield in. The contract that keeps it reviewable: the *unconditional* parser
-    # (`parse_to_ast`, which answers even for garbage) is still never called by the scanner, and the
-    # only code that touches the packer at all is the one rescue helper.
+    # Phase 2 wired the shield in and Phase 3 made it selectable, so this contract is stated as
+    # *calls* rather than as substrings - a comment that merely names `parse_to_ast` must not be able
+    # to trip it, and neither must a legitimate new caller be able to slip past it. Three rules: the
+    # gated `clean_parse` is the only packer attribute ever invoked, the unconditional parser
+    # (`parse_to_ast`, which answers even for garbage) is never invoked at all, and only the rescue
+    # helper plus the opt-in parse stage hold a reference to the packer module.
     scanner_src = (ROOT / "ast_scanner.py").read_text(encoding="utf-8")
-    assert "parse_to_ast" not in scanner_src, "the scanner must go through the gated clean_parse"
-    users = sorted({node.name for node in ast.walk(ast.parse(scanner_src))
+    scanner_tree = ast.parse(scanner_src)
+    all_attrs = {node.func.attr for node in ast.walk(scanner_tree)
+                 if isinstance(node, ast.Call) and isinstance(node.func, ast.Attribute)}
+    handles = {"_treesitter_packer", "_packer"}      # `_packer` is the constructor's local alias
+    packer_attrs = {node.func.attr for node in ast.walk(scanner_tree)
+                    if isinstance(node, ast.Call) and isinstance(node.func, ast.Attribute)
+                    and isinstance(node.func.value, ast.Name) and node.func.value.id in handles}
+    assert packer_attrs == {"clean_parse"}, packer_attrs
+    assert "parse_to_ast" not in all_attrs, "the scanner must go through the gated clean_parse"
+    users = sorted({node.name for node in ast.walk(scanner_tree)
                     if isinstance(node, (ast.FunctionDef, ast.AsyncFunctionDef))
                     and "_treesitter_packer" in ast.dump(node)})
-    assert users == ["_treesitter_rescue"], users
+    assert users == ["__init__", "_treesitter_rescue"], users
 
     # ─── 2. Structural + coordinate parity against ast.parse on valid Python ───
     assert len(SNIPPETS) >= 20, len(SNIPPETS)

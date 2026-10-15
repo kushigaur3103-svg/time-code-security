@@ -2710,6 +2710,17 @@ def _sink_gate_parallel(tracker, workers):
 # stays truthful.
 TOLERANT_PARSE_MAX_BLOCKS = 32
 
+# ─── Phase 3: which reader is allowed to produce a module, and in what order ───
+#   "hybrid"     - native `ast.parse` first (unchanged, and unchanged *cost*: a valid file never
+#                  reaches anything else), then the tree-sitter shield, then the block sweep.
+#   "treesitter" - the tolerant CST reader is asked for every file first, so modern syntax never
+#                  waits for a native failure; a file it declines is still parsed by CPython if
+#                  CPython can read it, and only then swept.
+#   "ast"        - legacy strict: native parse plus the block sweep, and the packer is never invoked.
+# This is configuration, not a heuristic: one value for the whole scan, no per-file guessing.
+PARSER_MODES = ("hybrid", "treesitter", "ast")
+DEFAULT_PARSER_MODE = "hybrid"
+
 
 def _tolerant_block_indent(text: str) -> int:
     """Visual indent of a line, tabs counted the way CPython counts them."""
@@ -2795,23 +2806,38 @@ def _treesitter_rescue(source: str, filename: str):
     return tree
 
 
-def parse_source_tolerant(source: str, filename: str):
-    """`ast.parse`, then - only if that raised SyntaxError - the same parse with bad blocks removed.
+def _normalise_parser_mode(parser_mode) -> str:
+    """One value in, one of PARSER_MODES out - and never an exception.
 
-    Returns `(tree | None, bypassed_block_start_lines)`. `None` means the file is as unparseable as it
-    was before: recovery never invents a module it cannot prove parses, and never presents a partial
-    file as a whole one.
-
-    An empty `bypassed_block_start_lines` on a file whose first parse failed means the tree came from
-    the tree-sitter shield - nothing had to be removed for it to parse.
+    The engine has no path that dies on a typo: an unknown or missing mode becomes the default and
+    says so on stderr, so a mistyped `--parser` shows up in the log instead of silently changing what
+    gets analysed or taking a scan down.
     """
+    if isinstance(parser_mode, str):
+        candidate = parser_mode.strip().lower()
+        if candidate in PARSER_MODES:
+            return candidate
+    print(f"TimeCodeSecurity [PARSER-MODE] ignored unknown parser mode {parser_mode!r}; "
+          f"using '{DEFAULT_PARSER_MODE}'", file=sys.stderr)
+    return DEFAULT_PARSER_MODE
+
+
+def _native_parse_once(source: str, filename: str):
+    """`ast.parse`, or None on a syntax error. Any other error propagates, exactly as before:
+    a NUL byte is a `ValueError` and no mode is allowed to turn that into a module."""
     try:
-        return ast.parse(source, filename=filename), []
+        return ast.parse(source, filename=filename)
     except SyntaxError:
-        pass
-    rescued = _treesitter_rescue(source, filename)
-    if rescued is not None:
-        return rescued, []
+        return None
+
+
+def _tolerant_sweep(source: str, filename: str):
+    """Last reader: rebuild the module with each offending top-level block replaced by `pass`.
+
+    Returns `(tree | None, bypassed_block_start_lines)`; `None` means the budget was spent and the
+    file stays unparseable. This is the mechanism already proven on damaged source, so every mode
+    ends here and no mode skips it.
+    """
     lines = source.splitlines(keepends=True)
     if not lines:
         return None, []
@@ -2833,22 +2859,54 @@ def parse_source_tolerant(source: str, filename: str):
     return None, sorted(replaced)
 
 
+def parse_source_tolerant(source: str, filename: str, parser_mode: str = DEFAULT_PARSER_MODE):
+    """Ask the readers the configured mode allows, in order, and sweep only if all of them fail.
+
+    Returns `(tree | None, bypassed_block_start_lines)`. `None` means the file is as unparseable as it
+    was before: recovery never invents a module it cannot prove parses, and never presents a partial
+    file as a whole one.
+
+    An empty `bypassed_block_start_lines` on a file whose first parse failed means the tree came from
+    the tree-sitter shield - nothing had to be removed for it to parse.
+
+    `parser_mode` only reorders the readers, it never adds one and never lets a mode skip the sweep:
+    `"treesitter"` asks the packer first, `"ast"` forbids it, `"hybrid"` keeps the historic order -
+    native parse, and the packer only after that raised - so a valid file still costs exactly one
+    `ast.parse` call and nothing else.
+    """
+    if parser_mode == "treesitter":
+        readers = (_treesitter_rescue, _native_parse_once)
+    elif parser_mode == "ast":
+        readers = (_native_parse_once,)
+    else:
+        readers = (_native_parse_once, _treesitter_rescue)
+    for read in readers:
+        tree = read(source, filename)
+        if tree is not None:
+            return tree, []
+    return _tolerant_sweep(source, filename)
+
+
 class TaintTracker:
-    def __init__(self, files: dict[str, str] = None, source: str = None, file_path: str = "target.py", audit_all: bool = False, max_workers: Optional[int] = None):
+    def __init__(self, files: dict[str, str] = None, source: str = None, file_path: str = "target.py", audit_all: bool = False, max_workers: Optional[int] = None, parser_mode: str = DEFAULT_PARSER_MODE):
         self.files = files if files is not None else {file_path: source}
         self.audit_all = audit_all
         self.max_workers = max_workers
-        
+        # Phase 3: one mode for the whole scan, resolved once, never re-guessed per file.
+        self.parser_mode = _normalise_parser_mode(parser_mode)
+
         # TimeCodeSecurity: Use safe parallel parsing with hardware governance
         # `execution_mode` is the authoritative answer to "did the fault-tolerant fan-out run?"
         #   "parallel"        - parse_files_parallel returned normally (its own `parse_mode` field
         #                       still says whether it took the internal sequential shortcut)
         #   "serial_fallback" - the fan-out raised, so every file was re-parsed here, serially
         #   "inline"          - the fan-out was never attempted (<= 10 files or module unavailable)
+        #   "treesitter"      - the opt-in CST reader path below; deliberately single-process, because
+        #                       every worker would have to load its own grammar for the same file
         self.execution_mode = "inline"
         self.parallel_fallback_reason = None
         _parallel_parsing_failed = False
-        if PARALLEL_PARSING_AVAILABLE and len(self.files) > 10:
+        if PARALLEL_PARSING_AVAILABLE and len(self.files) > 10 and self.parser_mode != "treesitter":
             # Only use parallel parsing for larger workloads (>10 files)
             try:
                 (self.modules, self.file_paths, self.skipped_files,
@@ -2868,7 +2926,60 @@ class TaintTracker:
                 print(f"TimeCodeSecurity [GOVERNOR] parallel parsing disabled "
                       f"({self.parallel_fallback_reason}); serial re-parse of all "
                       f"{len(self.files)} file(s)", file=sys.stderr)
-        if _parallel_parsing_failed or not getattr(self, "parse_stats", None):
+        if self.parser_mode == "treesitter":
+            # Opt-in CST path: the packer reads every file, so PEP 695 / PEP 701 source never has to
+            # fail natively first to be analysed. A file the packer will not vouch for is still handed
+            # to CPython, and only a file both readers reject reaches the block sweep in the gate
+            # below - so this mode can only ever add modules, never lose one against the default.
+            # Single process by design: one grammar for the scan instead of one per worker, which is
+            # what keeps the ~400 MB ceiling honest on a big corpus.
+            self.modules: dict[str, ast.AST] = {}
+            self.file_paths: dict[str, str] = {}
+            self.skipped_files: dict[str, str] = {}
+            self.execution_mode = "treesitter"
+            _packer = _treesitter_packer
+            if _packer is None:
+                print("TimeCodeSecurity [PARSER-MODE] parser_mode='treesitter' but the tree-sitter "
+                      "wheels are not installed: every file falls through to CPython and the block "
+                      "sweep", file=sys.stderr)
+            _parsed_by_packer = 0
+            for fpath, code in self.files.items():
+                mod_name = fpath.replace("\\\\", "/").replace(".py", "").replace("/", ".")
+                if mod_name.endswith(".__init__"): mod_name = mod_name[:-9]
+                tree = None
+                if _packer is not None:
+                    # `clean_parse`, not `parse_to_ast`: it is the only reader that refuses to
+                    # pronounce a module it cannot prove, and this mode must not lower that bar just
+                    # because it was asked for by name.
+                    tree = _packer.clean_parse(code, fpath)
+                    if tree is not None:
+                        _parsed_by_packer += 1
+                if tree is None:
+                    try:
+                        tree = ast.parse(code, filename=fpath)
+                    except (SyntaxError, ValueError, UnicodeDecodeError) as exc:
+                        # Same ledger, same truncation as the inline loop, so the retry gate below
+                        # sees an identical reason string in every mode.
+                        self.skipped_files[fpath] = f"{type(exc).__name__}: {exc}"[:200]
+                        continue
+                for p in ast.walk(tree):
+                    for child in ast.iter_child_nodes(p):
+                        child.parent = p
+                self.modules[mod_name] = tree
+                self.file_paths[mod_name] = fpath
+            self.parse_stats = {
+                "discovered": len(self.files),
+                "parsed": len(self.modules),
+                "fast_path_skipped": 0,
+                "unparseable": len(self.skipped_files),
+                "workers_used": 1,
+                "governor_events": 0,
+                "parse_mode": "single",
+                "execution_mode": self.execution_mode,
+                "parallel_fallback_reason": None,
+                "parsed_by_packer": _parsed_by_packer,
+            }
+        elif _parallel_parsing_failed or not getattr(self, "parse_stats", None):
             # Fallback to sequential parsing for small workloads, when parallel is unavailable,
             # or when the parallel fan-out raised.
             self.modules: dict[str, ast.AST] = {}
@@ -2900,7 +3011,11 @@ class TaintTracker:
                 "execution_mode": self.execution_mode,
                 "parallel_fallback_reason": self.parallel_fallback_reason,
             }
-        # ─── Syntax recovery: a file `ast.parse` rejected gets the shield, then one block-level retry ───
+        # Published for every mode, including the fan-out branch that built its own `parse_stats`:
+        # a report can now say which reader was *allowed* to produce these modules, not just guess it
+        # from the counters. Additive key only - nothing reads it as a control signal.
+        self.parse_stats["parser_mode"] = self.parser_mode
+        # ─── Syntax recovery: a file every allowed reader rejected gets one block-level retry ───
         # This is the whole cost on a healthy corpus: an empty dict, so the loop body never runs. The
         # retry lives here rather than inside each parse site because all three of them - the parallel
         # fan-out, its serial twin and the inline loop above - report failures the same way, through
@@ -2918,7 +3033,7 @@ class TaintTracker:
             _src = self.files.get(_fpath)
             if not isinstance(_src, str):
                 continue
-            _tree, _bypassed = parse_source_tolerant(_src, _fpath)
+            _tree, _bypassed = parse_source_tolerant(_src, _fpath, parser_mode=self.parser_mode)
             if _tree is None:
                 continue
             _mod = _fpath.replace("\\\\", "/").replace(".py", "").replace("/", ".")
