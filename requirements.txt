@@ -24,3 +24,10 @@ psycopg[binary]
 # while `tcs/parallel_analyzer.py`, `tcs/parallel_scanner.py` and `cli.py` all import it, so a
 # runner that installed only requirements.txt lost the governor and Phase 2 ran single-worker.
 psutil>=5.9
+
+# Phase 1 of the resilient parser (`tcs/treesitter_packer.py`): the tolerant CST parser and its
+# Python grammar. Both ship pre-compiled PyPI wheels for CPython 3.12 on Linux/macOS/Windows, so
+# installing them needs no C toolchain on the runner. Verified pair: tree-sitter 0.26.0 +
+# tree-sitter-python 0.25.0. Nothing imports them until Phase 2 wires the parser into the scanner.
+tree-sitter>=0.23
+tree-sitter-python>=0.21
