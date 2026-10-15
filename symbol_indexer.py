@@ -12,6 +12,32 @@ from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Dict, List, Optional, Set, Tuple
 
+# The cross-file index re-reads and re-parses the tree the scanner already parsed. On a big repository
+# that duplicated pass is worth handing to the same RAM-governed worker pool the scanner uses, but the
+# import is optional: `symbol_indexer` is imported by standalone tooling and tests where the worker
+# package is not on the path, and those callers must keep getting the serial behaviour, not an ImportError.
+try:
+    from tcs.parallel_scanner import read_and_parse_paths
+
+    _FANOUT_AVAILABLE = True
+except Exception:  # pragma: no cover - environment dependent
+    _FANOUT_AVAILABLE = False
+
+# Spawning a worker costs ~1.4 s, and 600 files parse serially in ~1 s, so a small tree must never pay
+# for a pool. Only fan out once the duplicated pass is long enough to be worth the spawn.
+PARALLEL_READ_MIN_FILES = 2000
+
+
+def _read_and_parse_one(path: str) -> dict:
+    """Read + parse one file into the worker entry shape; never raises."""
+    try:
+        source = Path(path).read_text(encoding="utf-8", errors="replace")
+        return {"path": path, "source": source,
+                "tree": ast.parse(source, filename=path), "error": None}
+    except Exception as exc:
+        return {"path": path, "source": None, "tree": None,
+                "error": f"{type(exc).__name__}: {exc}"[:200]}
+
 
 @dataclass(slots=True)
 class SymbolDefinition:
@@ -62,7 +88,7 @@ class GlobalSymbolIndex:
         # pointer. The returned value is still the same dotted string.
         return sys.intern(".".join(parts))
 
-    def build(self) -> GlobalSymbolIndex:
+    def build(self, max_workers: Optional[int] = None) -> GlobalSymbolIndex:
         """Pass 1: Discover and index all Python definitions and imports."""
         py_files: list[Path] = []
         for root, dirs, files in os.walk(self.root_dir, followlinks=False):
@@ -85,18 +111,35 @@ class GlobalSymbolIndex:
             self.module_to_file[mod_name] = p
             self.modules[mod_name] = ModuleIndex(module_name=mod_name, file_path=p)
 
-        # 2. Parse and index symbols
-        for p in py_files:
+        # 2. Parse and index symbols.
+        # This pass reads and parses the whole tree a *second* time - the scanner already parsed it -
+        # and it did so in the parent process, serially. Measured on the 609-file benchmark corpus
+        # that is 0.97 s, so it is not the reason a Home Assistant scan is slow; it is nevertheless
+        # pure duplicated work that scales linearly with the tree (~17 s at 10,648 files), so the
+        # read+parse goes through the same RAM-governed fan-out the scanner uses. `py_files` order is
+        # preserved because `modules` and `_ast_cache` are built by inserting these results and the
+        # cross-file engine walks that insertion order.
+        entries = self._read_and_parse([str(p) for p in py_files], max_workers)
+        for p, entry in zip(py_files, entries):
             mod_name = self.file_to_module[p]
+            if entry["tree"] is None:
+                continue
             try:
-                content = p.read_text(encoding="utf-8", errors="replace")
-                tree = ast.parse(content, filename=str(p))
-                self._ast_cache[mod_name] = tree
-                self._index_file(mod_name, p, tree)
+                self._ast_cache[mod_name] = entry["tree"]
+                self._index_file(mod_name, p, entry["tree"])
             except Exception:
+                # Unchanged from the serial loop: a tree cached before `_index_file` raised stays
+                # cached, so a file with an odd top-level statement is still analysable downstream.
                 continue
 
         return self
+
+    @staticmethod
+    def _read_and_parse(paths: List[str], max_workers: Optional[int]) -> List[dict]:
+        """Read + parse every path in path order: through the governor when it is importable."""
+        if _FANOUT_AVAILABLE and len(paths) >= PARALLEL_READ_MIN_FILES:
+            return read_and_parse_paths(paths, max_workers=max_workers)
+        return [_read_and_parse_one(p) for p in paths]
 
     def _index_file(self, mod_name: str, file_path: Path, tree: ast.AST) -> None:
         idx = self.modules[mod_name]

@@ -16866,6 +16866,20 @@ class TaintTracker:
             r"\b(SELECT|INSERT\s+INTO|UPDATE|DELETE\s+FROM|DROP|ALTER|TRUNCATE|"
             r"REPLACE\s+INTO|MERGE|WHERE|UNION)\b", re.IGNORECASE)
         p12_seen: set[tuple[int, int]] = set()
+        # Every emit used to copy `self.sink_records` and scan the copy to answer "is there already a
+        # CWE-89 record on this file:line". The list grows as this collector runs, so the cost is
+        # O(findings x records): measured on a 4x replication of the benchmark corpus (2,436 files)
+        # this collector took 78 s of a 120 s analysis, and it is the term that turns a linear scan
+        # into a quadratic one on a 10k-file repository. The index answers the same question in O(1).
+        # It is built once from the current list in list order and appended to at the one place this
+        # collector appends, so the first matching record stays the same record and a repair done
+        # earlier in this collector is still visible to a later emit.
+        cwe89_by_location: dict[Tuple[str, int], list] = {}
+        for _record in self.sink_records:
+            _node = _record.security_node
+            if _node.metadata.get("cwe") == "CWE-89":
+                _loc = _node.location
+                cwe89_by_location.setdefault((_loc.file, _loc.line_start), []).append(_record)
 
         def _scope_for(node: ast.AST, mod_name: str) -> str:
             current = node
@@ -17163,18 +17177,13 @@ class TaintTracker:
                 arg_line = getattr(query_expr, "lineno", 0)
                 if arg_line:
                     lines_to_emit.add(arg_line)
-            existing_records = list(self.sink_records)
             emitted = False
             for line in sorted(lines_to_emit):
                 if _is_line_suppressed(line, mod_name):
                     continue
                 node_location = CodeLocation(file_path, line, line, 0, 0)
-                match = next((
-                    record for record in existing_records
-                    if record.security_node.location.file == node_location.file
-                    and record.security_node.location.line_start == node_location.line_start
-                    and record.security_node.metadata.get("cwe") == "CWE-89"
-                ), None)
+                bucket = cwe89_by_location.get((node_location.file, node_location.line_start))
+                match = bucket[0] if bucket else None
                 if match is not None:
                     meta = match.security_node.metadata
                     if not any(key.endswith("source_id") for key in meta):
@@ -17200,12 +17209,17 @@ class TaintTracker:
                     },
                 )
                 self.sinks.append(sink_node)
-                self.sink_records.append(SinkRecord(
+                record = SinkRecord(
                     node=call,
                     security_node=sink_node,
                     lineno=line,
                     scope_id=scope_id,
-                ))
+                )
+                self.sink_records.append(record)
+                # Keep the index in step with the list it indexes: a second finding on this same
+                # file:line has to see this record, exactly as it saw the freshly copied list before.
+                cwe89_by_location.setdefault((node_location.file, node_location.line_start),
+                                             []).append(record)
                 emitted = True
 
         # P1 edge-repair: registry-created CWE-89 sinks that never earned a source id.

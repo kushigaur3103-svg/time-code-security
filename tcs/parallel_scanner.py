@@ -11,9 +11,10 @@ from __future__ import annotations
 
 import ast
 import os
+import pathlib
 import sys
 import time
-from concurrent.futures import ProcessPoolExecutor, as_completed
+from concurrent.futures import ProcessPoolExecutor
 from typing import Any, Dict, List, Optional, Tuple
 
 try:
@@ -167,18 +168,30 @@ def _is_zero_risk_file(filepath: str, source: str) -> bool:
     return False
 
 
-def _parse_single_file(args: Tuple[str, str]) -> Dict[str, Any]:
+def _parse_single_file(args: Tuple[str, Optional[str]]) -> Dict[str, Any]:
     """Parse a single Python file and return lightweight metadata.
     
     This runs in a worker process. Returns ONLY primitive types.
     
     Args:
-        args: (filepath, source_code) tuple
+        args: (filepath, source_code) tuple. A None source means "stream it from disk here":
+            the parent never buffers the repository for a fan-out it does not need.
     
     Returns:
         Dict with keys: filepath, mod_name, tree_serialized, skipped, error
     """
     filepath, source = args
+    if source is None:
+        try:
+            source = pathlib.Path(filepath).read_text(encoding="utf-8", errors="replace")
+        except (OSError, ValueError) as exc:
+            return {
+                "filepath": filepath,
+                "mod_name": None,
+                "tree": None,
+                "skipped_fast_path": False,
+                "error": f"{type(exc).__name__}: {exc}"[:200],
+            }
     
     # Fast-path: skip zero-risk files early
     if _is_zero_risk_file(filepath, source):
@@ -256,65 +269,95 @@ def parse_files_parallel(
     # Prepare file list
     file_items = list(files.items())
     total_files = len(file_items)
-    
+
     # For small workloads, skip parallelism overhead
     if total_files <= BATCH_SIZE:
         return _parse_files_sequential(files)
-    
-    # Batch files to reduce IPC overhead
-    batches = []
-    for i in range(0, total_files, BATCH_SIZE):
-        batch = file_items[i:i + BATCH_SIZE]
-        batches.append(batch)
-    
+
     modules: Dict[str, ast.AST] = {}
     file_paths: Dict[str, str] = {}
     skipped_files: Dict[str, str] = {}
     fast_path_skipped = 0
-    
     start_time = time.time()
-    
-    # Process batches sequentially (each batch uses parallel workers internally)
-    for batch_idx, batch in enumerate(batches):
-        # Re-check memory between batches and adjust workers dynamically
-        if batch_idx > 0 and batch_idx % 2 == 0:
-            current_mem = get_memory_stats()
-            current_free_mb = current_mem["available_gb"] * 1024
-            
-            # Hard safety threshold check
-            if current_free_mb < HARD_SAFETY_THRESHOLD_MB:
-                print(
-                    f"TimeCodeSecurity [GOVERNOR] CRITICAL: RAM dropped to {current_free_mb:.0f} MB. "
-                    f"Forcing single-worker mode.",
-                    file=sys.stderr,
-                )
-                max_workers = 1
-                governor_events += 1
-            elif current_free_mb < 1500:
-                # Moderate pressure - reduce by 1 if possible
-                if max_workers > 1:
-                    print(
-                        f"TimeCodeSecurity [GOVERNOR] Memory pressure ({current_free_mb:.0f} MB). "
-                        f"Reducing workers from {max_workers} to {max_workers - 1}.",
-                        file=sys.stderr,
-                    )
-                    max_workers = max(1, max_workers - 1)
-                    governor_events += 1
-        
-        # Process this batch with worker pool
-        batch_results = _process_batch(batch, max_workers)
-        
-        for result in batch_results:
-            if result["error"]:
-                skipped_files[result["filepath"]] = result["error"]
-            elif result["skipped_fast_path"]:
-                fast_path_skipped += 1
-            else:
-                modules[result["mod_name"]] = result["tree"]
-                file_paths[result["mod_name"]] = result["filepath"]
-    
+
+    def _merge(result: Dict[str, Any]) -> None:
+        # The same three-way branch the batch loop used to run, just fed in file order.
+        nonlocal fast_path_skipped
+        if result["error"]:
+            skipped_files[result["filepath"]] = result["error"]
+        elif result["skipped_fast_path"]:
+            fast_path_skipped += 1
+        else:
+            modules[result["mod_name"]] = result["tree"]
+            file_paths[result["mod_name"]] = result["filepath"]
+
+    # A governor that lands on one worker used to keep the fan-out anyway: a brand new
+    # ProcessPoolExecutor for every BATCH_SIZE slice, each file pickled into the child and its AST
+    # pickled back. Measured on the 609-file corpus: 4.91 s that way against 0.15 s in process, for
+    # identical trees - and the per-slice spawn multiplies by 267 slices on a 10k-file repository.
+    # So one worker parses in the parent, and several workers share ONE pool for the whole run
+    # instead of paying a fresh interpreter per slice.
+    governor_events = 0
+    in_process = max_workers <= 1
+    slices = [file_items[i:i + BATCH_SIZE] for i in range(0, total_files, BATCH_SIZE)]
+
+    if in_process:
+        for filepath, source in file_items:
+            _merge(_parse_here(filepath, source))
+        max_workers = 1
+    else:
+        executor: Optional[ProcessPoolExecutor] = None
+        try:
+            for slice_idx, batch in enumerate(slices):
+                # Re-check memory between slices and adjust the pool dynamically. Once the run has
+                # fallen back to the parent there is no pool left to protect, so the check stops.
+                if executor is not None and slice_idx > 0 and slice_idx % 2 == 0:
+                    current_free_mb = get_memory_stats()["available_gb"] * 1024
+                    if current_free_mb < HARD_SAFETY_THRESHOLD_MB:
+                        print(
+                            f"TimeCodeSecurity [GOVERNOR] CRITICAL: RAM dropped to "
+                            f"{current_free_mb:.0f} MB. Finishing this run in the parent.",
+                            file=sys.stderr,
+                        )
+                        # A ProcessPoolExecutor cannot shrink, and "1 worker" through a pool is the
+                        # pickling round-trip this change removes. The remaining slices run here:
+                        # one process instead of N is the strict RAM win the governor is for.
+                        # Nothing is in flight at this point (`_parse_slice` collected every
+                        # future), so waiting costs nothing and leaves no orphan worker behind.
+                        executor.shutdown(wait=True)
+                        executor = None
+                        in_process = True
+                        max_workers = 1
+                        governor_events += 1
+                    elif current_free_mb < 1500 and max_workers > 2:
+                        print(
+                            f"TimeCodeSecurity [GOVERNOR] Memory pressure "
+                            f"({current_free_mb:.0f} MB). Reducing workers from "
+                            f"{max_workers} to {max_workers - 1}.",
+                            file=sys.stderr,
+                        )
+                        max_workers = max_workers - 1
+                        governor_events += 1
+                        # Tear the pool down so the next slice rebuilds it at the smaller size: a
+                        # live ProcessPoolExecutor cannot give workers back, and a log line claiming
+                        # a reduction that did not happen would be the governor lying about RAM.
+                        executor.shutdown(wait=True)
+                        executor = None
+                if in_process:
+                    for filepath, source in batch:
+                        _merge(_parse_here(filepath, source))
+                    continue
+                if executor is None:
+                    executor = ProcessPoolExecutor(max_workers=max_workers)
+                free_mb = get_memory_stats()["available_gb"] * 1024
+                for result in _parse_slice(executor, batch, free_mb):
+                    _merge(result)
+        finally:
+            if executor is not None:
+                executor.shutdown(wait=True)
+
     elapsed = time.time() - start_time
-    
+
     print(
         f"TimeCodeSecurity: Parsed {len(modules)} files in {elapsed:.2f}s "
         f"({fast_path_skipped} fast-path skipped, {len(skipped_files)} errors)",
@@ -326,7 +369,7 @@ def parse_files_parallel(
         "parsed": len(modules),
         "fast_path_skipped": fast_path_skipped,
         "unparseable": len(skipped_files),
-        "parse_mode": "parallel",
+        "parse_mode": "inline" if in_process else "parallel",
         "workers_initial": workers_initial,
         "workers_final": max_workers,
         "governor_events": governor_events,
@@ -334,55 +377,67 @@ def parse_files_parallel(
     return modules, file_paths, skipped_files, parse_stats
 
 
-def _process_batch(
-    batch: List[Tuple[str, str]],
-    max_workers: int,
-) -> List[Dict[str, Any]]:
-    """Process a batch of files with ProcessPoolExecutor and adaptive timeouts."""
-    results = []
-    
-    # Compute adaptive timeout based on current memory pressure
-    mem_stats = get_memory_stats()
-    free_ram_mb = mem_stats["available_gb"] * 1024
-    per_file_timeout = compute_adaptive_timeout(free_ram_mb)
-    batch_timeout = per_file_timeout * len(batch)
-    
-    with ProcessPoolExecutor(max_workers=max_workers) as executor:
-        # Submit all files in batch
-        future_to_file = {
-            executor.submit(_parse_single_file, (filepath, source)): filepath
-            for filepath, source in batch
-        }
-        
-        # Collect results with adaptive timeout
-        for future in as_completed(future_to_file, timeout=batch_timeout):
-            filepath = future_to_file[future]
-            try:
-                result = future.result(timeout=per_file_timeout)
-                results.append(result)
-            except TimeoutError:
-                print(
-                    f"TimeCodeSecurity [WARN] File analysis timeout skipped: {filepath}",
-                    file=sys.stderr,
-                )
-                results.append({
-                    "filepath": filepath,
-                    "mod_name": None,
-                    "tree": None,
-                    "skipped_fast_path": False,
-                    "error": f"Timeout after {per_file_timeout:.1f}s (low memory)",
-                })
-            except Exception as exc:
-                results.append({
-                    "filepath": filepath,
-                    "mod_name": None,
-                    "tree": None,
-                    "skipped_fast_path": False,
-                    "error": f"Worker error: {type(exc).__name__}: {exc}"[:200],
-                })
-    
-    return results
 
+
+def _parse_here(filepath: str, source: Optional[str]) -> Dict[str, Any]:
+    """Run the worker body in the parent. It cannot raise: it is where a lost worker lands."""
+    try:
+        return _parse_single_file((filepath, source))
+    except Exception as exc:
+        return {
+            "filepath": filepath,
+            "mod_name": None,
+            "tree": None,
+            "skipped_fast_path": False,
+            "error": f"{type(exc).__name__}: {exc}"[:200],
+        }
+
+
+def _parse_slice(
+    executor: ProcessPoolExecutor,
+    batch: List[Tuple[str, Optional[str]]],
+    free_ram_mb: float,
+) -> List[Dict[str, Any]]:
+    """Parse one slice on the shared pool and hand the results back in file order.
+
+    Two properties the per-slice pool did not have:
+    - the executor is created once for the whole run, so a 10k-file repository pays one spawn
+      instead of one per 40 files;
+    - results are collected by index, not by `as_completed`. Completion order made `modules`
+      insertion order - and therefore the sink ids every later phase hands out from it - depend on
+      which worker happened to finish first. Files now always land in discovery order.
+
+    Only one slice is ever in flight, so the returned ASTs are bounded by BATCH_SIZE per parent
+    instead of the whole tree sitting in the result queue.
+    """
+    per_file_timeout = compute_adaptive_timeout(free_ram_mb)
+    futures = [executor.submit(_parse_single_file, (filepath, source))
+               for filepath, source in batch]
+    results: List[Dict[str, Any]] = []
+    for (filepath, source), future in zip(batch, futures):
+        try:
+            results.append(future.result(timeout=per_file_timeout))
+        except TimeoutError:
+            print(
+                f"TimeCodeSecurity [WARN] File analysis timeout skipped: {filepath}",
+                file=sys.stderr,
+            )
+            results.append({
+                "filepath": filepath,
+                "mod_name": None,
+                "tree": None,
+                "skipped_fast_path": False,
+                "error": f"Timeout after {per_file_timeout:.1f}s (low memory)",
+            })
+        except Exception as exc:
+            # A dead worker is a local fault, not a reason to lose a file: re-parse it here.
+            print(
+                f"TimeCodeSecurity [GOVERNOR] worker lost for {filepath} "
+                f"({type(exc).__name__}); re-parsing in parent",
+                file=sys.stderr,
+            )
+            results.append(_parse_here(filepath, source))
+    return results
 
 def _parse_files_sequential(
     files: Dict[str, str],
@@ -422,6 +477,81 @@ def _parse_files_sequential(
         "parse_mode": "sequential",
     }
     return modules, file_paths, skipped_files, parse_stats
+
+
+def _read_and_parse_path(path: str) -> Dict[str, Any]:
+    """Worker entry: read one file from disk and parse it, so the parent never does either.
+
+    The path, not the source text, is what crosses the process boundary. A second serial
+    read + `ast.parse` pass over the whole tree (the cross-file symbol indexer's) used to run in
+    the parent while every other core sat idle; passing paths is what lets that pass fan out
+    without pickling the repository's source through the queue first.
+    """
+    entry = {"path": path, "source": None, "tree": None, "error": None}
+    try:
+        source = pathlib.Path(path).read_text(encoding="utf-8", errors="replace")
+    except (OSError, ValueError) as exc:
+        entry["error"] = f"read {type(exc).__name__}: {exc}"[:200]
+        return entry
+    entry["source"] = source
+    try:
+        entry["tree"] = ast.parse(source, filename=path)
+    except (SyntaxError, ValueError, UnicodeDecodeError) as exc:
+        entry["error"] = f"parse {type(exc).__name__}: {exc}"[:200]
+    return entry
+
+
+def _read_and_parse_here(path: str) -> Dict[str, Any]:
+    """Same contract in-process, and it cannot raise: this is the path a worker failure lands on.
+
+    A lost worker must never mean a lost file. The serial re-do here is what keeps the parallel
+    fan-out findings-identical to the loop it replaced.
+    """
+    try:
+        return _read_and_parse_path(path)
+    except Exception as exc:
+        return {"path": path, "source": None, "tree": None,
+                "error": f"{type(exc).__name__}: {exc}"[:200]}
+
+
+def read_and_parse_paths(paths: List[str],
+                         max_workers: Optional[int] = None) -> List[Dict[str, Any]]:
+    """Read and parse *paths* in parallel, returning one entry per path **in the given order**.
+
+    Ordering is the whole contract: callers build dicts from these results and later phases walk
+    dict insertion order, so a completion-order fan-out would reshuffle findings. Entries come
+    back by index, never by whoever finished first.
+
+    Each entry is `{"path", "source", "tree", "error"}`; `tree` is None exactly when the serial
+    loop would have `continue`d, so the caller's decisions are unchanged.
+    """
+    if not paths:
+        return []
+    workers = compute_safe_workers() if max_workers is None else max(1, int(max_workers))
+    if workers <= 1:
+        return [_read_and_parse_here(p) for p in paths]
+    available_mb = get_memory_stats()["available_gb"] * 1024
+    # Generous, because a timeout here is not a skip: the file is re-read and re-parsed in the
+    # parent below. The watchdog exists to stop a wedged worker, not to drop work.
+    file_timeout = max(PER_FILE_TIMEOUT_S * 4, compute_adaptive_timeout(available_mb) * 4)
+    try:
+        with ProcessPoolExecutor(max_workers=workers) as executor:
+            futures = [executor.submit(_read_and_parse_path, p) for p in paths]
+            entries: List[Dict[str, Any]] = []
+            for path, future in zip(paths, futures):
+                try:
+                    entries.append(future.result(timeout=file_timeout))
+                except Exception as exc:
+                    print(f"TimeCodeSecurity [GOVERNOR] worker lost for {path} "
+                          f"({type(exc).__name__}: {exc}); re-parsing in parent",
+                          file=sys.stderr)
+                    entries.append(_read_and_parse_here(path))
+        return entries
+    except Exception as exc:
+        print(f"TimeCodeSecurity [GOVERNOR] path fan-out unavailable "
+              f"({type(exc).__name__}: {exc}); serial read+parse of {len(paths)} file(s)",
+              file=sys.stderr)
+        return [_read_and_parse_here(p) for p in paths]
 
 
 if __name__ == "__main__":
