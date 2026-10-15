@@ -3,8 +3,8 @@
 `tcs/treesitter_packer.py` converts a tree-sitter concrete syntax tree into a real `ast.Module`
 that `ast.walk` and `ast.NodeVisitor` can traverse. Three contracts are proven here:
 
-1. **Zero touch** -- the main scanner does not know this module exists, so nothing in the current
-   engine can change behaviour because of it.
+1. **Isolation** -- the translator imports nothing from the engine, and the engine reaches it through
+   one gated helper (`clean_parse`), never through the unconditional `parse_to_ast`.
 2. **Parity** -- for valid Python the output matches `ast.parse` node-for-node, so a later phase
    cannot introduce false positives or misses by switching to it.
 3. **Zero panic** -- for broken, binary, or cutting-edge syntax it still returns a traversable
@@ -245,10 +245,26 @@ def test_treesitter_packer_phase_one():
         print(f"SKIP: tree-sitter not installed on Python {PY}")
         return
 
-    # ─── 1. Zero touch: the main scanner has no idea this module exists ───
-    scanner = (ROOT / "ast_scanner.py").read_text(encoding="utf-8")
-    for needle in ("treesitter_packer", "tree_sitter", "tree-sitter", "parse_to_ast"):
-        assert needle not in scanner, f"ast_scanner.py references {needle!r}"
+    # ─── 1. Isolation: the translator is standalone, and the scanner touches one function ───
+    imports = []
+    for node in ast.walk(ast.parse((ROOT / "tcs" / "treesitter_packer.py").read_text(encoding="utf-8"))):
+        if isinstance(node, ast.Import):
+            imports += [a.name for a in node.names]
+        elif isinstance(node, ast.ImportFrom):
+            assert node.level == 0, "the packer uses a relative import"
+            imports.append(node.module or "")
+    # Only stdlib plus its own optional grammar wheels - never the engine it is meant to feed.
+    allowed = {"__future__", "ast", "threading", "typing", "tree_sitter", "tree_sitter_python"}
+    assert set(imports) <= allowed, sorted(set(imports) - allowed)
+    # Phase 2 wired the shield in. The contract that keeps it reviewable: the *unconditional* parser
+    # (`parse_to_ast`, which answers even for garbage) is still never called by the scanner, and the
+    # only code that touches the packer at all is the one rescue helper.
+    scanner_src = (ROOT / "ast_scanner.py").read_text(encoding="utf-8")
+    assert "parse_to_ast" not in scanner_src, "the scanner must go through the gated clean_parse"
+    users = sorted({node.name for node in ast.walk(ast.parse(scanner_src))
+                    if isinstance(node, (ast.FunctionDef, ast.AsyncFunctionDef))
+                    and "_treesitter_packer" in ast.dump(node)})
+    assert users == ["_treesitter_rescue"], users
 
     # ─── 2. Structural + coordinate parity against ast.parse on valid Python ───
     assert len(SNIPPETS) >= 20, len(SNIPPETS)

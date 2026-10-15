@@ -43,7 +43,7 @@ import ast
 import threading
 from typing import Any, List, Optional, Sequence, Tuple
 
-__all__ = ["parse_to_ast", "tree_sitter_available", "SYNTAX_PLACEHOLDER_PREFIX"]
+__all__ = ["parse_to_ast", "clean_parse", "tree_sitter_available", "SYNTAX_PLACEHOLDER_PREFIX"]
 
 # Markers used when a fragment could not be modelled. They are strings in the AST only to make the
 # degradation visible in a dump; the node types themselves are plain `ast` nodes.
@@ -129,14 +129,17 @@ def _pos(node, out: ast.AST) -> ast.AST:
     return out
 
 
+def _encode(source_code) -> bytes:
+    if isinstance(source_code, (bytes, bytearray)):
+        return bytes(source_code)
+    if isinstance(source_code, str):
+        return source_code.encode("utf-8", "surrogatepass")
+    return str(source_code).encode("utf-8", "replace")
+
+
 def parse_to_ast(source_code, filename: str = "<unknown>") -> ast.Module:
     """Parse `source_code` into a traversable `ast.Module`. Never raises."""
-    if isinstance(source_code, (bytes, bytearray)):
-        data = bytes(source_code)
-    elif isinstance(source_code, str):
-        data = source_code.encode("utf-8", "surrogatepass")
-    else:
-        data = str(source_code).encode("utf-8", "replace")
+    data = _encode(source_code)
     try:
         parser = None
         try:
@@ -163,12 +166,60 @@ def parse_to_ast(source_code, filename: str = "<unknown>") -> ast.Module:
         return fallback
 
 
+def clean_parse(source_code, filename: str = "<treesitter>") -> Optional[ast.Module]:
+    """Return a module only for source the grammar reads as *complete, valid* Python, else None.
+
+    This is the gate a scanner needs before it trusts a recovered tree. `parse_to_ast` always answers,
+    because its contract is "never panic"; that same eagerness makes it unsafe as an unconditional
+    rescue, since `def f(:` also yields a module - one whose broken statement was guessed at. Three
+    independent proofs have to hold here instead, and all three are facts about the input, never
+    hand-picked name lists:
+
+    1. the grammar's own verdict - `root.has_error` is False, so no `ERROR` node was needed to read
+       the file; this is what separates "valid syntax this interpreter predates" (PEP 695/701) from
+       "the author's file is damaged";
+    2. the translator's own verdict - it never had to synthesise a statement (`_pass`) for something
+       it could not model, so no code was quietly dropped or invented;
+    3. CPython's own verdict - the finished module compiles, which rejects recovered trees that are
+       structurally walkable but not valid Python (a hoisted top-level `return`, a starred target).
+
+    A file that fails any proof returns None, and the caller keeps its existing, proven recovery.
+    Never raises.
+    """
+    try:
+        with _PARSER_LOCK:
+            parser = _parser()
+            tree = parser.parse(_encode(source_code))
+            try:
+                root = tree.root_node
+                if root.has_error:
+                    return None
+                translator = _Translator(source=source_code, filename=filename)
+                module = translator.module(root)
+            finally:
+                destroy = getattr(tree, "destroy", None)
+                if callable(destroy):
+                    destroy()
+                del tree
+        if translator.degraded:
+            return None
+        name = filename if isinstance(filename, str) else "<treesitter>"
+        module.filename = name
+        compile(module, name, "exec")
+        return module
+    except Exception:
+        return None
+
+
 class _Translator:
     """CST -> `ast`. Every method returns `ast` nodes or placeholders, never None, never raises."""
 
     def __init__(self, source, filename: str):
         self.source = source
         self.filename = filename
+        # Set whenever a statement had to be invented instead of translated. `clean_parse` reads it
+        # to decide whether the tree it built may be handed to a scanner.
+        self.degraded = False
 
     # ─── module ───
     def module(self, root) -> ast.Module:
@@ -213,6 +264,9 @@ class _Translator:
             return []
 
     def _pass(self, node, lineno: int = 1, col: int = 0) -> ast.Pass:
+        # Every call site of this helper is "something real was here and we could not model it"; a
+        # `pass` written in the source goes through the `pass_statement` handler instead.
+        self.degraded = True
         out = ast.Pass()
         if node is None:
             out.lineno, out.col_offset = lineno, col
@@ -874,6 +928,8 @@ class _Translator:
         return self._placeholder(node)
 
     def _placeholder(self, node):
+        # An expression we could not model is a hole in the tree, not a translated node.
+        self.degraded = True
         out = ast.Constant(value=None)
         _pos(node, out)
         return out

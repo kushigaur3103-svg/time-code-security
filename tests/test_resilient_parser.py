@@ -141,11 +141,17 @@ def test_resilient_ast_recovery():
     tr = scan({"valid.py": VALID})
     assert tr.recovered_files == {}, tr.recovered_files
     assert tr.skipped_files == {}, tr.skipped_files
+    assert tr.rescued_files == {}, "valid file must never reach the shield"
     assert "RECOVERED" not in tr._stderr, tr._stderr
+    assert "RESCUED" not in tr._stderr, tr._stderr
     # The retry loop's only work on a healthy corpus is iterating an empty dict.
     assert tr.parse_stats.get("recovered") is None, "no recovery -> no new telemetry field"
+    assert tr.parse_stats.get("rescued") is None, "no rescue -> no new telemetry field"
 
     # ─── 2. Positive control: sinks around a newer-syntax line are still extracted ───
+    # Phase 2 hands a newer-syntax file to the tree-sitter shield, which reads it whole and therefore
+    # bypasses nothing. Where the shield is not installed the block sweep is still the mechanism, so
+    # each ledger is asserted against whichever one actually produced the tree.
     exercised = 0
     for label, src in MODERN.items():
         bad_line = rejected_line(src)
@@ -155,12 +161,16 @@ def test_resilient_ast_recovery():
         exercised += 1
         tree2, bypassed2 = parse_source_tolerant(src, "modern.py")
         assert tree2 is not None, f"{label}: recovery gave up"
-        assert bypassed2, f"{label}: nothing bypassed"
         assert "helper" in funcs(tree2), funcs(tree2)
         tr2 = scan({"modern.py": src})
-        assert tr2.recovered_files.get("modern.py") == bypassed2, tr2.recovered_files
+        if bypassed2:
+            assert tr2.recovered_files.get("modern.py") == bypassed2, tr2.recovered_files
+            assert f"bypassed unparseable line {bad_line}" in tr2._stderr, (tr2._stderr, bad_line)
+        else:
+            assert tr2.rescued_files.get("modern.py") == "treesitter", tr2.rescued_files
+            assert tr2.recovered_files == {}, tr2.recovered_files
+            assert "[RESCUED-TREESITTER] modern.py" in tr2._stderr, tr2._stderr
         assert any(ln == 5 for ln, _ in sink_lines(tr2)), sink_lines(tr2)
-        assert f"bypassed unparseable line {bad_line}" in tr2._stderr, (tr2._stderr, bad_line)
     print(f"  Python {PY}: {exercised} modern-syntax fixture(s) exercised recovery")
 
     # ─── 3. Fault injection: a malformed def does not sink the rest of the file ───

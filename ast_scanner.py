@@ -20,6 +20,18 @@ try:
 except ImportError:
     PARALLEL_PARSING_AVAILABLE = False
 
+# TimeCodeSecurity: Phase 2 syntax-rescue shield. `tcs.treesitter_packer` reads a *tolerant*
+# tree-sitter CST and converts it to a real `ast.Module`; it imports only stdlib at module level and
+# loads the tree-sitter wheels lazily inside its own functions, so this import costs nothing and
+# cannot fail on a runner that has no wheels (`TREESITTER_RESCUE_AVAILABLE` then stays False and the
+# shield is simply never consulted). Nothing here runs for a file that `ast.parse` accepted.
+try:
+    from tcs import treesitter_packer as _treesitter_packer
+    TREESITTER_RESCUE_AVAILABLE = True
+except ImportError:
+    _treesitter_packer = None
+    TREESITTER_RESCUE_AVAILABLE = False
+
 class NodeType(str, Enum):
     SOURCE = "source"
     TRANSFORM = "transform"
@@ -2763,17 +2775,43 @@ def _tolerant_substitute(lines: list, start: int, end: int) -> list:
     return out
 
 
+def _treesitter_rescue(source: str, filename: str):
+    """Ask the tolerant CST reader for a module, and take it only if it can prove the file was whole.
+
+    `clean_parse` inside the packer declines (returns None) unless three independent facts hold: the
+    grammar needed no `ERROR` node to read the file, the translator invented no placeholder statement,
+    and CPython itself compiles the finished module. That is what keeps this shield for *newer syntax
+    this interpreter predates* - PEP 695 generics, PEP 701 nested f-strings - instead of letting a
+    damaged file be analysed against a tree somebody guessed at. Damaged files fall through to the
+    block-level substitution below, which is the mechanism already proven on them.
+    """
+    if _treesitter_packer is None:
+        return None
+    tree = _treesitter_packer.clean_parse(source, filename)
+    if tree is None:
+        return None
+    print(f"TimeCodeSecurity [RESCUED-TREESITTER] {filename}: recovered complete AST via "
+          f"tree-sitter packer", file=sys.stderr)
+    return tree
+
+
 def parse_source_tolerant(source: str, filename: str):
     """`ast.parse`, then - only if that raised SyntaxError - the same parse with bad blocks removed.
 
     Returns `(tree | None, bypassed_block_start_lines)`. `None` means the file is as unparseable as it
     was before: recovery never invents a module it cannot prove parses, and never presents a partial
     file as a whole one.
+
+    An empty `bypassed_block_start_lines` on a file whose first parse failed means the tree came from
+    the tree-sitter shield - nothing had to be removed for it to parse.
     """
     try:
         return ast.parse(source, filename=filename), []
     except SyntaxError:
         pass
+    rescued = _treesitter_rescue(source, filename)
+    if rescued is not None:
+        return rescued, []
     lines = source.splitlines(keepends=True)
     if not lines:
         return None, []
@@ -2862,7 +2900,7 @@ class TaintTracker:
                 "execution_mode": self.execution_mode,
                 "parallel_fallback_reason": self.parallel_fallback_reason,
             }
-        # ─── Syntax recovery: a file `ast.parse` rejected gets one block-level retry ───
+        # ─── Syntax recovery: a file `ast.parse` rejected gets the shield, then one block-level retry ───
         # This is the whole cost on a healthy corpus: an empty dict, so the loop body never runs. The
         # retry lives here rather than inside each parse site because all three of them - the parallel
         # fan-out, its serial twin and the inline loop above - report failures the same way, through
@@ -2870,7 +2908,10 @@ class TaintTracker:
         # parent's tree (see `_phase2_module_batch`), so a recovered module analyses identically at any
         # worker count. Only SyntaxError is retried: a NUL byte (`ValueError`) or an undecodable file is
         # not a syntax problem and no partial module would be honest.
+        # `recovered_files` stays the block-substitution ledger and `rescued_files` the tree-sitter one,
+        # so a report can always say which mechanism produced which module.
         self.recovered_files: dict[str, list] = {}
+        self.rescued_files: dict[str, str] = {}
         for _fpath, _reason in list(self.skipped_files.items()):
             if not _reason.startswith("SyntaxError"):
                 continue
@@ -2893,14 +2934,21 @@ class TaintTracker:
             self.modules[_mod] = _tree
             self.file_paths[_mod] = _fpath
             del self.skipped_files[_fpath]
-            self.recovered_files[_fpath] = _bypassed
-            print(f"TimeCodeSecurity [RECOVERED] {_fpath}: bypassed unparseable line "
-                  f"{_bypassed[0] if _bypassed else 0} "
-                  f"({len(_bypassed)} block(s) replaced by pass: {','.join(map(str, _bypassed)) or '-'})",
-                  file=sys.stderr)
-        if self.recovered_files:
+            if _bypassed:
+                self.recovered_files[_fpath] = _bypassed
+                print(f"TimeCodeSecurity [RECOVERED] {_fpath}: bypassed unparseable line "
+                      f"{_bypassed[0]} "
+                      f"({len(_bypassed)} block(s) replaced by pass: {','.join(map(str, _bypassed))})",
+                      file=sys.stderr)
+            else:
+                # The shield already logged [RESCUED-TREESITTER] when it handed the tree back.
+                self.rescued_files[_fpath] = "treesitter"
+        if self.recovered_files or self.rescued_files:
             # Counters stay truthful: a recovered file was never parsed *and* is not unparseable now.
-            self.parse_stats["recovered"] = len(self.recovered_files)
+            if self.recovered_files:
+                self.parse_stats["recovered"] = len(self.recovered_files)
+            if self.rescued_files:
+                self.parse_stats["rescued"] = len(self.rescued_files)
             self.parse_stats["parsed"] = len(self.modules)
             self.parse_stats["unparseable"] = len(self.skipped_files)
         # Module names and file paths are re-compared and re-hashed for the rest of the run: every
