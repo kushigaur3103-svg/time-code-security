@@ -33,6 +33,10 @@ MIN_FREE_CORES = 2                    # Keep at least 2 cores free for Windows O
 WORKER_RAM_BUDGET_MB = 550            # Budget 550 MB RAM per active worker process
 HARD_SAFETY_THRESHOLD_MB = 900        # If available RAM < 900 MB, drop to 1 worker immediately
 PER_FILE_TIMEOUT_S = 4.0              # Strict per-file watchdog timeout (seconds)
+# Extra head-room on top of the queue-aware deadline below. The parent itself does work between
+# collections (merging results, reading files), so a deadline measured exactly to the millisecond
+# would blame that bookkeeping on the worker. 1.0s on a 4.0s parse budget, nothing more.
+QUEUE_BUDGET_SLACK_S = 1.0
 BATCH_SIZE = 40                       # Files per batch (balance IPC vs overhead)
 MAX_WORKERS_CEILING = 12              # Allow up to 12 workers on cloud runners with ample RAM
 CI_TWO_CORE_RAM_MB = 1600             # 2-core CI runner gets its second worker above this much RAM
@@ -350,7 +354,7 @@ def parse_files_parallel(
                 if executor is None:
                     executor = ProcessPoolExecutor(max_workers=max_workers)
                 free_mb = get_memory_stats()["available_gb"] * 1024
-                for result in _parse_slice(executor, batch, free_mb):
+                for result in _parse_slice(executor, batch, free_mb, max_workers):
                     _merge(result)
         finally:
             if executor is not None:
@@ -397,6 +401,7 @@ def _parse_slice(
     executor: ProcessPoolExecutor,
     batch: List[Tuple[str, Optional[str]]],
     free_ram_mb: float,
+    workers: int = 1,
 ) -> List[Dict[str, Any]]:
     """Parse one slice on the shared pool and hand the results back in file order.
 
@@ -409,17 +414,32 @@ def _parse_slice(
 
     Only one slice is ever in flight, so the returned ASTs are bounded by BATCH_SIZE per parent
     instead of the whole tree sitting in the result queue.
+
+    Queue wait is NOT parse time. `future.result(timeout=…)` was previously given the bare
+    per-file parse budget, so a file that simply sat behind `idx // workers` predecessors in the
+    FIFO queue burned its own watchdog while doing nothing: Home Assistant's
+    `tests/components/mqtt/test_init.py` (2,797 bytes, 0.8 ms to parse) was dropped that way at
+    14,893 MB free RAM, next to a "(low memory)" message that had never looked at RAM. Each file
+    now gets the same parse budget, extended only by the queue depth it must wait behind - a
+    genuinely stuck worker still hits a bounded deadline, a merely queued file never does.
     """
     per_file_timeout = compute_adaptive_timeout(free_ram_mb)
+    workers = max(1, int(workers))
+    _slice_t0 = time.perf_counter()
     futures = [executor.submit(_parse_single_file, (filepath, source))
                for filepath, source in batch]
     results: List[Dict[str, Any]] = [None] * len(batch)
     timed_out: List[Tuple[int, Any, str, Optional[str]]] = []
     for idx, ((filepath, source), future) in enumerate(zip(batch, futures)):
+        # Files are collected in submission order, and the pool is FIFO, so the task at `idx`
+        # cannot even START before `idx // workers` predecessors have finished. Its deadline is
+        # therefore the parse budget multiplied by that queue depth.
+        budget = per_file_timeout * (1 + idx // workers) + QUEUE_BUDGET_SLACK_S
         try:
-            results[idx] = future.result(timeout=per_file_timeout)
+            results[idx] = future.result(
+                timeout=max(0.0, budget - (time.perf_counter() - _slice_t0)))
         except TimeoutError:
-            timed_out.append((idx, future, filepath, source))
+            timed_out.append((idx, future, filepath, source, budget))
         except Exception as exc:
             # A dead worker is a local fault, not a reason to lose a file: re-parse it here.
             print(
@@ -433,7 +453,7 @@ def _parse_slice(
     # timeout may be done by now. Take those results; the parse completed anyway, and dropping
     # it lost a security-relevant file (Home Assistant's websocket_api/test_init.py) for no time
     # saved. Anything still running keeps the original skip policy, unchanged.
-    for idx, future, filepath, source in timed_out:
+    for idx, future, filepath, source, budget in timed_out:
         if future.done():
             try:
                 results[idx] = future.result()
@@ -464,7 +484,13 @@ def _parse_slice(
             "mod_name": None,
             "tree": None,
             "skipped_fast_path": False,
-            "error": f"Timeout after {per_file_timeout:.1f}s (low memory)",
+            # Truthful accounting: the budget, why it is that size, and the RAM the governor saw.
+            # The old string blamed "(low memory)" unconditionally, which is what made a 14.9 GB
+            # runner log two files as low-memory skips.
+            "error": (f"Timeout after {budget:.1f}s deadline "
+                      f"(parse limit {per_file_timeout:.1f}s x queue depth "
+                      f"{1 + idx // workers}, {workers} worker(s), "
+                      f"{free_ram_mb:.0f} MB free RAM)"),
         }
     return results
 
