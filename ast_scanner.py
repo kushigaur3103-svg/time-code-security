@@ -21071,6 +21071,10 @@ class TaintTracker:
         # Observational only: never feeds a finding. Reset per pass so a reused tracker cannot
         # carry stale timings.
         self._collector_profile = {}
+        # Observational per-collector input/output counts (Phase-1 instrumentation): sink
+        # records appended by each batch, in execution order. Never read by a decision.
+        _sink_deltas: dict[str, int] = {}
+        _prev_sinks = len(self.sink_records)
         self._checkpoint_phase = "Collectors (23 structural batches)"
         for _s1_name, _s1_collector in (
             ("batch2", self._collect_batch2_structural_findings),
@@ -21103,6 +21107,8 @@ class TaintTracker:
             self._collector_profile[_s1_name] = self._collector_profile.get(_s1_name, 0.0) + (
                 _time.perf_counter() - _s1_t0)
             self._flush_stage1_structural_edges()
+            _sink_deltas[_s1_name] = len(self.sink_records) - _prev_sinks
+            _prev_sinks = len(self.sink_records)
         # Last, so their line+CWE dedup sees every sink the earlier phases already reported.
         self._checkpoint_collector = None
         self._checkpoint_phase = "Blindspot collectors (14 CWE passes per module)"
@@ -21140,10 +21146,13 @@ class TaintTracker:
         self._flush_stage1_structural_edges()
         self._checkpoint_collector = None
         self._collector_profile["blindspot_all"] = _time.perf_counter() - _bs_t0
+        _sink_deltas["blindspot_all"] = len(self.sink_records) - _prev_sinks
         print("TimeCodeSecurity [PROFILE] Collectors (s): " + " ".join(
             f"{name}={secs:.2f}" for name, secs in
             sorted(self._collector_profile.items(), key=lambda kv: (-kv[1], kv[0]))),
             file=_sys.stderr)
+        print("TimeCodeSecurity [PROFILE] Collector sink deltas (execution order): " + " ".join(
+            f"{name}={delta}" for name, delta in _sink_deltas.items()), file=_sys.stderr)
         _t1 = _time.perf_counter()
         print(f"TimeCodeSecurity [PROFILE] Structural findings (all batches): {_t1 - _t0:.2f}s", file=_sys.stderr)
         _t_cascade = _t1

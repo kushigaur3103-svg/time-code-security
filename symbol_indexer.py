@@ -8,9 +8,24 @@ from __future__ import annotations
 import ast
 import os
 import sys
+import time
 from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Dict, List, Optional, Set, Tuple
+
+# Phase-1 instrumentation only (never read by a decision): the fallback resolver below is a
+# linear scan over every registered module name, so on a 10k-module repository each miss costs
+# 10k `endswith` tests. These counters say how often that happens and how long it costs.
+# `build()` resets them, so the numbers belong to one indexing run.
+_MATCH_STATS = {"calls": 0, "exact": 0, "suffix": 0, "miss": 0,
+                "modules_scanned": 0, "fallback_time_s": 0.0}
+
+
+def resolver_stats_line() -> str:
+    s = _MATCH_STATS
+    return (f"resolver: calls={s['calls']} exact={s['exact']} suffix={s['suffix']} "
+            f"miss={s['miss']} module_names_scanned={s['modules_scanned']} "
+            f"fallback_time={s['fallback_time_s']:.2f}s")
 
 # The cross-file index re-reads and re-parses the tree the scanner already parsed. On a big repository
 # that duplicated pass is worth handing to the same RAM-governed worker pool the scanner uses, but the
@@ -90,6 +105,10 @@ class GlobalSymbolIndex:
 
     def build(self, max_workers: Optional[int] = None) -> GlobalSymbolIndex:
         """Pass 1: Discover and index all Python definitions and imports."""
+        _t_walk0 = time.perf_counter()
+        # Observational reset so resolver counters belong to this engine run.
+        for _k in _MATCH_STATS:
+            _MATCH_STATS[_k] = 0.0 if _k == "fallback_time_s" else 0
         py_files: list[Path] = []
         for root, dirs, files in os.walk(self.root_dir, followlinks=False):
             # Symlinked dirs are pruned before descending: a link into an ancestor
@@ -119,7 +138,14 @@ class GlobalSymbolIndex:
         # read+parse goes through the same RAM-governed fan-out the scanner uses. `py_files` order is
         # preserved because `modules` and `_ast_cache` are built by inserting these results and the
         # cross-file engine walks that insertion order.
+        _t_walk1 = time.perf_counter()
         entries = self._read_and_parse([str(p) for p in py_files], max_workers)
+        _t_read1 = time.perf_counter()
+        # Phase-1 counters: this is the duplicated read+parse pass over the whole tree
+        # (`source` only exists in-process on the serial path; the fan-out returns trees, so
+        # char totals cover what the parent itself decoded).
+        _reread_chars = sum(len(e["source"]) for e in entries if e.get("source"))
+        _trees_built = sum(1 for e in entries if e["tree"] is not None)
         for p, entry in zip(py_files, entries):
             mod_name = self.file_to_module[p]
             if entry["tree"] is None:
@@ -132,6 +158,12 @@ class GlobalSymbolIndex:
                 # cached, so a file with an odd top-level statement is still analysable downstream.
                 continue
 
+        _t_idx1 = time.perf_counter()
+        print(f"TimeCodeSecurity [PROFILE] SymbolIndex: walk={_t_walk1 - _t_walk0:.2f}s "
+              f"py_files={len(py_files)} read_parse={_t_read1 - _t_walk1:.2f}s "
+              f"trees={_trees_built} parent_chars={_reread_chars} "
+              f"index={_t_idx1 - _t_read1:.2f}s modules={len(self.modules)} "
+              f"TOTAL={_t_idx1 - _t_walk0:.2f}s", file=sys.stderr)
         return self
 
     @staticmethod
@@ -254,12 +286,24 @@ class GlobalSymbolIndex:
 
     def _match_registered_module(self, module_candidate: str) -> Optional[str]:
         """Fuzzy match module name against root-prefixed or stripped module paths."""
+        st = _MATCH_STATS
+        st["calls"] += 1
+        _t_fb0 = time.perf_counter()
         if module_candidate in self.modules:
+            st["exact"] += 1
             return module_candidate
         # Suffix matching (e.g. 'introduction.apis' matching 'pygoat.introduction.apis')
+        _scanned = 0
         for mod in self.modules:
+            _scanned += 1
             if mod.endswith(f".{module_candidate}") or mod == module_candidate:
+                st["suffix"] += 1
+                st["modules_scanned"] += _scanned
+                st["fallback_time_s"] += time.perf_counter() - _t_fb0
                 return mod
+        st["miss"] += 1
+        st["modules_scanned"] += _scanned
+        st["fallback_time_s"] += time.perf_counter() - _t_fb0
         return None
 
 

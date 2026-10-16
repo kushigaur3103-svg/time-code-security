@@ -138,14 +138,24 @@ class CrossFileTaintEngine:
         self.signal_definitions: Set[tuple[str, str]] = set()
         self.signal_subscribers: dict[tuple[str, str], List[tuple[str, str]]] = {}
         self.task_definitions: Set[tuple[str, str]] = set()
+        # Observational only (Phase-1 instrumentation): rounds actually executed by the
+        # fixed-point loop below; never read by a decision.
+        self._propagation_rounds = 0
 
     def run(self) -> list[CrossFileFinding]:
+        # Phase-1 instrumentation: disjoint stage clocks over the existing sequence.
+        # Nothing here changes an algorithm, an iteration order, or a finding.
+        _t0 = time.perf_counter()
         # 1. Build Index & Contracts
         self.indexer.build()
+        _t1 = time.perf_counter()
         self.summarizer = FunctionSummarizer(self.indexer)
         self.contracts = self.summarizer.build_all_summaries()
+        _t2 = time.perf_counter()
         self._propagate_transitive_sink_contracts()
+        _t3 = time.perf_counter()
         self._build_event_catalog()
+        _t4 = time.perf_counter()
 
         # 2. Analyze Callers across all modules
         for mod_name, mod_idx in self.indexer.modules.items():
@@ -153,7 +163,16 @@ class CrossFileTaintEngine:
             if not tree:
                 continue
             self._analyze_module_calls(mod_name, mod_idx.file_path, tree)
+        _t5 = time.perf_counter()
 
+        from symbol_indexer import resolver_stats_line
+        print(f"TimeCodeSecurity [PROFILE] CrossEngine: IndexBuild={_t1 - _t0:.2f}s "
+              f"Summaries={_t2 - _t1:.2f}s Propagate={_t3 - _t2:.2f}s "
+              f"(rounds={self._propagation_rounds}) EventCatalog={_t4 - _t3:.2f}s "
+              f"CallerAnalysis={_t5 - _t4:.2f}s TOTAL={_t5 - _t0:.2f}s "
+              f"modules={len(self.indexer.modules)} contracts={len(self.contracts)} "
+              f"findings={len(self.findings)} | {resolver_stats_line()}",
+              file=sys.stderr)
         return self.findings
 
     # ─── Framework event bus: Django signals and Celery tasks ───
@@ -292,6 +311,7 @@ class CrossFileTaintEngine:
         forwarding propagates, which keeps the lift alias-free and terminating.
         """
         while True:
+            self._propagation_rounds += 1
             changed = False
             for mod_name, mod_idx in self.indexer.modules.items():
                 tree = self.indexer._ast_cache.get(mod_name)
@@ -383,12 +403,17 @@ class CrossFileTaintEngine:
         as injectable. The returned keys are (resolved file path, call lineno).
         """
         suppressed: Set[tuple[str, int]] = set()
+        _t_s0 = time.perf_counter()
         if not any(summary.is_sanitizer for summary in self.contracts.values()):
+            print(f"TimeCodeSecurity [PROFILE] CrossSanitizers: scan={time.perf_counter() - _t_s0:.2f}s "
+                  f"(no sanitizer contracts; 0 trees walked) sites=0", file=sys.stderr)
             return suppressed
+        _modules_walked = 0
         for mod_name, mod_idx in self.indexer.modules.items():
             tree = self.indexer._ast_cache.get(mod_name)
             if not tree:
                 continue
+            _modules_walked += 1
             file_key = str(Path(mod_idx.file_path).resolve())
             qualnames = {id(node): name for node, name in _contracted_functions(tree)}
             for node in ast.walk(tree):
@@ -398,6 +423,10 @@ class CrossFileTaintEngine:
                             mod_name, file_key, node, qualnames.get(id(node), node.name)
                         )
                     )
+        print(f"TimeCodeSecurity [PROFILE] CrossSanitizers: "
+              f"scan={time.perf_counter() - _t_s0:.2f}s "
+              f"(trees_walked={_modules_walked}/{len(self.indexer.modules)}) "
+              f"sites={len(suppressed)}", file=sys.stderr)
         return suppressed
 
     def _sanitized_sites(

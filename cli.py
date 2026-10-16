@@ -163,6 +163,53 @@ def _progress(message):
     print(f"[progress] {message}", file=sys.stderr, flush=True)
 
 
+class _StageClock:
+    """Phase-1 outer instrumentation: disjoint end-to-end stage clocks, stderr only.
+
+    Each `mark()` closes the stage that was open since the previous mark, so the stage
+    seconds are disjoint by construction and sum to TOTAL (modulo the final report call).
+    Engine-internal lines (`[PROFILE] Phase n ...`, `[PROFILE] CrossEngine ...`, collector
+    profiles) are NESTED inside these stages and must never be added to them. Worker-pool
+    time is included in the stage that owns the pool (Parse), not per core.
+
+    Nothing here feeds a finding, a suppression, the JSON schema, or the exit code;
+    `duration_ms` keeps its original semantics (started after file collection). RSS sampling
+    uses the already-optional psutil: without it the report says RSS=unavailable.
+    """
+
+    def __init__(self, label):
+        try:
+            import psutil
+            self._rss_fn = psutil.Process().memory_info
+        except Exception:
+            self._rss_fn = None
+        self.label = label
+        self.t_start = time.perf_counter()
+        self.t_mark = self.t_start
+        self.rows = []
+        self.peak_rss_mb = 0.0
+
+    def mark(self, stage):
+        now = time.perf_counter()
+        rss_mb = 0.0
+        if self._rss_fn is not None:
+            try:
+                rss_mb = self._rss_fn().rss / (1024 ** 2)
+            except Exception:
+                rss_mb = 0.0
+        self.peak_rss_mb = max(self.peak_rss_mb, rss_mb)
+        self.rows.append((stage, now - self.t_mark, rss_mb))
+        self.t_mark = now
+
+    def report(self):
+        total = time.perf_counter() - self.t_start
+        parts = " ".join(f"{name}={secs:.2f}s" for name, secs, _ in self.rows)
+        rss_note = (f" peakRSS_parent={self.peak_rss_mb:.0f}MB"
+                    if self._rss_fn is not None else " RSS=unavailable(psutil missing)")
+        print(f"TimeCodeSecurity [PROFILE] Outer({self.label}): {parts} TOTAL={total:.2f}s{rss_note}",
+              file=sys.stderr, flush=True)
+
+
 def _iter_tree_files(root):
     """Yield the real files under `root`, never following a symlink.
 
@@ -191,7 +238,11 @@ def _collect_files(scan_path, exclude_patterns=None):
     Args:
         scan_path: Path object (file or directory)
         exclude_patterns: List of glob patterns to exclude (e.g., ['tests', 'test_*'])
+
+    Phase-1 instrumentation only: the enumerate/read split names the cold-tree serial
+    read cost that the pre-existing `duration_ms` anchor cannot see (it starts later).
     """
+    _t_enum0 = time.perf_counter()
     cwd = Path.cwd().resolve()
     if not scan_path.exists():
         raise FileNotFoundError(f"Path does not exist: {scan_path}")
@@ -213,9 +264,11 @@ def _collect_files(scan_path, exclude_patterns=None):
     if not paths:
         raise ValueError(f"No Python files found: {scan_path}")
 
+    _t_enum = time.perf_counter()
     files = {}
     skipped = 0
     templated = 0
+    total_chars = 0
     total = len(paths)
     _progress(f"discovered {total} python file(s) under {scan_path}")
     for index, path in enumerate(paths, 1):
@@ -234,12 +287,18 @@ def _collect_files(scan_path, exclude_patterns=None):
         if is_tree and _is_template_interpolated(path, scan_path) and not _parses_as_python(source):
             templated += 1
             continue
+        total_chars += len(source)
         files[_file_key(path, cwd)] = source
+    _t_reads = time.perf_counter()
     if templated:
         _progress(f"skipped {templated} unparseable Jinja-interpolated file(s) under {scan_path}")
     if skipped:
         print(f"Warning: skipped {skipped} of {len(paths)} Python files; "
               f"{len(files)} scanned.", file=sys.stderr)
+    print(f"TimeCodeSecurity [PROFILE] CollectFiles: enumerate={_t_enum - _t_enum0:.2f}s "
+          f"(paths={total}), serial_read={_t_reads - _t_enum:.2f}s "
+          f"(kept={len(files)}, chars={total_chars}, unreadable={skipped}, jinja_skipped={templated})",
+          file=sys.stderr)
     _PARTIAL["current_file"] = None
     return files
 
@@ -1132,6 +1191,11 @@ def _maybe_warn_js_ts(args):
 
 def _scan(args):
     scope = args.scope
+    # Phase-1 outer clock: anchored at the earliest scan entry point, i.e. BEFORE
+    # `_maybe_warn_js_ts`, auxiliary collection and `_collect_files`. The pre-existing
+    # `started`/`duration_ms` anchor (after file collection) is left untouched so the
+    # JSON schema keeps its documented meaning; Outer(...) TOTAL is the wider boundary.
+    _clock = _StageClock("scan")
     _install_partial_flush(args)
     _maybe_warn_js_ts(args)
     
@@ -1146,6 +1210,7 @@ def _scan(args):
             templates = {}
         if scope not in ("all", "docker"):
             iac = {}
+        _clock.mark("AuxCollect")
         tracker = None
         files = {}
         if scope in ("all", "python"):
@@ -1154,6 +1219,7 @@ def _scan(args):
             except ValueError:
                 if not templates and not iac:
                     raise
+        _clock.mark("CollectPy")
         
         # TimeCodeSecurity: Capture pre-scan memory stats
         try:
@@ -1175,13 +1241,19 @@ def _scan(args):
                       + ("" if _parser_mode == DEFAULT_PARSER_MODE else f", parser={_parser_mode}"))
             tracker = TaintTracker(files=files, max_workers=workers, parser_mode=_parser_mode)
             _PARTIAL["tracker"] = tracker
+            _clock.mark("Parse+Init")
             for fpath, reason in sorted(tracker.skipped_files.items()):
                 print(f"Warning: skipping unparseable file {fpath}: {reason}", file=sys.stderr)
             _, _, edges = tracker.analyze()
+            _clock.mark("Analyze")
             ast_findings = _findings_for(tracker, edges)
+            _clock.mark("ASTFindings")
             _progress(f"parsed + traced, {len(ast_findings)} AST finding(s) so far")
         else:
             ast_findings = []
+            _clock.mark("Parse+Init")
+            _clock.mark("Analyze")
+            _clock.mark("ASTFindings")
         file_counts = {
             "python": len(tracker.modules) if tracker else 0,
             "docker": len(iac),
@@ -1226,12 +1298,18 @@ def _scan(args):
                                   getattr(tracker, "parallel_fallback_reason", None))
         findings = _merge_findings(ast_findings, audit_templates(templates), audit_iac_files(iac))
         findings = consolidate_findings(findings)
+        _clock.mark("Merge+Consolidate")
         _PARTIAL["findings"] = findings
         if scope in ("all", "python"):
             cross_findings, cross_engine = _run_cross_scan(args.path)
+            _clock.mark("CrossScan")
             findings = _suppress_cross_file_sanitized(findings, cross_engine)
+            _clock.mark("Suppression")
             findings.extend(cross_findings)
             _PARTIAL["findings"] = findings
+        else:
+            _clock.mark("CrossScan")
+            _clock.mark("Suppression")
 
         # Incremental scan: keep only diagnostics intersecting the modified lines.
         # Applied before autofix generation so patching work is scoped too.
@@ -1256,6 +1334,7 @@ def _scan(args):
             # Attach autofixes where deterministic fixes are available
             autofix_engine = RemediationEngine()
             findings = _attach_autofixes(findings, source_cache, autofix_engine)
+        _clock.mark("LineScope+JS+Autofix")
         
         duration_ms = (time.perf_counter() - started) * 1000
         
@@ -1300,6 +1379,7 @@ def _scan(args):
         traces = _cross_trace_report(findings, Path.cwd().resolve())
         if traces:
             print(traces)
+    _clock.mark("StdoutOutput")
 
     if args.sarif:
         try:
@@ -1312,6 +1392,7 @@ def _scan(args):
             return 2
     else:
         sarif_size_mb = 0
+    _clock.mark("SARIFDump")
     
     # TimeCodeSecurity: Print performance metrics to stderr
     if files and tracker:
@@ -1342,6 +1423,12 @@ def _scan(args):
             print("="*70, file=sys.stderr)
         except ImportError:
             pass  # Parallel scanner not available, skip metrics
+
+    _clock.mark("MetricsBlock")
+    # Outer TOTAL spans the whole scan command: entry (before auxiliary/python collection)
+    # to just before exit-code computation. Stages before `started` (AuxCollect, CollectPy)
+    # are inside TOTAL but NOT inside duration_ms - that is the CLI-vs-UI boundary gap.
+    _clock.report()
 
     # Exit-code parity with `tcs_cli.py`: a scan that finds something exits 1, so CI can gate
     # on either entry point. 2 stays reserved for an internal error (see the crash handler).
