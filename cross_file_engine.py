@@ -119,8 +119,12 @@ class CrossFileFinding:
 class CrossFileTaintEngine:
     """Pass 2: Traces data flow across modules using precomputed contracts."""
 
-    def __init__(self, root_dir: str | Path):
+    def __init__(self, root_dir: str | Path,
+                 reuse_trees: Optional[dict] = None):
         self.root_dir = Path(root_dir).resolve()
+        # Scanner-parsed (source, tree) snapshots keyed by resolved absolute path string;
+        # the indexer re-verifies each against disk before reuse (see GlobalSymbolIndex.build).
+        self.reuse_trees = reuse_trees
         self.indexer = GlobalSymbolIndex(self.root_dir)
         self.summarizer: Optional[FunctionSummarizer] = None
         self.contracts: dict[tuple[str, str], FunctionSummary] = {}
@@ -147,7 +151,7 @@ class CrossFileTaintEngine:
         # Nothing here changes an algorithm, an iteration order, or a finding.
         _t0 = time.perf_counter()
         # 1. Build Index & Contracts
-        self.indexer.build()
+        self.indexer.build(reuse_trees=self.reuse_trees)
         _t1 = time.perf_counter()
         self.summarizer = FunctionSummarizer(self.indexer)
         self.contracts = self.summarizer.build_all_summaries()
