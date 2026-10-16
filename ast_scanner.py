@@ -3150,6 +3150,14 @@ class TaintTracker:
         self._checkpoint_collector: Optional[str] = None
         self._checkpoint_t0: Optional[float] = None
         self._collector_profile: dict[str, float] = {}
+        # Diagnostic counters, written only by `_profile_removal` / `_profile_cache_rebuild` and read
+        # only by the `[PROFILE]` lines in `_analyze_pipeline`. `_profile_scope` names the collector
+        # currently running so a cache rebuild can be attributed instead of guessed; it is set from
+        # the same loop that already sets `_checkpoint_collector`, forced to one label for the
+        # blindspot pass (whose `_checkpoint_collector` is a file path, not a collector name).
+        self._profile_scope: Optional[str] = None
+        self._removal_profile: dict[str, dict[str, float]] = {}
+        self._cache_profile: dict[str, dict[str, int]] = {}
         self.functions: dict[str, ast.FunctionDef] = {}
         self.returns_by_scope: dict[str, list[ast.Return]] = {}
         self.raw_calls: list[tuple[ast.Call, str, int]] = []
@@ -9302,6 +9310,38 @@ class TaintTracker:
                     return True
         return False
 
+    def _profile_removal(self, removed_n: int, visited: int, rebinds: int, t0: float) -> None:
+        """Record the cost of one `_remove_existing` call against the collector that made it.
+
+        Measurement only: every argument is already known at the call site, nothing is read back into
+        scanner logic. `visited` is the number of records that call passed over while locating what to
+        remove - the (file, line, column) bucket for the indexed Phase 7 helper, the whole list for the
+        Phase 8/9 helpers that scan `sink_records` directly. `elapsed_s` covers the entire call,
+        including the list rebind and the `sinks` reconciliation, so it is the number a batching
+        change would have to beat.
+        """
+        scope = self._profile_scope or "(outside a collector)"
+        prof = self._removal_profile.setdefault(
+            scope, {"calls": 0, "removed": 0, "visited": 0, "rebinds": 0, "elapsed_s": 0.0})
+        prof["calls"] += 1
+        prof["removed"] += removed_n
+        prof["visited"] += visited
+        prof["rebinds"] += rebinds
+        import time as _time
+        prof["elapsed_s"] += _time.perf_counter() - t0
+
+    def _profile_cache_rebuild(self, kind: str, rebuilt_from: int) -> None:
+        """Record one forced rebuild of a sink cache, with the records it had to re-absorb.
+
+        Counted inside the invalidation branch only, so a hot incremental lookup adds nothing. The
+        count is exact, not inferred: `rebuilt_from` is `len(sink_records)` at the moment the rebuild
+        starts, i.e. the work the `range(start, len(records))` loop that follows performs.
+        """
+        scope = self._profile_scope or "(outside a collector)"
+        prof = self._cache_profile.setdefault(kind, {})
+        prof[scope] = prof.get(scope, 0) + 1
+        prof["_records_reabsorbed"] = prof.get("_records_reabsorbed", 0) + rebuilt_from
+
     def _sink_index_key(self, record: "SinkRecord"):
         """Dedup key for a sink record: the file, the first line and the CWE it reports.
 
@@ -9334,6 +9374,7 @@ class TaintTracker:
                 or (absorbed and records[absorbed - 1] is not self._sink_index_tail)):
             self._sink_index = {}
             self._sink_index_list = records
+            self._profile_cache_rebuild("sink_index", len(records))
             start = 0
         else:
             start = absorbed
@@ -9367,6 +9408,7 @@ class TaintTracker:
                 or (absorbed and records[absorbed - 1] is not self._sink_buckets_tail)):
             self._sink_buckets = {}
             self._sink_buckets_list = records
+            self._profile_cache_rebuild("sink_buckets", len(records))
             start = 0
         else:
             start = absorbed
@@ -9423,6 +9465,7 @@ class TaintTracker:
                 or (absorbed and records[absorbed - 1] is not self._sink_node_tail)):
             self._sink_node_seen = {record.node for record in records}
             self._sink_node_list = records
+            self._profile_cache_rebuild("sink_node_seen", len(records))
         else:
             seen = self._sink_node_seen
             for i in range(absorbed, len(records)):
@@ -19056,6 +19099,7 @@ class TaintTracker:
                     or (_loc_index_count and records[_loc_index_count - 1] is not _loc_index_tail)):
                 _sink_loc_index.clear()
                 _loc_index_list = records
+                self._profile_cache_rebuild("sink_loc_index", len(records))
                 _start = 0
             else:
                 _start = _loc_index_count
@@ -19225,18 +19269,29 @@ class TaintTracker:
             return _bool_keyword(expr, "resolve_entities", scope_id, lineno) is False
 
         def _remove_existing(node: ast.Call, cwes: set[str], mod_name: str) -> None:
-            node_location = location(node, self.file_paths.get(mod_name, "unknown.py"))
-            removed = [
-                record for record in _records_at(node_location)
-                if record.security_node.metadata.get("cwe") in cwes
-            ]
-            if not removed:
-                return
-            self.sink_records = [record for record in self.sink_records if record not in removed]
-            for record in removed:
-                if not any(other.security_node is record.security_node for other in self.sink_records):
-                    if record.security_node in self.sinks:
-                        self.sinks.remove(record.security_node)
+            import time as _rm_time
+            _rm_t0 = _rm_time.perf_counter()
+            _rm_stats = {"removed": 0, "visited": 0, "rebinds": 0}
+            try:
+                node_location = location(node, self.file_paths.get(mod_name, "unknown.py"))
+                bucket = _records_at(node_location)
+                _rm_stats["visited"] = len(bucket)
+                removed = [
+                    record for record in bucket
+                    if record.security_node.metadata.get("cwe") in cwes
+                ]
+                if not removed:
+                    return
+                _rm_stats["removed"] = len(removed)
+                _rm_stats["rebinds"] = 1
+                self.sink_records = [record for record in self.sink_records if record not in removed]
+                for record in removed:
+                    if not any(other.security_node is record.security_node for other in self.sink_records):
+                        if record.security_node in self.sinks:
+                            self.sinks.remove(record.security_node)
+            finally:
+                self._profile_removal(_rm_stats["removed"], _rm_stats["visited"],
+                                      _rm_stats["rebinds"], _rm_t0)
 
         def _is_opener_receiver(expr: ast.AST, scope_id: str, lineno: int, walked=None) -> bool:
             """True for `URLopener()` / `OpenerDirector()`, or a name bound to one."""
@@ -19855,19 +19910,29 @@ class TaintTracker:
             return False
 
         def _remove_existing(node: ast.Call, cwes: set[str], mod_name: str) -> None:
-            node_location = location(node, self.file_paths.get(mod_name, "unknown.py"))
-            removed = [
-                record for record in self.sink_records
-                if record.security_node.location == node_location
-                and record.security_node.metadata.get("cwe") in cwes
-            ]
-            if not removed:
-                return
-            self.sink_records = [record for record in self.sink_records if record not in removed]
-            for record in removed:
-                if not any(other.security_node is record.security_node for other in self.sink_records):
-                    if record.security_node in self.sinks:
-                        self.sinks.remove(record.security_node)
+            import time as _rm_time
+            _rm_t0 = _rm_time.perf_counter()
+            _rm_stats = {"removed": 0, "visited": 0, "rebinds": 0}
+            try:
+                node_location = location(node, self.file_paths.get(mod_name, "unknown.py"))
+                _rm_stats["visited"] = len(self.sink_records)
+                removed = [
+                    record for record in self.sink_records
+                    if record.security_node.location == node_location
+                    and record.security_node.metadata.get("cwe") in cwes
+                ]
+                if not removed:
+                    return
+                _rm_stats["removed"] = len(removed)
+                _rm_stats["rebinds"] = 1
+                self.sink_records = [record for record in self.sink_records if record not in removed]
+                for record in removed:
+                    if not any(other.security_node is record.security_node for other in self.sink_records):
+                        if record.security_node in self.sinks:
+                            self.sinks.remove(record.security_node)
+            finally:
+                self._profile_removal(_rm_stats["removed"], _rm_stats["visited"],
+                                      _rm_stats["rebinds"], _rm_t0)
 
         seen: set[tuple[str, int, int]] = set()
 
@@ -20133,19 +20198,29 @@ class TaintTracker:
             )
 
         def _remove_existing(node: ast.AST, cwe: str, mod_name: str) -> None:
-            node_location = location(node, self.file_paths.get(mod_name, "unknown.py"))
-            removed = [
-                record for record in self.sink_records
-                if record.security_node.location == node_location
-                and record.security_node.metadata.get("cwe") == cwe
-            ]
-            if not removed:
-                return
-            self.sink_records = [record for record in self.sink_records if record not in removed]
-            for record in removed:
-                if not any(other.security_node is record.security_node for other in self.sink_records):
-                    if record.security_node in self.sinks:
-                        self.sinks.remove(record.security_node)
+            import time as _rm_time
+            _rm_t0 = _rm_time.perf_counter()
+            _rm_stats = {"removed": 0, "visited": 0, "rebinds": 0}
+            try:
+                node_location = location(node, self.file_paths.get(mod_name, "unknown.py"))
+                _rm_stats["visited"] = len(self.sink_records)
+                removed = [
+                    record for record in self.sink_records
+                    if record.security_node.location == node_location
+                    and record.security_node.metadata.get("cwe") == cwe
+                ]
+                if not removed:
+                    return
+                _rm_stats["removed"] = len(removed)
+                _rm_stats["rebinds"] = 1
+                self.sink_records = [record for record in self.sink_records if record not in removed]
+                for record in removed:
+                    if not any(other.security_node is record.security_node for other in self.sink_records):
+                        if record.security_node in self.sinks:
+                            self.sinks.remove(record.security_node)
+            finally:
+                self._profile_removal(_rm_stats["removed"], _rm_stats["visited"],
+                                      _rm_stats["rebinds"], _rm_t0)
 
         seen: set[tuple[str, int, int]] = set()
 
@@ -21154,6 +21229,7 @@ class TaintTracker:
             ("django_post", self._collect_django_post_validation_findings),
         ):
             self._checkpoint_collector = _s1_name
+            self._profile_scope = _s1_name
             _s1_t0 = _time.perf_counter()
             _s1_collector()
             self._collector_profile[_s1_name] = self._collector_profile.get(_s1_name, 0.0) + (
@@ -21163,6 +21239,9 @@ class TaintTracker:
             _prev_sinks = len(self.sink_records)
         # Last, so their line+CWE dedup sees every sink the earlier phases already reported.
         self._checkpoint_collector = None
+        # One label for the whole pass: `_checkpoint_collector` holds a file path here, so keying the
+        # diagnostic counters on it would split the pass across ~10k buckets.
+        self._profile_scope = "blindspot_all"
         self._checkpoint_phase = "Blindspot collectors (14 CWE passes per module)"
         _bs_t0 = _time.perf_counter()
         for _bs_idx, (_bs_mod, _bs_tree) in enumerate(sorted(self.modules.items())):
@@ -21200,6 +21279,7 @@ class TaintTracker:
                 self._flush_stage1_structural_edges()
         self._flush_stage1_structural_edges()
         self._checkpoint_collector = None
+        self._profile_scope = None
         self._collector_profile["blindspot_all"] = _time.perf_counter() - _bs_t0
         _sink_deltas["blindspot_all"] = len(self.sink_records) - _prev_sinks
         print("TimeCodeSecurity [PROFILE] Collectors (s): " + " ".join(
@@ -21208,6 +21288,23 @@ class TaintTracker:
             file=_sys.stderr)
         print("TimeCodeSecurity [PROFILE] Collector sink deltas (execution order): " + " ".join(
             f"{name}={delta}" for name, delta in _sink_deltas.items()), file=_sys.stderr)
+        # Diagnostics for the removal helpers: `elapsed` is the whole cost a batching change would
+        # have to beat, `removed` is gross removals (unlike the net `sink deltas` above), and
+        # `rebinds` counts the list replacements that force every sink cache to rebuild.
+        print("TimeCodeSecurity [PROFILE] Removal helper cost per collector: " + (
+            " | ".join(
+                f"{name}: calls={int(prof['calls'])} removed={int(prof['removed'])} "
+                f"visited={int(prof['visited'])} rebinds={int(prof['rebinds'])} "
+                f"elapsed={prof['elapsed_s']:.3f}s"
+                for name, prof in sorted(self._removal_profile.items(),
+                                         key=lambda kv: -kv[1]["elapsed_s"])) or "none"),
+            file=_sys.stderr)
+        for _rp_kind, _rp_prof in sorted(self._cache_profile.items()):
+            print(f"TimeCodeSecurity [PROFILE] Sink-cache rebuilds [{_rp_kind}]: " + " ".join(
+                f"{_rp_scope}={_rp_n}" for _rp_scope, _rp_n in sorted(
+                    ((s, c) for s, c in _rp_prof.items() if s != "_records_reabsorbed"),
+                    key=lambda kv: (-kv[1], kv[0]))) +
+                f" reabsorbed={_rp_prof.get('_records_reabsorbed', 0)}", file=_sys.stderr)
         _t1 = _time.perf_counter()
         print(f"TimeCodeSecurity [PROFILE] Structural findings (all batches): {_t1 - _t0:.2f}s", file=_sys.stderr)
         _t_cascade = _t1
