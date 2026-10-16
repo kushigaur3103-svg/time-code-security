@@ -44,6 +44,39 @@ jobs:
       - name: Checkout TimeCodeSecurity (HEAD)
         uses: actions/checkout@v4
 
+      # Provenance first, and hard-checked. A 30-minute arena run that cannot say which commit it
+      # executed is worthless for attribution: the 2026-10-16 Home Assistant run was read as "the
+      # Phase 2 branch" while `github.head_branch`/`head_sha` on that run said `main` @ 69f398cae,
+      # and the missing `[PROFILE]` lines were the only symptom. `actions/checkout@v4` with no `ref:`
+      # input follows `github.sha` - the ref picked in the "Run workflow" dialog - so the only way
+      # old code runs is an old ref being dispatched. This step makes that impossible to mistake:
+      # it prints the dispatch ref/sha, the checkout's own `git rev-parse HEAD`, and fails the job if
+      # the two disagree. Nothing here echoes a secret: no env dump, no token, no `inputs` beyond the
+      # arena name already visible in the run title.
+      - name: Benchmark Provenance (which code is about to run)
+        run: |
+          mkdir -p benchmark_results
+          {
+            echo "dispatch ref            : ${{ github.ref }}"
+            echo "dispatch sha            : ${{ github.sha }}"
+            echo "checked out HEAD        : $(git rev-parse HEAD)"
+            echo "checked out branch      : $(git rev-parse --abbrev-ref HEAD)"
+            echo "HEAD commit subject     : $(git log -1 --pretty=%s)"
+            echo "workflow file           : ${{ github.workflow }} (from ${{ github.ref }})"
+            echo "run id / attempt        : ${{ github.run_id }} / ${{ github.run_attempt }}"
+            echo "trigger event           : ${{ github.event_name }}"
+            echo "arena input             : ${ARENA:-}"
+            echo "python                  : $(python --version 2>&1)"
+            echo "runner                  : ${{ runner.name }} (${{ runner.os }})"
+            echo "scan command            : python -u cli.py scan ${TARGET_DIR}/ --scope all --format json --sarif benchmark_results/tcs.sarif"
+          } | tee benchmark_results/provenance.txt
+          test "$(git rev-parse HEAD)" = "${{ github.sha }}" || {
+            echo "::error::checkout HEAD is not the dispatched sha - this run would score the wrong commit"
+            exit 1
+          }
+          echo "TCS_HEAD_SHA=$(git rev-parse HEAD)" >> "$GITHUB_ENV"
+          echo "TCS_HEAD_SHORT=$(git rev-parse --short HEAD)" >> "$GITHUB_ENV"
+
       - name: Set up Python 3.12
         uses: actions/setup-python@v5
         with:
@@ -95,6 +128,11 @@ jobs:
               ;;
           esac
           git clone --depth 1 --single-branch --branch "$REF" "$REPO" "$TARGET_DIR"
+          # The tag name alone is not a revision: `2023.11.0` is recorded here as the SHA the runner
+          # actually cloned, so a later re-dispatch can be compared file-for-file with this run.
+          # Read BEFORE `.git` is deleted, because after that there is nothing left to ask.
+          TARGET_SHA=$(git -C "$TARGET_DIR" rev-parse HEAD)
+          echo "target clone sha        : $TARGET_SHA ($REPO @ $REF)" >> benchmark_results/provenance.txt
           # Removing .git frees the object store before any engine reads the tree, and stops the
           # walkers from descending into it.
           rm -rf "$TARGET_DIR/.git"
@@ -102,11 +140,12 @@ jobs:
             echo "REPO=$REPO"
             echo "REF=$REF"
             echo "TARGET_REF_USED=$REF"
+            echo "TARGET_SHA=$TARGET_SHA"
             echo "ARENA_LABEL=$LABEL"
             echo "TARGET_PY_FILES=$(find "$TARGET_DIR" -name '*.py' | wc -l)"
             echo "TARGET_HTML_FILES=$(find "$TARGET_DIR" -name '*.html' | wc -l)"
           } >> "$GITHUB_ENV"
-          echo "arena=$ARENA -> $REPO @ $REF"
+          echo "arena=$ARENA -> $REPO @ $REF ($TARGET_SHA)"
           echo "python files: $(find "$TARGET_DIR" -name '*.py' | wc -l)"
           find "$TARGET_DIR" -type f | sort > benchmark_results/target_files.txt
           echo "arena files: $(wc -l < benchmark_results/target_files.txt)"
@@ -116,7 +155,7 @@ jobs:
         # worthless, so the job stops before a third-party tool is run. Actions runs the shell with
         # `bash -eo pipefail`, so a non-zero gate fails the step through the tee pipe.
         run: |
-          python scripts/run_all_checks.py | tee benchmark_results/gate1.txt
+          python scripts/run_all_checks.py 2>&1 | tee benchmark_results/gate1.txt
           grep -Eq "Cases Evaluated[[:space:]]*:[[:space:]]*552" benchmark_results/gate1.txt
           grep -Eq "False Positives[[:space:]]*:[[:space:]]*0" benchmark_results/gate1.txt
           grep -Eq "False Negatives[[:space:]]*:[[:space:]]*0" benchmark_results/gate1.txt
@@ -129,16 +168,44 @@ jobs:
         # 1379s with ~0s of headroom for the remaining phases. The pass is now fanned out over the
         # RAM governor's 4 workers on this runner, but the cap has to cover the worst case, not the
         # expected one: no call site is skipped, so the corpus still costs a full resolution.
-        # `|| echo` because Actions runs `bash -e` - a bare non-zero exit would abort the
-        # step before its code is recorded, and the referee would report "not recorded" instead of
-        # the real number (124 = timed out, 137 = killed).
+        #
+        # One merged log, two readers. `2>&1 | tee` puts stdout and stderr in the same file - every
+        # `[PROFILE]` line the engine writes goes to stderr, so a stdout-only capture would have
+        # hidden the timings that this whole step exists to produce - and the same text lands in the
+        # job log, so the numbers are readable without downloading the artifact. The real exit code
+        # comes from `PIPESTATUS[0]`, NOT from the pipeline: with Actions' default `bash -eo pipefail`
+        # a `tee` at the end of the pipe would either mask a 124 timeout or abort the step before
+        # `TCS_SCAN_EXIT` is recorded, and the referee would then say "not recorded" instead of
+        # naming the code. `set +e` around the scan is what keeps that bookkeeping honest.
         continue-on-error: true
         run: |
+          echo "TCS commit about to be scored: $(git rev-parse --short HEAD)"
+          {
+            echo "--- scan started $(date -u +%FT%TZ) on $(git rev-parse HEAD) ---"
+            echo "command: timeout --signal=TERM --kill-after=30s 2700s python -u cli.py scan $TARGET_DIR/ --scope all --format json --sarif benchmark_results/tcs.sarif"
+          } >> benchmark_results/tcs_stdout.txt
+          set +e
           timeout --signal=TERM --kill-after=30s 2700s \
             python -u cli.py scan "$TARGET_DIR/" --scope all --format json \
               --sarif benchmark_results/tcs.sarif \
-            > benchmark_results/tcs_stdout.txt 2>&1 \
-            || echo "TCS_SCAN_EXIT=$?" >> "$GITHUB_ENV"
+            2>&1 | tee -a benchmark_results/tcs_stdout.txt
+          TCS_CODE=${PIPESTATUS[0]}
+          set -e
+          echo "TCS_SCAN_EXIT=$TCS_CODE" >> "$GITHUB_ENV"
+          echo "----- forensics extract (also saved to benchmark_results/tcs_profile.txt) -----"
+          grep -E "\[PROFILE\]|\[GOVERNOR\]|\[TIMEOUT\]|timeout skipped|skipping unparseable|\[PARSER-MODE\]|\[RESCUED|\[SINKGATE\]|\[progress\]|Traceback|MemoryError" \
+            benchmark_results/tcs_stdout.txt > benchmark_results/tcs_profile.txt || true
+          wc -l < benchmark_results/tcs_profile.txt
+          head -c 4000 benchmark_results/tcs_profile.txt
+          echo
+          # Tripwire, not a guess: the engine's stage timers all share the `[PROFILE]` prefix, so a
+          # revision that genuinely has them cannot produce zero matches. If this prints, the scan
+          # ran code without the instrumentation - which is exactly the question this run had to ask.
+          # The pattern is the label the clock actually prints (`[PROFILE] Outer(scan): ... TOTAL=`),
+          # verified against scratch/_p3_new_err1.txt rather than remembered.
+          if ! grep -q "\[PROFILE\] Outer" benchmark_results/tcs_stdout.txt; then
+            echo "::warning::no '[PROFILE] Outer' stage-timer line in the log - the checked-out revision ($(git rev-parse --short HEAD)) does not emit the instrumentation"
+          fi
 
       - name: Write CodeQL Config (target directory only)
         # Without this, CodeQL analyses the whole workspace, which here means our own 17k-line engine
@@ -457,7 +524,12 @@ jobs:
                         f" | {label} |")
 
           md += ["", "## Reproducibility", "",
-                 "- Engine commit: `" + os.environ.get("GITHUB_SHA", "n/a")[:7] + "`",
+                 "- Engine commit checked out by this run: `"
+                 + os.environ.get("TCS_HEAD_SHA", os.environ.get("GITHUB_SHA", "n/a")) + "` ("
+                 "`git rev-parse HEAD` in the checkout, asserted equal to `github.sha`"
+                 " by the Provenance step)",
+                 "- Arena revision: `" + os.environ.get("REF", "n/a") + "` = `"
+                 + os.environ.get("TARGET_SHA", "n/a")[:12] + "`",
                  "- Gate 1 (`scripts/run_all_checks.py`, 552 cases, 0 FP, 0 FN): enforced as a hard "
                  "prerequisite before any third-party tool ran.",
                  "- Clone: `git clone --depth 1 --single-branch --branch <ref>`, `.git` removed.",

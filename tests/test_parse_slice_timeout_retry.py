@@ -5,12 +5,22 @@ may still complete while later files of the same slice are being collected. The 
 retry takes those finished results at ZERO added wall time (it only accepts `future.done()`)
 and keeps the original `[WARN] ... timeout skipped` policy for anything still running.
 No timeout value is changed and no waiting is added.
+
+Blocker 2 adds the other half of the same story: the budget handed to `future.result()` now
+excludes executor queue wait, so a sub-millisecond file queued behind its slice neighbours is
+no longer killed, and the skip record reports the real numbers instead of "(low memory)".
 """
 from __future__ import annotations
 
 import sys
 
-from tcs.parallel_scanner import _parse_slice
+import pytest
+
+from tcs.parallel_scanner import (
+    PER_FILE_TIMEOUT_S,
+    QUEUE_BUDGET_SLACK_S,
+    _parse_slice,
+)
 
 
 class _FakeFuture:
@@ -117,3 +127,72 @@ def test_file_order_is_preserved_with_mixed_outcomes():
     results = _run(futures, [(p, "s") for p in ["a.py", "b.py", "c.py", "d.py"]])
     assert [r["filepath"] for r in results] == ["a.py", "b.py", "c.py", "d.py"]
     assert results[1]["tree"] is None and results[2]["tree"] is not None
+
+
+class _BudgetSpy:
+    """Future that never finishes, but records the `timeout=` the slice loop asked for."""
+
+    def __init__(self, sink):
+        self._sink = sink
+
+    def result(self, timeout=None):
+        self._sink.append(timeout)
+        raise TimeoutError
+
+    def done(self):
+        return False
+
+
+def _budgets(count, workers, free_ram_mb=999_999):
+    """The per-file `result(timeout=…)` budget for file indices 0..count-1 at W workers."""
+    seen = []
+    batch = [(f"f{i}.py", "x") for i in range(count)]
+    _parse_slice(_FakeExecutor([_BudgetSpy(seen) for _ in batch]), batch,
+                 free_ram_mb=free_ram_mb, workers=workers)
+    return seen
+
+
+def test_queue_depth_is_part_of_the_budget_not_of_the_parse_limit():
+    """The bug: `result(timeout=4.0)` also counted the time the file sat in the queue, so a
+    0.8 ms file was killed for waiting behind its neighbours. The budget now scales with the
+    number of predecessors that must finish first (`idx // workers`) and nothing else."""
+    budgets = _budgets(9, workers=4)
+
+    def near(value):
+        # The deadline is measured against `perf_counter`, so each recorded budget is the nominal
+        # value minus the microseconds the loop took to get here.
+        return pytest.approx(value, abs=0.05)
+
+    # slack is 1.0s on top of the 4.0s base, so the first four files (queue depth 1) each get 5.0s.
+    assert budgets[:4] == [near(5.0)] * 4, budgets
+    # files 4..7 are the second row of the queue: one predecessor set must clear first.
+    assert budgets[4:8] == [near(9.0)] * 4, budgets
+    # file 8 is third in its row: two predecessor sets.
+    assert budgets[8] == near(13.0), budgets
+    # With a single worker every file waits behind all the earlier ones.
+    assert _budgets(3, workers=1) == [near(5.0), near(9.0), near(13.0)]
+
+
+def test_parse_limit_still_binds_the_first_row_and_low_memory_still_raises_it():
+    """The cap is a cap: a file at the head of the queue still gets exactly one parse budget, and
+    the memory governor still multiplies it (never removes it)."""
+    budgets = _budgets(1, workers=4)
+    assert budgets[0] == pytest.approx(PER_FILE_TIMEOUT_S + QUEUE_BUDGET_SLACK_S, abs=0.05)
+    # 1400 MB free -> x2 multiplier; 800 MB -> x3. Depth 0, so only the multiplier moves.
+    assert _budgets(1, workers=4, free_ram_mb=1400)[0] == pytest.approx(9.0, abs=0.05)
+    assert _budgets(1, workers=4, free_ram_mb=800)[0] == pytest.approx(13.0, abs=0.05)
+
+
+def test_timeout_record_states_the_budget_workers_and_ram_instead_of_blaming_memory(capsys):
+    """`Timeout after 4.0s (low memory)` was printed with 14,893 MB free. The entry now carries
+    the numbers that actually produced it, and no unconditional memory claim."""
+    stuck = _FakeFuture(times_out=True, done_after_timeout=False)
+    results = _run([_FakeFuture(_ok("a.py")), stuck],
+                   [("a.py", "x"), ("b.py", "y")])
+    err = results[1]["error"]
+    assert err.startswith("Timeout after ")
+    assert "low memory" not in err, err
+    assert "999999 MB free" in err, err
+    assert "queue depth 2" in err, err          # index 1 at 1 worker => depth 2
+    assert "1 worker(s)" in err, err
+    assert "File analysis timeout skipped: b.py" in capsys.readouterr().err

@@ -3129,6 +3129,12 @@ class TaintTracker:
         self._sink_index_list: Optional[list] = None
         self._sink_index_len = 0
         self._sink_index_tail: Optional[object] = None
+        # Phase 3: the same incremental idea for the (file -> (cwe, line) -> every node) buckets
+        # cluster2 and cluster3 used to rebuild by scanning all of `sink_records` per module.
+        self._sink_buckets: dict[str, dict[tuple[object, int], list]] = {}
+        self._sink_buckets_list: Optional[list] = None
+        self._sink_buckets_len = 0
+        self._sink_buckets_tail: Optional[object] = None
         # Node-identity dedup for the sink-detection re-scan of `raw_calls`: the set of `record.node`
         # objects currently in `sink_records`. Same invalidation rules as `_sink_index` above, but the
         # key is the AST node itself, because that scan asks "has *this exact call node* been recorded",
@@ -9341,6 +9347,62 @@ class TaintTracker:
         self._sink_index_tail = records[-1] if records else None
         return index.get((filename, lineno, cwe))
 
+    def _sink_cwe_line_buckets(self, filename: str) -> dict[tuple[object, int], list]:
+        """`(cwe, line_start) -> every sink node recorded for ONE file`, in record order.
+
+        `_collect_cluster2_structural_findings` and `_collect_cluster3_structural_findings` built
+        this by hand once per module: a full scan of `self.sink_records` filtered to that file. On
+        Home Assistant that is 9,626 modules x 7,149 records = 68.8M visits inside each collector,
+        which is the whole of their measured 72.28s and 44.87s. The buckets are the same lists the
+        inline loop produced - same key expression (`metadata.get("cwe") or ""`), same append order,
+        no key ever overwritten - only absorbed incrementally, with the identity/length/tail
+        invalidation triple `_sink_index_find` uses.
+
+        Callers take the snapshot once per module and never write to it, so records their own module
+        appends stay invisible to the lookups - exactly as the per-module rebuild behaved.
+        """
+        records = self.sink_records
+        absorbed = self._sink_buckets_len
+        if (records is not self._sink_buckets_list or absorbed > len(records)
+                or (absorbed and records[absorbed - 1] is not self._sink_buckets_tail)):
+            self._sink_buckets = {}
+            self._sink_buckets_list = records
+            start = 0
+        else:
+            start = absorbed
+        buckets = self._sink_buckets
+        for _i in range(start, len(records)):
+            node = records[_i].security_node
+            loc = node.location
+            by_line = buckets.get(loc.file)
+            if by_line is None:
+                by_line = buckets[loc.file] = {}
+            key = (node.metadata.get("cwe") or "", loc.line_start)
+            bucket = by_line.get(key)
+            if bucket is None:
+                by_line[key] = bucket = []
+            bucket.append(node)
+        self._sink_buckets_len = len(records)
+        self._sink_buckets_tail = records[-1] if records else None
+        return buckets.get(filename, {})
+
+    def _module_nodes(self, tree: ast.AST) -> list:
+        """`list(ast.walk(tree))`, memoised on the tree.
+
+        The blindspot stage ran 18 collector passes over every module and each one walked the whole
+        tree again - ~36 full traversals per module by the time CWE-319 and CWE-117 were done, on
+        the 10,648-file Home Assistant corpus. `ast.walk` is a deterministic BFS over
+        `ast.iter_fields`, so iterating the cached list visits the same nodes in the same order: the
+        emission sequence, the sink ids handed out from it and the first-match dedup are unchanged.
+        Subtree walks (`ast.walk(handler)`, `ast.walk(arg)`) are deliberately NOT touched - they do
+        not start at the module root, so the module list cannot serve them.
+        """
+        cached = tree.__dict__.get("_cached_all_nodes")
+        if cached is None:
+            cached = list(ast.walk(tree))
+            tree.__dict__["_cached_all_nodes"] = cached
+        return cached
+
     def _sink_node_unrecorded(self, node) -> bool:
         """True when no entry of `sink_records` holds this exact node -- O(1), was an O(sinks) scan.
 
@@ -9705,7 +9767,7 @@ class TaintTracker:
     # ── 1. CWE-78: subprocess with shell=True on a command built at runtime ────────
     def _collect_cwe78_subprocess_calls(self, tree, filename, source_lines):
         table = self._memo_assignment_map(tree)
-        for node in ast.walk(tree):
+        for node in self._module_nodes(tree):
             if not isinstance(node, ast.Call) or not isinstance(node.func, ast.AST):
                 continue
             if dotted_name(node.func) not in SUBPROCESS_SHELL_FUNCS:
@@ -9729,12 +9791,12 @@ class TaintTracker:
     def _collect_cwe532_logging_leaks(self, tree, filename, source_lines, module=""):
         func_ranges = [
             (func.lineno, getattr(func, "end_lineno", None) or func.lineno)
-            for func in ast.walk(tree)
+            for func in self._module_nodes(tree)
             if isinstance(func, (ast.FunctionDef, ast.AsyncFunctionDef))
         ]
         if not module:
             module = next((mod for mod, path in self.file_paths.items() if path == filename), "")
-        for node in ast.walk(tree):
+        for node in self._module_nodes(tree):
             if not isinstance(node, ast.Call):
                 continue
             if not self._blindspot_is_log_call(node, func_ranges):
@@ -10233,7 +10295,7 @@ class TaintTracker:
 
     # ── 3. CWE-668: server started on every interface instead of loopback ──────────
     def _collect_cwe668_insecure_host_binding(self, tree, filename, source_lines):
-        for node in ast.walk(tree):
+        for node in self._module_nodes(tree):
             if not isinstance(node, ast.Call) or not isinstance(node.func, ast.Attribute):
                 continue
             if node.func.attr not in BIND_METHOD_NAMES:
@@ -10254,7 +10316,7 @@ class TaintTracker:
     # ── 4. CWE-93: raw client input written into a response header or body ─────────
     def _collect_cwe93_header_injection(self, tree, filename, source_lines):
         table = self._memo_assignment_map(tree)
-        for node in ast.walk(tree):
+        for node in self._module_nodes(tree):
             # Only the values that actually land in the header are inspected: the receiver of
             # a method call and the subscript key are the response object's own names.
             exprs = []
@@ -10290,7 +10352,7 @@ class TaintTracker:
         # client chose. The loop above only reads Subscript targets (`response['Header']`) and
         # method calls, so an Attribute target was never examined and every body write stayed
         # silent - measured: that snippet produced no finding at all before this pass.
-        for node in ast.walk(tree):
+        for node in self._module_nodes(tree):
             if not isinstance(node, ast.Assign):
                 continue
             if not any(self._c93_is_response_body_target(t) for t in node.targets):
@@ -10353,7 +10415,7 @@ class TaintTracker:
         table = self._memo_assignment_map(tree)
         ranges = self._memo_function_ranges(tree)
         guarded = self._c22_guarded_names(tree)
-        for node in ast.walk(tree):
+        for node in self._module_nodes(tree):
             if not isinstance(node, ast.Call):
                 continue
             if (dotted_name(node.func) or "") not in FILE_OPEN_FUNCS:
@@ -10472,7 +10534,7 @@ class TaintTracker:
         """
         table = self._memo_assignment_map(tree)
         with_opens = self._c94_handle_opens(tree)
-        for node in ast.walk(tree):
+        for node in self._module_nodes(tree):
             if not isinstance(node, ast.Call) or not node.args:
                 continue
             func = node.func
@@ -10553,7 +10615,7 @@ class TaintTracker:
         """
         table = self._memo_assignment_map(tree)
         ranges = self._memo_function_ranges(tree)
-        for node in ast.walk(tree):
+        for node in self._module_nodes(tree):
             if not isinstance(node, ast.Call) or not node.args:
                 continue
             if self._c79_segment(node.func) not in XSS_SAFE_WRAPPERS:
@@ -10668,7 +10730,7 @@ class TaintTracker:
                 "CWE-209: Detailed exception or stack trace exposed in response",
                 "STACK_TRACE_EXPOSURE", reuse_existing=True)
 
-        for handler in [node for node in ast.walk(tree) if isinstance(node, ast.ExceptHandler)]:
+        for handler in [node for node in self._module_nodes(tree) if isinstance(node, ast.ExceptHandler)]:
             names = self._c209_handler_names(handler)
             for ret in _returns(handler.body):
                 if self._is_bad_error_return(ret, handler.name):
@@ -10676,7 +10738,7 @@ class TaintTracker:
                 if self._c209_exposed_in_reply(ret.value, names, table, ret.lineno):
                     _emit(ret)
 
-        for func in [node for node in ast.walk(tree)
+        for func in [node for node in self._module_nodes(tree)
                      if isinstance(node, (ast.FunctionDef, ast.AsyncFunctionDef))
                      and self._c209_is_web_handler(node)]:
             # A WSGI/route callable assembles the body it returns from its handlers two statements
@@ -10689,7 +10751,7 @@ class TaintTracker:
 
         dispatchers = self._c209_reply_dispatcher_scopes(tree)
         if dispatchers:
-            for handler in [node for node in ast.walk(tree) if isinstance(node, ast.ExceptHandler)]:
+            for handler in [node for node in self._module_nodes(tree) if isinstance(node, ast.ExceptHandler)]:
                 # Python unbinds the caught name when the handler ends, so a call that is not lexically
                 # inside a handler cannot be carrying this handler's detail.
                 names = self._c209_handler_detail_names(handler)
@@ -10900,7 +10962,7 @@ class TaintTracker:
             for func, params in self._c117_endpoint_scopes(tree)
         ]
         crud = self._c117_crud_param_scopes(tree, filename)
-        for node in ast.walk(tree):
+        for node in self._module_nodes(tree):
             if not isinstance(node, ast.Call) or not self._blindspot_is_log_call(node, func_ranges):
                 continue
             arguments = list(node.args) + [
@@ -11128,7 +11190,7 @@ class TaintTracker:
         """
         table = self._memo_assignment_map(tree)
         func_ranges = [(start, end) for start, end, _params in self._memo_function_ranges(tree)]
-        for try_node in ast.walk(tree):
+        for try_node in self._module_nodes(tree):
             if not isinstance(try_node, ast.Try):
                 continue
             parsed_reads = self._c117_parsed_payload_reads(try_node.body)
@@ -11256,7 +11318,7 @@ class TaintTracker:
         table = self._memo_assignment_map(tree)
         with_opens = self._c94_handle_opens(tree)
         scopes = self._c312_stream_scopes(tree)
-        for node in ast.walk(tree):
+        for node in self._module_nodes(tree):
             if not isinstance(node, ast.Call) or not node.args:
                 continue
             if not isinstance(node.func, ast.Attribute) or node.func.attr not in ("write", "writelines"):
@@ -11376,7 +11438,7 @@ class TaintTracker:
         emitted twice.
         """
         table = self._memo_assignment_map(tree)
-        for node in ast.walk(tree):
+        for node in self._module_nodes(tree):
             target = self._c601_redirect_target(node)
             if target is None:
                 continue
@@ -11457,7 +11519,7 @@ class TaintTracker:
             return
         table = self._memo_assignment_map(tree)
         bare_verbs = self._c319_imported_verbs(tree)
-        for node in ast.walk(tree):
+        for node in self._module_nodes(tree):
             if not isinstance(node, ast.Call) or not self._c319_is_transport_sink(node, bare_verbs):
                 continue
             url_arg = node.args[0] if node.args else next(
@@ -11565,7 +11627,7 @@ class TaintTracker:
         table = self._memo_assignment_map(tree)
         scopes = [(start, end) for start, end, _params in self._memo_function_ranges(tree)]
         tls_scopes, secured_names = self._c319_raw_socket_tls_evidence(tree, scopes)
-        for node in ast.walk(tree):
+        for node in self._module_nodes(tree):
             if not isinstance(node, ast.Call):
                 continue
             segments = (dotted_name(node.func) or "").split(".")
@@ -11662,7 +11724,7 @@ class TaintTracker:
         `dag.py:817 Environment(**jinja_env_options)` and `lineage/datasets.py Environment()` are the
         measured examples - and the safe half of the CWE-79 corpus depends on that restraint.
         """
-        for node in ast.walk(tree):
+        for node in self._module_nodes(tree):
             if not isinstance(node, ast.Call):
                 continue
             name = dotted_name(node.func) or ""
@@ -11706,7 +11768,7 @@ class TaintTracker:
         spelling measured here is `execute("SELECT ... ?", (uid,))`, where the driver does the quoting.
         """
         table = self._memo_assignment_map(tree)
-        for node in ast.walk(tree):
+        for node in self._module_nodes(tree):
             if not isinstance(node, ast.Call) or not isinstance(node.func, ast.Attribute):
                 continue
             if node.func.attr not in HOOK_QUERY_METHODS:
@@ -11794,7 +11856,7 @@ class TaintTracker:
         silent because the interpolated values are identifiers (a DataFrame's column names, a model's
         table name) that never carried a source. This rule reads the construction, never the source.
         """
-        for node in ast.walk(tree):
+        for node in self._module_nodes(tree):
             if not isinstance(node, ast.Call) or not self._c89_is_sqlalchemy_text(node.func):
                 continue
             statement = node.args[0] if node.args else next(
@@ -11849,11 +11911,11 @@ class TaintTracker:
         aliases = self._c502_import_aliases(tree)
         if not any(isinstance(node, ast.Call) and node.args
                    and self._c502_qualified_name(node, aliases) in SOCKET_DESERIALIZATION_SINKS
-                   for node in ast.walk(tree)):
+                   for node in self._module_nodes(tree)):
             # The pairing walk below is per function and quadratic in nesting depth. A module that
             # never calls a deserialiser cannot produce this finding, so it stops here.
             return
-        for func in ast.walk(tree):
+        for func in self._module_nodes(tree):
             if not isinstance(func, (ast.FunctionDef, ast.AsyncFunctionDef)):
                 continue
             table: dict[str, list] = {}
@@ -12604,12 +12666,7 @@ class TaintTracker:
             def _kw_arguments(call: ast.Call):
                 return {kw.arg: kw for kw in getattr(call, "keywords", []) if kw.arg}
 
-            existing_index: dict[tuple[str, int], list] = {}
-            for record in self.sink_records:
-                loc = record.security_node.location
-                if loc.file == file_path:
-                    key = (record.security_node.metadata.get("cwe") or "", loc.line_start)
-                    existing_index.setdefault(key, []).append(record.security_node)
+            existing_index = self._sink_cwe_line_buckets(file_path)
 
             def _merge_into_existing_sink(cwe: str, line: int, operation: str) -> None:
                 """Phase 6.3: an edgeless registry sink at the same (cwe, line) used to swallow
@@ -13229,12 +13286,7 @@ class TaintTracker:
             def _static(expr, scope: str, lineno: int):
                 return _eval_static_constant(expr, self.assignments_by_scope, scope, lineno)
 
-            existing_index: dict[tuple[str, int], list] = {}
-            for record in self.sink_records:
-                loc = record.security_node.location
-                if loc.file == file_path:
-                    key = (record.security_node.metadata.get("cwe") or "", loc.line_start)
-                    existing_index.setdefault(key, []).append(record.security_node)
+            existing_index = self._sink_cwe_line_buckets(file_path)
 
             def _merge_into_existing_sink(cwe: str, line: int, operation: str) -> None:
                 """Phase 6.3: stamp the synthetic source id onto an edgeless registry sink at
@@ -21139,6 +21191,9 @@ class TaintTracker:
             # Appended last for the same reason as the passes above: the sink ids they hand out are
             # parity-measured, so a new collector can only ever sit after them.
             self._collect_cwe319_raw_socket_cleartext(_bs_tree, _bs_file, _bs_lines)
+            # The shared walk served all 19 passes above; drop it before the next module so the list
+            # of node references is bounded by one module instead of the whole repository.
+            _bs_tree.__dict__.pop("_cached_all_nodes", None)
             # Every 25 modules: a flush per module would rescan every sink record, which costs
             # O(modules x sinks) on a large repo. This keeps the window at ~25 files.
             if _bs_idx % 25 == 24:
