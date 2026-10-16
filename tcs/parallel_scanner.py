@@ -413,22 +413,13 @@ def _parse_slice(
     per_file_timeout = compute_adaptive_timeout(free_ram_mb)
     futures = [executor.submit(_parse_single_file, (filepath, source))
                for filepath, source in batch]
-    results: List[Dict[str, Any]] = []
-    for (filepath, source), future in zip(batch, futures):
+    results: List[Dict[str, Any]] = [None] * len(batch)
+    timed_out: List[Tuple[int, Any, str, Optional[str]]] = []
+    for idx, ((filepath, source), future) in enumerate(zip(batch, futures)):
         try:
-            results.append(future.result(timeout=per_file_timeout))
+            results[idx] = future.result(timeout=per_file_timeout)
         except TimeoutError:
-            print(
-                f"TimeCodeSecurity [WARN] File analysis timeout skipped: {filepath}",
-                file=sys.stderr,
-            )
-            results.append({
-                "filepath": filepath,
-                "mod_name": None,
-                "tree": None,
-                "skipped_fast_path": False,
-                "error": f"Timeout after {per_file_timeout:.1f}s (low memory)",
-            })
+            timed_out.append((idx, future, filepath, source))
         except Exception as exc:
             # A dead worker is a local fault, not a reason to lose a file: re-parse it here.
             print(
@@ -436,7 +427,45 @@ def _parse_slice(
                 f"({type(exc).__name__}); re-parsing in parent",
                 file=sys.stderr,
             )
-            results.append(_parse_here(filepath, source))
+            results[idx] = _parse_here(filepath, source)
+    # A second look at the timed-out files, costing zero wall time: later files in the slice
+    # were collected while earlier workers kept running, so a future that first reported a
+    # timeout may be done by now. Take those results; the parse completed anyway, and dropping
+    # it lost a security-relevant file (Home Assistant's websocket_api/test_init.py) for no time
+    # saved. Anything still running keeps the original skip policy, unchanged.
+    for idx, future, filepath, source in timed_out:
+        if future.done():
+            try:
+                results[idx] = future.result()
+                print(
+                    f"TimeCodeSecurity [INFO] Recovered timed-out parse: {filepath}",
+                    file=sys.stderr,
+                )
+                continue
+            except Exception as exc:
+                # Completed-with-error is the same local fault the first pass already treats as a
+                # lost worker (`_parse_single_file` itself never raises - an exception here means
+                # the pool or the result transport failed). Route it to the identical, pre-existing
+                # fallback: `_parse_here` cannot raise and fail-closes, so a genuine parser failure
+                # still lands as an error entry, never as a silently successful parse.
+                print(
+                    f"TimeCodeSecurity [GOVERNOR] worker lost for {filepath} "
+                    f"({type(exc).__name__}); re-parsing in parent",
+                    file=sys.stderr,
+                )
+                results[idx] = _parse_here(filepath, source)
+                continue
+        print(
+            f"TimeCodeSecurity [WARN] File analysis timeout skipped: {filepath}",
+            file=sys.stderr,
+        )
+        results[idx] = {
+            "filepath": filepath,
+            "mod_name": None,
+            "tree": None,
+            "skipped_fast_path": False,
+            "error": f"Timeout after {per_file_timeout:.1f}s (low memory)",
+        }
     return results
 
 def _parse_files_sequential(

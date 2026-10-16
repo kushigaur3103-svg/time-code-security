@@ -886,7 +886,41 @@ class CrossFinding(dict):
         self.desc = message
         self.description = message
 
-def _run_cross_scan(target_path):
+def _cross_scan_reuse_trees(tracker):
+    """The scanner's already-parsed ASTs, offered to the cross-file indexer for a second use.
+
+    Reuse preconditions, each one checked before this dict is handed over:
+    - parser mode is not `treesitter`: the engine reparses with the built-in `ast` module and
+      a treesitter-produced tree is not what `GlobalSymbolIndex._index_file` walks;
+    - files the scanner skipped (unparseable), recovered (block-pass substituted) or rescued
+      are excluded - the engine's own disk parse would build a *different* tree for them,
+      and the baseline behaviour for those files is the fresh parse, not the scanner's one;
+    - the indexer still re-reads every path and reuses its tree only when the on-disk source
+      equals the scanner's snapshot byte-for-byte, so a file changed mid-scan falls back.
+
+    Returns None when nothing qualifies; the engine then behaves exactly as before.
+    """
+    if tracker is None or not getattr(tracker, "modules", None):
+        return None
+    if getattr(tracker, "execution_mode", None) == "treesitter":
+        return None
+    cwd = Path.cwd()
+    excluded = (set(tracker.skipped_files) | set(tracker.recovered_files)
+                | set(tracker.rescued_files))
+    reuse = {}
+    for mod, tree in tracker.modules.items():
+        key = tracker.file_paths.get(mod)
+        if key is None or key in excluded or tree is None:
+            continue
+        try:
+            source = tracker.files[key]
+            reuse[str((cwd / key).resolve())] = (source, tree)
+        except (KeyError, OSError):
+            continue
+    return reuse or None
+
+
+def _run_cross_scan(target_path, reuse_trees=None):
     """Executes CrossFileTaintEngine. Returns (findings, engine).
 
     An engine failure is fatal rather than empty: swallowing the exception made a broken
@@ -894,7 +928,7 @@ def _run_cross_scan(target_path):
     cross-file findings and the sanitizer suppression that depends on the engine.
     """
     try:
-        engine = CrossFileTaintEngine(target_path)
+        engine = CrossFileTaintEngine(target_path, reuse_trees=reuse_trees)
         raw_findings = engine.run()
     except Exception as exc:
         print(f"[FATAL] CrossFileTaintEngine crashed: {exc}", file=sys.stderr)
@@ -1301,7 +1335,8 @@ def _scan(args):
         _clock.mark("Merge+Consolidate")
         _PARTIAL["findings"] = findings
         if scope in ("all", "python"):
-            cross_findings, cross_engine = _run_cross_scan(args.path)
+            cross_findings, cross_engine = _run_cross_scan(
+                args.path, reuse_trees=_cross_scan_reuse_trees(tracker))
             _clock.mark("CrossScan")
             findings = _suppress_cross_file_sanitized(findings, cross_engine)
             _clock.mark("Suppression")

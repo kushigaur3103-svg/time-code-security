@@ -17,15 +17,13 @@ from typing import Dict, List, Optional, Set, Tuple
 # linear scan over every registered module name, so on a 10k-module repository each miss costs
 # 10k `endswith` tests. These counters say how often that happens and how long it costs.
 # `build()` resets them, so the numbers belong to one indexing run.
-_MATCH_STATS = {"calls": 0, "exact": 0, "suffix": 0, "miss": 0,
-                "modules_scanned": 0, "fallback_time_s": 0.0}
+_MATCH_STATS = {"calls": 0, "exact": 0, "suffix": 0, "miss": 0, "index_size": 0}
 
 
 def resolver_stats_line() -> str:
     s = _MATCH_STATS
     return (f"resolver: calls={s['calls']} exact={s['exact']} suffix={s['suffix']} "
-            f"miss={s['miss']} module_names_scanned={s['modules_scanned']} "
-            f"fallback_time={s['fallback_time_s']:.2f}s")
+            f"miss={s['miss']} suffix_index_size={s['index_size']}")
 
 # The cross-file index re-reads and re-parses the tree the scanner already parsed. On a big repository
 # that duplicated pass is worth handing to the same RAM-governed worker pool the scanner uses, but the
@@ -90,6 +88,9 @@ class GlobalSymbolIndex:
         self.file_to_module: dict[Path, str] = {}
         self.module_to_file: dict[str, Path] = {}
         self._ast_cache: dict[str, ast.AST] = {}
+        # suffix -> first-registered module whose dotted name ends with that suffix.
+        # Rebuilt once per build(); replaces the per-call linear scan over `modules`.
+        self._suffix_index: dict[str, str] = {}
 
     def _file_to_modname(self, file_path: Path) -> str:
         """Derive standard dotted module name from relative project path."""
@@ -103,12 +104,21 @@ class GlobalSymbolIndex:
         # pointer. The returned value is still the same dotted string.
         return sys.intern(".".join(parts))
 
-    def build(self, max_workers: Optional[int] = None) -> GlobalSymbolIndex:
-        """Pass 1: Discover and index all Python definitions and imports."""
+    def build(self, max_workers: Optional[int] = None,
+              reuse_trees: Optional[dict[str, tuple[str, ast.AST]]] = None) -> GlobalSymbolIndex:
+        """Pass 1: Discover and index all Python definitions and imports.
+
+        `reuse_trees` optionally maps a resolved absolute path string to the scanner's own
+        `(source, tree)` pair. A tree is reused only when re-reading that path from disk
+        yields a source byte-for-byte equal to the cached snapshot - so a file the scanner
+        parsed is exactly the file this index would have parsed. Any miss, read error or
+        content mismatch falls back to the original read+parse path, unchanged.
+        """
         _t_walk0 = time.perf_counter()
         # Observational reset so resolver counters belong to this engine run.
         for _k in _MATCH_STATS:
-            _MATCH_STATS[_k] = 0.0 if _k == "fallback_time_s" else 0
+            _MATCH_STATS[_k] = 0
+        self._suffix_index = {}
         py_files: list[Path] = []
         for root, dirs, files in os.walk(self.root_dir, followlinks=False):
             # Symlinked dirs are pruned before descending: a link into an ancestor
@@ -129,6 +139,7 @@ class GlobalSymbolIndex:
             self.file_to_module[p] = mod_name
             self.module_to_file[mod_name] = p
             self.modules[mod_name] = ModuleIndex(module_name=mod_name, file_path=p)
+        self._build_suffix_index()
 
         # 2. Parse and index symbols.
         # This pass reads and parses the whole tree a *second* time - the scanner already parsed it -
@@ -139,7 +150,27 @@ class GlobalSymbolIndex:
         # preserved because `modules` and `_ast_cache` are built by inserting these results and the
         # cross-file engine walks that insertion order.
         _t_walk1 = time.perf_counter()
-        entries = self._read_and_parse([str(p) for p in py_files], max_workers)
+        paths = [str(p) for p in py_files]
+        reusable: dict[int, ast.AST] = {}
+        if reuse_trees:
+            for i, path_str in enumerate(paths):
+                cached = reuse_trees.get(path_str)
+                if cached is None:
+                    continue
+                source, tree = cached
+                if tree is None:
+                    continue
+                try:
+                    if Path(path_str).read_text(encoding="utf-8", errors="replace") != source:
+                        continue
+                except Exception:
+                    continue
+                reusable[i] = tree
+        parsed = self._read_and_parse([p for i, p in enumerate(paths)
+                                       if i not in reusable], max_workers)
+        _it = iter(parsed)
+        entries = [({"tree": reusable[i], "source": ""} if i in reusable else next(_it))
+                   for i in range(len(paths))]
         _t_read1 = time.perf_counter()
         # Phase-1 counters: this is the duplicated read+parse pass over the whole tree
         # (`source` only exists in-process on the serial path; the fan-out returns trees, so
@@ -161,7 +192,7 @@ class GlobalSymbolIndex:
         _t_idx1 = time.perf_counter()
         print(f"TimeCodeSecurity [PROFILE] SymbolIndex: walk={_t_walk1 - _t_walk0:.2f}s "
               f"py_files={len(py_files)} read_parse={_t_read1 - _t_walk1:.2f}s "
-              f"trees={_trees_built} parent_chars={_reread_chars} "
+              f"trees={_trees_built} reused={len(reusable)} parent_chars={_reread_chars} "
               f"index={_t_idx1 - _t_read1:.2f}s modules={len(self.modules)} "
               f"TOTAL={_t_idx1 - _t_walk0:.2f}s", file=sys.stderr)
         return self
@@ -285,26 +316,41 @@ class GlobalSymbolIndex:
         return None
 
     def _match_registered_module(self, module_candidate: str) -> Optional[str]:
-        """Fuzzy match module name against root-prefixed or stripped module paths."""
+        """Fuzzy match module name against root-prefixed or stripped module paths.
+
+        The suffix index reproduces the old linear scan exactly: `self.modules` keeps
+        insertion order, `_build_suffix_index` inserts each dotted suffix only once (first
+        module wins), and the indexed key is the same `mod.endswith(f".{candidate}")` test
+        the loop applied - i.e. `candidate` must match a proper dotted suffix, never a bare
+        trailing segment. Lookup is O(len(parts)) instead of O(N modules) per call.
+        """
         st = _MATCH_STATS
         st["calls"] += 1
-        _t_fb0 = time.perf_counter()
         if module_candidate in self.modules:
             st["exact"] += 1
             return module_candidate
-        # Suffix matching (e.g. 'introduction.apis' matching 'pygoat.introduction.apis')
-        _scanned = 0
+        match = self._suffix_index.get(module_candidate)
+        if match is not None:
+            st["suffix"] += 1
+        else:
+            st["miss"] += 1
+        return match
+
+    def _build_suffix_index(self) -> None:
+        """Index every proper dotted suffix of each registered module name.
+
+        `mod == candidate` is not included here - exact names hit `self.modules` directly -
+        matching the old loop where the equality branch preceded the suffix match.
+        """
+        idx: dict[str, str] = {}
         for mod in self.modules:
-            _scanned += 1
-            if mod.endswith(f".{module_candidate}") or mod == module_candidate:
-                st["suffix"] += 1
-                st["modules_scanned"] += _scanned
-                st["fallback_time_s"] += time.perf_counter() - _t_fb0
-                return mod
-        st["miss"] += 1
-        st["modules_scanned"] += _scanned
-        st["fallback_time_s"] += time.perf_counter() - _t_fb0
-        return None
+            parts = mod.split(".")
+            for i in range(1, len(parts)):
+                suffix = ".".join(parts[i:])
+                if suffix not in idx:
+                    idx[suffix] = mod
+        self._suffix_index = idx
+        _MATCH_STATS["index_size"] = len(idx)
 
 
 if __name__ == "__main__":
