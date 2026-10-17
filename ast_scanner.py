@@ -19330,6 +19330,28 @@ class TaintTracker:
                 self._profile_removal(_rm_stats["removed"], _rm_stats["visited"],
                                       _rm_stats["rebinds"], _rm_t0)
 
+        def _remove_existing_if_defusable(
+            node: ast.Call, cwes: set[str], mod_name: str, defusable
+        ) -> None:
+            """Prune prior `cwes` records at `node`, but only fold when there is something to prune.
+
+            The main pass ran `_literal7` for the CWE-89/CWE-502 defuse checks on every one of the
+            ~460k Call nodes, yet only ~34 records were ever removed: the fold almost always decided
+            nothing. This short-circuits with the *exact* predicate `_remove_existing` uses -- `in
+            cwes` over the same `_records_at` bucket -- so when no record here carries one of `cwes`
+            the outcome cannot differ and folding is skipped. `_literal7`/`_fold7` are pure apart
+            from the deterministic memo, so a skipped call only means a later identical call (same
+            kind/id(node)/scope/lineno) recomputes the same value. When a matching record does exist,
+            `defusable()` runs the original fold and `_remove_existing` is called unchanged, so the
+            removed set, ordering, sink IDs and removal profiling are byte-identical.
+            """
+            node_location = location(node, self.file_paths.get(mod_name, "unknown.py"))
+            bucket = _records_at(node_location)
+            if not any(record.security_node.metadata.get("cwe") in cwes for record in bucket):
+                return
+            if defusable():
+                _remove_existing(node, cwes, mod_name)
+
         def _is_opener_receiver(expr: ast.AST, scope_id: str, lineno: int, walked=None) -> bool:
             """True for `URLopener()` / `OpenerDirector()`, or a name bound to one."""
             if isinstance(expr, ast.Call):
@@ -19542,16 +19564,18 @@ class TaintTracker:
                 query_arg = node.args[0] if node.args else next(
                     (kw.value for kw in node.keywords
                      if kw.arg in {"statement", "sql", "query"}), None)
-                if _literal7(query_arg, scope_id, lineno) is not None:
-                    _remove_existing(node, {"CWE-89"}, mod_name)
+                _remove_existing_if_defusable(
+                    node, {"CWE-89"}, mod_name,
+                    lambda: _literal7(query_arg, scope_id, lineno) is not None)
 
                 # CWE-502: a payload that is a literal, or bytes read from a literal
                 # path, cannot carry attacker-controlled pickle/yaml structure.
                 payload_arg = node.args[0] if node.args else next(
                     (kw.value for kw in node.keywords if kw.arg in {"data", "file", "stream"}), None)
-                if (_literal7(payload_arg, scope_id, lineno)
-                        is not None or _fixed_path_read(payload_arg, scope_id, lineno)):
-                    _remove_existing(node, {"CWE-502"}, mod_name)
+                _remove_existing_if_defusable(
+                    node, {"CWE-502"}, mod_name,
+                    lambda: _literal7(payload_arg, scope_id, lineno) is not None
+                    or _fixed_path_read(payload_arg, scope_id, lineno))
 
                 # CWE-79: a body is markup only if the response says so. A JSON
                 # content_type means the browser never parses it, and a structured literal
