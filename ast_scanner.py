@@ -3158,6 +3158,13 @@ class TaintTracker:
         self._profile_scope: Optional[str] = None
         self._removal_profile: dict[str, dict[str, float]] = {}
         self._cache_profile: dict[str, dict[str, int]] = {}
+        # Same shape for the Phase 7 internal split: `_phase7_secs`/`_phase7_calls` hold timed spans
+        # (the `seg_*` labels are disjoint brackets of the per-module loop, the rest are helper
+        # funnels that nest inside them), `_phase7_volumes` counts items, not time. Written only by
+        # `_collect_phase7_structural_findings`, read only by the `[PROFILE] Phase 7 ...` lines.
+        self._phase7_secs: dict[str, float] = {}
+        self._phase7_calls: dict[str, int] = {}
+        self._phase7_volumes: dict[str, int] = {}
         self.functions: dict[str, ast.FunctionDef] = {}
         self.returns_by_scope: dict[str, list[ast.Return]] = {}
         self.raw_calls: list[tuple[ast.Call, str, int]] = []
@@ -19054,6 +19061,23 @@ class TaintTracker:
 
     def _collect_phase7_structural_findings(self) -> None:
         """Collect XXE and server-side template injection findings."""
+        import time as _p7_time
+        # Measurement only. `seg_*` labels are brackets around the per-module loop and its
+        # sub-blocks: `seg_module_loop_total` is the whole loop, the other four partition its body,
+        # so `seg_loop_other = seg_module_loop_total - (the other four)` is the unbracketed residue.
+        # The remaining labels are helper funnels timed inclusively -- they nest inside the segments
+        # (`add_finding` contains a `_records_at` call, `records_at` contains its own rebuild loop),
+        # so they are reported separately and are NOT additive with each other or with the segments.
+        # Each helper is timed with try/finally, so a helper that returns early or raises still
+        # charges the time it spent. Nothing here is read back into scanner logic.
+
+        def _p7_mark(label: str, seconds: float, calls: int = 1) -> None:
+            self._phase7_secs[label] = self._phase7_secs.get(label, 0.0) + seconds
+            self._phase7_calls[label] = self._phase7_calls.get(label, 0) + calls
+
+        def _p7_volume(label: str, n: int) -> None:
+            self._phase7_volumes[label] = self._phase7_volumes.get(label, 0) + n
+
         function_scopes = {id(function): scope for scope, function in self.functions.items()}
         # One memo for the two pure resolvers this collector leans on. Nothing in this
         # collector's line range writes assignments_by_scope, and neither folder has side
@@ -19064,15 +19088,20 @@ class TaintTracker:
         _phase7_fold_memo: dict[tuple, tuple] = {}
 
         def _memo_fold(kind: str, folder, node, fold_scope: str, fold_lineno: int):
-            if not isinstance(node, ast.AST):
-                return folder(node, self.assignments_by_scope, fold_scope, fold_lineno)
-            memo_key = (kind, id(node), fold_scope, fold_lineno)
-            cached = _phase7_fold_memo.get(memo_key)
-            if cached is not None and cached[0] is node:
-                return cached[1]
-            value = folder(node, self.assignments_by_scope, fold_scope, fold_lineno)
-            _phase7_fold_memo[memo_key] = (node, value)
-            return value
+            _p7_t0 = _p7_time.perf_counter()
+            try:
+                if not isinstance(node, ast.AST):
+                    return folder(node, self.assignments_by_scope, fold_scope, fold_lineno)
+                memo_key = (kind, id(node), fold_scope, fold_lineno)
+                cached = _phase7_fold_memo.get(memo_key)
+                if cached is not None and cached[0] is node:
+                    _p7_volume("memo_fold_hits", 1)
+                    return cached[1]
+                value = folder(node, self.assignments_by_scope, fold_scope, fold_lineno)
+                _phase7_fold_memo[memo_key] = (node, value)
+                return value
+            finally:
+                _p7_mark("memo_fold", _p7_time.perf_counter() - _p7_t0)
 
         def _fold7(node, fold_scope: str, fold_lineno: int):
             return _memo_fold("const", _eval_static_constant, node, fold_scope, fold_lineno)
@@ -19094,25 +19123,29 @@ class TaintTracker:
 
         def _records_at(node_location: CodeLocation) -> list:
             nonlocal _loc_index_count, _loc_index_list, _loc_index_tail
-            records = self.sink_records
-            if (records is not _loc_index_list or _loc_index_count > len(records)
-                    or (_loc_index_count and records[_loc_index_count - 1] is not _loc_index_tail)):
-                _sink_loc_index.clear()
-                _loc_index_list = records
-                self._profile_cache_rebuild("sink_loc_index", len(records))
-                _start = 0
-            else:
-                _start = _loc_index_count
-            for _index in range(_start, len(records)):
-                loc = records[_index].security_node.location
-                _sink_loc_index.setdefault(
-                    (loc.file, loc.line_start, loc.column_start), []).append(records[_index])
-            _loc_index_count = len(records)
-            _loc_index_tail = records[-1] if records else None
-            bucket_key = (node_location.file, node_location.line_start,
-                          node_location.column_start)
-            return [record for record in _sink_loc_index.get(bucket_key, ())
-                    if record.security_node.location == node_location]
+            _p7_t0 = _p7_time.perf_counter()
+            try:
+                records = self.sink_records
+                if (records is not _loc_index_list or _loc_index_count > len(records)
+                        or (_loc_index_count and records[_loc_index_count - 1] is not _loc_index_tail)):
+                    _sink_loc_index.clear()
+                    _loc_index_list = records
+                    self._profile_cache_rebuild("sink_loc_index", len(records))
+                    _start = 0
+                else:
+                    _start = _loc_index_count
+                for _index in range(_start, len(records)):
+                    loc = records[_index].security_node.location
+                    _sink_loc_index.setdefault(
+                        (loc.file, loc.line_start, loc.column_start), []).append(records[_index])
+                _loc_index_count = len(records)
+                _loc_index_tail = records[-1] if records else None
+                bucket_key = (node_location.file, node_location.line_start,
+                              node_location.column_start)
+                return [record for record in _sink_loc_index.get(bucket_key, ())
+                        if record.security_node.location == node_location]
+            finally:
+                _p7_mark("records_at", _p7_time.perf_counter() - _p7_t0)
         xml_sinks = {
             "lxml.etree.parse", "lxml.etree.fromstring",
             "xml.etree.ElementTree.parse", "xml.etree.ElementTree.fromstring",
@@ -19133,11 +19166,15 @@ class TaintTracker:
             return f"{mod_name}:global"
 
         def _call_names(call: ast.Call, scope_id: str) -> set[str]:
-            if not isinstance(call, ast.Call) or not isinstance(call.func, ast.AST):
-                return set()
-            name = dotted_name(call.func) or ""
-            canonical = self.resolve_canonical_name(call.func, scope_id) or ""
-            return {value for value in (name, canonical) if value}
+            _p7_t0 = _p7_time.perf_counter()
+            try:
+                if not isinstance(call, ast.Call) or not isinstance(call.func, ast.AST):
+                    return set()
+                name = dotted_name(call.func) or ""
+                canonical = self.resolve_canonical_name(call.func, scope_id) or ""
+                return {value for value in (name, canonical) if value}
+            finally:
+                _p7_mark("call_names", _p7_time.perf_counter() - _p7_t0)
 
         def _assigned_value(name: str, scope_id: str, lineno: int):
             current_scope = scope_id
@@ -19394,47 +19431,60 @@ class TaintTracker:
             node: ast.Call, mod_name: str, scope_id: str, cwe: str,
             category: str, source_id: str, operation: str,
         ) -> None:
-            line = getattr(node, "lineno", 1)
-            column = getattr(node, "col_offset", 0)
-            key = (cwe, line, column)
-            if key in seen:
-                return
-            seen.add(key)
-            node_location = location(node, self.file_paths.get(mod_name, "unknown.py"))
-            existing = next((
-                record for record in _records_at(node_location)
-                if record.security_node.metadata.get("cwe") == cwe
-            ), None)
-            if existing is not None:
-                existing.security_node.metadata["p7_source_id"] = source_id
-                return
-            sink_node = SecurityNode(
-                id=self.next_sink_id(),
-                node_type=NodeType.SINK,
-                symbol=operation,
-                operation=operation,
-                location=node_location,
-                metadata={
-                    "sink_type": category,
-                    "category": category,
-                    "cwe": cwe,
-                    "p7_source_id": source_id,
-                },
-            )
-            self.sinks.append(sink_node)
-            self.sink_records.append(SinkRecord(
-                node=node,
-                security_node=sink_node,
-                lineno=line,
-                scope_id=scope_id,
-            ))
+            _p7_t0 = _p7_time.perf_counter()
+            try:
+                line = getattr(node, "lineno", 1)
+                column = getattr(node, "col_offset", 0)
+                key = (cwe, line, column)
+                if key in seen:
+                    return
+                seen.add(key)
+                _p7_volume("add_finding_past_dedup", 1)
+                node_location = location(node, self.file_paths.get(mod_name, "unknown.py"))
+                existing = next((
+                    record for record in _records_at(node_location)
+                    if record.security_node.metadata.get("cwe") == cwe
+                ), None)
+                if existing is not None:
+                    existing.security_node.metadata["p7_source_id"] = source_id
+                    return
+                sink_node = SecurityNode(
+                    id=self.next_sink_id(),
+                    node_type=NodeType.SINK,
+                    symbol=operation,
+                    operation=operation,
+                    location=node_location,
+                    metadata={
+                        "sink_type": category,
+                        "category": category,
+                        "cwe": cwe,
+                        "p7_source_id": source_id,
+                    },
+                )
+                self.sinks.append(sink_node)
+                self.sink_records.append(SinkRecord(
+                    node=node,
+                    security_node=sink_node,
+                    lineno=line,
+                    scope_id=scope_id,
+                ))
+            finally:
+                _p7_mark("add_finding", _p7_time.perf_counter() - _p7_t0)
 
+        _p7_loop_t0 = _p7_time.perf_counter()
         for mod_name, tree in self.modules.items():
             seen.clear()
             sax_parser_vars: set[tuple[str, str]] = set()
             environment_vars: set[tuple[str, str]] = set()
-            scoped_nodes = [(node, _scope_for(node, mod_name)) for node in self._reachable_nodes(tree)]
+            _p7_seg_t0 = _p7_time.perf_counter()
+            reachable_nodes = self._reachable_nodes(tree)
+            _p7_mark("seg_reachable_nodes", _p7_time.perf_counter() - _p7_seg_t0)
+            _p7_seg_t0 = _p7_time.perf_counter()
+            scoped_nodes = [(node, _scope_for(node, mod_name)) for node in reachable_nodes]
+            _p7_mark("seg_scope_binding", _p7_time.perf_counter() - _p7_seg_t0)
+            _p7_volume("scoped_nodes", len(scoped_nodes))
 
+            _p7_seg_t0 = _p7_time.perf_counter()
             for node, scope_id in scoped_nodes:
                 if isinstance(node, (ast.Assign, ast.AnnAssign)) and isinstance(node.value, ast.Call):
                     names = _call_names(node.value, scope_id)
@@ -19445,7 +19495,9 @@ class TaintTracker:
                                 sax_parser_vars.add((scope_id, target.id))
                             if any(name.endswith("Environment") for name in names):
                                 environment_vars.add((scope_id, target.id))
+            _p7_mark("seg_assign_prepass", _p7_time.perf_counter() - _p7_seg_t0)
 
+            _p7_seg_t0 = _p7_time.perf_counter()
             for node, scope_id in scoped_nodes:
                 if not isinstance(node, ast.Call) or not isinstance(node.func, ast.AST):
                     continue
@@ -19504,7 +19556,10 @@ class TaintTracker:
                 # CWE-79: a body is markup only if the response says so. A JSON
                 # content_type means the browser never parses it, and a structured literal
                 # is not markup in the first place.
-                if _json_or_structured_body(node, self.assignments_by_scope, scope_id, lineno):
+                _p7_t0 = _p7_time.perf_counter()
+                _json_body = _json_or_structured_body(node, self.assignments_by_scope, scope_id, lineno)
+                _p7_mark("json_or_structured_body", _p7_time.perf_counter() - _p7_t0)
+                if _json_body:
                     _remove_existing(node, {"CWE-79"}, mod_name)
 
                 is_xml_parser = any(name.endswith("XMLParser") for name in names)
@@ -19579,6 +19634,8 @@ class TaintTracker:
                         )
                     else:
                         _remove_existing(node, {"CWE-1336", "CWE-79"}, mod_name)
+            _p7_mark("seg_main_pass", _p7_time.perf_counter() - _p7_seg_t0)
+        _p7_mark("seg_module_loop_total", _p7_time.perf_counter() - _p7_loop_t0)
 
     def _collect_phase8_structural_findings(self) -> None:
         """Collect open redirect, weak hash, and insecure cookie findings."""
@@ -21198,6 +21255,10 @@ class TaintTracker:
         # Observational only: never feeds a finding. Reset per pass so a reused tracker cannot
         # carry stale timings.
         self._collector_profile = {}
+        # Same reset rule for the Phase 7 internal split, so a reused tracker reports one pass.
+        self._phase7_secs = {}
+        self._phase7_calls = {}
+        self._phase7_volumes = {}
         # Observational per-collector input/output counts (Phase-1 instrumentation): sink
         # records appended by each batch, in execution order. Never read by a decision.
         _sink_deltas: dict[str, int] = {}
@@ -21305,6 +21366,30 @@ class TaintTracker:
                     ((s, c) for s, c in _rp_prof.items() if s != "_records_reabsorbed"),
                     key=lambda kv: (-kv[1], kv[0]))) +
                 f" reabsorbed={_rp_prof.get('_records_reabsorbed', 0)}", file=_sys.stderr)
+        # Phase 7 internal split, accumulated across calls. The `seg_*` line is a set of brackets:
+        # seg_module_loop_total covers the whole per-module loop and seg_reachable_nodes +
+        # seg_scope_binding + seg_assign_prepass + seg_main_pass partition its body, so the residue
+        # (loop bookkeeping) is derivable and nothing in that line double-counts. The funnel line is
+        # deliberately reported separately: those timers sit INSIDE the brackets and inside each
+        # other (add_finding calls _records_at, both nest in seg_main_pass), so their seconds are
+        # inclusive and must never be summed with the segment line.
+        _p7_brackets = ("seg_module_loop_total", "seg_main_pass", "seg_assign_prepass",
+                        "seg_scope_binding", "seg_reachable_nodes")
+        _p7_body = sum(self._phase7_secs.get(k, 0.0) for k in _p7_brackets[1:])
+        print("TimeCodeSecurity [PROFILE] Phase 7 internal segments (s | calls, brackets; "
+              "loop_other = total - body): " + " ".join(
+            f"{name}={self._phase7_secs.get(name, 0.0):.2f}|{self._phase7_calls.get(name, 0)}"
+            for name in _p7_brackets) +
+            f" loop_other={self._phase7_secs.get('seg_module_loop_total', 0.0) - _p7_body:.2f}",
+            file=_sys.stderr)
+        print("TimeCodeSecurity [PROFILE] Phase 7 helper funnels (s | calls, INCLUSIVE of nested "
+              "helpers, already counted inside the segments above - do not add): " + " ".join(
+            f"{name}={secs:.2f}|{self._phase7_calls.get(name, 0)}" for name, secs in
+            sorted(self._phase7_secs.items(), key=lambda kv: (-kv[1], kv[0]))
+            if name not in _p7_brackets) + " | memo_fold_hits=" + str(
+            self._phase7_volumes.get("memo_fold_hits", 0)) + " add_finding_past_dedup=" + str(
+            self._phase7_volumes.get("add_finding_past_dedup", 0)) + " scoped_nodes=" + str(
+            self._phase7_volumes.get("scoped_nodes", 0)), file=_sys.stderr)
         _t1 = _time.perf_counter()
         print(f"TimeCodeSecurity [PROFILE] Structural findings (all batches): {_t1 - _t0:.2f}s", file=_sys.stderr)
         _t_cascade = _t1
