@@ -12546,14 +12546,22 @@ class TaintTracker:
         """
         function_scopes = {id(function): scope for scope, function in self.functions.items()}
 
+        _scope_memo: dict[int, str] = {}
+
         def _scope_for(node: ast.AST, mod_name: str) -> str:
-            current = node
-            while current is not None:
-                scope = function_scopes.get(id(current))
-                if scope:
-                    return scope
-                current = getattr(current, "parent", None)
-            return f"{mod_name}:global"
+            """Enclosing function scope for `node`, memoised; cleared once per tree."""
+            scope = _scope_memo.get(id(node))
+            if scope is None:
+                current = node
+                while current is not None:
+                    scope = function_scopes.get(id(current))
+                    if scope:
+                        break
+                    current = getattr(current, "parent", None)
+                else:
+                    scope = f"{mod_name}:global"
+                _scope_memo[id(node)] = scope
+            return scope
 
         def _enclosing_function(node: ast.AST):
             current = getattr(node, "parent", None)
@@ -12616,603 +12624,606 @@ class TaintTracker:
             return found
 
         for mod_name, tree in self.modules.items():
-            file_path = self.file_paths.get(mod_name, "unknown.py")
-            mod_scope = f"{mod_name}:global"
-            reachable = list(self._reachable_nodes(tree))
-            seen: set[tuple[str, int, int]] = set()
+            try:
+                file_path = self.file_paths.get(mod_name, "unknown.py")
+                mod_scope = f"{mod_name}:global"
+                reachable = list(self._reachable_nodes(tree))
+                seen: set[tuple[str, int, int]] = set()
 
-            # 1. Scope-aware import bindings (function-local imports shadow module imports).
-            bindings: dict[str, list[tuple[int, str, str]]] = {}
-            for node in reachable:
-                scope = _scope_for(node, mod_name)
-                if isinstance(node, ast.Import):
-                    for alias in node.names:
-                        local = alias.asname or alias.name.split(".")[0]
-                        bindings.setdefault(scope, []).append(
-                            (getattr(node, "lineno", 0), local, alias.name))
-                        if alias.asname is None and "." in alias.name:
+                # 1. Scope-aware import bindings (function-local imports shadow module imports).
+                bindings: dict[str, list[tuple[int, str, str]]] = {}
+                for node in reachable:
+                    scope = _scope_for(node, mod_name)
+                    if isinstance(node, ast.Import):
+                        for alias in node.names:
+                            local = alias.asname or alias.name.split(".")[0]
                             bindings.setdefault(scope, []).append(
-                                (getattr(node, "lineno", 0), alias.name, alias.name))
-                elif isinstance(node, ast.ImportFrom):
-                    module = node.module or ""
-                    for alias in node.names:
-                        local = alias.asname or alias.name
-                        full = f"{module}.{alias.name}" if module else alias.name
-                        bindings.setdefault(scope, []).append(
-                            (getattr(node, "lineno", 0), local, full))
+                                (getattr(node, "lineno", 0), local, alias.name))
+                            if alias.asname is None and "." in alias.name:
+                                bindings.setdefault(scope, []).append(
+                                    (getattr(node, "lineno", 0), alias.name, alias.name))
+                    elif isinstance(node, ast.ImportFrom):
+                        module = node.module or ""
+                        for alias in node.names:
+                            local = alias.asname or alias.name
+                            full = f"{module}.{alias.name}" if module else alias.name
+                            bindings.setdefault(scope, []).append(
+                                (getattr(node, "lineno", 0), local, full))
 
-            def _resolve_chain(chain: list[str], scope: str, lineno: int) -> list[str]:
-                if not chain:
+                def _resolve_chain(chain: list[str], scope: str, lineno: int) -> list[str]:
+                    if not chain:
+                        return chain
+                    for depth in range(min(len(chain), 3), 0, -1):
+                        prefix = ".".join(chain[:depth])
+                        best = None
+                        for scope_key in (scope, mod_scope):
+                            rows = [row for row in bindings.get(scope_key, [])
+                                    if row[1] == prefix and row[0] <= lineno]
+                            if rows:
+                                best = rows[-1][2]
+                                break
+                        if best is None:
+                            best = self.imports.get(mod_name, {}).get(prefix)
+                        if best:
+                            return best.split(".") + chain[depth:]
                     return chain
-                for depth in range(min(len(chain), 3), 0, -1):
-                    prefix = ".".join(chain[:depth])
-                    best = None
-                    for scope_key in (scope, mod_scope):
-                        rows = [row for row in bindings.get(scope_key, [])
-                                if row[1] == prefix and row[0] <= lineno]
-                        if rows:
-                            best = rows[-1][2]
-                            break
-                    if best is None:
-                        best = self.imports.get(mod_name, {}).get(prefix)
-                    if best:
-                        return best.split(".") + chain[depth:]
-                return chain
 
-            def _call_forms(call: ast.Call, scope: str) -> set[str]:
-                raw = dotted_name(call.func) or ""
-                forms = {raw} if raw else set()
-                resolved = _resolve_chain(_segments(call.func), scope,
-                                          getattr(call, "lineno", 0))
-                if resolved:
-                    dotted = ".".join(resolved)
-                    if dotted:
-                        forms.add(dotted)
-                canon = self.resolve_canonical_name(call.func, scope) or ""
-                if canon:
-                    forms.add(canon)
-                return {form for form in forms if form}
+                def _call_forms(call: ast.Call, scope: str) -> set[str]:
+                    raw = dotted_name(call.func) or ""
+                    forms = {raw} if raw else set()
+                    resolved = _resolve_chain(_segments(call.func), scope,
+                                              getattr(call, "lineno", 0))
+                    if resolved:
+                        dotted = ".".join(resolved)
+                        if dotted:
+                            forms.add(dotted)
+                    canon = self.resolve_canonical_name(call.func, scope) or ""
+                    if canon:
+                        forms.add(canon)
+                    return {form for form in forms if form}
 
-            # 2. Value evaluation for literals and one-level name chains (wildcard lists).
-            def _eval_value(expr, scope: str, lineno: int, depth: int = 0):
-                if expr is None or depth > 2:
+                # 2. Value evaluation for literals and one-level name chains (wildcard lists).
+                def _eval_value(expr, scope: str, lineno: int, depth: int = 0):
+                    if expr is None or depth > 2:
+                        return None
+                    if isinstance(expr, ast.Constant):
+                        return expr.value
+                    if isinstance(expr, (ast.List, ast.Tuple)):
+                        return [_eval_value(elt, scope, lineno, depth + 1) for elt in expr.elts]
+                    if isinstance(expr, ast.Name):
+                        records = list(self.assignments_by_scope.get((scope, expr.id), []))
+                        records += list(self.assignments_by_scope.get((mod_scope, expr.id), []))
+                        prior = [r for r in records if r.lineno <= lineno]
+                        if prior:
+                            return _eval_value(prior[-1].value_node, scope, prior[-1].lineno,
+                                               depth + 1)
+                        return None
                     return None
-                if isinstance(expr, ast.Constant):
-                    return expr.value
-                if isinstance(expr, (ast.List, ast.Tuple)):
-                    return [_eval_value(elt, scope, lineno, depth + 1) for elt in expr.elts]
-                if isinstance(expr, ast.Name):
-                    records = list(self.assignments_by_scope.get((scope, expr.id), []))
-                    records += list(self.assignments_by_scope.get((mod_scope, expr.id), []))
-                    prior = [r for r in records if r.lineno <= lineno]
-                    if prior:
-                        return _eval_value(prior[-1].value_node, scope, prior[-1].lineno,
-                                           depth + 1)
+
+                def _param_default_value(fn_node, name: str):
+                    if fn_node is None:
+                        return None
+                    for param, default in TaintTracker._c1_parameter_defaults(fn_node):
+                        if param.arg == name:
+                            return default
                     return None
-                return None
 
-            def _param_default_value(fn_node, name: str):
-                if fn_node is None:
+                def _url_string(expr, scope: str, lineno: int, fn_node):
+                    value = _eval_static_constant(expr, self.assignments_by_scope, scope, lineno)
+                    if isinstance(value, str):
+                        return value
+                    if isinstance(expr, ast.Name):
+                        default = _param_default_value(fn_node, expr.id)
+                        if default is not None:
+                            resolved = _eval_static_constant(default, self.assignments_by_scope,
+                                                             scope, lineno)
+                            if isinstance(resolved, str):
+                                return resolved
                     return None
-                for param, default in TaintTracker._c1_parameter_defaults(fn_node):
-                    if param.arg == name:
-                        return default
-                return None
 
-            def _url_string(expr, scope: str, lineno: int, fn_node):
-                value = _eval_static_constant(expr, self.assignments_by_scope, scope, lineno)
-                if isinstance(value, str):
-                    return value
-                if isinstance(expr, ast.Name):
-                    default = _param_default_value(fn_node, expr.id)
-                    if default is not None:
-                        resolved = _eval_static_constant(default, self.assignments_by_scope,
-                                                         scope, lineno)
-                        if isinstance(resolved, str):
-                            return resolved
-                return None
-
-            def _is_cleartext_url(expr, scope: str, lineno: int, fn_node) -> bool:
-                url = _url_string(expr, scope, lineno, fn_node)
-                if not isinstance(url, str) or not url.lower().startswith(
-                        CLUSTER2_CLEARTEXT_SCHEME):
-                    return False
-                host = url[len(CLUSTER2_CLEARTEXT_SCHEME):].split("/", 1)[0]
-                host = host.rsplit(":", 1)[0]
-                # Allowlist: localhost/loopback addresses
-                if host.lower() in CLUSTER2_LOCAL_HOSTS:
-                    return False
-                # Allowlist: XML namespace and schema domains (w3.org, schemas.microsoft.com, etc.)
-                for schema_domain in CLUSTER2_SCHEMA_DOMAINS:
-                    if schema_domain in url:
+                def _is_cleartext_url(expr, scope: str, lineno: int, fn_node) -> bool:
+                    url = _url_string(expr, scope, lineno, fn_node)
+                    if not isinstance(url, str) or not url.lower().startswith(
+                            CLUSTER2_CLEARTEXT_SCHEME):
                         return False
-                return True
-
-            def _contains_wildcard(expr, scope: str, lineno: int) -> bool:
-                value = _eval_value(expr, scope, lineno)
-                if isinstance(value, str):
-                    return value == "*"
-                if isinstance(value, list):
-                    return any(item == "*" for item in value if isinstance(item, str))
-                return False
-
-            def _kw_arguments(call: ast.Call):
-                return {kw.arg: kw for kw in getattr(call, "keywords", []) if kw.arg}
-
-            existing_index = self._sink_cwe_line_buckets(file_path)
-
-            def _merge_into_existing_sink(cwe: str, line: int, operation: str) -> None:
-                """Phase 6.3: an edgeless registry sink at the same (cwe, line) used to swallow
-                the structural finding; stamp its synthetic source id instead (mirrors the
-                P3 `_add_finding` merge)."""
-                source_id = CLUSTER2_STRUCTURAL_SOURCE_IDS.get(operation, operation)
-                if not source_id:
-                    return
-                for existing in existing_index.get((cwe, line)) or []:
-                    if not existing.metadata.get("p3_source_id"):
-                        existing.metadata["p3_source_id"] = source_id
-                        return
-
-            def _add(node: ast.AST, operation: str, category: str, cwe: str) -> None:
-                line = getattr(node, "lineno", 1)
-                column = getattr(node, "col_offset", 0)
-                key = (cwe, line, column)
-                if key in seen:
-                    return
-                if cwe == "CWE-918" and self._is_http_transport_module(file_path):
-                    return
-                _c2_lines = self._source_lines_by_file.get(file_path, [])
-                if _c2_lines and 1 <= line <= len(_c2_lines):
-                    if CLUSTER3_NOSEC_RE.search(_c2_lines[line - 1]):
-                        return
-                    if line >= 2 and re.search(r"#\s*ok:", _c2_lines[line - 2], re.IGNORECASE):
-                        return
-                if existing_index.get((cwe, line)):
-                    _merge_into_existing_sink(cwe, line, operation)
-                    return
-                seen.add(key)
-                scope_id = _scope_for(node, mod_name)
-                sink_node = SecurityNode(
-                    id=self.next_sink_id(),
-                    node_type=NodeType.SINK,
-                    symbol=operation,
-                    operation=operation,
-                    location=location(node, file_path),
-                    metadata={"sink_type": category, "category": category, "cwe": cwe,
-                              # Identity-mapped for every registered operation; the fallback
-                              # keeps an unregistered one reporting under its own name instead
-                              # of raising KeyError, which the collector's error handling would
-                              # swallow and silently disable the whole rule.
-                              "p3_source_id": CLUSTER2_STRUCTURAL_SOURCE_IDS.get(operation,
-                                                                                   operation)},
-                )
-                self.sinks.append(sink_node)
-                self.sink_records.append(SinkRecord(
-                    node=node,
-                    security_node=sink_node,
-                    lineno=line,
-                    scope_id=scope_id,
-                ))
-
-            # 3. Single pass collecting scope state: taint assignments, sessions, sinks.
-            taint_vars: dict[tuple[str, str], ast.AST] = {}
-            route_params: dict[str, set[str]] = {}
-            sessions: dict[str, set[str]] = {}
-            consumed_redirect: dict[str, set[str]] = {}
-            consumed_ssrf: dict[str, set[str]] = {}
-            validated: dict[str, set[str]] = {}
-            nan_guarded: dict[str, set[str]] = {}
-
-            for node in reachable:
-                scope = _scope_for(node, mod_name)
-
-                if isinstance(node, ast.FunctionDef):
-                    params = _route_param_names(node)
-                    if params:
-                        fn_scope = function_scopes.get(id(node))
-                        if fn_scope:
-                            route_params.setdefault(fn_scope, set()).update(params)
-
-                elif isinstance(node, ast.Compare):
-                    if any(isinstance(c, ast.Constant) and isinstance(c.value, str)
-                           and c.value.lower() == CLUSTER2_NAN_GUARD_VALUE
-                           for c in node.comparators):
-                        guarded = {sub.id for sub in ast.walk(node) if isinstance(sub, ast.Name)}
-                        owner = _enclosing_function(node)
-                        owner_scope = function_scopes.get(id(owner)) if owner else scope
-                        nan_guarded.setdefault(owner_scope or scope, set()).update(guarded)
-
-                elif isinstance(node, ast.With):
-                    for item in node.items:
-                        expr = item.context_expr
-                        if isinstance(expr, ast.Call) and any(
-                                form.split(".")[-1] in CLUSTER2_SESSION_CONSTRUCTORS
-                                for form in _call_forms(expr, scope)):
-                            name_node = item.optional_vars
-                            if isinstance(name_node, ast.Name):
-                                sessions.setdefault(scope, set()).add(name_node.id)
-
-                elif isinstance(node, (ast.Assign, ast.AnnAssign)):
-                    targets = node.targets if isinstance(node, ast.Assign) else [node.target]
-                    names = [t.id for t in targets if isinstance(t, ast.Name)]
-                    value = node.value
-                    if value is None or not names:
-                        continue
-                    if isinstance(value, ast.Call) and any(
-                            form.split(".")[-1] in CLUSTER2_SESSION_CONSTRUCTORS
-                            for form in _call_forms(value, scope)):
-                        for name in names:
-                            sessions.setdefault(scope, set()).add(name)
-                    owner = _enclosing_function(node)
-                    owner_scope = function_scopes.get(id(owner)) if owner else mod_scope
-                    is_taint = _is_request_taint_expr(value)
-                    if not is_taint and isinstance(value, ast.Name):
-                        is_taint = value.id in route_params.get(owner_scope, set())
-                    for name in names:
-                        if is_taint:
-                            taint_vars[(scope, name)] = node
-                        else:
-                            taint_vars.pop((scope, name), None)
-
-                elif isinstance(node, ast.Call):
-                    forms = _call_forms(node, scope)
-                    segs = {form.split(".")[-1] for form in forms}
-                    arg_nodes = list(node.args) + [kw.value for kw in
-                                                   getattr(node, "keywords", [])]
-                    if segs & CLUSTER2_REDIRECT_SINKS:
-                        consumed_redirect.setdefault(scope, set()).update(
-                            _names_in(node.args or arg_nodes[:1]))
-                    if segs & CLUSTER2_REDIRECT_VALIDATORS:
-                        validated.setdefault(scope, set()).add("redirect")
-                    if segs & CLUSTER2_SSRF_VALIDATORS:
-                        validated.setdefault(scope, set()).add("ssrf")
-                    if segs & {"startswith"}:
-                        prefix_val = None
-                        if node.args and isinstance(node.args[0], ast.Constant) and isinstance(node.args[0].value, str):
-                            prefix_val = node.args[0].value
-                        elif node.args and isinstance(node.args[0], (ast.Tuple, ast.List)):
-                            for elt in node.args[0].elts:
-                                if isinstance(elt, ast.Constant) and isinstance(elt.value, str) and elt.value.startswith(("http://", "https://", "/")):
-                                    prefix_val = elt.value
-                                    break
-                        if prefix_val and prefix_val.startswith(("http://", "https://", "/")):
-                            validated.setdefault(scope, set()).add("ssrf")
-                    is_ssrf_sink = False
-                    for form in forms:
-                        parts = form.split(".")
-                        root, last = parts[0], parts[-1]
-                        if last == "urlopen":
-                            is_ssrf_sink = True
-                        elif root in ("requests", "httpx", "urllib3") and last in \
-                                CLUSTER2_SSRF_SINK_SEGMENTS:
-                            is_ssrf_sink = True
-                        elif len(parts) == 1 and last in ("get", "post", "put", "delete",
-                                                          "head", "options", "patch") and \
-                                any(f.startswith("requests.") or f.startswith("httpx.")
-                                    for f in forms):
-                            is_ssrf_sink = True
-                    if is_ssrf_sink:
-                        consumed_ssrf.setdefault(scope, set()).update(_names_in(arg_nodes))
-
-            # 4. Source-line emissions for CWE-601 / CWE-918 untrusted flows.
-            for (scope, name), assign_node in taint_vars.items():
-                scope_validators = validated.get(scope, set())
-                if name in consumed_redirect.get(scope, set()) and \
-                        "redirect" not in scope_validators:
-                    _add(assign_node, "UNTRUSTED_REDIRECT_SOURCE", "OPEN_REDIRECT", "CWE-601")
-                if name in consumed_ssrf.get(scope, set()) and \
-                        "ssrf" not in scope_validators and \
-                        not any(g.get("var_name") == name for g in self.containment_guards):
-                    _add(assign_node, "SSRF_UNTRUSTED_URL_SOURCE",
-                         "SERVER_SIDE_REQUEST_FORGERY", "CWE-918")
-
-            pattern_mod_host = re.compile(r"://([^/@]*?)%[sr]")
-            pattern_fmt_host = re.compile(r"://([^/@]*?)\{")
-            pattern_scheme_suffix = re.compile(r"://[^/@]*$")
-
-            def _expr_is_tainted(expr: Optional[ast.AST], scope: str) -> bool:
-                if expr is None:
-                    return False
-                if _is_request_taint_expr(expr):
+                    host = url[len(CLUSTER2_CLEARTEXT_SCHEME):].split("/", 1)[0]
+                    host = host.rsplit(":", 1)[0]
+                    # Allowlist: localhost/loopback addresses
+                    if host.lower() in CLUSTER2_LOCAL_HOSTS:
+                        return False
+                    # Allowlist: XML namespace and schema domains (w3.org, schemas.microsoft.com, etc.)
+                    for schema_domain in CLUSTER2_SCHEMA_DOMAINS:
+                        if schema_domain in url:
+                            return False
                     return True
-                owner = _enclosing_function(expr)
-                owner_scope = function_scopes.get(id(owner)) if owner else mod_scope
-                fn_route_params = route_params.get(owner_scope, set())
-                if isinstance(expr, ast.Name):
-                    if expr.id in fn_route_params:
-                        return True
-                    if (scope, expr.id) in taint_vars or (owner_scope, expr.id) in taint_vars:
-                        return True
-                for sub in ast.walk(expr):
-                    if _is_request_taint_expr(sub):
-                        return True
-                    if isinstance(sub, ast.Name):
-                        if sub.id in fn_route_params or (scope, sub.id) in taint_vars or (owner_scope, sub.id) in taint_vars:
-                            return True
-                return False
 
-            def _is_tainted_url_host_expr(root_expr: ast.AST, scope: str, lineno: int) -> bool:
-                if root_expr is None:
+                def _contains_wildcard(expr, scope: str, lineno: int) -> bool:
+                    value = _eval_value(expr, scope, lineno)
+                    if isinstance(value, str):
+                        return value == "*"
+                    if isinstance(value, list):
+                        return any(item == "*" for item in value if isinstance(item, str))
                     return False
-                for sub in ast.walk(root_expr):
-                    # 1. Modulo formatting: template % args
-                    if isinstance(sub, ast.BinOp) and isinstance(sub.op, ast.Mod):
-                        tmpl = _eval_static_constant(sub.left, self.assignments_by_scope, scope, lineno)
-                        if tmpl is None and isinstance(sub.left, ast.Constant) and isinstance(sub.left.value, str):
-                            tmpl = sub.left.value
-                        if isinstance(tmpl, str) and pattern_mod_host.search(tmpl):
-                            if isinstance(sub.right, (ast.Tuple, ast.List)):
-                                if sub.right.elts and _expr_is_tainted(sub.right.elts[0], scope):
-                                    return True
-                            elif _expr_is_tainted(sub.right, scope):
+
+                def _kw_arguments(call: ast.Call):
+                    return {kw.arg: kw for kw in getattr(call, "keywords", []) if kw.arg}
+
+                existing_index = self._sink_cwe_line_buckets(file_path)
+
+                def _merge_into_existing_sink(cwe: str, line: int, operation: str) -> None:
+                    """Phase 6.3: an edgeless registry sink at the same (cwe, line) used to swallow
+                    the structural finding; stamp its synthetic source id instead (mirrors the
+                    P3 `_add_finding` merge)."""
+                    source_id = CLUSTER2_STRUCTURAL_SOURCE_IDS.get(operation, operation)
+                    if not source_id:
+                        return
+                    for existing in existing_index.get((cwe, line)) or []:
+                        if not existing.metadata.get("p3_source_id"):
+                            existing.metadata["p3_source_id"] = source_id
+                            return
+
+                def _add(node: ast.AST, operation: str, category: str, cwe: str) -> None:
+                    line = getattr(node, "lineno", 1)
+                    column = getattr(node, "col_offset", 0)
+                    key = (cwe, line, column)
+                    if key in seen:
+                        return
+                    if cwe == "CWE-918" and self._is_http_transport_module(file_path):
+                        return
+                    _c2_lines = self._source_lines_by_file.get(file_path, [])
+                    if _c2_lines and 1 <= line <= len(_c2_lines):
+                        if CLUSTER3_NOSEC_RE.search(_c2_lines[line - 1]):
+                            return
+                        if line >= 2 and re.search(r"#\s*ok:", _c2_lines[line - 2], re.IGNORECASE):
+                            return
+                    if existing_index.get((cwe, line)):
+                        _merge_into_existing_sink(cwe, line, operation)
+                        return
+                    seen.add(key)
+                    scope_id = _scope_for(node, mod_name)
+                    sink_node = SecurityNode(
+                        id=self.next_sink_id(),
+                        node_type=NodeType.SINK,
+                        symbol=operation,
+                        operation=operation,
+                        location=location(node, file_path),
+                        metadata={"sink_type": category, "category": category, "cwe": cwe,
+                                  # Identity-mapped for every registered operation; the fallback
+                                  # keeps an unregistered one reporting under its own name instead
+                                  # of raising KeyError, which the collector's error handling would
+                                  # swallow and silently disable the whole rule.
+                                  "p3_source_id": CLUSTER2_STRUCTURAL_SOURCE_IDS.get(operation,
+                                                                                       operation)},
+                    )
+                    self.sinks.append(sink_node)
+                    self.sink_records.append(SinkRecord(
+                        node=node,
+                        security_node=sink_node,
+                        lineno=line,
+                        scope_id=scope_id,
+                    ))
+
+                # 3. Single pass collecting scope state: taint assignments, sessions, sinks.
+                taint_vars: dict[tuple[str, str], ast.AST] = {}
+                route_params: dict[str, set[str]] = {}
+                sessions: dict[str, set[str]] = {}
+                consumed_redirect: dict[str, set[str]] = {}
+                consumed_ssrf: dict[str, set[str]] = {}
+                validated: dict[str, set[str]] = {}
+                nan_guarded: dict[str, set[str]] = {}
+
+                for node in reachable:
+                    scope = _scope_for(node, mod_name)
+
+                    if isinstance(node, ast.FunctionDef):
+                        params = _route_param_names(node)
+                        if params:
+                            fn_scope = function_scopes.get(id(node))
+                            if fn_scope:
+                                route_params.setdefault(fn_scope, set()).update(params)
+
+                    elif isinstance(node, ast.Compare):
+                        if any(isinstance(c, ast.Constant) and isinstance(c.value, str)
+                               and c.value.lower() == CLUSTER2_NAN_GUARD_VALUE
+                               for c in node.comparators):
+                            guarded = {sub.id for sub in ast.walk(node) if isinstance(sub, ast.Name)}
+                            owner = _enclosing_function(node)
+                            owner_scope = function_scopes.get(id(owner)) if owner else scope
+                            nan_guarded.setdefault(owner_scope or scope, set()).update(guarded)
+
+                    elif isinstance(node, ast.With):
+                        for item in node.items:
+                            expr = item.context_expr
+                            if isinstance(expr, ast.Call) and any(
+                                    form.split(".")[-1] in CLUSTER2_SESSION_CONSTRUCTORS
+                                    for form in _call_forms(expr, scope)):
+                                name_node = item.optional_vars
+                                if isinstance(name_node, ast.Name):
+                                    sessions.setdefault(scope, set()).add(name_node.id)
+
+                    elif isinstance(node, (ast.Assign, ast.AnnAssign)):
+                        targets = node.targets if isinstance(node, ast.Assign) else [node.target]
+                        names = [t.id for t in targets if isinstance(t, ast.Name)]
+                        value = node.value
+                        if value is None or not names:
+                            continue
+                        if isinstance(value, ast.Call) and any(
+                                form.split(".")[-1] in CLUSTER2_SESSION_CONSTRUCTORS
+                                for form in _call_forms(value, scope)):
+                            for name in names:
+                                sessions.setdefault(scope, set()).add(name)
+                        owner = _enclosing_function(node)
+                        owner_scope = function_scopes.get(id(owner)) if owner else mod_scope
+                        is_taint = _is_request_taint_expr(value)
+                        if not is_taint and isinstance(value, ast.Name):
+                            is_taint = value.id in route_params.get(owner_scope, set())
+                        for name in names:
+                            if is_taint:
+                                taint_vars[(scope, name)] = node
+                            else:
+                                taint_vars.pop((scope, name), None)
+
+                    elif isinstance(node, ast.Call):
+                        forms = _call_forms(node, scope)
+                        segs = {form.split(".")[-1] for form in forms}
+                        arg_nodes = list(node.args) + [kw.value for kw in
+                                                       getattr(node, "keywords", [])]
+                        if segs & CLUSTER2_REDIRECT_SINKS:
+                            consumed_redirect.setdefault(scope, set()).update(
+                                _names_in(node.args or arg_nodes[:1]))
+                        if segs & CLUSTER2_REDIRECT_VALIDATORS:
+                            validated.setdefault(scope, set()).add("redirect")
+                        if segs & CLUSTER2_SSRF_VALIDATORS:
+                            validated.setdefault(scope, set()).add("ssrf")
+                        if segs & {"startswith"}:
+                            prefix_val = None
+                            if node.args and isinstance(node.args[0], ast.Constant) and isinstance(node.args[0].value, str):
+                                prefix_val = node.args[0].value
+                            elif node.args and isinstance(node.args[0], (ast.Tuple, ast.List)):
+                                for elt in node.args[0].elts:
+                                    if isinstance(elt, ast.Constant) and isinstance(elt.value, str) and elt.value.startswith(("http://", "https://", "/")):
+                                        prefix_val = elt.value
+                                        break
+                            if prefix_val and prefix_val.startswith(("http://", "https://", "/")):
+                                validated.setdefault(scope, set()).add("ssrf")
+                        is_ssrf_sink = False
+                        for form in forms:
+                            parts = form.split(".")
+                            root, last = parts[0], parts[-1]
+                            if last == "urlopen":
+                                is_ssrf_sink = True
+                            elif root in ("requests", "httpx", "urllib3") and last in \
+                                    CLUSTER2_SSRF_SINK_SEGMENTS:
+                                is_ssrf_sink = True
+                            elif len(parts) == 1 and last in ("get", "post", "put", "delete",
+                                                              "head", "options", "patch") and \
+                                    any(f.startswith("requests.") or f.startswith("httpx.")
+                                        for f in forms):
+                                is_ssrf_sink = True
+                        if is_ssrf_sink:
+                            consumed_ssrf.setdefault(scope, set()).update(_names_in(arg_nodes))
+
+                # 4. Source-line emissions for CWE-601 / CWE-918 untrusted flows.
+                for (scope, name), assign_node in taint_vars.items():
+                    scope_validators = validated.get(scope, set())
+                    if name in consumed_redirect.get(scope, set()) and \
+                            "redirect" not in scope_validators:
+                        _add(assign_node, "UNTRUSTED_REDIRECT_SOURCE", "OPEN_REDIRECT", "CWE-601")
+                    if name in consumed_ssrf.get(scope, set()) and \
+                            "ssrf" not in scope_validators and \
+                            not any(g.get("var_name") == name for g in self.containment_guards):
+                        _add(assign_node, "SSRF_UNTRUSTED_URL_SOURCE",
+                             "SERVER_SIDE_REQUEST_FORGERY", "CWE-918")
+
+                pattern_mod_host = re.compile(r"://([^/@]*?)%[sr]")
+                pattern_fmt_host = re.compile(r"://([^/@]*?)\{")
+                pattern_scheme_suffix = re.compile(r"://[^/@]*$")
+
+                def _expr_is_tainted(expr: Optional[ast.AST], scope: str) -> bool:
+                    if expr is None:
+                        return False
+                    if _is_request_taint_expr(expr):
+                        return True
+                    owner = _enclosing_function(expr)
+                    owner_scope = function_scopes.get(id(owner)) if owner else mod_scope
+                    fn_route_params = route_params.get(owner_scope, set())
+                    if isinstance(expr, ast.Name):
+                        if expr.id in fn_route_params:
+                            return True
+                        if (scope, expr.id) in taint_vars or (owner_scope, expr.id) in taint_vars:
+                            return True
+                    for sub in ast.walk(expr):
+                        if _is_request_taint_expr(sub):
+                            return True
+                        if isinstance(sub, ast.Name):
+                            if sub.id in fn_route_params or (scope, sub.id) in taint_vars or (owner_scope, sub.id) in taint_vars:
                                 return True
-                    # 2. str.format(...)
-                    elif isinstance(sub, ast.Call) and isinstance(sub.func, ast.Attribute) and sub.func.attr == "format":
-                        tmpl = _eval_static_constant(sub.func.value, self.assignments_by_scope, scope, lineno)
-                        if tmpl is None and isinstance(sub.func.value, ast.Constant) and isinstance(sub.func.value.value, str):
-                            tmpl = sub.func.value.value
-                        if isinstance(tmpl, str) and pattern_fmt_host.search(tmpl):
-                            all_args = list(sub.args) + [kw.value for kw in sub.keywords]
-                            if any(_expr_is_tainted(a, scope) for a in all_args):
-                                return True
-                    # 3. String concatenation: left + right
-                    elif isinstance(sub, ast.BinOp) and isinstance(sub.op, ast.Add):
-                        left_str = _eval_static_constant(sub.left, self.assignments_by_scope, scope, lineno)
-                        if left_str is None and isinstance(sub.left, ast.Constant) and isinstance(sub.left.value, str):
-                            left_str = sub.left.value
-                        if isinstance(left_str, str) and pattern_scheme_suffix.search(left_str):
-                            if _expr_is_tainted(sub.right, scope):
-                                return True
-                    # 4. f-string: f"..."
-                    elif isinstance(sub, ast.JoinedStr):
-                        running_prefix = ""
-                        for part in sub.values:
-                            if isinstance(part, ast.Constant) and isinstance(part.value, str):
-                                running_prefix += part.value
-                            elif isinstance(part, ast.FormattedValue):
-                                if pattern_scheme_suffix.search(running_prefix):
-                                    if _expr_is_tainted(part.value, scope):
+                    return False
+
+                def _is_tainted_url_host_expr(root_expr: ast.AST, scope: str, lineno: int) -> bool:
+                    if root_expr is None:
+                        return False
+                    for sub in ast.walk(root_expr):
+                        # 1. Modulo formatting: template % args
+                        if isinstance(sub, ast.BinOp) and isinstance(sub.op, ast.Mod):
+                            tmpl = _eval_static_constant(sub.left, self.assignments_by_scope, scope, lineno)
+                            if tmpl is None and isinstance(sub.left, ast.Constant) and isinstance(sub.left.value, str):
+                                tmpl = sub.left.value
+                            if isinstance(tmpl, str) and pattern_mod_host.search(tmpl):
+                                if isinstance(sub.right, (ast.Tuple, ast.List)):
+                                    if sub.right.elts and _expr_is_tainted(sub.right.elts[0], scope):
                                         return True
-                                running_prefix = ""
-                return False
+                                elif _expr_is_tainted(sub.right, scope):
+                                    return True
+                        # 2. str.format(...)
+                        elif isinstance(sub, ast.Call) and isinstance(sub.func, ast.Attribute) and sub.func.attr == "format":
+                            tmpl = _eval_static_constant(sub.func.value, self.assignments_by_scope, scope, lineno)
+                            if tmpl is None and isinstance(sub.func.value, ast.Constant) and isinstance(sub.func.value.value, str):
+                                tmpl = sub.func.value.value
+                            if isinstance(tmpl, str) and pattern_fmt_host.search(tmpl):
+                                all_args = list(sub.args) + [kw.value for kw in sub.keywords]
+                                if any(_expr_is_tainted(a, scope) for a in all_args):
+                                    return True
+                        # 3. String concatenation: left + right
+                        elif isinstance(sub, ast.BinOp) and isinstance(sub.op, ast.Add):
+                            left_str = _eval_static_constant(sub.left, self.assignments_by_scope, scope, lineno)
+                            if left_str is None and isinstance(sub.left, ast.Constant) and isinstance(sub.left.value, str):
+                                left_str = sub.left.value
+                            if isinstance(left_str, str) and pattern_scheme_suffix.search(left_str):
+                                if _expr_is_tainted(sub.right, scope):
+                                    return True
+                        # 4. f-string: f"..."
+                        elif isinstance(sub, ast.JoinedStr):
+                            running_prefix = ""
+                            for part in sub.values:
+                                if isinstance(part, ast.Constant) and isinstance(part.value, str):
+                                    running_prefix += part.value
+                                elif isinstance(part, ast.FormattedValue):
+                                    if pattern_scheme_suffix.search(running_prefix):
+                                        if _expr_is_tainted(part.value, scope):
+                                            return True
+                                    running_prefix = ""
+                    return False
 
-            # 5. Node-local predicates.
-            for node in reachable:
-                scope = _scope_for(node, mod_name)
-                fn_node = _enclosing_function(node)
-                fn_scope = (function_scopes.get(id(fn_node)) if fn_node else mod_scope)
+                # 5. Node-local predicates.
+                for node in reachable:
+                    scope = _scope_for(node, mod_name)
+                    fn_node = _enclosing_function(node)
+                    fn_scope = (function_scopes.get(id(fn_node)) if fn_node else mod_scope)
 
-                # CWE-918: Tainted URL host construction
-                # SUPPRESSION: Merely constructing a URL string or dictionary key does not constitute SSRF.
-                # Suppress unless the URL flows into an actual network transmission sink (requests.get/post, urllib.request, etc.).
-                if isinstance(node, (ast.Assign, ast.AnnAssign, ast.Return)):
-                    val = node.value
-                    if val is not None and _is_tainted_url_host_expr(val, scope, getattr(node, "lineno", 0)):
-                        # Suppress if this is a Return statement returning JsonResponse/flask.jsonify (no outbound request)
-                        if isinstance(node, ast.Return) and isinstance(val, ast.Call):
-                            ret_name = dotted_name(val.func) or ""
-                            if ret_name in {"JsonResponse", "django.http.JsonResponse", "jsonify", "flask.jsonify"}:
-                                continue  # JsonResponse returns JSON, doesn't make HTTP requests
+                    # CWE-918: Tainted URL host construction
+                    # SUPPRESSION: Merely constructing a URL string or dictionary key does not constitute SSRF.
+                    # Suppress unless the URL flows into an actual network transmission sink (requests.get/post, urllib.request, etc.).
+                    if isinstance(node, (ast.Assign, ast.AnnAssign, ast.Return)):
+                        val = node.value
+                        if val is not None and _is_tainted_url_host_expr(val, scope, getattr(node, "lineno", 0)):
+                            # Suppress if this is a Return statement returning JsonResponse/flask.jsonify (no outbound request)
+                            if isinstance(node, ast.Return) and isinstance(val, ast.Call):
+                                ret_name = dotted_name(val.func) or ""
+                                if ret_name in {"JsonResponse", "django.http.JsonResponse", "jsonify", "flask.jsonify"}:
+                                    continue  # JsonResponse returns JSON, doesn't make HTTP requests
                         
-                        # Check if this URL variable actually reaches a network sink in the same module.
-                        url_var_name = ""
-                        if isinstance(node, ast.Assign) and node.targets:
-                            t = node.targets[0]
-                            if isinstance(t, ast.Name):
-                                url_var_name = t.id
-                        elif isinstance(node, ast.AnnAssign) and node.target:
-                            if isinstance(node.target, ast.Name):
-                                url_var_name = node.target.id
+                            # Check if this URL variable actually reaches a network sink in the same module.
+                            url_var_name = ""
+                            if isinstance(node, ast.Assign) and node.targets:
+                                t = node.targets[0]
+                                if isinstance(t, ast.Name):
+                                    url_var_name = t.id
+                            elif isinstance(node, ast.AnnAssign) and node.target:
+                                if isinstance(node.target, ast.Name):
+                                    url_var_name = node.target.id
                         
-                        if url_var_name:
-                            # Search for usage of this variable in a network sink call.
-                            reaches_network_sink = False
-                            for other_node in reachable:
-                                if isinstance(other_node, ast.Call):
-                                    other_name = dotted_name(other_node.func) or ""
-                                    if any(sink in other_name for sink in ("requests.", "urllib.request.", "httpx.", "aiohttp.")):
-                                        # Check if our URL variable is passed as an argument.
-                                        for arg in other_node.args:
-                                            if isinstance(arg, ast.Name) and arg.id == url_var_name:
-                                                reaches_network_sink = True
-                                                break
-                                        if not reaches_network_sink:
-                                            for kw in other_node.keywords:
-                                                if isinstance(kw.value, ast.Name) and kw.value.id == url_var_name:
+                            if url_var_name:
+                                # Search for usage of this variable in a network sink call.
+                                reaches_network_sink = False
+                                for other_node in reachable:
+                                    if isinstance(other_node, ast.Call):
+                                        other_name = dotted_name(other_node.func) or ""
+                                        if any(sink in other_name for sink in ("requests.", "urllib.request.", "httpx.", "aiohttp.")):
+                                            # Check if our URL variable is passed as an argument.
+                                            for arg in other_node.args:
+                                                if isinstance(arg, ast.Name) and arg.id == url_var_name:
                                                     reaches_network_sink = True
                                                     break
-                                    if reaches_network_sink:
-                                        break
+                                            if not reaches_network_sink:
+                                                for kw in other_node.keywords:
+                                                    if isinstance(kw.value, ast.Name) and kw.value.id == url_var_name:
+                                                        reaches_network_sink = True
+                                                        break
+                                        if reaches_network_sink:
+                                            break
                             
-                            if not reaches_network_sink:
-                                continue  # Suppress: URL constructed but never sent over network
+                                if not reaches_network_sink:
+                                    continue  # Suppress: URL constructed but never sent over network
                         
-                        scope_validators = validated.get(scope, set())
-                        if "ssrf" not in scope_validators:
-                            _add(node, "SSRF_UNTRUSTED_URL_SOURCE", "SERVER_SIDE_REQUEST_FORGERY", "CWE-918")
-                elif isinstance(node, ast.AugAssign):
-                    if isinstance(node.target, ast.Name):
-                        prior_recs = self.assignments_by_scope.get((scope, node.target.id), [])
-                        ended_scheme = False
-                        for pr in prior_recs:
-                            if pr.lineno < node.lineno:
-                                pr_val = _eval_static_constant(pr.value_node, self.assignments_by_scope, scope, pr.lineno)
-                                if isinstance(pr_val, str) and pattern_scheme_suffix.search(pr_val):
-                                    ended_scheme = True
-                                    break
-                        if ended_scheme and _expr_is_tainted(node.value, scope):
                             scope_validators = validated.get(scope, set())
                             if "ssrf" not in scope_validators:
                                 _add(node, "SSRF_UNTRUSTED_URL_SOURCE", "SERVER_SIDE_REQUEST_FORGERY", "CWE-918")
+                    elif isinstance(node, ast.AugAssign):
+                        if isinstance(node.target, ast.Name):
+                            prior_recs = self.assignments_by_scope.get((scope, node.target.id), [])
+                            ended_scheme = False
+                            for pr in prior_recs:
+                                if pr.lineno < node.lineno:
+                                    pr_val = _eval_static_constant(pr.value_node, self.assignments_by_scope, scope, pr.lineno)
+                                    if isinstance(pr_val, str) and pattern_scheme_suffix.search(pr_val):
+                                        ended_scheme = True
+                                        break
+                            if ended_scheme and _expr_is_tainted(node.value, scope):
+                                scope_validators = validated.get(scope, set())
+                                if "ssrf" not in scope_validators:
+                                    _add(node, "SSRF_UNTRUSTED_URL_SOURCE", "SERVER_SIDE_REQUEST_FORGERY", "CWE-918")
 
-                if isinstance(node, ast.Assign):
-                    first_target = node.targets[0] if node.targets else None
-                    target_chain = _segments(first_target) if first_target is not None else []
-                    target_dotted = ".".join(target_chain) if target_chain else (
-                        dotted_name(first_target) if first_target is not None else "")
-                    if target_dotted == CLUSTER2_SSL_GLOBAL_OVERRIDE_TARGET:
-                        value_forms: set[str] = set()
-                        if isinstance(node.value, ast.Name):
-                            value_forms.add(node.value.id)
-                        elif isinstance(node.value, ast.Attribute):
-                            value_forms.add(node.value.attr)
-                        elif isinstance(node.value, ast.Call):
-                            value_forms |= {f.split(".")[-1] for f in
-                                            _call_forms(node.value, scope)}
-                        if value_forms & CLUSTER2_SSL_UNVERIFIED_FACTORIES:
-                            _add(node, "SSL_CONTEXT_GLOBAL_OVERRIDE",
-                                 "INSECURE_TRANSPORT", "CWE-295")
-                    continue
+                    if isinstance(node, ast.Assign):
+                        first_target = node.targets[0] if node.targets else None
+                        target_chain = _segments(first_target) if first_target is not None else []
+                        target_dotted = ".".join(target_chain) if target_chain else (
+                            dotted_name(first_target) if first_target is not None else "")
+                        if target_dotted == CLUSTER2_SSL_GLOBAL_OVERRIDE_TARGET:
+                            value_forms: set[str] = set()
+                            if isinstance(node.value, ast.Name):
+                                value_forms.add(node.value.id)
+                            elif isinstance(node.value, ast.Attribute):
+                                value_forms.add(node.value.attr)
+                            elif isinstance(node.value, ast.Call):
+                                value_forms |= {f.split(".")[-1] for f in
+                                                _call_forms(node.value, scope)}
+                            if value_forms & CLUSTER2_SSL_UNVERIFIED_FACTORIES:
+                                _add(node, "SSL_CONTEXT_GLOBAL_OVERRIDE",
+                                     "INSECURE_TRANSPORT", "CWE-295")
+                        continue
 
-                if not isinstance(node, ast.Call):
-                    continue
+                    if not isinstance(node, ast.Call):
+                        continue
 
-                forms = _call_forms(node, scope)
-                segs = {form.split(".")[-1] for form in forms}
-                roots = {form.split(".")[0] for form in forms}
-                lineno = getattr(node, "lineno", 0)
+                    forms = _call_forms(node, scope)
+                    segs = {form.split(".")[-1] for form in forms}
+                    roots = {form.split(".")[0] for form in forms}
+                    lineno = getattr(node, "lineno", 0)
 
-                # CWE-295: HTTPSConnection() without an explicit TLS context.
-                if CLUSTER2_HTTPS_CONNECTION_SEGMENT in segs:
-                    has_context_kw = any(kw.arg == "context" for kw in
-                                         getattr(node, "keywords", []))
-                    if not has_context_kw:
-                        _add(node, "UNVERIFIED_HTTPS_CONNECTION", "INSECURE_TRANSPORT",
-                             "CWE-295")
-
-                # CWE-295: urllib3.PoolManager with certificate checks disabled.
-                if segs & CLUSTER2_POOL_MANAGER_SEGMENTS and "urllib3" in roots:
-                    for kw in getattr(node, "keywords", []):
-                        if kw.arg not in ("cert_reqs", "ssl_cert_reqs"):
-                            continue
-                        value = _eval_static_constant(kw.value, self.assignments_by_scope,
-                                                      scope, lineno)
-                        disabled = value is False or (isinstance(value, str) and
-                                                      value.upper() in
-                                                      CLUSTER2_CERT_NONE_VALUES)
-                        if disabled:
-                            _add(node, "DISABLED_SSL_VERIFICATION", "INSECURE_TRANSPORT",
+                    # CWE-295: HTTPSConnection() without an explicit TLS context.
+                    if CLUSTER2_HTTPS_CONNECTION_SEGMENT in segs:
+                        has_context_kw = any(kw.arg == "context" for kw in
+                                             getattr(node, "keywords", []))
+                        if not has_context_kw:
+                            _add(node, "UNVERIFIED_HTTPS_CONNECTION", "INSECURE_TRANSPORT",
                                  "CWE-295")
 
-                # CWE-319: urllib3 HTTPConnectionPool (plaintext pool, never HTTPS*).
-                if CLUSTER2_HTTP_POOL_SEGMENT in segs:
-                    _add(node, "CLEARTEXT_HTTP_CONNECTION_POOL", "INSECURE_TRANSPORT",
-                         "CWE-319")
+                    # CWE-295: urllib3.PoolManager with certificate checks disabled.
+                    if segs & CLUSTER2_POOL_MANAGER_SEGMENTS and "urllib3" in roots:
+                        for kw in getattr(node, "keywords", []):
+                            if kw.arg not in ("cert_reqs", "ssl_cert_reqs"):
+                                continue
+                            value = _eval_static_constant(kw.value, self.assignments_by_scope,
+                                                          scope, lineno)
+                            disabled = value is False or (isinstance(value, str) and
+                                                          value.upper() in
+                                                          CLUSTER2_CERT_NONE_VALUES)
+                            if disabled:
+                                _add(node, "DISABLED_SSL_VERIFICATION", "INSECURE_TRANSPORT",
+                                     "CWE-295")
 
-                # CWE-319: requests/httpx/session calls fetching a resolved http:// URL.
-                all_sessions = (sessions.get(scope, set()) |
-                                sessions.get(fn_scope or "", set()) |
-                                sessions.get(mod_scope, set()))
-                for form in forms:
-                    parts = form.split(".")
-                    root, last = parts[0], parts[-1]
-                    if last not in CLUSTER2_HTTP_VERBS:
-                        continue
-                    if root not in ("requests", "httpx", "urllib3") and root not in all_sessions:
-                        continue
-                    idx = CLUSTER2_HTTP_URL_ARG_INDEX.get(last, 0)
-                    url_arg = node.args[idx] if len(node.args) > idx else None
-                    if url_arg is None:
-                        kw_map = _kw_arguments(node)
-                        if "url" in kw_map:
-                            url_arg = kw_map["url"].value
-                    if url_arg is not None and _is_cleartext_url(url_arg, scope, lineno,
-                                                                 fn_node):
-                        _add(node, "CLEARTEXT_HTTP_REQUEST", "INSECURE_TRANSPORT", "CWE-319")
-                    break
+                    # CWE-319: urllib3 HTTPConnectionPool (plaintext pool, never HTTPS*).
+                    if CLUSTER2_HTTP_POOL_SEGMENT in segs:
+                        _add(node, "CLEARTEXT_HTTP_CONNECTION_POOL", "INSECURE_TRANSPORT",
+                             "CWE-319")
 
-                # CWE-611: XML entry points reached through an xml./lxml. alias.
-                if segs & CLUSTER2_XML_METHODS:
-                    first_arg_const = bool(node.args) and isinstance(node.args[0], ast.Constant)
-                    call_seg = (dotted_name(node.func) or "").split(".")[-1]
+                    # CWE-319: requests/httpx/session calls fetching a resolved http:// URL.
+                    all_sessions = (sessions.get(scope, set()) |
+                                    sessions.get(fn_scope or "", set()) |
+                                    sessions.get(mod_scope, set()))
                     for form in forms:
-                        if form.startswith("defusedxml"):
+                        parts = form.split(".")
+                        root, last = parts[0], parts[-1]
+                        if last not in CLUSTER2_HTTP_VERBS:
                             continue
-                        if not form.startswith(CLUSTER2_XML_UNSAFE_ROOTS):
+                        if root not in ("requests", "httpx", "urllib3") and root not in all_sessions:
                             continue
-                        # `parse('literal.xml')` is the audited-safe shape in the upstream
-                        # corpus; parseString()/fromstring()/iterparse() stay flagged.
-                        if call_seg == "parse" and first_arg_const:
-                            continue
-                        _add(node, "ALIASED_UNSAFE_XML_PARSE", "XML_EXTERNAL_ENTITY",
-                             "CWE-611")
+                        idx = CLUSTER2_HTTP_URL_ARG_INDEX.get(last, 0)
+                        url_arg = node.args[idx] if len(node.args) > idx else None
+                        if url_arg is None:
+                            kw_map = _kw_arguments(node)
+                            if "url" in kw_map:
+                                url_arg = kw_map["url"].value
+                        if url_arg is not None and _is_cleartext_url(url_arg, scope, lineno,
+                                                                     fn_node):
+                            _add(node, "CLEARTEXT_HTTP_REQUEST", "INSECURE_TRANSPORT", "CWE-319")
                         break
 
-                # CWE-704: unvalidated numeric conversion on a request-controlled value.
-                if isinstance(node.func, ast.Name) and node.func.id in CLUSTER2_NAN_CONVERSIONS \
-                        and len(node.args) == 1:
-                    arg = node.args[0]
-                    parent = getattr(node, "parent", None)
-                    wrapped_by_int = (isinstance(parent, ast.Call)
-                                      and isinstance(parent.func, ast.Name)
-                                      and parent.func.id in CLUSTER2_NAN_SAFE_WRAPPERS)
-                    arg_is_safe_call = (isinstance(arg, ast.Call)
-                                        and isinstance(arg.func, ast.Name)
-                                        and arg.func.id in CLUSTER2_NAN_SAFE_WRAPPERS)
-                    tainted_arg = False
-                    if isinstance(arg, ast.Name):
-                        tainted_arg = ((scope, arg.id) in taint_vars or
-                                       arg.id in route_params.get(fn_scope or "", set()) or
-                                       arg.id in route_params.get(scope, set()))
-                    elif isinstance(arg, (ast.Call, ast.Subscript, ast.Attribute)):
-                        tainted_arg = _root_is_request(arg)
-                    guarded = arg_is_safe_call or wrapped_by_int or (
-                        isinstance(arg, ast.Name) and
-                        arg.id in nan_guarded.get(fn_scope or "", set()))
-                    if tainted_arg and not guarded:
-                        _add(node, "NAN_UNVALIDATED_CONVERSION", "TYPE_CONFUSION", "CWE-704")
-
-                # CWE-942: wildcard CORS combined with credentialed requests.
-                if segs & CLUSTER2_CORS_ADD_MW:
-                    first_arg = node.args[0] if node.args else None
-                    middleware = ""
-                    if isinstance(first_arg, ast.Name):
-                        middleware = first_arg.id
-                    elif isinstance(first_arg, ast.Attribute):
-                        middleware = first_arg.attr
-                    if middleware in CLUSTER2_CORS_MIDDLEWARE:
-                        kw_map = _kw_arguments(node)
-                        origins_kw = kw_map.get("allow_origins") or kw_map.get("origins")
-                        credentials_kw = kw_map.get("allow_credentials")
-                        creds_true = credentials_kw is not None and _eval_static_constant(
-                            credentials_kw.value, self.assignments_by_scope, scope,
-                            lineno) is True
-                        if origins_kw is not None and creds_true and _contains_wildcard(
-                                origins_kw.value, scope, lineno):
-                            _add(origins_kw.value, "PERMISSIVE_CORS_POLICY",
-                                 "INSECURE_CONFIGURATION", "CWE-942")
-                elif segs & CLUSTER2_CORS_FACTORY_CALLS:
-                    kw_map = _kw_arguments(node)
-                    origins_kw = kw_map.get("origins") or kw_map.get("allow_origins")
-                    credentials_kw = (kw_map.get("supports_credentials")
-                                      or kw_map.get("allow_credentials"))
-                    creds_true = credentials_kw is not None and _eval_static_constant(
-                        credentials_kw.value, self.assignments_by_scope, scope, lineno) is True
-                    wildcard = origins_kw is not None and _contains_wildcard(
-                        origins_kw.value, scope, lineno)
-                    if not wildcard:
-                        for sub in ast.walk(node):
-                            if not isinstance(sub, ast.Dict):
+                    # CWE-611: XML entry points reached through an xml./lxml. alias.
+                    if segs & CLUSTER2_XML_METHODS:
+                        first_arg_const = bool(node.args) and isinstance(node.args[0], ast.Constant)
+                        call_seg = (dotted_name(node.func) or "").split(".")[-1]
+                        for form in forms:
+                            if form.startswith("defusedxml"):
                                 continue
-                            origin_wild = False
-                            cred_ok = False
-                            for key, val in zip(sub.keys, sub.values):
-                                if not (isinstance(key, ast.Constant)
-                                        and isinstance(key.value, str)):
+                            if not form.startswith(CLUSTER2_XML_UNSAFE_ROOTS):
+                                continue
+                            # `parse('literal.xml')` is the audited-safe shape in the upstream
+                            # corpus; parseString()/fromstring()/iterparse() stay flagged.
+                            if call_seg == "parse" and first_arg_const:
+                                continue
+                            _add(node, "ALIASED_UNSAFE_XML_PARSE", "XML_EXTERNAL_ENTITY",
+                                 "CWE-611")
+                            break
+
+                    # CWE-704: unvalidated numeric conversion on a request-controlled value.
+                    if isinstance(node.func, ast.Name) and node.func.id in CLUSTER2_NAN_CONVERSIONS \
+                            and len(node.args) == 1:
+                        arg = node.args[0]
+                        parent = getattr(node, "parent", None)
+                        wrapped_by_int = (isinstance(parent, ast.Call)
+                                          and isinstance(parent.func, ast.Name)
+                                          and parent.func.id in CLUSTER2_NAN_SAFE_WRAPPERS)
+                        arg_is_safe_call = (isinstance(arg, ast.Call)
+                                            and isinstance(arg.func, ast.Name)
+                                            and arg.func.id in CLUSTER2_NAN_SAFE_WRAPPERS)
+                        tainted_arg = False
+                        if isinstance(arg, ast.Name):
+                            tainted_arg = ((scope, arg.id) in taint_vars or
+                                           arg.id in route_params.get(fn_scope or "", set()) or
+                                           arg.id in route_params.get(scope, set()))
+                        elif isinstance(arg, (ast.Call, ast.Subscript, ast.Attribute)):
+                            tainted_arg = _root_is_request(arg)
+                        guarded = arg_is_safe_call or wrapped_by_int or (
+                            isinstance(arg, ast.Name) and
+                            arg.id in nan_guarded.get(fn_scope or "", set()))
+                        if tainted_arg and not guarded:
+                            _add(node, "NAN_UNVALIDATED_CONVERSION", "TYPE_CONFUSION", "CWE-704")
+
+                    # CWE-942: wildcard CORS combined with credentialed requests.
+                    if segs & CLUSTER2_CORS_ADD_MW:
+                        first_arg = node.args[0] if node.args else None
+                        middleware = ""
+                        if isinstance(first_arg, ast.Name):
+                            middleware = first_arg.id
+                        elif isinstance(first_arg, ast.Attribute):
+                            middleware = first_arg.attr
+                        if middleware in CLUSTER2_CORS_MIDDLEWARE:
+                            kw_map = _kw_arguments(node)
+                            origins_kw = kw_map.get("allow_origins") or kw_map.get("origins")
+                            credentials_kw = kw_map.get("allow_credentials")
+                            creds_true = credentials_kw is not None and _eval_static_constant(
+                                credentials_kw.value, self.assignments_by_scope, scope,
+                                lineno) is True
+                            if origins_kw is not None and creds_true and _contains_wildcard(
+                                    origins_kw.value, scope, lineno):
+                                _add(origins_kw.value, "PERMISSIVE_CORS_POLICY",
+                                     "INSECURE_CONFIGURATION", "CWE-942")
+                    elif segs & CLUSTER2_CORS_FACTORY_CALLS:
+                        kw_map = _kw_arguments(node)
+                        origins_kw = kw_map.get("origins") or kw_map.get("allow_origins")
+                        credentials_kw = (kw_map.get("supports_credentials")
+                                          or kw_map.get("allow_credentials"))
+                        creds_true = credentials_kw is not None and _eval_static_constant(
+                            credentials_kw.value, self.assignments_by_scope, scope, lineno) is True
+                        wildcard = origins_kw is not None and _contains_wildcard(
+                            origins_kw.value, scope, lineno)
+                        if not wildcard:
+                            for sub in ast.walk(node):
+                                if not isinstance(sub, ast.Dict):
                                     continue
-                                lowered = key.value.lower()
-                                if lowered in ("origins", "allow_origins") and \
-                                        _contains_wildcard(val, scope, lineno):
-                                    origin_wild = True
-                                elif lowered in ("supports_credentials", "allow_credentials"):
-                                    cred_ok = _eval_static_constant(
-                                        val, self.assignments_by_scope, scope, lineno) is True
-                            if origin_wild and cred_ok:
-                                wildcard = True
-                                creds_true = True
-                    if wildcard and creds_true:
-                        _add(node, "PERMISSIVE_CORS_POLICY", "INSECURE_CONFIGURATION",
-                             "CWE-942")
+                                origin_wild = False
+                                cred_ok = False
+                                for key, val in zip(sub.keys, sub.values):
+                                    if not (isinstance(key, ast.Constant)
+                                            and isinstance(key.value, str)):
+                                        continue
+                                    lowered = key.value.lower()
+                                    if lowered in ("origins", "allow_origins") and \
+                                            _contains_wildcard(val, scope, lineno):
+                                        origin_wild = True
+                                    elif lowered in ("supports_credentials", "allow_credentials"):
+                                        cred_ok = _eval_static_constant(
+                                            val, self.assignments_by_scope, scope, lineno) is True
+                                if origin_wild and cred_ok:
+                                    wildcard = True
+                                    creds_true = True
+                        if wildcard and creds_true:
+                            _add(node, "PERMISSIVE_CORS_POLICY", "INSECURE_CONFIGURATION",
+                                 "CWE-942")
+            finally:
+                _scope_memo.clear()
 
     def _module_is_json_api(self, mod_name: str) -> bool:
         """True when the module is built on a JSON-first router (FastAPI/Starlette/ninja)."""
