@@ -13279,14 +13279,22 @@ class TaintTracker:
         """
         function_scopes = {id(function): scope for scope, function in self.functions.items()}
 
+        _scope_memo: dict[int, str] = {}
+
         def _scope_for(node: ast.AST, mod_name: str) -> str:
-            current = node
-            while current is not None:
-                scope = function_scopes.get(id(current))
-                if scope:
-                    return scope
-                current = getattr(current, "parent", None)
-            return f"{mod_name}:global"
+            """Enclosing function scope for `node`, memoised; cleared once per tree."""
+            scope = _scope_memo.get(id(node))
+            if scope is None:
+                current = node
+                while current is not None:
+                    scope = function_scopes.get(id(current))
+                    if scope:
+                        break
+                    current = getattr(current, "parent", None)
+                else:
+                    scope = f"{mod_name}:global"
+                _scope_memo[id(node)] = scope
+            return scope
 
         def _segments(expr: ast.AST) -> list[str]:
             chain: list[str] = []
@@ -13302,764 +13310,767 @@ class TaintTracker:
             return (name or "").lower()
 
         for mod_name, tree in self.modules.items():
-            file_path = self.file_paths.get(mod_name, "unknown.py")
-            mod_scope = f"{mod_name}:global"
-            reachable = list(self._reachable_nodes(tree))
-            seen: set[tuple[str, int, int]] = set()
+            try:
+                file_path = self.file_paths.get(mod_name, "unknown.py")
+                mod_scope = f"{mod_name}:global"
+                reachable = list(self._reachable_nodes(tree))
+                seen: set[tuple[str, int, int]] = set()
 
-            bindings: dict[str, list[tuple[int, str, str]]] = {}
-            for node in reachable:
-                scope = _scope_for(node, mod_name)
-                if isinstance(node, ast.Import):
-                    for alias in node.names:
-                        local = alias.asname or alias.name.split(".")[0]
-                        bindings.setdefault(scope, []).append(
-                            (getattr(node, "lineno", 0), local, alias.name))
-                        if alias.asname is None and "." in alias.name:
+                bindings: dict[str, list[tuple[int, str, str]]] = {}
+                for node in reachable:
+                    scope = _scope_for(node, mod_name)
+                    if isinstance(node, ast.Import):
+                        for alias in node.names:
+                            local = alias.asname or alias.name.split(".")[0]
                             bindings.setdefault(scope, []).append(
-                                (getattr(node, "lineno", 0), alias.name, alias.name))
-                elif isinstance(node, ast.ImportFrom):
-                    module = node.module or ""
-                    for alias in node.names:
-                        local = alias.asname or alias.name
-                        full = f"{module}.{alias.name}" if module else alias.name
-                        bindings.setdefault(scope, []).append(
-                            (getattr(node, "lineno", 0), local, full))
+                                (getattr(node, "lineno", 0), local, alias.name))
+                            if alias.asname is None and "." in alias.name:
+                                bindings.setdefault(scope, []).append(
+                                    (getattr(node, "lineno", 0), alias.name, alias.name))
+                    elif isinstance(node, ast.ImportFrom):
+                        module = node.module or ""
+                        for alias in node.names:
+                            local = alias.asname or alias.name
+                            full = f"{module}.{alias.name}" if module else alias.name
+                            bindings.setdefault(scope, []).append(
+                                (getattr(node, "lineno", 0), local, full))
 
-            def _resolve_chain(chain: list[str], scope: str, lineno: int) -> list[str]:
-                if not chain:
+                def _resolve_chain(chain: list[str], scope: str, lineno: int) -> list[str]:
+                    if not chain:
+                        return chain
+                    for depth in range(min(len(chain), 3), 0, -1):
+                        prefix = ".".join(chain[:depth])
+                        best = None
+                        for scope_key in (scope, mod_scope):
+                            rows = [row for row in bindings.get(scope_key, [])
+                                    if row[1] == prefix and row[0] <= lineno]
+                            if rows:
+                                best = rows[-1][2]
+                                break
+                        if best is None:
+                            best = self.imports.get(mod_name, {}).get(prefix)
+                        if best:
+                            return best.split(".") + chain[depth:]
                     return chain
-                for depth in range(min(len(chain), 3), 0, -1):
-                    prefix = ".".join(chain[:depth])
-                    best = None
-                    for scope_key in (scope, mod_scope):
-                        rows = [row for row in bindings.get(scope_key, [])
-                                if row[1] == prefix and row[0] <= lineno]
-                        if rows:
-                            best = rows[-1][2]
-                            break
-                    if best is None:
-                        best = self.imports.get(mod_name, {}).get(prefix)
-                    if best:
-                        return best.split(".") + chain[depth:]
-                return chain
 
-            def _eval_value(expr, scope: str, lineno: int, depth: int = 0):
-                if expr is None or depth > 2:
+                def _eval_value(expr, scope: str, lineno: int, depth: int = 0):
+                    if expr is None or depth > 2:
+                        return None
+                    if isinstance(expr, ast.Constant):
+                        return expr.value
+                    if isinstance(expr, (ast.List, ast.Tuple)):
+                        return [_eval_value(elt, scope, lineno, depth + 1) for elt in expr.elts]
+                    if isinstance(expr, ast.Name):
+                        records = list(self.assignments_by_scope.get((scope, expr.id), []))
+                        records += list(self.assignments_by_scope.get((mod_scope, expr.id), []))
+                        prior = [r for r in records if r.lineno <= lineno]
+                        if prior:
+                            return _eval_value(prior[-1].value_node, scope, prior[-1].lineno,
+                                               depth + 1)
+                        return None
                     return None
-                if isinstance(expr, ast.Constant):
-                    return expr.value
-                if isinstance(expr, (ast.List, ast.Tuple)):
-                    return [_eval_value(elt, scope, lineno, depth + 1) for elt in expr.elts]
-                if isinstance(expr, ast.Name):
-                    records = list(self.assignments_by_scope.get((scope, expr.id), []))
-                    records += list(self.assignments_by_scope.get((mod_scope, expr.id), []))
-                    prior = [r for r in records if r.lineno <= lineno]
-                    if prior:
-                        return _eval_value(prior[-1].value_node, scope, prior[-1].lineno,
-                                           depth + 1)
-                    return None
-                return None
 
-            def _assigned_node(name: str, scope: str, lineno: int):
-                records = list(self.assignments_by_scope.get((scope, name), []))
-                records += list(self.assignments_by_scope.get((mod_scope, name), []))
-                prior = [r for r in records if r.lineno <= lineno and r.lineno != lineno]
-                return prior[-1] if prior else None
+                def _assigned_node(name: str, scope: str, lineno: int):
+                    records = list(self.assignments_by_scope.get((scope, name), []))
+                    records += list(self.assignments_by_scope.get((mod_scope, name), []))
+                    prior = [r for r in records if r.lineno <= lineno and r.lineno != lineno]
+                    return prior[-1] if prior else None
 
-            def _static(expr, scope: str, lineno: int):
-                return _eval_static_constant(expr, self.assignments_by_scope, scope, lineno)
+                def _static(expr, scope: str, lineno: int):
+                    return _eval_static_constant(expr, self.assignments_by_scope, scope, lineno)
 
-            existing_index = self._sink_cwe_line_buckets(file_path)
+                existing_index = self._sink_cwe_line_buckets(file_path)
 
-            def _merge_into_existing_sink(cwe: str, line: int, operation: str) -> None:
-                """Phase 6.3: stamp the synthetic source id onto an edgeless registry sink at
-                the same (cwe, line) instead of dropping the structural finding."""
-                source_id = CLUSTER3_STRUCTURAL_SOURCE_IDS.get(operation)
-                if not source_id:
-                    return
-                for existing in existing_index.get((cwe, line)) or []:
-                    if not existing.metadata.get("p3_source_id"):
-                        existing.metadata["p3_source_id"] = source_id
+                def _merge_into_existing_sink(cwe: str, line: int, operation: str) -> None:
+                    """Phase 6.3: stamp the synthetic source id onto an edgeless registry sink at
+                    the same (cwe, line) instead of dropping the structural finding."""
+                    source_id = CLUSTER3_STRUCTURAL_SOURCE_IDS.get(operation)
+                    if not source_id:
                         return
+                    for existing in existing_index.get((cwe, line)) or []:
+                        if not existing.metadata.get("p3_source_id"):
+                            existing.metadata["p3_source_id"] = source_id
+                            return
 
-            nosec_lines: set[int] = set()
-            mod_source = self.files.get(file_path) or ""
-            for _idx, _text in enumerate(mod_source.splitlines(), 1):
-                if CLUSTER3_NOSEC_RE.search(_text):
-                    nosec_lines.add(_idx)
+                nosec_lines: set[int] = set()
+                mod_source = self.files.get(file_path) or ""
+                for _idx, _text in enumerate(mod_source.splitlines(), 1):
+                    if CLUSTER3_NOSEC_RE.search(_text):
+                        nosec_lines.add(_idx)
 
-            def _add(node: ast.AST, operation: str, category: str, cwe: str) -> None:
-                line = getattr(node, "lineno", 1)
-                column = getattr(node, "col_offset", 0)
-                if line in nosec_lines or (line - 1) in nosec_lines:
-                    return
-                key = (cwe, line, column)
-                if key in seen:
-                    return
-                if existing_index.get((cwe, line)):
-                    _merge_into_existing_sink(cwe, line, operation)
-                    return
-                seen.add(key)
-                scope_id = _scope_for(node, mod_name)
-                sink_node = SecurityNode(
-                    id=self.next_sink_id(),
-                    node_type=NodeType.SINK,
-                    symbol=operation,
-                    operation=operation,
-                    location=location(node, file_path),
-                    metadata={"sink_type": category, "category": category, "cwe": cwe,
-                              # Same contract as the Cluster 2 collector: identity-mapped for
-                              # registered operations, and a fallback instead of a KeyError for
-                              # one that was never registered, so a rule can never be silently
-                              # disabled by the collector's error handling.
-                              "p3_source_id": CLUSTER3_STRUCTURAL_SOURCE_IDS.get(operation,
-                                                                                  operation)},
-                )
-                self.sinks.append(sink_node)
-                self.sink_records.append(SinkRecord(
-                    node=node,
-                    security_node=sink_node,
-                    lineno=line,
-                    scope_id=scope_id,
-                ))
+                def _add(node: ast.AST, operation: str, category: str, cwe: str) -> None:
+                    line = getattr(node, "lineno", 1)
+                    column = getattr(node, "col_offset", 0)
+                    if line in nosec_lines or (line - 1) in nosec_lines:
+                        return
+                    key = (cwe, line, column)
+                    if key in seen:
+                        return
+                    if existing_index.get((cwe, line)):
+                        _merge_into_existing_sink(cwe, line, operation)
+                        return
+                    seen.add(key)
+                    scope_id = _scope_for(node, mod_name)
+                    sink_node = SecurityNode(
+                        id=self.next_sink_id(),
+                        node_type=NodeType.SINK,
+                        symbol=operation,
+                        operation=operation,
+                        location=location(node, file_path),
+                        metadata={"sink_type": category, "category": category, "cwe": cwe,
+                                  # Same contract as the Cluster 2 collector: identity-mapped for
+                                  # registered operations, and a fallback instead of a KeyError for
+                                  # one that was never registered, so a rule can never be silently
+                                  # disabled by the collector's error handling.
+                                  "p3_source_id": CLUSTER3_STRUCTURAL_SOURCE_IDS.get(operation,
+                                                                                      operation)},
+                    )
+                    self.sinks.append(sink_node)
+                    self.sink_records.append(SinkRecord(
+                        node=node,
+                        security_node=sink_node,
+                        lineno=line,
+                        scope_id=scope_id,
+                    ))
 
-            def _contains_weak_hash_token(root_node) -> bool:
-                for sub in ast.walk(root_node):
-                    if isinstance(sub, ast.Attribute) and \
-                            _lower_method(sub.attr) in {"md5", "md4", "md2", "sha1"}:
-                        return True
-                    if isinstance(sub, ast.Name) and \
-                            _lower_method(sub.id) in {"md5", "md4", "md2"}:
-                        return True
-                    if isinstance(sub, ast.Constant) and isinstance(sub.value, str) and \
-                            _lower_method(sub.value) in {"md5", "md4", "md2"}:
-                        return True
-                return False
-
-            def _is_escape_call(expr) -> bool:
-                return isinstance(expr, ast.Call) and \
-                    bool(_segments(expr.func)) and _segments(expr.func)[-1] in \
-                    CLUSTER3_TWIML_ESCAPERS
-
-            def _twiml_is_dynamic(value, scope: str, lineno: int, depth: int = 0) -> bool:
-                if value is None or depth > 3:
+                def _contains_weak_hash_token(root_node) -> bool:
+                    for sub in ast.walk(root_node):
+                        if isinstance(sub, ast.Attribute) and \
+                                _lower_method(sub.attr) in {"md5", "md4", "md2", "sha1"}:
+                            return True
+                        if isinstance(sub, ast.Name) and \
+                                _lower_method(sub.id) in {"md5", "md4", "md2"}:
+                            return True
+                        if isinstance(sub, ast.Constant) and isinstance(sub.value, str) and \
+                                _lower_method(sub.value) in {"md5", "md4", "md2"}:
+                            return True
                     return False
-                if isinstance(value, ast.Name):
-                    record = _assigned_node(value.id, scope, lineno)
-                    if record is None:
+
+                def _is_escape_call(expr) -> bool:
+                    return isinstance(expr, ast.Call) and \
+                        bool(_segments(expr.func)) and _segments(expr.func)[-1] in \
+                        CLUSTER3_TWIML_ESCAPERS
+
+                def _twiml_is_dynamic(value, scope: str, lineno: int, depth: int = 0) -> bool:
+                    if value is None or depth > 3:
                         return False
-                    return _twiml_is_dynamic(record.value_node, record.scope_id,
-                                             record.lineno, depth + 1)
-                constants = [sub.value for sub in ast.walk(value)
-                             if isinstance(sub, ast.Constant) and isinstance(sub.value, str)]
-                if isinstance(value, ast.Call) and \
-                        _segments(value.func)[-1:] == ["format"] and \
-                        isinstance(value.func, ast.Attribute) and \
-                        isinstance(value.func.value, ast.Name):
-                    base_record = _assigned_node(value.func.value.id, scope, lineno)
-                    if base_record is not None:
-                        base_text = _eval_value(base_record.value_node, base_record.scope_id,
-                                                base_record.lineno)
-                        if isinstance(base_text, str):
-                            constants = constants + [base_text]
-                if not any(CLUSTER3_TWIML_XML_RE.search(text or "") for text in constants):
+                    if isinstance(value, ast.Name):
+                        record = _assigned_node(value.id, scope, lineno)
+                        if record is None:
+                            return False
+                        return _twiml_is_dynamic(record.value_node, record.scope_id,
+                                                 record.lineno, depth + 1)
+                    constants = [sub.value for sub in ast.walk(value)
+                                 if isinstance(sub, ast.Constant) and isinstance(sub.value, str)]
+                    if isinstance(value, ast.Call) and \
+                            _segments(value.func)[-1:] == ["format"] and \
+                            isinstance(value.func, ast.Attribute) and \
+                            isinstance(value.func.value, ast.Name):
+                        base_record = _assigned_node(value.func.value.id, scope, lineno)
+                        if base_record is not None:
+                            base_text = _eval_value(base_record.value_node, base_record.scope_id,
+                                                    base_record.lineno)
+                            if isinstance(base_text, str):
+                                constants = constants + [base_text]
+                    if not any(CLUSTER3_TWIML_XML_RE.search(text or "") for text in constants):
+                        return False
+                    interpolated: list[ast.AST] = []
+                    if isinstance(value, ast.JoinedStr):
+                        interpolated = [fv.value for fv in value.values
+                                        if isinstance(fv, ast.FormattedValue)]
+                    elif isinstance(value, ast.BinOp):
+                        for sub in ast.walk(value):
+                            if isinstance(sub, ast.BinOp) and \
+                                    isinstance(sub.op, (ast.Add, ast.Mod)):
+                                if isinstance(sub.op, ast.Add):
+                                    side = sub.left if isinstance(sub.right, ast.Constant) else \
+                                        sub.right
+                                else:
+                                    side = sub.right
+                                if isinstance(side, ast.Tuple):
+                                    interpolated.extend(side.elts)
+                                else:
+                                    interpolated.append(side)
+                        interpolated = [item for item in interpolated
+                                        if not isinstance(item, ast.Constant)]
+                    elif isinstance(value, ast.Call) and _segments(value.func)[-1:] == ["format"]:
+                        interpolated = list(value.args) + [kw.value for kw in value.keywords]
+                    if not interpolated:
+                        return False
+                    for expr in interpolated:
+                        if _is_escape_call(expr):
+                            continue
+                        if isinstance(expr, (ast.Name, ast.Call, ast.Attribute, ast.Subscript)):
+                            return True
                     return False
-                interpolated: list[ast.AST] = []
-                if isinstance(value, ast.JoinedStr):
-                    interpolated = [fv.value for fv in value.values
-                                    if isinstance(fv, ast.FormattedValue)]
-                elif isinstance(value, ast.BinOp):
-                    for sub in ast.walk(value):
-                        if isinstance(sub, ast.BinOp) and \
-                                isinstance(sub.op, (ast.Add, ast.Mod)):
-                            if isinstance(sub.op, ast.Add):
-                                side = sub.left if isinstance(sub.right, ast.Constant) else \
-                                    sub.right
-                            else:
-                                side = sub.right
-                            if isinstance(side, ast.Tuple):
-                                interpolated.extend(side.elts)
-                            else:
-                                interpolated.append(side)
-                    interpolated = [item for item in interpolated
-                                    if not isinstance(item, ast.Constant)]
-                elif isinstance(value, ast.Call) and _segments(value.func)[-1:] == ["format"]:
-                    interpolated = list(value.args) + [kw.value for kw in value.keywords]
-                if not interpolated:
-                    return False
-                for expr in interpolated:
-                    if _is_escape_call(expr):
+
+                def _aws_secret_looks_real(text: str) -> bool:
+                    return bool(text) and len(set(text)) > 2
+
+                opener_vars: dict[str, set[str]] = {}
+
+                def _module_urllib_chain(chain: list[str]) -> bool:
+                    return any(seg in CLUSTER3_URLLIB_MODULE_SEGS for seg in chain[:3])
+
+                for node in reachable:
+                    scope = _scope_for(node, mod_name)
+                    lineno = getattr(node, "lineno", 1)
+
+                    # ---- pre-pass: opener objects (opener = urllib.URLopener()/build_opener()) ----
+                    if isinstance(node, ast.Assign) and isinstance(node.value, ast.Call) and \
+                            len(node.targets) == 1 and isinstance(node.targets[0], ast.Name):
+                        value_chain = _resolve_chain(_segments(node.value.func), scope, lineno)
+                        if value_chain and value_chain[-1] in CLUSTER3_OPENER_CTOR_SEGS:
+                            opener_vars.setdefault(scope, set()).add(node.targets[0].id)
+
+                    # ---- CWE-352: @csrf_exempt views ----
+                    if isinstance(node, (ast.FunctionDef, ast.AsyncFunctionDef)):
+                        for decorator in node.decorator_list:
+                            dec_chain = _segments(decorator.func) if isinstance(decorator, ast.Call) \
+                                else _segments(decorator)
+                            if dec_chain and dec_chain[-1] == CLUSTER3_CSRF_EXEMPT_SEG \
+                                    and not self._csrf_is_json_api_noise(mod_name, dec_chain):
+                                _add(decorator, "CSRF_EXEMPT_VIEW", "CSRF_MISSING_PROTECTION",
+                                     "CWE-352")
+                        # ---- CWE-798: password-named default arguments ----
+                        for arg, default in TaintTracker._c1_parameter_defaults(node):
+                            if arg.arg.lower() not in CLUSTER3_PASSWORD_PARAM_NAMES:
+                                continue
+                            if not (isinstance(default, ast.Constant)
+                                    and isinstance(default.value, str)):
+                                continue
+                            text = default.value
+                            if len(text) < 3:
+                                continue
+                            lowered = text.lower()
+                            if any(marker in lowered for marker in
+                                   ("changeme", "example", "dummy", "placeholder", "default",
+                                    "test", "none", "hello", "world", "foo", "bar", "sample",
+                                    "demo")):
+                                continue
+                            _add(node, "HARDCODED_PASSWORD_DEFAULT", "HARDCODED_CREDENTIAL",
+                                 "CWE-798")
+
+                    # ---- CWE-352: WTF_CSRF_ENABLED = False (attribute/subscript/bare) ----
+                    if isinstance(node, ast.Assign):
+                        for target in node.targets:
+                            key_name = None
+                            if isinstance(target, ast.Name):
+                                key_name = target.id
+                            elif isinstance(target, ast.Attribute):
+                                key_name = target.attr
+                            elif isinstance(target, ast.Subscript) and \
+                                    isinstance(target.slice, ast.Constant):
+                                key_name = target.slice.value
+                            if key_name == CLUSTER3_WTF_CSRF_KEY and \
+                                    _static(node.value, scope, lineno) is False:
+                                _add(node, "FLASK_CSRF_DISABLED", "CSRF_MISSING_PROTECTION",
+                                     "CWE-352")
+
+                    # ---- CWE-287: options={"verify_signature": False} ----
+                    # Anchored on the dict, not the jwt.decode call: the corpus labels both the
+                    # inline literal and the `opts = {...}` assignment as the vulnerable site, and
+                    # a literal False is the only form the file itself proves.
+                    if isinstance(node, ast.Dict):
+                        for opt_key, opt_value in zip(node.keys, node.values):
+                            if isinstance(opt_key, ast.Constant) and \
+                                    opt_key.value == CLUSTER3_JWT_SIGNATURE_CHECK_OPTION and \
+                                    isinstance(opt_value, ast.Constant) and opt_value.value is False:
+                                _add(node, "UNVERIFIED_JWT_DECODE", "IMPROPER_AUTHENTICATION",
+                                     "CWE-287")
+                                break
+
+                    # ---- CWE-326: weak ssl.PROTOCOL_* constant (args, kwargs, defaults) ----
+                    if isinstance(node, (ast.Attribute, ast.Name)):
+                        ssl_segs = _segments(node)
+                        if ssl_segs and ssl_segs[-1] in CLUSTER3_WEAK_SSL_PROTOCOL_SEGS and \
+                                _resolve_chain(ssl_segs, scope, lineno)[:1] == \
+                                [CLUSTER3_SSL_MODULE_ROOT]:
+                            _add(node, "WEAK_SSL_PROTOCOL", "INSECURE_TRANSPORT", "CWE-326")
+
+                    # ---- CWE-326: pyOpenSSL insecure protocol methods (SSL.*_METHOD) ----
+                    if isinstance(node, (ast.Attribute, ast.Name)):
+                        openssl_segs = _segments(node)
+                        if openssl_segs and openssl_segs[-1] in CLUSTER3_PYOPENSSL_METHOD_SEGS:
+                            chain = _resolve_chain(openssl_segs, scope, lineno)
+                            # Match any X.SSLv2_METHOD where the parent is SSL (covers OpenSSL.SSL,
+                            # pyOpenSSL.SSL, or bare SSL after from-import).
+                            if len(chain) >= 2 and chain[-2] == CLUSTER3_PYOPENSSL_SSL_ROOT:
+                                _add(node, "PYOPENSSL_INSECURE_METHOD", "INSECURE_TRANSPORT", "CWE-326")
+
+                    # ---- CWE-327: cryptography.hazmat legacy cipher algorithms ----
+                    if isinstance(node, (ast.Attribute, ast.Name)):
+                        algo_segs = _segments(node)
+                        if algo_segs and algo_segs[-1] in CLUSTER3_CRYPTOGRAPHY_LEGACY_ALGOS:
+                            chain = _resolve_chain(algo_segs, scope, lineno)
+                            # Match: algorithms.Blowfish under cryptography.hazmat.primitives.ciphers
+                            if len(chain) >= 5 and chain[-2] == CLUSTER3_CRYPTOGRAPHY_ALGO_SEG and \
+                                    chain[-3] == CLUSTER3_CRYPTOGRAPHY_CIPHERS_SEG and \
+                                    chain[0] == CLUSTER3_CRYPTOGRAPHY_HAZMAT_ROOT:
+                                _add(node, "CRYPTOGRAPHY_LEGACY_ALGO", "WEAK_CRYPTOGRAPHY", "CWE-327")
+
+                    # ---- CWE-327: insecure ECB mode (Phase 9.3) ----
+                    if isinstance(node, ast.Call):
+                        func_name = dotted_name(node.func) or ""
+                        last_part = func_name.rsplit(".", 1)[-1] if func_name else ""
+                        # Check for modes.ECB(...) or ECB(...) constructor calls
+                        if last_part in P3_ECB_MARKER_ATTRS or (isinstance(node.func, ast.Name) and node.func.id in P3_ECB_MARKER_ATTRS):
+                            # Don't double-report if already flagged as weak cipher
+                            callee = dotted_name(node.func) or ""
+                            if callee not in P3_ECB_SKIP_IF_WEAK_CIPHER:
+                                _add(node, "INSECURE_CIPHER_MODE_ECB", "WEAK_CRYPTOGRAPHY", "CWE-327")
+
+                    if not isinstance(node, ast.Call):
                         continue
-                    if isinstance(expr, (ast.Name, ast.Call, ast.Attribute, ast.Subscript)):
-                        return True
-                return False
 
-            def _aws_secret_looks_real(text: str) -> bool:
-                return bool(text) and len(set(text)) > 2
+                    raw_chain = _segments(node.func)
+                    chain = _resolve_chain(raw_chain, scope, lineno)
+                    forms = {".".join(chain)} if chain else set()
+                    if raw_chain:
+                        forms.add(".".join(raw_chain))
+                    if raw_chain and raw_chain[0]:
+                        record = _assigned_node(raw_chain[0], scope, lineno)
+                        if record is not None:
+                            base = dotted_name(record.value_node)
+                            if base:
+                                forms.add(".".join(base.split(".") + raw_chain[1:]))
+                    last_seg = raw_chain[-1] if raw_chain else ""
+                    kw_map = {kw.arg: kw for kw in node.keywords if kw.arg}
 
-            opener_vars: dict[str, set[str]] = {}
+                    # ---- CWE-327: hashlib.new(weak) without usedforsecurity=False ----
+                    if last_seg == "new" and chain and chain[-2:-1] == \
+                            [CLUSTER3_HASHLIB_MODULE_SEG]:
+                        name_kw = kw_map.get("name")
+                        name_expr = name_kw.value if name_kw else (node.args[0] if node.args
+                                                                   else None)
+                        algo = _static(name_expr, scope, lineno)
+                        usedfor = kw_map.get("usedforsecurity")
+                        usedfor_value = _static(usedfor.value, scope, lineno) if usedfor else None
+                        if isinstance(algo, str) and algo.lower() in \
+                                CLUSTER3_WEAK_NEW_HASH_ALGOS and usedfor_value is not False:
+                            _add(node, "WEAK_HASH_NEW", "CRYPTOGRAPHIC_FAILURES", "CWE-327")
 
-            def _module_urllib_chain(chain: list[str]) -> bool:
-                return any(seg in CLUSTER3_URLLIB_MODULE_SEGS for seg in chain[:3])
+                    # ---- CWE-327: legacy Crypto(Dome).Cipher algorithms (alias aware) ----
+                    if last_seg == "new" and len(chain) >= 4 and \
+                            chain[-3] == CLUSTER3_CIPHER_MODULE_SEG and \
+                            chain[-2] in CLUSTER3_LEGACY_CIPHER_NAMES and \
+                            chain[0] in CLUSTER3_CIPHER_MODULE_ROOTS:
+                        _add(node, "WEAK_CIPHER_LEGACY", "WEAK_CRYPTOGRAPHY", "CWE-327")
 
-            for node in reachable:
-                scope = _scope_for(node, mod_name)
-                lineno = getattr(node, "lineno", 1)
-
-                # ---- pre-pass: opener objects (opener = urllib.URLopener()/build_opener()) ----
-                if isinstance(node, ast.Assign) and isinstance(node.value, ast.Call) and \
-                        len(node.targets) == 1 and isinstance(node.targets[0], ast.Name):
-                    value_chain = _resolve_chain(_segments(node.value.func), scope, lineno)
-                    if value_chain and value_chain[-1] in CLUSTER3_OPENER_CTOR_SEGS:
-                        opener_vars.setdefault(scope, set()).add(node.targets[0].id)
-
-                # ---- CWE-352: @csrf_exempt views ----
-                if isinstance(node, (ast.FunctionDef, ast.AsyncFunctionDef)):
-                    for decorator in node.decorator_list:
-                        dec_chain = _segments(decorator.func) if isinstance(decorator, ast.Call) \
-                            else _segments(decorator)
-                        if dec_chain and dec_chain[-1] == CLUSTER3_CSRF_EXEMPT_SEG \
-                                and not self._csrf_is_json_api_noise(mod_name, dec_chain):
-                            _add(decorator, "CSRF_EXEMPT_VIEW", "CSRF_MISSING_PROTECTION",
-                                 "CWE-352")
-                    # ---- CWE-798: password-named default arguments ----
-                    for arg, default in TaintTracker._c1_parameter_defaults(node):
-                        if arg.arg.lower() not in CLUSTER3_PASSWORD_PARAM_NAMES:
-                            continue
-                        if not (isinstance(default, ast.Constant)
-                                and isinstance(default.value, str)):
-                            continue
-                        text = default.value
-                        if len(text) < 3:
-                            continue
-                        lowered = text.lower()
-                        if any(marker in lowered for marker in
-                               ("changeme", "example", "dummy", "placeholder", "default",
-                                "test", "none", "hello", "world", "foo", "bar", "sample",
-                                "demo")):
-                            continue
-                        _add(node, "HARDCODED_PASSWORD_DEFAULT", "HARDCODED_CREDENTIAL",
-                             "CWE-798")
-
-                # ---- CWE-352: WTF_CSRF_ENABLED = False (attribute/subscript/bare) ----
-                if isinstance(node, ast.Assign):
-                    for target in node.targets:
-                        key_name = None
-                        if isinstance(target, ast.Name):
-                            key_name = target.id
-                        elif isinstance(target, ast.Attribute):
-                            key_name = target.attr
-                        elif isinstance(target, ast.Subscript) and \
-                                isinstance(target.slice, ast.Constant):
-                            key_name = target.slice.value
-                        if key_name == CLUSTER3_WTF_CSRF_KEY and \
-                                _static(node.value, scope, lineno) is False:
-                            _add(node, "FLASK_CSRF_DISABLED", "CSRF_MISSING_PROTECTION",
-                                 "CWE-352")
-
-                # ---- CWE-287: options={"verify_signature": False} ----
-                # Anchored on the dict, not the jwt.decode call: the corpus labels both the
-                # inline literal and the `opts = {...}` assignment as the vulnerable site, and
-                # a literal False is the only form the file itself proves.
-                if isinstance(node, ast.Dict):
-                    for opt_key, opt_value in zip(node.keys, node.values):
-                        if isinstance(opt_key, ast.Constant) and \
-                                opt_key.value == CLUSTER3_JWT_SIGNATURE_CHECK_OPTION and \
-                                isinstance(opt_value, ast.Constant) and opt_value.value is False:
-                            _add(node, "UNVERIFIED_JWT_DECODE", "IMPROPER_AUTHENTICATION",
-                                 "CWE-287")
-                            break
-
-                # ---- CWE-326: weak ssl.PROTOCOL_* constant (args, kwargs, defaults) ----
-                if isinstance(node, (ast.Attribute, ast.Name)):
-                    ssl_segs = _segments(node)
-                    if ssl_segs and ssl_segs[-1] in CLUSTER3_WEAK_SSL_PROTOCOL_SEGS and \
-                            _resolve_chain(ssl_segs, scope, lineno)[:1] == \
-                            [CLUSTER3_SSL_MODULE_ROOT]:
-                        _add(node, "WEAK_SSL_PROTOCOL", "INSECURE_TRANSPORT", "CWE-326")
-
-                # ---- CWE-326: pyOpenSSL insecure protocol methods (SSL.*_METHOD) ----
-                if isinstance(node, (ast.Attribute, ast.Name)):
-                    openssl_segs = _segments(node)
-                    if openssl_segs and openssl_segs[-1] in CLUSTER3_PYOPENSSL_METHOD_SEGS:
-                        chain = _resolve_chain(openssl_segs, scope, lineno)
-                        # Match any X.SSLv2_METHOD where the parent is SSL (covers OpenSSL.SSL,
-                        # pyOpenSSL.SSL, or bare SSL after from-import).
-                        if len(chain) >= 2 and chain[-2] == CLUSTER3_PYOPENSSL_SSL_ROOT:
-                            _add(node, "PYOPENSSL_INSECURE_METHOD", "INSECURE_TRANSPORT", "CWE-326")
-
-                # ---- CWE-327: cryptography.hazmat legacy cipher algorithms ----
-                if isinstance(node, (ast.Attribute, ast.Name)):
-                    algo_segs = _segments(node)
-                    if algo_segs and algo_segs[-1] in CLUSTER3_CRYPTOGRAPHY_LEGACY_ALGOS:
-                        chain = _resolve_chain(algo_segs, scope, lineno)
-                        # Match: algorithms.Blowfish under cryptography.hazmat.primitives.ciphers
-                        if len(chain) >= 5 and chain[-2] == CLUSTER3_CRYPTOGRAPHY_ALGO_SEG and \
-                                chain[-3] == CLUSTER3_CRYPTOGRAPHY_CIPHERS_SEG and \
-                                chain[0] == CLUSTER3_CRYPTOGRAPHY_HAZMAT_ROOT:
-                            _add(node, "CRYPTOGRAPHY_LEGACY_ALGO", "WEAK_CRYPTOGRAPHY", "CWE-327")
-
-                # ---- CWE-327: insecure ECB mode (Phase 9.3) ----
-                if isinstance(node, ast.Call):
-                    func_name = dotted_name(node.func) or ""
-                    last_part = func_name.rsplit(".", 1)[-1] if func_name else ""
-                    # Check for modes.ECB(...) or ECB(...) constructor calls
-                    if last_part in P3_ECB_MARKER_ATTRS or (isinstance(node.func, ast.Name) and node.func.id in P3_ECB_MARKER_ATTRS):
-                        # Don't double-report if already flagged as weak cipher
-                        callee = dotted_name(node.func) or ""
-                        if callee not in P3_ECB_SKIP_IF_WEAK_CIPHER:
-                            _add(node, "INSECURE_CIPHER_MODE_ECB", "WEAK_CRYPTOGRAPHY", "CWE-327")
-
-                if not isinstance(node, ast.Call):
-                    continue
-
-                raw_chain = _segments(node.func)
-                chain = _resolve_chain(raw_chain, scope, lineno)
-                forms = {".".join(chain)} if chain else set()
-                if raw_chain:
-                    forms.add(".".join(raw_chain))
-                if raw_chain and raw_chain[0]:
-                    record = _assigned_node(raw_chain[0], scope, lineno)
-                    if record is not None:
-                        base = dotted_name(record.value_node)
-                        if base:
-                            forms.add(".".join(base.split(".") + raw_chain[1:]))
-                last_seg = raw_chain[-1] if raw_chain else ""
-                kw_map = {kw.arg: kw for kw in node.keywords if kw.arg}
-
-                # ---- CWE-327: hashlib.new(weak) without usedforsecurity=False ----
-                if last_seg == "new" and chain and chain[-2:-1] == \
-                        [CLUSTER3_HASHLIB_MODULE_SEG]:
-                    name_kw = kw_map.get("name")
-                    name_expr = name_kw.value if name_kw else (node.args[0] if node.args
-                                                               else None)
-                    algo = _static(name_expr, scope, lineno)
-                    usedfor = kw_map.get("usedforsecurity")
-                    usedfor_value = _static(usedfor.value, scope, lineno) if usedfor else None
-                    if isinstance(algo, str) and algo.lower() in \
-                            CLUSTER3_WEAK_NEW_HASH_ALGOS and usedfor_value is not False:
-                        _add(node, "WEAK_HASH_NEW", "CRYPTOGRAPHIC_FAILURES", "CWE-327")
-
-                # ---- CWE-327: legacy Crypto(Dome).Cipher algorithms (alias aware) ----
-                if last_seg == "new" and len(chain) >= 4 and \
-                        chain[-3] == CLUSTER3_CIPHER_MODULE_SEG and \
-                        chain[-2] in CLUSTER3_LEGACY_CIPHER_NAMES and \
-                        chain[0] in CLUSTER3_CIPHER_MODULE_ROOTS:
-                    _add(node, "WEAK_CIPHER_LEGACY", "WEAK_CRYPTOGRAPHY", "CWE-327")
-
-                # ---- CWE-327: block cipher built from an empty key literal ----
-                # `AES.new("", ...)` has no key material at all; a non-empty literal is the
-                # corpus' own negative control, so only the empty string is accepted.
-                if last_seg == "new" and len(chain) >= 2 and \
-                        chain[-2] in CLUSTER3_BLOCK_CIPHER_CLASS_NAMES and \
-                        node.args and isinstance(node.args[0], ast.Constant) and \
-                        node.args[0].value == "":
-                    _add(node, "EMPTY_CIPHER_KEY", "WEAK_CRYPTOGRAPHY", "CWE-327")
-                elif chain and chain[-1] == "Cipher" and node.args and \
-                        isinstance(node.args[0], ast.Call) and node.args[0].args:
-                    algo_chain = _segments(node.args[0].func)
-                    if algo_chain and algo_chain[-1] in CLUSTER3_BLOCK_CIPHER_CLASS_NAMES and \
-                            isinstance(node.args[0].args[0], ast.Constant) and \
-                            node.args[0].args[0].value == "":
+                    # ---- CWE-327: block cipher built from an empty key literal ----
+                    # `AES.new("", ...)` has no key material at all; a non-empty literal is the
+                    # corpus' own negative control, so only the empty string is accepted.
+                    if last_seg == "new" and len(chain) >= 2 and \
+                            chain[-2] in CLUSTER3_BLOCK_CIPHER_CLASS_NAMES and \
+                            node.args and isinstance(node.args[0], ast.Constant) and \
+                            node.args[0].value == "":
                         _add(node, "EMPTY_CIPHER_KEY", "WEAK_CRYPTOGRAPHY", "CWE-327")
+                    elif chain and chain[-1] == "Cipher" and node.args and \
+                            isinstance(node.args[0], ast.Call) and node.args[0].args:
+                        algo_chain = _segments(node.args[0].func)
+                        if algo_chain and algo_chain[-1] in CLUSTER3_BLOCK_CIPHER_CLASS_NAMES and \
+                                isinstance(node.args[0].args[0], ast.Constant) and \
+                                node.args[0].args[0].value == "":
+                            _add(node, "EMPTY_CIPHER_KEY", "WEAK_CRYPTOGRAPHY", "CWE-327")
 
-                # ---- CWE-327: Crypto(Dome).Hash weak class .new() (alias aware) ----
-                if last_seg == "new" and len(chain) >= 3:
-                    class_name = chain[-2]
-                    if class_name in CLUSTER3_WEAK_HASH_CLASS_NAMES and any(
-                            chain[i:i + 2] == list(pair)
-                            for pair in CLUSTER3_HASH_MODULE_PAIRS
-                            for i in range(len(chain) - 2)):
-                        _add(node, "WEAK_HASH_CONSTRUCTOR", "CRYPTOGRAPHIC_FAILURES",
-                             "CWE-327")
-
-                # ---- CWE-327: cryptography hashes.MD5()/SHA1() ----
-                if chain and chain[-2:-1] == ["hashes"] and \
-                        chain[-1] in {"MD5", "MD4", "MD2", "SHA1"} and \
-                        chain[0] == "cryptography":
-                    _add(node, "WEAK_HASH_CONSTRUCTOR", "CRYPTOGRAPHIC_FAILURES", "CWE-327")
-
-                # ---- CWE-327: weak digest handed to setPassword ----
-                if last_seg and _lower_method(last_seg) in CLUSTER3_PASSWORD_SETTER_METHODS:
-                    for arg in node.args:
-                        probe_expr = arg.func if isinstance(arg, ast.Call) and \
-                            isinstance(arg.func, ast.Attribute) else arg
-                        target_name = None
-                        if isinstance(probe_expr, ast.Name):
-                            target_name = probe_expr.id
-                        elif isinstance(probe_expr, ast.Attribute) and \
-                                isinstance(probe_expr.value, ast.Name):
-                            target_name = probe_expr.value.id
-                        if target_name is None:
-                            continue
-                        record = _assigned_node(target_name, scope, lineno)
-                        if record is not None and _contains_weak_hash_token(
-                                record.value_node):
-                            _add(node, "WEAK_HASH_PASSWORD_USAGE", "CRYPTOGRAPHIC_FAILURES",
+                    # ---- CWE-327: Crypto(Dome).Hash weak class .new() (alias aware) ----
+                    if last_seg == "new" and len(chain) >= 3:
+                        class_name = chain[-2]
+                        if class_name in CLUSTER3_WEAK_HASH_CLASS_NAMES and any(
+                                chain[i:i + 2] == list(pair)
+                                for pair in CLUSTER3_HASH_MODULE_PAIRS
+                                for i in range(len(chain) - 2)):
+                            _add(node, "WEAK_HASH_CONSTRUCTOR", "CRYPTOGRAPHIC_FAILURES",
                                  "CWE-327")
-                            break
 
-                # ---- CWE-330: uuid1() ----
-                if last_seg == CLUSTER3_INSECURE_UUID_SEG and \
-                        (len(raw_chain) == 1 or "uuid" in chain):
-                    defined_locally = any(
-                        isinstance(fn, (ast.FunctionDef, ast.AsyncFunctionDef))
-                        and fn.name == CLUSTER3_INSECURE_UUID_SEG
-                        for fn in ast.walk(tree))
-                    if not defined_locally and _assigned_node(last_seg, scope, lineno) is None:
-                        _add(node, "INSECURE_UUID1", "CRYPTOGRAPHIC_FAILURES", "CWE-330")
+                    # ---- CWE-327: cryptography hashes.MD5()/SHA1() ----
+                    if chain and chain[-2:-1] == ["hashes"] and \
+                            chain[-1] in {"MD5", "MD4", "MD2", "SHA1"} and \
+                            chain[0] == "cryptography":
+                        _add(node, "WEAK_HASH_CONSTRUCTOR", "CRYPTOGRAPHIC_FAILURES", "CWE-327")
 
-                # ---- CWE-939: dynamic urllib fetch ----
-                fetch_via_module = bool(chain) and last_seg == "urlopen" and (
-                    _module_urllib_chain(chain) or len(chain) == 1)
-                fetch_via_opener = len(raw_chain) >= 2 and last_seg in {"open", "retrieve"} \
-                    and raw_chain[0] in opener_vars.get(scope, set())
-                if (fetch_via_module or fetch_via_opener) and node.args:
-                    url_expr = node.args[0]
-                    url_value = _static(url_expr, scope, lineno)
-                    if url_value is None and isinstance(url_expr, ast.Name):
-                        current = getattr(node, "parent", None)
-                        fn_node = None
-                        while current is not None:
-                            if isinstance(current, (ast.FunctionDef, ast.AsyncFunctionDef)):
-                                fn_node = current
+                    # ---- CWE-327: weak digest handed to setPassword ----
+                    if last_seg and _lower_method(last_seg) in CLUSTER3_PASSWORD_SETTER_METHODS:
+                        for arg in node.args:
+                            probe_expr = arg.func if isinstance(arg, ast.Call) and \
+                                isinstance(arg.func, ast.Attribute) else arg
+                            target_name = None
+                            if isinstance(probe_expr, ast.Name):
+                                target_name = probe_expr.id
+                            elif isinstance(probe_expr, ast.Attribute) and \
+                                    isinstance(probe_expr.value, ast.Name):
+                                target_name = probe_expr.value.id
+                            if target_name is None:
+                                continue
+                            record = _assigned_node(target_name, scope, lineno)
+                            if record is not None and _contains_weak_hash_token(
+                                    record.value_node):
+                                _add(node, "WEAK_HASH_PASSWORD_USAGE", "CRYPTOGRAPHIC_FAILURES",
+                                     "CWE-327")
                                 break
-                            current = getattr(current, "parent", None)
-                        for param, default in (
-                                TaintTracker._c1_parameter_defaults(fn_node)
-                                if fn_node is not None else []):
-                            if param.arg == url_expr.id and isinstance(default, ast.Constant) \
-                                    and isinstance(default.value, str):
-                                url_value = default.value
-                                break
-                    if url_value is None:
-                        _add(node, "DYNAMIC_URLLIB_FETCH", "PROTOCOL_RESOURCE_ACCESS",
-                             "CWE-939")
 
-                # ---- CWE-155: shell wildcard against sensitive binaries ----
-                cmd_chain = chain if chain else raw_chain
-                shell_form = bool(cmd_chain) and cmd_chain[0] == "os" and \
-                    cmd_chain[-1] in CLUSTER3_SHELL_EXEC_SEGS
-                subp_form = bool(cmd_chain) and cmd_chain[0] == "subprocess" and \
-                    cmd_chain[-1] in CLUSTER3_SUBPROCESS_SHELL_SEGS
-                if (shell_form or subp_form) and node.args:
-                    executes_shell = shell_form
-                    if subp_form:
-                        shell_kw = kw_map.get("shell")
-                        executes_shell = bool(shell_kw) and \
-                            _static(shell_kw.value, scope, lineno) is True
-                    if executes_shell:
-                        command = node.args[0]
-                        cmd_text = command.value if isinstance(command, ast.Constant) and \
-                            isinstance(command.value, str) else None
-                        if cmd_text and "*" in cmd_text:
-                            tokens = cmd_text.split()
-                            binary = tokens[0].rsplit("/", 1)[-1] if tokens else ""
-                            if binary in CLUSTER3_WILDCARD_BINARIES:
-                                _add(node, "SUBPROCESS_WILDCARD_INJECTION",
-                                     "COMMAND_INJECTION", "CWE-155")
+                    # ---- CWE-330: uuid1() ----
+                    if last_seg == CLUSTER3_INSECURE_UUID_SEG and \
+                            (len(raw_chain) == 1 or "uuid" in chain):
+                        defined_locally = any(
+                            isinstance(fn, (ast.FunctionDef, ast.AsyncFunctionDef))
+                            and fn.name == CLUSTER3_INSECURE_UUID_SEG
+                            for fn in ast.walk(tree))
+                        if not defined_locally and _assigned_node(last_seg, scope, lineno) is None:
+                            _add(node, "INSECURE_UUID1", "CRYPTOGRAPHIC_FAILURES", "CWE-330")
 
-                # ---- CWE-673: flask url_for(..., _external=True|dynamic) ----
-                if last_seg == CLUSTER3_URLFOR_SEG and (
-                        len(raw_chain) == 1 or raw_chain[0] == "flask"
-                        or (chain and chain[-2:-1] == ["flask"])):
-                    external = kw_map.get("_external")
-                    if external is not None:
-                        value = _static(external.value, scope, lineno)
-                        if value is True or value is None:
-                            _add(node, "URL_FOR_EXTERNAL_TRUE", "OPEN_REDIRECT", "CWE-673")
-
-                # ---- CWE-91: TwiML XML injection ----
-                twiml_kw = kw_map.get(CLUSTER3_TWIML_KW)
-                if twiml_kw is not None and _twiml_is_dynamic(twiml_kw.value, scope, lineno):
-                    _add(twiml_kw.value, "TWIML_XML_INJECTION", "XML_INJECTION", "CWE-91")
-
-                # ---- CWE-532: credential leakage into logs ----
-                if chain and last_seg in CLUSTER3_LOGGER_METHODS and \
-                        (chain[0] in CLUSTER3_LOGGER_ROOTS or
-                         (len(raw_chain) == 2 and raw_chain[0] in CLUSTER3_LOGGER_ROOTS)):
-                    leaked = False
-                    for arg in node.args[1:]:
-                        if isinstance(arg, ast.Name) and \
-                                CLUSTER3_SENSITIVE_LOG_NAME_RE.match(arg.id):
-                            leaked = True
-                            break
-                        if isinstance(arg, (ast.JoinedStr, ast.BinOp)):
-                            for sub in ast.walk(arg):
-                                if isinstance(sub, ast.Name) and \
-                                        CLUSTER3_SENSITIVE_LOG_NAME_RE.match(sub.id):
-                                    leaked = True
+                    # ---- CWE-939: dynamic urllib fetch ----
+                    fetch_via_module = bool(chain) and last_seg == "urlopen" and (
+                        _module_urllib_chain(chain) or len(chain) == 1)
+                    fetch_via_opener = len(raw_chain) >= 2 and last_seg in {"open", "retrieve"} \
+                        and raw_chain[0] in opener_vars.get(scope, set())
+                    if (fetch_via_module or fetch_via_opener) and node.args:
+                        url_expr = node.args[0]
+                        url_value = _static(url_expr, scope, lineno)
+                        if url_value is None and isinstance(url_expr, ast.Name):
+                            current = getattr(node, "parent", None)
+                            fn_node = None
+                            while current is not None:
+                                if isinstance(current, (ast.FunctionDef, ast.AsyncFunctionDef)):
+                                    fn_node = current
                                     break
+                                current = getattr(current, "parent", None)
+                            for param, default in (
+                                    TaintTracker._c1_parameter_defaults(fn_node)
+                                    if fn_node is not None else []):
+                                if param.arg == url_expr.id and isinstance(default, ast.Constant) \
+                                        and isinstance(default.value, str):
+                                    url_value = default.value
+                                    break
+                        if url_value is None:
+                            _add(node, "DYNAMIC_URLLIB_FETCH", "PROTOCOL_RESOURCE_ACCESS",
+                                 "CWE-939")
+
+                    # ---- CWE-155: shell wildcard against sensitive binaries ----
+                    cmd_chain = chain if chain else raw_chain
+                    shell_form = bool(cmd_chain) and cmd_chain[0] == "os" and \
+                        cmd_chain[-1] in CLUSTER3_SHELL_EXEC_SEGS
+                    subp_form = bool(cmd_chain) and cmd_chain[0] == "subprocess" and \
+                        cmd_chain[-1] in CLUSTER3_SUBPROCESS_SHELL_SEGS
+                    if (shell_form or subp_form) and node.args:
+                        executes_shell = shell_form
+                        if subp_form:
+                            shell_kw = kw_map.get("shell")
+                            executes_shell = bool(shell_kw) and \
+                                _static(shell_kw.value, scope, lineno) is True
+                        if executes_shell:
+                            command = node.args[0]
+                            cmd_text = command.value if isinstance(command, ast.Constant) and \
+                                isinstance(command.value, str) else None
+                            if cmd_text and "*" in cmd_text:
+                                tokens = cmd_text.split()
+                                binary = tokens[0].rsplit("/", 1)[-1] if tokens else ""
+                                if binary in CLUSTER3_WILDCARD_BINARIES:
+                                    _add(node, "SUBPROCESS_WILDCARD_INJECTION",
+                                         "COMMAND_INJECTION", "CWE-155")
+
+                    # ---- CWE-673: flask url_for(..., _external=True|dynamic) ----
+                    if last_seg == CLUSTER3_URLFOR_SEG and (
+                            len(raw_chain) == 1 or raw_chain[0] == "flask"
+                            or (chain and chain[-2:-1] == ["flask"])):
+                        external = kw_map.get("_external")
+                        if external is not None:
+                            value = _static(external.value, scope, lineno)
+                            if value is True or value is None:
+                                _add(node, "URL_FOR_EXTERNAL_TRUE", "OPEN_REDIRECT", "CWE-673")
+
+                    # ---- CWE-91: TwiML XML injection ----
+                    twiml_kw = kw_map.get(CLUSTER3_TWIML_KW)
+                    if twiml_kw is not None and _twiml_is_dynamic(twiml_kw.value, scope, lineno):
+                        _add(twiml_kw.value, "TWIML_XML_INJECTION", "XML_INJECTION", "CWE-91")
+
+                    # ---- CWE-532: credential leakage into logs ----
+                    if chain and last_seg in CLUSTER3_LOGGER_METHODS and \
+                            (chain[0] in CLUSTER3_LOGGER_ROOTS or
+                             (len(raw_chain) == 2 and raw_chain[0] in CLUSTER3_LOGGER_ROOTS)):
+                        leaked = False
+                        for arg in node.args[1:]:
+                            if isinstance(arg, ast.Name) and \
+                                    CLUSTER3_SENSITIVE_LOG_NAME_RE.match(arg.id):
+                                leaked = True
+                                break
+                            if isinstance(arg, (ast.JoinedStr, ast.BinOp)):
+                                for sub in ast.walk(arg):
+                                    if isinstance(sub, ast.Name) and \
+                                            CLUSTER3_SENSITIVE_LOG_NAME_RE.match(sub.id):
+                                        leaked = True
+                                        break
+                            if leaked:
+                                break
                         if leaked:
-                            break
-                    if leaked:
-                        _add(node, "LOGGER_CREDENTIAL_LEAK", "INFORMATION_DISCLOSURE",
-                             "CWE-532")
+                            _add(node, "LOGGER_CREDENTIAL_LEAK", "INFORMATION_DISCLOSURE",
+                                 "CWE-532")
 
-                # ---- CWE-798: hardcoded AWS tokens in boto3 constructors ----
-                boto_form = any(form.startswith("boto3") or form.endswith("boto3.client")
-                                or form == "client" or form.endswith(".client")
-                                or form.endswith(".Session") or form.endswith(".resource")
-                                or form in {"Session", "resource"}
-                                for form in forms)
-                if boto_form and last_seg in CLUSTER3_BOTO_CONSTRUCTOR_SEGS:
-                    tainted_kw = None
-                    for kw in node.keywords:
-                        if kw.arg == CLUSTER3_AWS_KEY_ID_KW:
-                            text = _eval_value(kw.value, scope, lineno)
-                            if isinstance(text, str) and \
-                                    CLUSTER3_AWS_KEY_ID_SHAPE_RE.match(text):
-                                tainted_kw = kw
-                                break
-                        elif kw.arg in CLUSTER3_AWS_SECRET_KWS:
-                            text = _eval_value(kw.value, scope, lineno)
-                            if isinstance(text, str) and \
-                                    CLUSTER3_AWS_SECRET_SHAPE_RE.match(text) and \
-                                    _aws_secret_looks_real(text):
-                                tainted_kw = kw
-                                break
-                    if tainted_kw is not None:
-                        _add(node, "HARDCODED_AWS_TOKEN", "HARDCODED_CREDENTIAL", "CWE-798")
+                    # ---- CWE-798: hardcoded AWS tokens in boto3 constructors ----
+                    boto_form = any(form.startswith("boto3") or form.endswith("boto3.client")
+                                    or form == "client" or form.endswith(".client")
+                                    or form.endswith(".Session") or form.endswith(".resource")
+                                    or form in {"Session", "resource"}
+                                    for form in forms)
+                    if boto_form and last_seg in CLUSTER3_BOTO_CONSTRUCTOR_SEGS:
+                        tainted_kw = None
+                        for kw in node.keywords:
+                            if kw.arg == CLUSTER3_AWS_KEY_ID_KW:
+                                text = _eval_value(kw.value, scope, lineno)
+                                if isinstance(text, str) and \
+                                        CLUSTER3_AWS_KEY_ID_SHAPE_RE.match(text):
+                                    tainted_kw = kw
+                                    break
+                            elif kw.arg in CLUSTER3_AWS_SECRET_KWS:
+                                text = _eval_value(kw.value, scope, lineno)
+                                if isinstance(text, str) and \
+                                        CLUSTER3_AWS_SECRET_SHAPE_RE.match(text) and \
+                                        _aws_secret_looks_real(text):
+                                    tainted_kw = kw
+                                    break
+                        if tainted_kw is not None:
+                            _add(node, "HARDCODED_AWS_TOKEN", "HARDCODED_CREDENTIAL", "CWE-798")
 
-                # ---- CWE-326: insufficient RSA/DSA key size, weak EC curves ----
-                if last_seg in CLUSTER3_KEYGEN_SEGS:
-                    root = raw_chain[0] if raw_chain else ""
-                    if root in CLUSTER3_KEYGEN_ROOTS:
-                        size_kw = kw_map.get("key_size")
-                        size_expr = size_kw.value if size_kw else None
-                        if size_expr is None:
-                            constants = [arg for arg in node.args
-                                         if isinstance(arg, ast.Constant)
-                                         and isinstance(arg.value, int)]
-                            if root == "rsa":
-                                constants = [arg for arg in constants
-                                             if arg.value not in (3, 65537)]
-                            if len(constants) == 1:
-                                size_expr = constants[0]
-                        bits = _static(size_expr, scope, lineno) if size_expr is not None \
-                            else None
-                        if isinstance(bits, int) and 0 < bits < 2048:
-                            _add(size_expr, "INSUFFICIENT_KEY_SIZE",
-                                 "CRYPTOGRAPHIC_FAILURES", "CWE-326")
-                    elif root == CLUSTER3_EC_ROOT:
-                        curve_kw = kw_map.get("curve")
-                        curve_expr = curve_kw.value if curve_kw else \
-                            (node.args[0] if node.args else None)
-                        if curve_expr is not None:
-                            curve_chain = _segments(curve_expr)
-                            curve_name = curve_chain[-1] if curve_chain else ""
-                            match = re.match(r"^SEC[A-Z](\d{3})", curve_name)
-                            if match and int(match.group(1)) < 224:
-                                _add(curve_expr, "INSUFFICIENT_KEY_SIZE",
+                    # ---- CWE-326: insufficient RSA/DSA key size, weak EC curves ----
+                    if last_seg in CLUSTER3_KEYGEN_SEGS:
+                        root = raw_chain[0] if raw_chain else ""
+                        if root in CLUSTER3_KEYGEN_ROOTS:
+                            size_kw = kw_map.get("key_size")
+                            size_expr = size_kw.value if size_kw else None
+                            if size_expr is None:
+                                constants = [arg for arg in node.args
+                                             if isinstance(arg, ast.Constant)
+                                             and isinstance(arg.value, int)]
+                                if root == "rsa":
+                                    constants = [arg for arg in constants
+                                                 if arg.value not in (3, 65537)]
+                                if len(constants) == 1:
+                                    size_expr = constants[0]
+                            bits = _static(size_expr, scope, lineno) if size_expr is not None \
+                                else None
+                            if isinstance(bits, int) and 0 < bits < 2048:
+                                _add(size_expr, "INSUFFICIENT_KEY_SIZE",
                                      "CRYPTOGRAPHIC_FAILURES", "CWE-326")
+                        elif root == CLUSTER3_EC_ROOT:
+                            curve_kw = kw_map.get("curve")
+                            curve_expr = curve_kw.value if curve_kw else \
+                                (node.args[0] if node.args else None)
+                            if curve_expr is not None:
+                                curve_chain = _segments(curve_expr)
+                                curve_name = curve_chain[-1] if curve_chain else ""
+                                match = re.match(r"^SEC[A-Z](\d{3})", curve_name)
+                                if match and int(match.group(1)) < 224:
+                                    _add(curve_expr, "INSUFFICIENT_KEY_SIZE",
+                                         "CRYPTOGRAPHIC_FAILURES", "CWE-326")
 
-                # ---- CWE-352: app.config.update(WTF_CSRF_ENABLED=False, ...) kwargs ----
-                for kw in node.keywords:
-                    if kw.arg != CLUSTER3_WTF_CSRF_KEY:
-                        continue
-                    if _static(kw.value, scope, lineno) is not False:
-                        continue
-                    testing_kw = kw_map.get(CLUSTER3_TESTING_KEY)
-                    if testing_kw is not None and _static(testing_kw.value, scope,
-                                                          lineno) is True:
-                        continue
-                    _add(kw.value, "FLASK_CSRF_DISABLED", "CSRF_MISSING_PROTECTION",
-                         "CWE-352")
-
-                # ---- CWE-215/CWE-489: app.config.update(DEBUG=True, SECRET_KEY="...") ----
-                if chain and len(chain) >= 2 and chain[-1] == "update" and \
-                        chain[-2] == "config":
-                    _DEBUG_BOOL_KEYS = frozenset({"DEBUG"})
-                    _STRING_CONFIG_KEYS = frozenset({"SECRET_KEY", "ENV"})
+                    # ---- CWE-352: app.config.update(WTF_CSRF_ENABLED=False, ...) kwargs ----
                     for kw in node.keywords:
-                        val = _static(kw.value, scope, lineno)
-                        if val is not None:
-                            if kw.arg in _DEBUG_BOOL_KEYS and val is True:
-                                _add(kw.value, "ACTIVE_DEBUG_CODE", "ACTIVE_DEBUG_CODE",
-                                     "CWE-489")
-                            elif kw.arg in _STRING_CONFIG_KEYS:
-                                _add(kw.value, "HARDCODED_CONFIG", "HARDCODED_CONFIG",
-                                     "CWE-489")
-
-                # ---- CWE-502: yaml unsafe loaders ----
-                if chain and chain[0] == CLUSTER3_YAML_ROOT and \
-                        last_seg in CLUSTER3_YAML_UNSAFE_SEGS and \
-                        not self._deserializes_own_document(node, scope, lineno):
-                    _add(node, "UNSAFE_YAML_LOADER", "DESERIALIZATION", "CWE-502")
-                elif chain and chain[0] == CLUSTER3_YAML_ROOT and \
-                        last_seg in {"load", "load_all"}:
-                    loader_kw = kw_map.get("Loader") or kw_map.get("Loader"
-                                                                   .lower())
-                    if loader_kw is not None:
-                        loader_name = _segments(loader_kw.value)[-1] if \
-                            _segments(loader_kw.value) else ""
-                        if loader_name in CLUSTER3_YAML_UNSAFE_LOADERS and \
-                                not self._deserializes_own_document(node, scope, lineno):
-                            _add(node, "UNSAFE_YAML_LOADER", "DESERIALIZATION", "CWE-502")
-
-                # ---- CWE-502: ruamel YAML(typ='unsafe'|'base') ----
-                # The constructor itself is the deserialization surface, so an unsafe typ is
-                # decided by the literal keyword alone; 'rt' and 'safe' stay silent, as does a
-                # YAML() with no typ at all. The `yaml` segment must come from the module path
-                # (`ruamel.yaml.YAML`), never from the constructor name itself, or a local
-                # class spelled YAML would match.
-                if chain and chain[-1] == CLUSTER3_RUAMEL_YAML_CTOR_SEG and \
-                        any(seg.lower() == CLUSTER3_YAML_ROOT for seg in chain[:-1]):
-                    typ_kw = kw_map.get("typ")
-                    if typ_kw is not None:
-                        typ_value = _static(typ_kw.value, scope, lineno)
-                        if isinstance(typ_value, str) and \
-                                typ_value.lower() in CLUSTER3_YAML_UNSAFE_TYPES:
-                            _add(node, "UNSAFE_RUAMEL_YAML", "DESERIALIZATION", "CWE-502")
-
-                # ---- CWE-502: pickle-family and marshal/shelve usage ----
-                if chain and len(chain) >= 2 and chain[-2] in CLUSTER3_PICKLE_ROOTS:
-                    has_dynamic_arg = any(_static(arg, scope, lineno) is None
-                                          for arg in node.args)
-                    if has_dynamic_arg and (
-                            last_seg in CLUSTER3_PICKLE_METHOD_SEGS or
-                            (chain[-2] == "shelve" and last_seg == CLUSTER3_SHELVE_OPEN_SEG)):
-                        _add(node, "UNSAFE_PICKLE_USAGE" if chain[-2] != "marshal"
-                             else "MARSHAL_USAGE", "DESERIALIZATION", "CWE-502")
-
-            # ---- Cluster 3 rule A: mutable default argument mutated in place (CWE-1188) ----
-            # Three facts have to hold on one function before the shared object is at risk: a
-            # container default, a write through that object, and no rebinding of the parameter
-            # to a freshly built object before the write. Definitions nested inside another
-            # function are out of scope: the corpus labels that shape `# OK`, and the upstream
-            # rule excludes it the same way.
-            def _nested_in_function(node: ast.AST) -> bool:
-                current = getattr(node, "parent", None)
-                while current is not None:
-                    if isinstance(current, (ast.FunctionDef, ast.AsyncFunctionDef)):
-                        return True
-                    current = getattr(current, "parent", None)
-                return False
-
-            def _mutable_default_parameters(func) -> list[tuple[str, ast.AST]]:
-                positional = list(func.args.posonlyargs) + list(func.args.args)
-                defaults = list(func.args.defaults)
-                padded = [None] * (len(positional) - len(defaults)) + defaults
-                pairs = list(zip(positional, padded)) + \
-                    list(zip(func.args.kwonlyargs, func.args.kw_defaults))
-                out: list[tuple[str, ast.AST]] = []
-                for arg, default in pairs:
-                    if default is None:
-                        continue
-                    if isinstance(default, (ast.List, ast.Dict, ast.Set)):
-                        out.append((arg.arg, default))
-                    elif isinstance(default, ast.Call) and not default.args:
-                        head = getattr(default.func, "id", None) or \
-                            getattr(default.func, "attr", None)
-                        if head in CLUSTER3_MUTABLE_DEFAULT_CONTAINER_NAMES:
-                            out.append((arg.arg, default))
-                return out
-
-            def _fresh_rebind_lines(func, name: str) -> set[int]:
-                lines: set[int] = set()
-                for sub in ast.walk(func):
-                    if isinstance(sub, ast.Assign):
-                        value = sub.value
-                        sub_base = getattr(value, "value", None)
-                        fresh = (isinstance(value, ast.Call) and (
-                                    (getattr(value.func, "id", None)
-                                     in CLUSTER3_MUTABLE_DEFAULT_CONTAINER_NAMES) or
-                                    (getattr(value.func, "attr", None)
-                                     in CLUSTER3_MUTABLE_DEFAULT_COPY_NAMES) or
-                                    (isinstance(value.func, ast.Attribute) and
-                                     getattr(value.func.value, "id", None)
-                                     in CLUSTER3_MUTABLE_DEFAULT_CONTAINER_NAMES))) or \
-                            isinstance(value, CLUSTER3_MUTABLE_DEFAULT_FRESH_VALUE_TYPES) or \
-                            (isinstance(value, ast.Subscript) and
-                             isinstance(sub_base, ast.Name) and sub_base.id == name) or \
-                            (isinstance(value, ast.BoolOp) and
-                             any(isinstance(n, ast.Name) and n.id == name
-                                 for n in ast.walk(value)))
-                        if fresh and any(isinstance(t, ast.Name) and t.id == name
-                                         for t in sub.targets):
-                            lines.add(getattr(sub, "lineno", 0))
-                    elif isinstance(sub, ast.AnnAssign) and isinstance(sub.target, ast.Name) \
-                            and sub.target.id == name and sub.value is not None:
-                        lines.add(getattr(sub, "lineno", 0))
-                return lines
-
-            def _shared_object_mutations(func, name: str) -> list[tuple[ast.AST, str]]:
-                # `x = default` then `x.append(...)` is the same shared object, so one level of
-                # plain aliasing counts as a mutation of the default itself.
-                aliases = {name}
-                for sub in ast.walk(func):
-                    if isinstance(sub, ast.Assign) and isinstance(sub.value, ast.Name) and \
-                            sub.value.id == name:
-                        aliases.update(t.id for t in sub.targets if isinstance(t, ast.Name))
-                sites: list[tuple[ast.AST, str]] = []
-                for sub in ast.walk(func):
-                    if isinstance(sub, ast.Call) and isinstance(sub.func, ast.Attribute) and \
-                            isinstance(sub.func.value, ast.Name) and \
-                            sub.func.value.id in aliases and \
-                            sub.func.attr in CLUSTER3_MUTABLE_DEFAULT_METHOD_NAMES:
-                        sites.append((sub, sub.func.attr))
-                    elif isinstance(sub, ast.Assign):
-                        for target in sub.targets:
-                            if isinstance(target, ast.Subscript) and \
-                                    isinstance(target.value, ast.Name) and \
-                                    target.value.id in aliases:
-                                sites.append((sub, "subscript_store"))
-                    elif isinstance(sub, ast.AugAssign) and isinstance(sub.target, ast.Name) \
-                            and sub.target.id in aliases:
-                        sites.append((sub, "augassign"))
-                return sites
-
-            for func in [node for node in reachable
-                         if isinstance(node, (ast.FunctionDef, ast.AsyncFunctionDef))]:
-                if _nested_in_function(func):
-                    continue
-                for param, _default in _mutable_default_parameters(func):
-                    rebound = _fresh_rebind_lines(func, param)
-                    for mut_node, _kind in _shared_object_mutations(func, param):
-                        if any(rb <= getattr(mut_node, "lineno", 0) for rb in rebound):
+                        if kw.arg != CLUSTER3_WTF_CSRF_KEY:
                             continue
-                        _add(mut_node, "MUTABLE_DEFAULT_ARGUMENT",
-                             "INSECURE_DEFAULT_INITIALIZATION", "CWE-1188")
+                        if _static(kw.value, scope, lineno) is not False:
+                            continue
+                        testing_kw = kw_map.get(CLUSTER3_TESTING_KEY)
+                        if testing_kw is not None and _static(testing_kw.value, scope,
+                                                              lineno) is True:
+                            continue
+                        _add(kw.value, "FLASK_CSRF_DISABLED", "CSRF_MISSING_PROTECTION",
+                             "CWE-352")
 
-            # ---- Cluster 3 rule B: credential key in a dictionary that reaches a token call ----
-            # A password inside a payload only becomes a leak when that payload is what gets
-            # encoded into the token, so the dictionary must be an argument of an encode/sign
-            # call -- inline, or one assignment away. HTTP request bodies with the same keys are
-            # another CWE's business and are deliberately not matched here.
-            module_roots: set[str] = set()
-            for sub in reachable:
-                if isinstance(sub, ast.Import):
-                    module_roots.update(alias.name.split(".")[0] for alias in sub.names)
-                elif isinstance(sub, ast.ImportFrom) and sub.module:
-                    module_roots.add(sub.module.split(".")[0])
-            if module_roots & CLUSTER3_TOKEN_LIBRARY_ROOTS:
-                payload_dict_ids: set[int] = set()
-                payload_names: set[str] = set()
+                    # ---- CWE-215/CWE-489: app.config.update(DEBUG=True, SECRET_KEY="...") ----
+                    if chain and len(chain) >= 2 and chain[-1] == "update" and \
+                            chain[-2] == "config":
+                        _DEBUG_BOOL_KEYS = frozenset({"DEBUG"})
+                        _STRING_CONFIG_KEYS = frozenset({"SECRET_KEY", "ENV"})
+                        for kw in node.keywords:
+                            val = _static(kw.value, scope, lineno)
+                            if val is not None:
+                                if kw.arg in _DEBUG_BOOL_KEYS and val is True:
+                                    _add(kw.value, "ACTIVE_DEBUG_CODE", "ACTIVE_DEBUG_CODE",
+                                         "CWE-489")
+                                elif kw.arg in _STRING_CONFIG_KEYS:
+                                    _add(kw.value, "HARDCODED_CONFIG", "HARDCODED_CONFIG",
+                                         "CWE-489")
+
+                    # ---- CWE-502: yaml unsafe loaders ----
+                    if chain and chain[0] == CLUSTER3_YAML_ROOT and \
+                            last_seg in CLUSTER3_YAML_UNSAFE_SEGS and \
+                            not self._deserializes_own_document(node, scope, lineno):
+                        _add(node, "UNSAFE_YAML_LOADER", "DESERIALIZATION", "CWE-502")
+                    elif chain and chain[0] == CLUSTER3_YAML_ROOT and \
+                            last_seg in {"load", "load_all"}:
+                        loader_kw = kw_map.get("Loader") or kw_map.get("Loader"
+                                                                       .lower())
+                        if loader_kw is not None:
+                            loader_name = _segments(loader_kw.value)[-1] if \
+                                _segments(loader_kw.value) else ""
+                            if loader_name in CLUSTER3_YAML_UNSAFE_LOADERS and \
+                                    not self._deserializes_own_document(node, scope, lineno):
+                                _add(node, "UNSAFE_YAML_LOADER", "DESERIALIZATION", "CWE-502")
+
+                    # ---- CWE-502: ruamel YAML(typ='unsafe'|'base') ----
+                    # The constructor itself is the deserialization surface, so an unsafe typ is
+                    # decided by the literal keyword alone; 'rt' and 'safe' stay silent, as does a
+                    # YAML() with no typ at all. The `yaml` segment must come from the module path
+                    # (`ruamel.yaml.YAML`), never from the constructor name itself, or a local
+                    # class spelled YAML would match.
+                    if chain and chain[-1] == CLUSTER3_RUAMEL_YAML_CTOR_SEG and \
+                            any(seg.lower() == CLUSTER3_YAML_ROOT for seg in chain[:-1]):
+                        typ_kw = kw_map.get("typ")
+                        if typ_kw is not None:
+                            typ_value = _static(typ_kw.value, scope, lineno)
+                            if isinstance(typ_value, str) and \
+                                    typ_value.lower() in CLUSTER3_YAML_UNSAFE_TYPES:
+                                _add(node, "UNSAFE_RUAMEL_YAML", "DESERIALIZATION", "CWE-502")
+
+                    # ---- CWE-502: pickle-family and marshal/shelve usage ----
+                    if chain and len(chain) >= 2 and chain[-2] in CLUSTER3_PICKLE_ROOTS:
+                        has_dynamic_arg = any(_static(arg, scope, lineno) is None
+                                              for arg in node.args)
+                        if has_dynamic_arg and (
+                                last_seg in CLUSTER3_PICKLE_METHOD_SEGS or
+                                (chain[-2] == "shelve" and last_seg == CLUSTER3_SHELVE_OPEN_SEG)):
+                            _add(node, "UNSAFE_PICKLE_USAGE" if chain[-2] != "marshal"
+                                 else "MARSHAL_USAGE", "DESERIALIZATION", "CWE-502")
+
+                # ---- Cluster 3 rule A: mutable default argument mutated in place (CWE-1188) ----
+                # Three facts have to hold on one function before the shared object is at risk: a
+                # container default, a write through that object, and no rebinding of the parameter
+                # to a freshly built object before the write. Definitions nested inside another
+                # function are out of scope: the corpus labels that shape `# OK`, and the upstream
+                # rule excludes it the same way.
+                def _nested_in_function(node: ast.AST) -> bool:
+                    current = getattr(node, "parent", None)
+                    while current is not None:
+                        if isinstance(current, (ast.FunctionDef, ast.AsyncFunctionDef)):
+                            return True
+                        current = getattr(current, "parent", None)
+                    return False
+
+                def _mutable_default_parameters(func) -> list[tuple[str, ast.AST]]:
+                    positional = list(func.args.posonlyargs) + list(func.args.args)
+                    defaults = list(func.args.defaults)
+                    padded = [None] * (len(positional) - len(defaults)) + defaults
+                    pairs = list(zip(positional, padded)) + \
+                        list(zip(func.args.kwonlyargs, func.args.kw_defaults))
+                    out: list[tuple[str, ast.AST]] = []
+                    for arg, default in pairs:
+                        if default is None:
+                            continue
+                        if isinstance(default, (ast.List, ast.Dict, ast.Set)):
+                            out.append((arg.arg, default))
+                        elif isinstance(default, ast.Call) and not default.args:
+                            head = getattr(default.func, "id", None) or \
+                                getattr(default.func, "attr", None)
+                            if head in CLUSTER3_MUTABLE_DEFAULT_CONTAINER_NAMES:
+                                out.append((arg.arg, default))
+                    return out
+
+                def _fresh_rebind_lines(func, name: str) -> set[int]:
+                    lines: set[int] = set()
+                    for sub in ast.walk(func):
+                        if isinstance(sub, ast.Assign):
+                            value = sub.value
+                            sub_base = getattr(value, "value", None)
+                            fresh = (isinstance(value, ast.Call) and (
+                                        (getattr(value.func, "id", None)
+                                         in CLUSTER3_MUTABLE_DEFAULT_CONTAINER_NAMES) or
+                                        (getattr(value.func, "attr", None)
+                                         in CLUSTER3_MUTABLE_DEFAULT_COPY_NAMES) or
+                                        (isinstance(value.func, ast.Attribute) and
+                                         getattr(value.func.value, "id", None)
+                                         in CLUSTER3_MUTABLE_DEFAULT_CONTAINER_NAMES))) or \
+                                isinstance(value, CLUSTER3_MUTABLE_DEFAULT_FRESH_VALUE_TYPES) or \
+                                (isinstance(value, ast.Subscript) and
+                                 isinstance(sub_base, ast.Name) and sub_base.id == name) or \
+                                (isinstance(value, ast.BoolOp) and
+                                 any(isinstance(n, ast.Name) and n.id == name
+                                     for n in ast.walk(value)))
+                            if fresh and any(isinstance(t, ast.Name) and t.id == name
+                                             for t in sub.targets):
+                                lines.add(getattr(sub, "lineno", 0))
+                        elif isinstance(sub, ast.AnnAssign) and isinstance(sub.target, ast.Name) \
+                                and sub.target.id == name and sub.value is not None:
+                            lines.add(getattr(sub, "lineno", 0))
+                    return lines
+
+                def _shared_object_mutations(func, name: str) -> list[tuple[ast.AST, str]]:
+                    # `x = default` then `x.append(...)` is the same shared object, so one level of
+                    # plain aliasing counts as a mutation of the default itself.
+                    aliases = {name}
+                    for sub in ast.walk(func):
+                        if isinstance(sub, ast.Assign) and isinstance(sub.value, ast.Name) and \
+                                sub.value.id == name:
+                            aliases.update(t.id for t in sub.targets if isinstance(t, ast.Name))
+                    sites: list[tuple[ast.AST, str]] = []
+                    for sub in ast.walk(func):
+                        if isinstance(sub, ast.Call) and isinstance(sub.func, ast.Attribute) and \
+                                isinstance(sub.func.value, ast.Name) and \
+                                sub.func.value.id in aliases and \
+                                sub.func.attr in CLUSTER3_MUTABLE_DEFAULT_METHOD_NAMES:
+                            sites.append((sub, sub.func.attr))
+                        elif isinstance(sub, ast.Assign):
+                            for target in sub.targets:
+                                if isinstance(target, ast.Subscript) and \
+                                        isinstance(target.value, ast.Name) and \
+                                        target.value.id in aliases:
+                                    sites.append((sub, "subscript_store"))
+                        elif isinstance(sub, ast.AugAssign) and isinstance(sub.target, ast.Name) \
+                                and sub.target.id in aliases:
+                            sites.append((sub, "augassign"))
+                    return sites
+
+                for func in [node for node in reachable
+                             if isinstance(node, (ast.FunctionDef, ast.AsyncFunctionDef))]:
+                    if _nested_in_function(func):
+                        continue
+                    for param, _default in _mutable_default_parameters(func):
+                        rebound = _fresh_rebind_lines(func, param)
+                        for mut_node, _kind in _shared_object_mutations(func, param):
+                            if any(rb <= getattr(mut_node, "lineno", 0) for rb in rebound):
+                                continue
+                            _add(mut_node, "MUTABLE_DEFAULT_ARGUMENT",
+                                 "INSECURE_DEFAULT_INITIALIZATION", "CWE-1188")
+
+                # ---- Cluster 3 rule B: credential key in a dictionary that reaches a token call ----
+                # A password inside a payload only becomes a leak when that payload is what gets
+                # encoded into the token, so the dictionary must be an argument of an encode/sign
+                # call -- inline, or one assignment away. HTTP request bodies with the same keys are
+                # another CWE's business and are deliberately not matched here.
+                module_roots: set[str] = set()
                 for sub in reachable:
-                    if not isinstance(sub, ast.Call):
-                        continue
-                    segs = _segments(sub.func)
-                    if not segs or segs[-1] not in CLUSTER3_TOKEN_PAYLOAD_FUNCTION_NAMES:
-                        continue
-                    for arg in list(sub.args) + [kw.value for kw in sub.keywords]:
-                        if isinstance(arg, ast.Dict):
-                            payload_dict_ids.add(id(arg))
-                        elif isinstance(arg, ast.Name):
-                            payload_names.add(arg.id)
-                if payload_names:
+                    if isinstance(sub, ast.Import):
+                        module_roots.update(alias.name.split(".")[0] for alias in sub.names)
+                    elif isinstance(sub, ast.ImportFrom) and sub.module:
+                        module_roots.add(sub.module.split(".")[0])
+                if module_roots & CLUSTER3_TOKEN_LIBRARY_ROOTS:
+                    payload_dict_ids: set[int] = set()
+                    payload_names: set[str] = set()
                     for sub in reachable:
-                        if isinstance(sub, ast.Assign) and isinstance(sub.value, ast.Dict) and \
-                                any(isinstance(t, ast.Name) and t.id in payload_names
-                                    for t in sub.targets):
-                            payload_dict_ids.add(id(sub.value))
-                for node in [n for n in reachable if isinstance(n, ast.Dict)]:
-                    keys = [key.value for key in node.keys
-                            if isinstance(key, ast.Constant) and isinstance(key.value, str)]
-                    if id(node) in payload_dict_ids and \
-                            any(key.lower() in CLUSTER3_SENSITIVE_PAYLOAD_KEYS for key in keys):
-                        _add(node, "HARDCODED_CREDENTIAL_IN_PAYLOAD", "HARDCODED_CREDENTIAL",
-                             "CWE-522")
+                        if not isinstance(sub, ast.Call):
+                            continue
+                        segs = _segments(sub.func)
+                        if not segs or segs[-1] not in CLUSTER3_TOKEN_PAYLOAD_FUNCTION_NAMES:
+                            continue
+                        for arg in list(sub.args) + [kw.value for kw in sub.keywords]:
+                            if isinstance(arg, ast.Dict):
+                                payload_dict_ids.add(id(arg))
+                            elif isinstance(arg, ast.Name):
+                                payload_names.add(arg.id)
+                    if payload_names:
+                        for sub in reachable:
+                            if isinstance(sub, ast.Assign) and isinstance(sub.value, ast.Dict) and \
+                                    any(isinstance(t, ast.Name) and t.id in payload_names
+                                        for t in sub.targets):
+                                payload_dict_ids.add(id(sub.value))
+                    for node in [n for n in reachable if isinstance(n, ast.Dict)]:
+                        keys = [key.value for key in node.keys
+                                if isinstance(key, ast.Constant) and isinstance(key.value, str)]
+                        if id(node) in payload_dict_ids and \
+                                any(key.lower() in CLUSTER3_SENSITIVE_PAYLOAD_KEYS for key in keys):
+                            _add(node, "HARDCODED_CREDENTIAL_IN_PAYLOAD", "HARDCODED_CREDENTIAL",
+                                 "CWE-522")
+            finally:
+                _scope_memo.clear()
 
     def _c312_format_pieces(self, value):
         """(literal template, [substituted expressions]) for a `.format()` / f-string / `%` write.
@@ -21363,7 +21374,7 @@ class TaintTracker:
         self._profile_scope = "blindspot_all"
         self._checkpoint_phase = "Blindspot collectors (14 CWE passes per module)"
         _bs_t0 = _time.perf_counter()
-        for _bs_idx, (_bs_mod, _bs_tree) in enumerate(sorted(self.modules.items())):
+        for _bs_mod, _bs_tree in sorted(self.modules.items()):
             _bs_file = self.file_paths.get(_bs_mod, "unknown.py")
             _bs_lines = self._source_lines_by_file.get(_bs_file, [])
             self._checkpoint_collector = _bs_file
@@ -21399,10 +21410,9 @@ class TaintTracker:
                 # original exception still propagates unchanged.
                 _bs_tree.__dict__.pop("_cached_all_nodes", None)
                 _bs_tree.__dict__.pop("_cached_node_buckets", None)
-            # Every 25 modules: a flush per module would rescan every sink record, which costs
-            # O(modules x sinks) on a large repo. This keeps the window at ~25 files.
-            if _bs_idx % 25 == 24:
-                self._flush_stage1_structural_edges()
+        # One flush after the loop: every blindspot sink is created with `p4_source_id`, which
+        # `_emit_structural_edge` defers, so an in-loop flush could only ever re-scan the stage-1
+        # sinks that the per-collector flush above already emitted.
         self._flush_stage1_structural_edges()
         self._checkpoint_collector = None
         self._profile_scope = None
