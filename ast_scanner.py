@@ -9452,6 +9452,29 @@ class TaintTracker:
             tree.__dict__["_cached_all_nodes"] = cached
         return cached
 
+    def _module_calls(self, tree: ast.AST) -> list:
+        """The `ast.Call` subsequence of `_module_nodes(tree)`, memoised beside the walk itself.
+
+        Thirteen blindspot collectors each walked the whole module node list only to `continue` on
+        the first line of the body for every node that is not a call. Filtering that list once costs
+        the same as one of those walks and serves thirteen, so the surviving iterations are over the
+        calls alone.
+
+        The subsequence is built by a straight filter of the cached walk, so it keeps that walk's
+        order and its multiplicity: a collector sees exactly its own nodes, in exactly the order it
+        saw them before, and therefore hands out the same sink ids. The `isinstance(node, ast.Call)`
+        test stays in each body - this list only removes the nodes that test was already rejecting.
+
+        Invalidated by identity against the walk it was built from, so a rebuilt `_cached_all_nodes`
+        cannot serve a stale bucket; both keys are released together per module in the blindspot loop.
+        """
+        nodes = self._module_nodes(tree)
+        buckets = tree.__dict__.get("_cached_node_buckets")
+        if buckets is None or buckets[0] is not nodes:
+            buckets = (nodes, [node for node in nodes if isinstance(node, ast.Call)])
+            tree.__dict__["_cached_node_buckets"] = buckets
+        return buckets[1]
+
     def _sink_node_unrecorded(self, node) -> bool:
         """True when no entry of `sink_records` holds this exact node -- O(1), was an O(sinks) scan.
 
@@ -9817,7 +9840,7 @@ class TaintTracker:
     # ── 1. CWE-78: subprocess with shell=True on a command built at runtime ────────
     def _collect_cwe78_subprocess_calls(self, tree, filename, source_lines):
         table = self._memo_assignment_map(tree)
-        for node in self._module_nodes(tree):
+        for node in self._module_calls(tree):
             if not isinstance(node, ast.Call) or not isinstance(node.func, ast.AST):
                 continue
             if dotted_name(node.func) not in SUBPROCESS_SHELL_FUNCS:
@@ -9846,7 +9869,7 @@ class TaintTracker:
         ]
         if not module:
             module = next((mod for mod, path in self.file_paths.items() if path == filename), "")
-        for node in self._module_nodes(tree):
+        for node in self._module_calls(tree):
             if not isinstance(node, ast.Call):
                 continue
             if not self._blindspot_is_log_call(node, func_ranges):
@@ -10345,7 +10368,7 @@ class TaintTracker:
 
     # ── 3. CWE-668: server started on every interface instead of loopback ──────────
     def _collect_cwe668_insecure_host_binding(self, tree, filename, source_lines):
-        for node in self._module_nodes(tree):
+        for node in self._module_calls(tree):
             if not isinstance(node, ast.Call) or not isinstance(node.func, ast.Attribute):
                 continue
             if node.func.attr not in BIND_METHOD_NAMES:
@@ -10465,7 +10488,7 @@ class TaintTracker:
         table = self._memo_assignment_map(tree)
         ranges = self._memo_function_ranges(tree)
         guarded = self._c22_guarded_names(tree)
-        for node in self._module_nodes(tree):
+        for node in self._module_calls(tree):
             if not isinstance(node, ast.Call):
                 continue
             if (dotted_name(node.func) or "") not in FILE_OPEN_FUNCS:
@@ -10584,7 +10607,7 @@ class TaintTracker:
         """
         table = self._memo_assignment_map(tree)
         with_opens = self._c94_handle_opens(tree)
-        for node in self._module_nodes(tree):
+        for node in self._module_calls(tree):
             if not isinstance(node, ast.Call) or not node.args:
                 continue
             func = node.func
@@ -10665,7 +10688,7 @@ class TaintTracker:
         """
         table = self._memo_assignment_map(tree)
         ranges = self._memo_function_ranges(tree)
-        for node in self._module_nodes(tree):
+        for node in self._module_calls(tree):
             if not isinstance(node, ast.Call) or not node.args:
                 continue
             if self._c79_segment(node.func) not in XSS_SAFE_WRAPPERS:
@@ -11012,7 +11035,7 @@ class TaintTracker:
             for func, params in self._c117_endpoint_scopes(tree)
         ]
         crud = self._c117_crud_param_scopes(tree, filename)
-        for node in self._module_nodes(tree):
+        for node in self._module_calls(tree):
             if not isinstance(node, ast.Call) or not self._blindspot_is_log_call(node, func_ranges):
                 continue
             arguments = list(node.args) + [
@@ -11368,7 +11391,7 @@ class TaintTracker:
         table = self._memo_assignment_map(tree)
         with_opens = self._c94_handle_opens(tree)
         scopes = self._c312_stream_scopes(tree)
-        for node in self._module_nodes(tree):
+        for node in self._module_calls(tree):
             if not isinstance(node, ast.Call) or not node.args:
                 continue
             if not isinstance(node.func, ast.Attribute) or node.func.attr not in ("write", "writelines"):
@@ -11569,7 +11592,7 @@ class TaintTracker:
             return
         table = self._memo_assignment_map(tree)
         bare_verbs = self._c319_imported_verbs(tree)
-        for node in self._module_nodes(tree):
+        for node in self._module_calls(tree):
             if not isinstance(node, ast.Call) or not self._c319_is_transport_sink(node, bare_verbs):
                 continue
             url_arg = node.args[0] if node.args else next(
@@ -11677,7 +11700,7 @@ class TaintTracker:
         table = self._memo_assignment_map(tree)
         scopes = [(start, end) for start, end, _params in self._memo_function_ranges(tree)]
         tls_scopes, secured_names = self._c319_raw_socket_tls_evidence(tree, scopes)
-        for node in self._module_nodes(tree):
+        for node in self._module_calls(tree):
             if not isinstance(node, ast.Call):
                 continue
             segments = (dotted_name(node.func) or "").split(".")
@@ -11774,7 +11797,7 @@ class TaintTracker:
         `dag.py:817 Environment(**jinja_env_options)` and `lineage/datasets.py Environment()` are the
         measured examples - and the safe half of the CWE-79 corpus depends on that restraint.
         """
-        for node in self._module_nodes(tree):
+        for node in self._module_calls(tree):
             if not isinstance(node, ast.Call):
                 continue
             name = dotted_name(node.func) or ""
@@ -11818,7 +11841,7 @@ class TaintTracker:
         spelling measured here is `execute("SELECT ... ?", (uid,))`, where the driver does the quoting.
         """
         table = self._memo_assignment_map(tree)
-        for node in self._module_nodes(tree):
+        for node in self._module_calls(tree):
             if not isinstance(node, ast.Call) or not isinstance(node.func, ast.Attribute):
                 continue
             if node.func.attr not in HOOK_QUERY_METHODS:
@@ -11906,7 +11929,7 @@ class TaintTracker:
         silent because the interpolated values are identifiers (a DataFrame's column names, a model's
         table name) that never carried a source. This rule reads the construction, never the source.
         """
-        for node in self._module_nodes(tree):
+        for node in self._module_calls(tree):
             if not isinstance(node, ast.Call) or not self._c89_is_sqlalchemy_text(node.func):
                 continue
             statement = node.args[0] if node.args else next(
@@ -21333,31 +21356,38 @@ class TaintTracker:
             _bs_file = self.file_paths.get(_bs_mod, "unknown.py")
             _bs_lines = self._source_lines_by_file.get(_bs_file, [])
             self._checkpoint_collector = _bs_file
-            self._collect_cwe78_subprocess_calls(_bs_tree, _bs_file, _bs_lines)
-            self._collect_cwe532_logging_leaks(_bs_tree, _bs_file, _bs_lines, _bs_mod)
-            self._collect_cwe668_insecure_host_binding(_bs_tree, _bs_file, _bs_lines)
-            self._collect_cwe93_header_injection(_bs_tree, _bs_file, _bs_lines)
-            self._collect_cwe22_parameter_path_sinks(_bs_tree, _bs_file, _bs_lines)
-            self._collect_cwe94_python_source_writes(_bs_tree, _bs_file, _bs_lines)
-            self._collect_cwe79_django_xss(_bs_tree, _bs_file, _bs_lines)
-            self._collect_cwe209_stack_trace_exposure(_bs_tree, _bs_file, _bs_lines)
-            self._collect_cwe117_log_injection(_bs_tree, _bs_file, _bs_lines)
-            self._collect_cwe601_open_redirect(_bs_tree, _bs_file, _bs_lines)
-            self._collect_cwe319_insecure_transport(_bs_tree, _bs_file, _bs_lines)
-            self._collect_cwe79_insecure_jinja_config(_bs_tree, _bs_file, _bs_lines)
-            self._collect_cwe89_hook_query_execution(_bs_tree, _bs_file, _bs_lines)
-            self._collect_cwe502_socket_deserialization(_bs_tree, _bs_file, _bs_lines)
-            # Appended after the passes above on purpose: a new collector inserted earlier would shift
-            # the sink ids those passes hand out, and parity is measured on those ids.
-            self._collect_cwe89_sqlalchemy_text_interpolation(_bs_tree, _bs_file, _bs_lines)
-            self._collect_cwe117_handler_echo_logging(_bs_tree, _bs_file, _bs_lines)
-            self._collect_cwe312_config_stream_writes(_bs_tree, _bs_file, _bs_lines)
-            # Appended last for the same reason as the passes above: the sink ids they hand out are
-            # parity-measured, so a new collector can only ever sit after them.
-            self._collect_cwe319_raw_socket_cleartext(_bs_tree, _bs_file, _bs_lines)
-            # The shared walk served all 19 passes above; drop it before the next module so the list
-            # of node references is bounded by one module instead of the whole repository.
-            _bs_tree.__dict__.pop("_cached_all_nodes", None)
+            try:
+                self._collect_cwe78_subprocess_calls(_bs_tree, _bs_file, _bs_lines)
+                self._collect_cwe532_logging_leaks(_bs_tree, _bs_file, _bs_lines, _bs_mod)
+                self._collect_cwe668_insecure_host_binding(_bs_tree, _bs_file, _bs_lines)
+                self._collect_cwe93_header_injection(_bs_tree, _bs_file, _bs_lines)
+                self._collect_cwe22_parameter_path_sinks(_bs_tree, _bs_file, _bs_lines)
+                self._collect_cwe94_python_source_writes(_bs_tree, _bs_file, _bs_lines)
+                self._collect_cwe79_django_xss(_bs_tree, _bs_file, _bs_lines)
+                self._collect_cwe209_stack_trace_exposure(_bs_tree, _bs_file, _bs_lines)
+                self._collect_cwe117_log_injection(_bs_tree, _bs_file, _bs_lines)
+                self._collect_cwe601_open_redirect(_bs_tree, _bs_file, _bs_lines)
+                self._collect_cwe319_insecure_transport(_bs_tree, _bs_file, _bs_lines)
+                self._collect_cwe79_insecure_jinja_config(_bs_tree, _bs_file, _bs_lines)
+                self._collect_cwe89_hook_query_execution(_bs_tree, _bs_file, _bs_lines)
+                self._collect_cwe502_socket_deserialization(_bs_tree, _bs_file, _bs_lines)
+                # Appended after the passes above on purpose: a new collector inserted earlier would shift
+                # the sink ids those passes hand out, and parity is measured on those ids.
+                self._collect_cwe89_sqlalchemy_text_interpolation(_bs_tree, _bs_file, _bs_lines)
+                self._collect_cwe117_handler_echo_logging(_bs_tree, _bs_file, _bs_lines)
+                self._collect_cwe312_config_stream_writes(_bs_tree, _bs_file, _bs_lines)
+                # Appended last for the same reason as the passes above: the sink ids they hand out are
+                # parity-measured, so a new collector can only ever sit after them.
+                self._collect_cwe319_raw_socket_cleartext(_bs_tree, _bs_file, _bs_lines)
+            finally:
+                # The shared walk served all 19 passes above; drop it before the next module so the list
+                # of node references is bounded by one module instead of the whole repository. The Call
+                # bucket is a view of that same list, so it is released with it, for the same reason, at
+                # the same point. In a `finally` because one collector raising halfway through the list
+                # must not leave this module's walk and bucket pinned either - no `except` here, so the
+                # original exception still propagates unchanged.
+                _bs_tree.__dict__.pop("_cached_all_nodes", None)
+                _bs_tree.__dict__.pop("_cached_node_buckets", None)
             # Every 25 modules: a flush per module would rescan every sink record, which costs
             # O(modules x sinks) on a large repo. This keeps the window at ~25 files.
             if _bs_idx % 25 == 24:
