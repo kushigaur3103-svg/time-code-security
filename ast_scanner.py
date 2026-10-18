@@ -9255,17 +9255,21 @@ class TaintTracker:
         cache[id(tree)] = (tree, table)
         return table
 
-    def _memo_function_ranges(self, tree):
+    def _memo_function_ranges(self, tree, nodes=None):
         """`_c22_function_ranges(tree)` cached per module tree; same identity-guarded contract.
 
         Three collectors request it per module. Callers only build filtered lists out of the
         returned tuples, never mutate it, so one shared instance is behaviourally identical.
+
+        *nodes* is forwarded to the builder and is only supplied by the first caller of the module,
+        which is also the only one that can miss this cache; it changes which list is iterated,
+        never which nodes are in it or in what order.
         """
         cache = self.__dict__.setdefault("_function_ranges_cache", {})
         entry = cache.get(id(tree))
         if entry is not None and entry[0] is tree:
             return entry[1]
-        ranges = TaintTracker._c22_function_ranges(tree)
+        ranges = TaintTracker._c22_function_ranges(tree, nodes)
         cache[id(tree)] = (tree, ranges)
         return ranges
 
@@ -10497,8 +10501,13 @@ class TaintTracker:
         containment test on the same variable.
         """
         table = self._memo_assignment_map(tree)
-        ranges = self._memo_function_ranges(tree)
-        guarded = self._c22_guarded_names(tree)
+        # Both of these are per-module structures that visit every node once, and the `for node in
+        # self._module_calls(tree)` a few lines below needs the very same cached walk anyway, so the
+        # list is already warm here and is released for this module at the blindspot loop's `finally`.
+        # This is the first request for the function ranges in the loop, so serving it from the cache
+        # removes the module walk for the four later collectors that share the same memo.
+        ranges = self._memo_function_ranges(tree, self._module_nodes(tree))
+        guarded = self._c22_guarded_names(tree, self._module_nodes(tree))
         for node in self._module_calls(tree):
             if not isinstance(node, ast.Call):
                 continue
@@ -10535,10 +10544,10 @@ class TaintTracker:
                 "UNTRUSTED_PATH_TRAVERSAL", reuse_existing=True)
 
     @staticmethod
-    def _c22_function_ranges(tree):
+    def _c22_function_ranges(tree, nodes=None):
         """(first line, last line, parameter names) for every def in the module."""
         out = []
-        for node in ast.walk(tree):
+        for node in (nodes if nodes is not None else ast.walk(tree)):
             if isinstance(node, (ast.FunctionDef, ast.AsyncFunctionDef)):
                 declared = list(node.args.args) + list(node.args.posonlyargs) \
                     + list(node.args.kwonlyargs)
@@ -10590,10 +10599,10 @@ class TaintTracker:
         return False
 
     @staticmethod
-    def _c22_guarded_names(tree):
+    def _c22_guarded_names(tree, nodes=None):
         """Names compared with `.startswith(root)` - an explicit allowlist of a base directory."""
         out = set()
-        for node in ast.walk(tree):
+        for node in (nodes if nodes is not None else ast.walk(tree)):
             if isinstance(node, ast.Call) and isinstance(node.func, ast.Attribute) \
                     and node.func.attr == "startswith":
                 root = node.func.value
@@ -10642,10 +10651,10 @@ class TaintTracker:
                 "DYNAMIC_CODE_EXECUTION")
 
     @staticmethod
-    def _c94_handle_opens(tree):
+    def _c94_handle_opens(tree, nodes=None):
         """`with open(path, mode) as handle:` bindings, mapping the handle name to the open()."""
         out = {}
-        for node in ast.walk(tree):
+        for node in (nodes if nodes is not None else ast.walk(tree)):
             for item in getattr(node, "items", []):
                 value = item.context_expr
                 if not (isinstance(value, ast.Call)
@@ -11043,7 +11052,10 @@ class TaintTracker:
         func_ranges = [(start, end) for start, end, _params in self._memo_function_ranges(tree)]
         endpoints = [
             (func.lineno, func.end_lineno or func.lineno, params)
-            for func, params in self._c117_endpoint_scopes(tree)
+            # Served from the module's cached walk: cwe78 already built this list for the same module
+            # in this loop iteration and it is released at the loop's `finally`, so this costs one
+            # dict lookup instead of a full traversal.
+            for func, params in self._c117_endpoint_scopes(tree, self._module_nodes(tree))
         ]
         crud = self._c117_crud_param_scopes(tree, filename)
         for node in self._module_calls(tree):
@@ -11097,7 +11109,7 @@ class TaintTracker:
         return scopes
 
     @staticmethod
-    def _c117_endpoint_scopes(tree):
+    def _c117_endpoint_scopes(tree, nodes=None):
         """(function, parameter names) for every def that is a client-facing endpoint.
 
         A parameter *named* `request` is not evidence on its own: google-api-python-client hands
@@ -11107,7 +11119,7 @@ class TaintTracker:
         object into another view-level call - the shape of an undecorated view helper.
         """
         scopes = []
-        for func in ast.walk(tree):
+        for func in (nodes if nodes is not None else ast.walk(tree)):
             if not isinstance(func, (ast.FunctionDef, ast.AsyncFunctionDef)):
                 continue
             if not TaintTracker._c209_route_decorated(func) \
@@ -11400,8 +11412,13 @@ class TaintTracker:
         silent.
         """
         table = self._memo_assignment_map(tree)
-        with_opens = self._c94_handle_opens(tree)
-        scopes = self._c312_stream_scopes(tree)
+        # Two module-wide structures, both read again at `for node in self._module_calls(tree)` below,
+        # so the node list this serves them from is the module's already-warm cached walk, released at
+        # the blindspot loop's `finally`. `_c94_handle_opens` is shared with the CWE-94 pass, which is
+        # not memoized and still builds its own copy - leaving that one untouched keeps this change to
+        # the CWE-312 pass.
+        with_opens = self._c94_handle_opens(tree, self._module_nodes(tree))
+        scopes = self._c312_stream_scopes(tree, self._module_nodes(tree))
         for node in self._module_calls(tree):
             if not isinstance(node, ast.Call) or not node.args:
                 continue
@@ -11423,10 +11440,10 @@ class TaintTracker:
                 "CLEARTEXT_SENSITIVE_STORAGE")
 
     @staticmethod
-    def _c312_stream_scopes(tree):
+    def _c312_stream_scopes(tree, nodes=None):
         """(start, end, stream-annotated parameter names) for every def that takes a stream."""
         scopes = []
-        for func in [node for node in ast.walk(tree)
+        for func in [node for node in (nodes if nodes is not None else ast.walk(tree))
                      if isinstance(node, (ast.FunctionDef, ast.AsyncFunctionDef))]:
             names = {argument.arg for argument in
                      list(func.args.posonlyargs) + list(func.args.args) + list(func.args.kwonlyargs)
