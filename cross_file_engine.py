@@ -169,6 +169,11 @@ class CrossFileTaintEngine:
         # bindings). The fixed point re-reads these every round and nothing in the loop can
         # change them, so they are built on round 1 and reused; cleared when it returns.
         self._lift_traversal: dict[tuple[str, str], tuple[ast.AST, list, Dict[str, tuple[str, str]]]] = {}
+        # Raw file path spelling -> owning module (None when the file is outside the indexed
+        # tree). `file_to_module` is filled by indexer.build() and never mutated again, so one
+        # path string always answers the same module; `Path.resolve()` is an OS call that would
+        # otherwise repeat per call site. Negative hits are cached for the same reason.
+        self._path_to_module_memo: dict[str, Optional[str]] = {}
 
     def run(self) -> list[CrossFileFinding]:
         # Phase-1 instrumentation: disjoint stage clocks over the existing sequence.
@@ -442,29 +447,36 @@ class CrossFileTaintEngine:
         """
         suppressed: Set[tuple[str, int]] = set()
         _t_s0 = time.perf_counter()
-        if not any(summary.is_sanitizer for summary in self.contracts.values()):
-            print(f"TimeCodeSecurity [PROFILE] CrossSanitizers: scan={time.perf_counter() - _t_s0:.2f}s "
-                  f"(no sanitizer contracts; 0 trees walked) sites=0", file=sys.stderr)
-            return suppressed
-        _modules_walked = 0
-        for mod_name, mod_idx in self.indexer.modules.items():
-            tree = self.indexer._ast_cache.get(mod_name)
-            if not tree:
-                continue
-            _modules_walked += 1
-            file_key = str(Path(mod_idx.file_path).resolve())
-            qualnames = {id(node): name for node, name in _contracted_functions(tree)}
-            for node in _function_defs(tree):
-                suppressed.update(
-                    self._sanitized_sites(
-                        mod_name, file_key, node, qualnames.get(id(node), node.name)
+        try:
+            if not any(summary.is_sanitizer for summary in self.contracts.values()):
+                print(f"TimeCodeSecurity [PROFILE] CrossSanitizers: scan={time.perf_counter() - _t_s0:.2f}s "
+                      f"(no sanitizer contracts; 0 trees walked) sites=0", file=sys.stderr)
+                return suppressed
+            _modules_walked = 0
+            for mod_name, mod_idx in self.indexer.modules.items():
+                tree = self.indexer._ast_cache.get(mod_name)
+                if not tree:
+                    continue
+                _modules_walked += 1
+                file_key = str(Path(mod_idx.file_path).resolve())
+                qualnames = {id(node): name for node, name in _contracted_functions(tree)}
+                for node in _function_defs(tree):
+                    suppressed.update(
+                        self._sanitized_sites(
+                            mod_name, file_key, node, qualnames.get(id(node), node.name)
+                        )
                     )
-                )
-        print(f"TimeCodeSecurity [PROFILE] CrossSanitizers: "
-              f"scan={time.perf_counter() - _t_s0:.2f}s "
-              f"(trees_walked={_modules_walked}/{len(self.indexer.modules)}) "
-              f"sites={len(suppressed)}", file=sys.stderr)
-        return suppressed
+            print(f"TimeCodeSecurity [PROFILE] CrossSanitizers: "
+                  f"scan={time.perf_counter() - _t_s0:.2f}s "
+                  f"(trees_walked={_modules_walked}/{len(self.indexer.modules)}) "
+                  f"sites={len(suppressed)}", file=sys.stderr)
+            return suppressed
+        finally:
+            # This pass is the last consumer of the path memo: run() returns before the caller
+            # (cli.py) asks for sanitizer sites, so the cache is released here instead of at the
+            # end of run() - releasing it earlier would make this phase re-issue every OS path
+            # lookup it has just been handed the answer to.
+            self._path_to_module_memo.clear()
 
     def _sanitized_sites(
         self,
@@ -650,6 +662,22 @@ class CrossFileTaintEngine:
         resolved = self._resolve_inherited_method(class_ref, call.func.attr)
         return 1 if resolved is not None and resolved[1] is summary else 0
 
+    def _resolve_file_module(self, file_path) -> Optional[str]:
+        """Owning module for a file path spelling, resolving the OS path at most once each.
+
+        `file_to_module` is keyed by Path objects and is written only by indexer.build(), so
+        the answer for a given spelling never changes during a run. The key is normalised with
+        str() because callers hold either a str or a Path for the same file; misses (None) are
+        cached too, since unindexed third-party paths are the common case.
+        """
+        key = str(file_path)
+        memo = self._path_to_module_memo
+        if key in memo:
+            return memo[key]
+        mod_name = self.indexer.file_to_module.get(Path(key).resolve())
+        memo[key] = mod_name
+        return mod_name
+
     def _resolve_call_contract(
         self,
         caller_mod: str,
@@ -677,7 +705,7 @@ class CrossFileTaintEngine:
         if not symbol_def:
             return None
 
-        callee_mod = self.indexer.file_to_module.get(Path(symbol_def.file_path).resolve())
+        callee_mod = self._resolve_file_module(symbol_def.file_path)
         if not callee_mod:
             return None
 
@@ -837,7 +865,7 @@ class CrossFileTaintEngine:
         symbol_def = self.indexer.resolve_symbol(caller_mod, name)
         if symbol_def is None or symbol_def.kind not in ("function", "async_function"):
             return None
-        decorator_mod = self.indexer.file_to_module.get(Path(symbol_def.file_path).resolve())
+        decorator_mod = self._resolve_file_module(symbol_def.file_path)
         if decorator_mod is None:
             return None
         return self._function_node(decorator_mod, symbol_def.name)
@@ -917,7 +945,7 @@ class CrossFileTaintEngine:
         symbol_def = self.indexer.resolve_symbol(caller_mod, name)
         if symbol_def is None or symbol_def.kind != "class":
             return None
-        class_mod = self.indexer.file_to_module.get(Path(symbol_def.file_path).resolve())
+        class_mod = self._resolve_file_module(symbol_def.file_path)
         if class_mod is None:
             return None
         return symbol_def.name, class_mod
@@ -1078,7 +1106,7 @@ class CrossFileTaintEngine:
 
     def _sink_descriptor(self, file_path: str, lineno: int, fallback: str) -> str:
         """Recover how the sink was written (e.g. 'cursor.execute') from its source line."""
-        mod_name = self.indexer.file_to_module.get(Path(file_path).resolve())
+        mod_name = self._resolve_file_module(file_path)
         tree = self.indexer._ast_cache.get(mod_name) if mod_name else None
         if tree is None or not hasattr(ast, "unparse"):
             return fallback
