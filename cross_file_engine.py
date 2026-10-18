@@ -63,6 +63,26 @@ def _contracted_functions(tree: ast.AST):
                     yield item, f"{stmt.name}.{item.name}"
 
 
+def _function_defs(tree: ast.AST):
+    """Yield every FunctionDef/AsyncFunctionDef in a module by visiting statements only.
+
+    A def can only ever sit in statement position, so skipping `ast.expr` and `ast.pattern`
+    subtrees returns the same node set an isinstance filter over `ast.walk(tree)` produces,
+    without paying for the expression nodes that make up most of a module's tree. Nested
+    `match`/`try`/`with`/`if` bodies are still descended, and defs nested inside a def body
+    are included, exactly as `ast.walk` would find them.
+    """
+    stack = [tree]
+    while stack:
+        node = stack.pop()
+        for child in ast.iter_child_nodes(node):
+            if isinstance(child, (ast.expr, ast.pattern)):
+                continue
+            if isinstance(child, (ast.FunctionDef, ast.AsyncFunctionDef)):
+                yield child
+            stack.append(child)
+
+
 def _dotted_prefix(expr: ast.expr) -> str:
     """Dotted spelling of a Name/Attribute expression chain, '' when it is anything else."""
     parts: List[str] = []
@@ -145,6 +165,10 @@ class CrossFileTaintEngine:
         # Observational only (Phase-1 instrumentation): rounds actually executed by the
         # fixed-point loop below; never read by a decision.
         self._propagation_rounds = 0
+        # (caller module, qualname) -> (func node, Call nodes in ast.walk order, receiver
+        # bindings). The fixed point re-reads these every round and nothing in the loop can
+        # change them, so they are built on round 1 and reused; cleared when it returns.
+        self._lift_traversal: dict[tuple[str, str], tuple[ast.AST, list, Dict[str, tuple[str, str]]]] = {}
 
     def run(self) -> list[CrossFileFinding]:
         # Phase-1 instrumentation: disjoint stage clocks over the existing sequence.
@@ -328,6 +352,7 @@ class CrossFileTaintEngine:
                     if self._lift_callee_sinks(mod_name, summary, func_node):
                         changed = True
             if not changed:
+                self._lift_traversal.clear()
                 return
 
     def _lift_callee_sinks(
@@ -342,9 +367,18 @@ class CrossFileTaintEngine:
             for edge in summary.param_sinks
         }
         added = False
-        receivers = self._instance_bindings(caller_mod, summary.qualname, func_node)
+        # The Call list and the receiver map depend only on the syntax of this function and
+        # on the (immutable) symbol index, so round 1 pays for them and later rounds reuse
+        # them. The identity check guards against a re-parsed node landing on a freed id.
+        cached = self._lift_traversal.get((caller_mod, summary.qualname))
+        if cached is not None and cached[0] is func_node:
+            calls, receivers = cached[1], cached[2]
+        else:
+            calls = [n for n in ast.walk(func_node) if isinstance(n, ast.Call)]
+            receivers = self._instance_bindings(caller_mod, summary.qualname, func_node)
+            self._lift_traversal[(caller_mod, summary.qualname)] = (func_node, calls, receivers)
 
-        for call in (n for n in ast.walk(func_node) if isinstance(n, ast.Call)):
+        for call in calls:
             resolved = self._resolve_call_contract(caller_mod, call, receivers)
             if resolved is None:
                 continue
@@ -420,13 +454,12 @@ class CrossFileTaintEngine:
             _modules_walked += 1
             file_key = str(Path(mod_idx.file_path).resolve())
             qualnames = {id(node): name for node, name in _contracted_functions(tree)}
-            for node in ast.walk(tree):
-                if isinstance(node, (ast.FunctionDef, ast.AsyncFunctionDef)):
-                    suppressed.update(
-                        self._sanitized_sites(
-                            mod_name, file_key, node, qualnames.get(id(node), node.name)
-                        )
+            for node in _function_defs(tree):
+                suppressed.update(
+                    self._sanitized_sites(
+                        mod_name, file_key, node, qualnames.get(id(node), node.name)
                     )
+                )
         print(f"TimeCodeSecurity [PROFILE] CrossSanitizers: "
               f"scan={time.perf_counter() - _t_s0:.2f}s "
               f"(trees_walked={_modules_walked}/{len(self.indexer.modules)}) "
