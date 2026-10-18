@@ -9218,16 +9218,21 @@ class TaintTracker:
 
     # ── shared helpers for the PyGoat blind-spot collectors ────────────────────────
     @staticmethod
-    def _blindspot_build_assignment_map(tree):
+    def _blindspot_build_assignment_map(tree, nodes=None):
         """name -> [(lineno, value_node)] for every plain `name = ...` binding in the module."""
         table: dict[str, list] = {}
-        for node in ast.walk(tree):
+        # `nodes` lets a caller hand over the module's already-cached walk (`_module_nodes`) instead of
+        # traversing the same tree a second time. BFS order and multiplicity are identical either way,
+        # so the table, the row order inside each bucket and every `_blindspot_latest_assignment`
+        # answer are unchanged. Default stays the standalone walk: callers outside the blindspot loop
+        # must not pin a node list on a module they are not serving.
+        for node in (nodes if nodes is not None else ast.walk(tree)):
             if isinstance(node, ast.Assign) and len(node.targets) == 1 \
                     and isinstance(node.targets[0], ast.Name):
                 table.setdefault(node.targets[0].id, []).append((node.lineno, node.value))
         return table
 
-    def _memo_assignment_map(self, tree):
+    def _memo_assignment_map(self, tree, nodes=None):
         """`_blindspot_build_assignment_map(tree)` cached per module tree.
 
         Nine CWE collectors ask for the same module's map during one run, and the builder is a
@@ -9238,12 +9243,15 @@ class TaintTracker:
         The cache is keyed on `id(tree)` and the stored value carries the tree, so a hit is only
         served when the cached object IS the requested tree. That makes id reuse after a
         garbage-collection impossible to mistake for a hit, at the cost of one identity check.
+
+        *nodes* is forwarded to the builder and is only ever supplied by a caller that already holds
+        this module's cached walk; it changes which list is iterated, never which nodes are in it.
         """
         cache = self.__dict__.setdefault("_assignment_map_cache", {})
         entry = cache.get(id(tree))
         if entry is not None and entry[0] is tree:
             return entry[1]
-        table = TaintTracker._blindspot_build_assignment_map(tree)
+        table = TaintTracker._blindspot_build_assignment_map(tree, nodes)
         cache[id(tree)] = (tree, table)
         return table
 
@@ -9839,7 +9847,10 @@ class TaintTracker:
 
     # ── 1. CWE-78: subprocess with shell=True on a command built at runtime ────────
     def _collect_cwe78_subprocess_calls(self, tree, filename, source_lines):
-        table = self._memo_assignment_map(tree)
+        # `_module_calls` on the next line needs this module's cached walk anyway, so handing the same
+        # list to the table builder costs no extra traversal and pins nothing new: the list is already
+        # the one released per module in the blindspot loop's `finally`.
+        table = self._memo_assignment_map(tree, self._module_nodes(tree))
         for node in self._module_calls(tree):
             if not isinstance(node, ast.Call) or not isinstance(node.func, ast.AST):
                 continue
