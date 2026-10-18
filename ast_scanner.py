@@ -10626,7 +10626,10 @@ class TaintTracker:
         file stay silent.
         """
         table = self._memo_assignment_map(tree)
-        with_opens = self._c94_handle_opens(tree)
+        # The CWE-312 pass already asks for this same structure from the module's cached walk, and the
+        # blindspot loop releases that list per module in its `finally`, so serving this pass from the
+        # same list costs a dict lookup instead of a full traversal.
+        with_opens = self._c94_handle_opens(tree, self._module_nodes(tree))
         for node in self._module_calls(tree):
             if not isinstance(node, ast.Call) or not node.args:
                 continue
@@ -10842,7 +10845,7 @@ class TaintTracker:
                 if self._c209_exposed_in_reply(ret.value, detail_names, table, ret.lineno):
                     _emit(ret)
 
-        dispatchers = self._c209_reply_dispatcher_scopes(tree)
+        dispatchers = self._c209_reply_dispatcher_scopes(tree, self._module_nodes(tree))
         if dispatchers:
             for handler in [node for node in self._module_nodes(tree) if isinstance(node, ast.ExceptHandler)]:
                 # Python unbinds the caught name when the handler ends, so a call that is not lexically
@@ -10866,7 +10869,7 @@ class TaintTracker:
             return True
         return bool(name) and name.rsplit(".", 1)[-1] in RESPONSE_CONSTRUCTOR_NAMES
 
-    def _c209_reply_dispatcher_scopes(self, tree):
+    def _c209_reply_dispatcher_scopes(self, tree, nodes=None):
         """helper name -> (positional params, all param names, params that become the reply body,
         the response node, is-a-method).
 
@@ -10879,12 +10882,15 @@ class TaintTracker:
         Most modules build no reply at all, so the walk stops there instead of descending into every
         function body: `airflow/www/views.py` has ~200 defs and one pass over its reply calls costs
         the same as one pass over the file.
+
+        *nodes* is the module's cached node list, supplied only by the blindspot pass that already
+        holds it; both loops below read the same nodes `ast.walk(tree)` would yield, in the same order.
         """
-        calls = [node for node in ast.walk(tree)
+        calls = [node for node in (nodes if nodes is not None else ast.walk(tree))
                  if isinstance(node, ast.Call) and self._c209_is_response_call(node)]
         if not calls:
             return {}
-        functions = [node for node in ast.walk(tree)
+        functions = [node for node in (nodes if nodes is not None else ast.walk(tree))
                      if isinstance(node, (ast.FunctionDef, ast.AsyncFunctionDef))]
         owned: dict[int, list] = {}
         for call in calls:
