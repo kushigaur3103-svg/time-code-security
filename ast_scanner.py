@@ -14195,8 +14195,11 @@ class TaintTracker:
             # *inner* node - the one whose test the branch actually ran - is what gets recorded.
             # Only bodies are mapped: a grant taken in an `else` is taken because the test failed,
             # which is the bypass this rule hunts, never a verification.
+            # Read from `_reachable_nodes`, the same cached list the pass below iterates: a node that
+            # is pruned there can never reach the one lookup (`assignment_guard.get(id(node))`), so
+            # the map keeps exactly the entries that are ever asked for, minus a second full walk.
             assignment_guard: dict[int, ast.If] = {}
-            for _if_node in (n for n in ast.walk(tree) if isinstance(n, ast.If)):
+            for _if_node in (n for n in self._reachable_nodes(tree) if isinstance(n, ast.If)):
                 for _stmt in _if_node.body:
                     if isinstance(_stmt, (ast.Assign, ast.AnnAssign)):
                         assignment_guard.setdefault(id(_stmt), _if_node)
