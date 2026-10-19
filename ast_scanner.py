@@ -11625,7 +11625,7 @@ class TaintTracker:
         if self._c319_test_scope(filename):
             return
         table = self._memo_assignment_map(tree)
-        bare_verbs = self._c319_imported_verbs(tree)
+        bare_verbs = self._c319_imported_verbs(tree, nodes=self._module_nodes(tree))
         for node in self._module_calls(tree):
             if not isinstance(node, ast.Call) or not self._c319_is_transport_sink(node, bare_verbs):
                 continue
@@ -11652,10 +11652,10 @@ class TaintTracker:
         return "/tests/" in path or "/test/" in path or path.rsplit("/", 1)[-1].startswith("test_")
 
     @staticmethod
-    def _c319_imported_verbs(tree):
+    def _c319_imported_verbs(tree, nodes=None):
         """Bare `get`/`post` count only when imported from `requests`/`urllib`, else `get` is a dict."""
         verbs = set()
-        for node in ast.walk(tree):
+        for node in (nodes if nodes is not None else ast.walk(tree)):
             if isinstance(node, ast.ImportFrom) \
                     and (node.module or "").split(".")[0] in HTTP_VERB_MODULES:
                 verbs.update(alias.name for alias in node.names)
@@ -11733,7 +11733,8 @@ class TaintTracker:
             return
         table = self._memo_assignment_map(tree)
         scopes = [(start, end) for start, end, _params in self._memo_function_ranges(tree)]
-        tls_scopes, secured_names = self._c319_raw_socket_tls_evidence(tree, scopes)
+        tls_scopes, secured_names = self._c319_raw_socket_tls_evidence(
+            tree, scopes, nodes=self._module_nodes(tree))
         for node in self._module_calls(tree):
             if not isinstance(node, ast.Call):
                 continue
@@ -11765,10 +11766,10 @@ class TaintTracker:
                 "INSECURE_TRANSPORT", reuse_existing=True)
 
     @staticmethod
-    def _c319_raw_socket_tls_evidence(tree, scopes):
+    def _c319_raw_socket_tls_evidence(tree, scopes, nodes=None):
         """Per-scope: which scopes do any TLS wrapping, and which socket handles the wrapping names."""
         tls_scopes, secured = set(), {}
-        for node in ast.walk(tree):
+        for node in (nodes if nodes is not None else ast.walk(tree)):
             if not isinstance(node, ast.Call):
                 continue
             segments = (dotted_name(node.func) or "").split(".")
@@ -15017,7 +15018,7 @@ class TaintTracker:
                             return "<ctor>", fn.attr
                 return None, None
 
-            for func in ast.walk(tree):
+            for func in self._module_nodes(tree):
                 if not isinstance(func, (ast.FunctionDef, ast.AsyncFunctionDef)):
                     continue
                 obj_vars = set()
