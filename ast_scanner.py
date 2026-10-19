@@ -12159,7 +12159,7 @@ class TaintTracker:
     def _c20_statement_index(self, tree):
         """id(statement) -> (owning statement list, position) for every block in the module."""
         index = {}
-        for node in ast.walk(tree):
+        for node in self._module_nodes(tree):
             for _field, value in ast.iter_fields(node):
                 if isinstance(value, list) and value and all(isinstance(item, ast.stmt) for item in value):
                     for position, item in enumerate(value):
@@ -12170,7 +12170,7 @@ class TaintTracker:
         """(guard, access) pairs for raw request data read inside a validated-form scope."""
         statement_index = self._c20_statement_index(tree)
         found = []
-        for node in ast.walk(tree):
+        for node in self._module_nodes(tree):
             if not isinstance(node, ast.If):
                 continue
             negated = self._c20_is_form_valid_test(node.test)
@@ -15152,7 +15152,7 @@ class TaintTracker:
 
             # Pre-scan module assignments
             assigns_in_module: dict[str, list[tuple[int, ast.AST]]] = {}
-            for n in ast.walk(tree):
+            for n in self._module_nodes(tree):
                 if isinstance(n, ast.Assign):
                     for t in n.targets:
                         if isinstance(t, ast.Name):
@@ -20486,7 +20486,7 @@ class TaintTracker:
             # lower-cased here because `_target_name()` lower-cases them.
             key_used: set = set()
             loaded: set = set()
-            for sub in ast.walk(tree):
+            for sub in self._module_nodes(tree):
                 if isinstance(sub, ast.Subscript) and isinstance(sub.slice, (ast.Name, ast.Attribute)):
                     key_used.add((sub.slice.id if isinstance(sub.slice, ast.Name)
                                   else sub.slice.attr).lower())
