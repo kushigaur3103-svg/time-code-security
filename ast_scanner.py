@@ -12581,6 +12581,13 @@ class TaintTracker:
         function_scopes = {id(function): scope for scope, function in self.functions.items()}
 
         _scope_memo: dict[int, str] = {}
+        # (id(call node), scope) -> the dotted forms that call can be written as. Passes 3 and 5
+        # ask for the same node several times, and the answer depends only on that pair: `bindings`
+        # is frozen when pass 1 ends, self.imports/assignments_by_scope are only read here, and
+        # resolve_canonical_name walks just those tables. Cleared with _scope_memo once per module,
+        # so it never holds an AST reference past the module that owns it. Declared here rather
+        # than inside the per-module try, so the finally cannot trip on a name that was never bound.
+        call_forms_memo: dict[tuple[int, str], set[str]] = {}
 
         def _scope_for(node: ast.AST, mod_name: str) -> str:
             """Enclosing function scope for `node`, memoised; cleared once per tree."""
@@ -12704,6 +12711,10 @@ class TaintTracker:
                     return chain
 
                 def _call_forms(call: ast.Call, scope: str) -> set[str]:
+                    memo_key = (id(call), scope)
+                    cached = call_forms_memo.get(memo_key)
+                    if cached is not None:
+                        return cached
                     raw = dotted_name(call.func) or ""
                     forms = {raw} if raw else set()
                     resolved = _resolve_chain(_segments(call.func), scope,
@@ -12715,7 +12726,9 @@ class TaintTracker:
                     canon = self.resolve_canonical_name(call.func, scope) or ""
                     if canon:
                         forms.add(canon)
-                    return {form for form in forms if form}
+                    result = {form for form in forms if form}
+                    call_forms_memo[memo_key] = result
+                    return result
 
                 # 2. Value evaluation for literals and one-level name chains (wildcard lists).
                 def _eval_value(expr, scope: str, lineno: int, depth: int = 0):
@@ -13263,6 +13276,7 @@ class TaintTracker:
                                  "CWE-942")
             finally:
                 _scope_memo.clear()
+                call_forms_memo.clear()
 
     def _module_is_json_api(self, mod_name: str) -> bool:
         """True when the module is built on a JSON-first router (FastAPI/Starlette/ninja)."""
