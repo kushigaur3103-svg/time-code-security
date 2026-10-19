@@ -126,19 +126,24 @@ def get_memory_stats() -> Dict[str, float]:
         return {"total_gb": 0, "available_gb": 0, "used_gb": 0, "percent_used": 0}
 
 
-def _is_zero_risk_file(filepath: str, source: str) -> bool:
+def _is_zero_risk_file(filepath: str, source: str) -> Tuple[bool, Optional[ast.Module]]:
     """Fast-path pre-filter: skip full AST analysis for inert files.
 
     Zero-risk files include:
     - Empty __init__.py files
     - Files containing only static docstrings/comments
     - Pure localization string files
+
+    Returns `(is_zero_risk, tree)`. The tree is the module the decision was taken on, handed back
+    so the caller never parses the same source a second time. It is `None` when there is no tree to
+    hand on: an inert file (the tree is released with the decision) and a source whose parse raised,
+    which the caller reports exactly as before.
     """
     stripped = source.strip()
     
     # Empty file
     if not stripped:
-        return True
+        return True, None
     
     # Check if it's an __init__.py
     basename = os.path.basename(filepath)
@@ -147,29 +152,29 @@ def _is_zero_risk_file(filepath: str, source: str) -> bool:
         lines = [l.strip() for l in stripped.splitlines() if l.strip()]
         non_empty = [l for l in lines if not l.startswith('#') and not l.startswith('"""') and not l.startswith("'''")]
         if not non_empty:
-            return True
+            return True, None
     
     # Only comments/docstrings?
     try:
         tree = ast.parse(source, filename=filepath)
-        # If body has only Expr(docstring) or Module-level constants, skip
-        if isinstance(tree, ast.Module):
-            body_items = []
-            for node in tree.body:
-                if isinstance(node, ast.Expr) and isinstance(node.value, (ast.Constant, ast.Str)):
-                    continue  # Docstring
-                elif isinstance(node, (ast.Import, ast.ImportFrom)):
-                    continue  # Pure imports
-                else:
-                    body_items.append(node)
-            
-            # If nothing substantive remains, it's low-risk
-            if not body_items:
-                return True
     except (SyntaxError, ValueError):
-        pass  # Parse errors handled elsewhere
+        # Parse errors handled elsewhere
+        return False, None
+    # If nothing substantive remains, it's low-risk
+    if isinstance(tree, ast.Module):
+        body_items = []
+        for node in tree.body:
+            if isinstance(node, ast.Expr) and isinstance(node.value, (ast.Constant, ast.Str)):
+                continue  # Docstring
+            elif isinstance(node, (ast.Import, ast.ImportFrom)):
+                continue  # Pure imports
+            else:
+                body_items.append(node)
+
+        if not body_items:
+            return True, None
     
-    return False
+    return False, tree
 
 
 def _parse_single_file(args: Tuple[str, Optional[str]]) -> Dict[str, Any]:
@@ -197,8 +202,10 @@ def _parse_single_file(args: Tuple[str, Optional[str]]) -> Dict[str, Any]:
                 "error": f"{type(exc).__name__}: {exc}"[:200],
             }
     
-    # Fast-path: skip zero-risk files early
-    if _is_zero_risk_file(filepath, source):
+    # Fast-path: skip zero-risk files early. The tree the pre-filter parsed to make that decision
+    # is carried through here, so a file costs one `ast.parse` instead of two.
+    zero_risk, tree = _is_zero_risk_file(filepath, source)
+    if zero_risk:
         return {
             "filepath": filepath,
             "mod_name": None,
@@ -214,7 +221,10 @@ def _parse_single_file(args: Tuple[str, Optional[str]]) -> Dict[str, Any]:
     
     # Parse AST
     try:
-        tree = ast.parse(source, filename=filepath)
+        # `tree` is None only when the pre-filter's own parse raised; re-parsing here re-raises the
+        # identical exception, so an unparseable file is reported exactly as it was before.
+        if tree is None:
+            tree = ast.parse(source, filename=filepath)
         
         # Link parent pointers (required for TaintTracker)
         for parent in ast.walk(tree):
@@ -504,7 +514,8 @@ def _parse_files_sequential(
     fast_path_skipped = 0
     
     for filepath, source in files.items():
-        if _is_zero_risk_file(filepath, source):
+        zero_risk, tree = _is_zero_risk_file(filepath, source)
+        if zero_risk:
             fast_path_skipped += 1
             continue
         
@@ -513,7 +524,10 @@ def _parse_files_sequential(
             mod_name = mod_name[:-9]
         
         try:
-            tree = ast.parse(source, filename=filepath)
+            # Same single-parse rule as the fan-out body: this path must hand back trees identical
+            # to it, and a second `ast.parse` would only differ in object identity.
+            if tree is None:
+                tree = ast.parse(source, filename=filepath)
             for parent in ast.walk(tree):
                 for child in ast.iter_child_nodes(parent):
                     child.parent = parent
