@@ -12667,8 +12667,8 @@ class TaintTracker:
                 # 1. Scope-aware import bindings (function-local imports shadow module imports).
                 bindings: dict[str, list[tuple[int, str, str]]] = {}
                 for node in reachable:
-                    scope = _scope_for(node, mod_name)
                     if isinstance(node, ast.Import):
+                        scope = _scope_for(node, mod_name)
                         for alias in node.names:
                             local = alias.asname or alias.name.split(".")[0]
                             bindings.setdefault(scope, []).append(
@@ -12677,6 +12677,7 @@ class TaintTracker:
                                 bindings.setdefault(scope, []).append(
                                     (getattr(node, "lineno", 0), alias.name, alias.name))
                     elif isinstance(node, ast.ImportFrom):
+                        scope = _scope_for(node, mod_name)
                         module = node.module or ""
                         for alias in node.names:
                             local = alias.asname or alias.name
@@ -12847,8 +12848,6 @@ class TaintTracker:
                 nan_guarded: dict[str, set[str]] = {}
 
                 for node in reachable:
-                    scope = _scope_for(node, mod_name)
-
                     if isinstance(node, ast.FunctionDef):
                         params = _route_param_names(node)
                         if params:
@@ -12857,6 +12856,7 @@ class TaintTracker:
                                 route_params.setdefault(fn_scope, set()).update(params)
 
                     elif isinstance(node, ast.Compare):
+                        scope = _scope_for(node, mod_name)
                         if any(isinstance(c, ast.Constant) and isinstance(c.value, str)
                                and c.value.lower() == CLUSTER2_NAN_GUARD_VALUE
                                for c in node.comparators):
@@ -12866,6 +12866,7 @@ class TaintTracker:
                             nan_guarded.setdefault(owner_scope or scope, set()).update(guarded)
 
                     elif isinstance(node, ast.With):
+                        scope = _scope_for(node, mod_name)
                         for item in node.items:
                             expr = item.context_expr
                             if isinstance(expr, ast.Call) and any(
@@ -12881,6 +12882,7 @@ class TaintTracker:
                         value = node.value
                         if value is None or not names:
                             continue
+                        scope = _scope_for(node, mod_name)
                         if isinstance(value, ast.Call) and any(
                                 form.split(".")[-1] in CLUSTER2_SESSION_CONSTRUCTORS
                                 for form in _call_forms(value, scope)):
@@ -12898,6 +12900,7 @@ class TaintTracker:
                                 taint_vars.pop((scope, name), None)
 
                     elif isinstance(node, ast.Call):
+                        scope = _scope_for(node, mod_name)
                         forms = _call_forms(node, scope)
                         segs = {form.split(".")[-1] for form in forms}
                         arg_nodes = list(node.args) + [kw.value for kw in
@@ -13021,14 +13024,11 @@ class TaintTracker:
 
                 # 5. Node-local predicates.
                 for node in reachable:
-                    scope = _scope_for(node, mod_name)
-                    fn_node = _enclosing_function(node)
-                    fn_scope = (function_scopes.get(id(fn_node)) if fn_node else mod_scope)
-
                     # CWE-918: Tainted URL host construction
                     # SUPPRESSION: Merely constructing a URL string or dictionary key does not constitute SSRF.
                     # Suppress unless the URL flows into an actual network transmission sink (requests.get/post, urllib.request, etc.).
                     if isinstance(node, (ast.Assign, ast.AnnAssign, ast.Return)):
+                        scope = _scope_for(node, mod_name)
                         val = node.value
                         if val is not None and _is_tainted_url_host_expr(val, scope, getattr(node, "lineno", 0)):
                             # Suppress if this is a Return statement returning JsonResponse/flask.jsonify (no outbound request)
@@ -13110,6 +13110,11 @@ class TaintTracker:
                     if not isinstance(node, ast.Call):
                         continue
 
+                    # Every remaining predicate in this pass is Call-only, so the two helper
+                    # results are computed here instead of once for every node in the module.
+                    scope = _scope_for(node, mod_name)
+                    fn_node = _enclosing_function(node)
+                    fn_scope = (function_scopes.get(id(fn_node)) if fn_node else mod_scope)
                     forms = _call_forms(node, scope)
                     segs = {form.split(".")[-1] for form in forms}
                     roots = {form.split(".")[0] for form in forms}
