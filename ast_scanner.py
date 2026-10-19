@@ -14327,8 +14327,15 @@ class TaintTracker:
                     # Walk ALL nodes in function body (not just direct children) to find auth guards
                     for node_in_func in ast.walk(func_node):
                         if isinstance(node_in_func, ast.If):
-                            names_if = {n.id for n in ast.walk(node_in_func.test) if isinstance(n, ast.Name)}
-                            attrs_if = {a.attr for a in ast.walk(node_in_func.test) if isinstance(a, ast.Attribute)}
+                            names_if = set()
+                            attrs_if = set()
+                            # ast.walk is a fixed BFS, so one descent of node_in_func.test yields the
+                            # same Name ids and the same Attribute names as the two comprehensions did.
+                            for nd in ast.walk(node_in_func.test):
+                                if isinstance(nd, ast.Name):
+                                    names_if.add(nd.id)
+                                elif isinstance(nd, ast.Attribute):
+                                    attrs_if.add(nd.attr)
                             if "is_authenticated" in attrs_if or "is_active" in attrs_if or "is_staff" in attrs_if:
                                 has_guard_in_func = True
                             if "request" in names_if and any("user" in a.lower() for a in attrs_if):
@@ -14343,8 +14350,15 @@ class TaintTracker:
 
             for node in self._reachable_nodes(tree):
                 if isinstance(node, ast.Compare):
-                    names_comp = {n.id for n in ast.walk(node) if isinstance(n, ast.Name)}
-                    attrs_comp = {n.attr for n in ast.walk(node) if isinstance(n, ast.Attribute)}
+                    names_comp = set()
+                    attrs_comp = set()
+                    # Same root, same fixed BFS order: one descent fills both projections exactly as
+                    # the two comprehensions did, and both are only read for membership below.
+                    for nd in ast.walk(node):
+                        if isinstance(nd, ast.Name):
+                            names_comp.add(nd.id)
+                        elif isinstance(nd, ast.Attribute):
+                            attrs_comp.add(nd.attr)
                     if "ALLOWED_EXTENSIONS" in names_comp or "splitext" in attrs_comp:
                         has_extension_whitelist = True
                     if "owner_id" in attrs_comp or "owner" in attrs_comp:
@@ -14408,12 +14422,20 @@ class TaintTracker:
                             cwe_meta = None
                         elif node.args:
                             arg0 = node.args[0]
-                            names_in_arg = {n.id for n in ast.walk(arg0) if isinstance(n, ast.Name)}
+                            names_in_arg = set()
+                            consts_in_arg = []
+                            # One descent of arg0 builds the Name ids plus the string-constant list that
+                            # were previously projected by three separate walks of this same root.
+                            for nd in ast.walk(arg0):
+                                if isinstance(nd, ast.Name):
+                                    names_in_arg.add(nd.id)
+                                elif isinstance(nd, ast.Constant) and isinstance(nd.value, str):
+                                    consts_in_arg.append(nd.value)
                             is_pw_hash = any(CWE3A_PASSWORD_NAME_RE.match(n) for n in names_in_arg)
                             for scope_cand in (scope_id, name):
                                 if CWE3A_PASSWORD_NAME_RE.search(scope_cand):
                                     is_pw_hash = True
-                            for s_const in [n.value for n in ast.walk(arg0) if isinstance(n, ast.Constant) and isinstance(n.value, str)]:
+                            for s_const in consts_in_arg:
                                 if CWE3A_PASSWORD_NAME_RE.search(s_const):
                                     is_pw_hash = True
 
@@ -14422,7 +14444,7 @@ class TaintTracker:
                                 for n in names_in_arg:
                                     if CWE3A_SALT_NAME_RE.match(n) or "salt" in n.lower():
                                         has_salt = True
-                                for s_const in [n.value for n in ast.walk(arg0) if isinstance(n, ast.Constant) and isinstance(n.value, str)]:
+                                for s_const in consts_in_arg:
                                     if "salt" in s_const.lower():
                                         has_salt = True
 
@@ -14578,14 +14600,18 @@ class TaintTracker:
                         if not name.startswith("vault"):
                             if node.args:
                                 arg0 = node.args[0]
-                                arg_names = {n.id for n in ast.walk(arg0) if isinstance(n, ast.Name)}
-                                is_sensitive = any(CWE3A_SENSITIVE_VALUE_RE.match(n) for n in arg_names)
+                                arg_names = set()
                                 is_sanitized = False
-                                for tc in ast.walk(arg0):
-                                    if isinstance(tc, ast.Call):
-                                        tcn = dotted_name(tc.func) or ""
+                                # One descent of arg0 replaces two walks of the same root: the Name ids
+                                # and the Call-sanitizer test are two projections of one fixed BFS.
+                                for nd in ast.walk(arg0):
+                                    if isinstance(nd, ast.Name):
+                                        arg_names.add(nd.id)
+                                    elif isinstance(nd, ast.Call):
+                                        tcn = dotted_name(nd.func) or ""
                                         if tcn in CWE3A_STORAGE_SANITIZERS or any(tcn.endswith(s) for s in ("encrypt", "hashpw", "mask_secret", "sha256", "redact")):
                                             is_sanitized = True
+                                is_sensitive = any(CWE3A_SENSITIVE_VALUE_RE.match(n) for n in arg_names)
                                 if is_sensitive and not is_sanitized:
                                     for aname in arg_names:
                                         recs = self.assignments_by_scope.get((scope_id, aname), [])
