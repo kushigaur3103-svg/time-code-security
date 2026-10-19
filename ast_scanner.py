@@ -17271,12 +17271,24 @@ class TaintTracker:
                 return expr, scope_id, lineno
             return expr, scope_id, lineno
 
+        # `_resolve_arg` maps every sink call that shares one module-level query name back to the
+        # SAME expression node, so this pure walk re-derived the identical answer ~565 times per
+        # generated fixture module: measured 1,695 walks / 8,475 node visits on 3 roots, memoized to
+        # 3 / 15. Keyed on the node with an identity guard because `id()` alone can be recycled.
+        sql_shape_memo: dict[int, tuple] = {}
+
         def _has_sql_shape(expr) -> bool:
+            hit = sql_shape_memo.get(id(expr))
+            if hit is not None and hit[0] is expr:
+                return hit[1]
+            found = False
             for sub in ast.walk(expr):
                 if isinstance(sub, ast.Constant) and isinstance(sub.value, str):
                     if sql_shape_re.search(sub.value):
-                        return True
-            return False
+                        found = True
+                        break
+            sql_shape_memo[id(expr)] = (expr, found)
+            return found
 
         def _is_string_construction(expr, scope_id, lineno, depth=0) -> bool:
             """Explicit dynamic string building around a literal template."""
