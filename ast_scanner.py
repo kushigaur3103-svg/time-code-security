@@ -13371,8 +13371,8 @@ class TaintTracker:
 
                 bindings: dict[str, list[tuple[int, str, str]]] = {}
                 for node in reachable:
-                    scope = _scope_for(node, mod_name)
                     if isinstance(node, ast.Import):
+                        scope = _scope_for(node, mod_name)
                         for alias in node.names:
                             local = alias.asname or alias.name.split(".")[0]
                             bindings.setdefault(scope, []).append(
@@ -13381,6 +13381,7 @@ class TaintTracker:
                                 bindings.setdefault(scope, []).append(
                                     (getattr(node, "lineno", 0), alias.name, alias.name))
                     elif isinstance(node, ast.ImportFrom):
+                        scope = _scope_for(node, mod_name)
                         module = node.module or ""
                         for alias in node.names:
                             local = alias.asname or alias.name
@@ -13566,12 +13567,12 @@ class TaintTracker:
                     return any(seg in CLUSTER3_URLLIB_MODULE_SEGS for seg in chain[:3])
 
                 for node in reachable:
-                    scope = _scope_for(node, mod_name)
                     lineno = getattr(node, "lineno", 1)
 
                     # ---- pre-pass: opener objects (opener = urllib.URLopener()/build_opener()) ----
                     if isinstance(node, ast.Assign) and isinstance(node.value, ast.Call) and \
                             len(node.targets) == 1 and isinstance(node.targets[0], ast.Name):
+                        scope = _scope_for(node, mod_name)
                         value_chain = _resolve_chain(_segments(node.value.func), scope, lineno)
                         if value_chain and value_chain[-1] in CLUSTER3_OPENER_CTOR_SEGS:
                             opener_vars.setdefault(scope, set()).add(node.targets[0].id)
@@ -13606,6 +13607,7 @@ class TaintTracker:
 
                     # ---- CWE-352: WTF_CSRF_ENABLED = False (attribute/subscript/bare) ----
                     if isinstance(node, ast.Assign):
+                        scope = _scope_for(node, mod_name)
                         for target in node.targets:
                             key_name = None
                             if isinstance(target, ast.Name):
@@ -13635,6 +13637,9 @@ class TaintTracker:
 
                     # ---- CWE-326: weak ssl.PROTOCOL_* constant (args, kwargs, defaults) ----
                     if isinstance(node, (ast.Attribute, ast.Name)):
+                        # The two blocks below share this exact gate, so one binding here covers
+                        # all three; a node that reaches them has already passed through here.
+                        scope = _scope_for(node, mod_name)
                         ssl_segs = _segments(node)
                         if ssl_segs and ssl_segs[-1] in CLUSTER3_WEAK_SSL_PROTOCOL_SEGS and \
                                 _resolve_chain(ssl_segs, scope, lineno)[:1] == \
@@ -13676,6 +13681,7 @@ class TaintTracker:
                     if not isinstance(node, ast.Call):
                         continue
 
+                    scope = _scope_for(node, mod_name)
                     raw_chain = _segments(node.func)
                     chain = _resolve_chain(raw_chain, scope, lineno)
                     forms = {".".join(chain)} if chain else set()
