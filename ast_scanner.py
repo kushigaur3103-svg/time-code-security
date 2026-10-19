@@ -14303,7 +14303,7 @@ class TaintTracker:
                 if auth_guards_built:
                     return
                 auth_guards_built = True
-                for def_node in ast.walk(tree):
+                for def_node in self._module_nodes(tree):
                     if not isinstance(def_node, (ast.FunctionDef, ast.AsyncFunctionDef)):
                         continue
                     body_is_guard = False
