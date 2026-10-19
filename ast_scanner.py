@@ -12016,7 +12016,7 @@ class TaintTracker:
         """
         if not any(token in "\n".join(source_lines) for token in SOCKET_DESERIALIZATION_TOKENS):
             return
-        aliases = self._c502_import_aliases(tree)
+        aliases = self._c502_import_aliases(tree, nodes=self._module_nodes(tree))
         if not any(isinstance(node, ast.Call) and node.args
                    and self._c502_qualified_name(node, aliases) in SOCKET_DESERIALIZATION_SINKS
                    for node in self._module_nodes(tree)):
@@ -12057,10 +12057,10 @@ class TaintTracker:
                     "SOCKET_DESERIALIZATION", reuse_existing=True)
 
     @staticmethod
-    def _c502_import_aliases(tree):
+    def _c502_import_aliases(tree, nodes=None):
         """local name -> dotted path, so `import msgpack as mp` still reads as `msgpack.unpackb`."""
         aliases: dict[str, str] = {}
-        for node in ast.walk(tree):
+        for node in (nodes if nodes is not None else ast.walk(tree)):
             if isinstance(node, ast.Import):
                 for item in node.names:
                     aliases[item.asname or item.name.split(".")[0]] = item.name
@@ -15460,7 +15460,7 @@ class TaintTracker:
                                 recv = dotted_name(target.value) or (target.value.id if isinstance(target.value, ast.Name) else "")
                                 if recv in ("session", "request.session", "req.session", "self.session", "sess"):
                                     is_cycled = False
-                                    for fn_node in ast.walk(tree):
+                                    for fn_node in self._module_nodes(tree):
                                         if isinstance(fn_node, ast.Call) and isinstance(fn_node.func, ast.Attribute):
                                             if fn_node.func.attr in ("cycle_key", "regenerate", "regenerate_id", "clear", "flush"):
                                                 call_recv = dotted_name(fn_node.func.value) or (fn_node.func.value.id if isinstance(fn_node.func.value, ast.Name) else "")
