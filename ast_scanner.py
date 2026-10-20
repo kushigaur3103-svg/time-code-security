@@ -1734,6 +1734,28 @@ CLUSTER3_SENSITIVE_PAYLOAD_KEYS = frozenset({
     "password", "passwd", "user_password", "secret",
 })
 
+# Concrete node types each cluster's sweeps can ever look at, collected once per module so the
+# loops never re-test a type they cannot use. Every entry is traceable to a predicate that reads
+# the loop variable itself:
+#   cluster2: 12685/12694 Import+ImportFrom, 12872 FunctionDef, 12879 Compare, 12889 With,
+#             12900/13051/13063/13067 Assign+AnnAssign+Return, 12901/13097/13112 Assign/AugAssign,
+#             12923/13075/13131 Call.
+#   cluster3: 13382/13391 Import+ImportFrom, 13581/13617/14128 Assign, 13589 FunctionDef +
+#             AsyncFunctionDef, 13637/14132 Dict, 13647/13658/13668 Attribute+Name, and
+#             Call-only from 13679/13689/14116 onwards (the 20-rule finale sits behind that).
+# AsyncFunctionDef and AsyncWith are listed even where only FunctionDef/With is tested: the two
+# are siblings on some Python versions and subclasses on others, and a node kept by mistake can
+# never lose a finding, while a node dropped by mistake can. AnnAssign/AugAssign are carried in
+# the cluster 3 set for the same reason.
+_GATE_CLUSTER2 = frozenset({
+    ast.Import, ast.ImportFrom, ast.FunctionDef, ast.AsyncFunctionDef, ast.Compare,
+    ast.With, ast.AsyncWith, ast.Assign, ast.AnnAssign, ast.AugAssign, ast.Return, ast.Call,
+})
+_GATE_CLUSTER3 = frozenset({
+    ast.Import, ast.ImportFrom, ast.Assign, ast.AnnAssign, ast.AugAssign,
+    ast.FunctionDef, ast.AsyncFunctionDef, ast.Dict, ast.Attribute, ast.Name, ast.Call,
+})
+
 CLUSTER3_STRUCTURAL_SOURCE_IDS = {
     "WEAK_HASH_NEW": "WEAK_HASH_NEW",
     "WEAK_HASH_CONSTRUCTOR": "WEAK_HASH_CONSTRUCTOR",
@@ -12676,7 +12698,12 @@ class TaintTracker:
             try:
                 file_path = self.file_paths.get(mod_name, "unknown.py")
                 mod_scope = f"{mod_name}:global"
-                reachable = list(self._reachable_nodes(tree))
+                # Every sweep below reads the loop node itself, and none of them can use a type
+                # outside _GATE_CLUSTER2, so the module's node list is filtered once here instead
+                # of being re-tested on each pass. The full tree stays reachable for every other
+                # collector: the engine's cached list is read, never rewritten.
+                reachable = [node for node in self._reachable_nodes(tree)
+                             if type(node) in _GATE_CLUSTER2]
                 seen: set[tuple[str, int, int]] = set()
 
                 # 1. Scope-aware import bindings (function-local imports shadow module imports).
@@ -13374,7 +13401,11 @@ class TaintTracker:
             try:
                 file_path = self.file_paths.get(mod_name, "unknown.py")
                 mod_scope = f"{mod_name}:global"
-                reachable = list(self._reachable_nodes(tree))
+                # Same as cluster 2: the main sweep, the rule A function list and the rule B
+                # token sweeps all read the loop node directly, and every type they test is in
+                # _GATE_CLUSTER3, so one filter replaces seven full passes over the raw list.
+                reachable = [node for node in self._reachable_nodes(tree)
+                             if type(node) in _GATE_CLUSTER3]
                 seen: set[tuple[str, int, int]] = set()
 
                 bindings: dict[str, list[tuple[int, str, str]]] = {}
