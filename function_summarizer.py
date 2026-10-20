@@ -147,11 +147,31 @@ class FunctionSummarizer:
         # Intra-function variable flow tracking
         # Maps local_var -> set of param indices it was derived from
         alias_map: dict[str, set[int]] = {p: {i} for i, p in enumerate(params)}
+        # Collecting the sanitized locals and the Return nodes inside the sweep below replaces
+        # two extra full traversals of the same body. The walk order is identical to the
+        # dedicated passes it replaces (same `for stmt in node.body` / `ast.walk(stmt)` nesting),
+        # so the add/discard sequence for `sanitized` is unchanged and every Return is still
+        # evaluated against the finished alias_map by the post-loop check.
+        returns: list[ast.Return] = []
+        sanitized: Set[str] = set()
 
         for stmt in node.body:
             for sub in ast.walk(stmt):
                 # 1. Track assignments: local_var = param
                 if isinstance(sub, ast.Assign):
+                    callee = (
+                        self._callee_name(sub.value.func)
+                        if isinstance(sub.value, ast.Call)
+                        else None
+                    )
+                    produced_by_sanitizer = callee in KNOWN_SANITIZERS
+                    for target in sub.targets:
+                        if isinstance(target, ast.Name):
+                            if produced_by_sanitizer:
+                                sanitized.add(target.id)
+                            else:
+                                sanitized.discard(target.id)
+
                     val_params = self._resolve_referenced_params(sub.value, alias_map, kw_containers)
                     if val_params:
                         for target in sub.targets:
@@ -160,6 +180,7 @@ class FunctionSummarizer:
 
                 # 2. Track Returns: return param / return expr(param)
                 elif isinstance(sub, ast.Return) and sub.value is not None:
+                    returns.append(sub)
                     ret_params = self._resolve_referenced_params(sub.value, alias_map, kw_containers)
                     summary.tainted_returns.update(ret_params)
 
@@ -193,16 +214,13 @@ class FunctionSummarizer:
         # Body-level sanitizer evidence: the name heuristic above misses helpers such as
         # `format_command` that sanitize through a call rather than through their own name.
         if not summary.is_sanitizer and params and not summary.param_sinks:
-            sanitized_locals = self._sanitized_locals(node)
             propagating = [
                 ret.value
-                for ret in ast.walk(node)
-                if isinstance(ret, ast.Return)
-                and ret.value is not None
-                and self._resolve_referenced_params(ret.value, alias_map, kw_containers)
+                for ret in returns
+                if self._resolve_referenced_params(ret.value, alias_map, kw_containers)
             ]
             if propagating and all(
-                self._is_sanitized_expr(expr, sanitized_locals) for expr in propagating
+                self._is_sanitized_expr(expr, sanitized) for expr in propagating
             ):
                 summary.is_sanitizer = True
 
@@ -215,23 +233,6 @@ class FunctionSummarizer:
         if isinstance(node, ast.Attribute):
             return node.attr
         return None
-
-    def _sanitized_locals(self, node: ast.AST) -> Set[str]:
-        """Local names bound to a value produced by a known sanitizer call."""
-        sanitized: Set[str] = set()
-        for stmt in node.body:
-            for sub in ast.walk(stmt):
-                if not isinstance(sub, ast.Assign):
-                    continue
-                callee = self._callee_name(sub.value.func) if isinstance(sub.value, ast.Call) else None
-                produced_by_sanitizer = callee in KNOWN_SANITIZERS
-                for target in sub.targets:
-                    if isinstance(target, ast.Name):
-                        if produced_by_sanitizer:
-                            sanitized.add(target.id)
-                        else:
-                            sanitized.discard(target.id)
-        return sanitized
 
     def _is_sanitized_expr(self, expr: ast.AST, sanitized_locals: Set[str]) -> bool:
         if isinstance(expr, ast.Call):

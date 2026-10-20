@@ -167,7 +167,10 @@ class CrossFileTaintEngine:
         self._propagation_rounds = 0
         # (caller module, qualname) -> (func node, Call nodes in ast.walk order, receiver
         # bindings). The fixed point re-reads these every round and nothing in the loop can
-        # change them, so they are built on round 1 and reused; cleared when it returns.
+        # change them, so they are built on round 1 and reused. The caller stage below walks the
+        # same nodes with the same qualname keys, so it reads the receiver map from here instead
+        # of recomputing it; the cache is dropped at the end of run() and is only ever read,
+        # never mutated.
         self._lift_traversal: dict[tuple[str, str], tuple[ast.AST, list, Dict[str, tuple[str, str]]]] = {}
         # Raw file path spelling -> owning module (None when the file is outside the indexed
         # tree). `file_to_module` is filled by indexer.build() and never mutated again, so one
@@ -197,6 +200,10 @@ class CrossFileTaintEngine:
                 continue
             self._analyze_module_calls(mod_name, mod_idx.file_path, tree)
         _t5 = time.perf_counter()
+        # The lift traversal is retained through the caller stage above, so it has to be
+        # released here: after run() the cache is empty, exactly as it always was, and
+        # sanitized_sink_locations() (called by runners after this) recomputes its own bindings.
+        self._lift_traversal.clear()
 
         from symbol_indexer import resolver_stats_line
         print(f"TimeCodeSecurity [PROFILE] CrossEngine: IndexBuild={_t1 - _t0:.2f}s "
@@ -357,7 +364,6 @@ class CrossFileTaintEngine:
                     if self._lift_callee_sinks(mod_name, summary, func_node):
                         changed = True
             if not changed:
-                self._lift_traversal.clear()
                 return
 
     def _lift_callee_sinks(
@@ -537,8 +543,16 @@ class CrossFileTaintEngine:
             if arg.arg in ("request", "req"):
                 tainted_vars.add(arg.arg)
 
-        # Track local assignments from sources
-        receivers = self._instance_bindings(caller_mod, caller_func_name, func_node)
+        # Track local assignments from sources. The propagation fixed point already computed
+        # the receiver bindings for this exact node under the same (module, qualname) key, so
+        # reuse that read-only mapping instead of re-walking the body. A function that never
+        # reached the lift stage (no contract, or no params) simply misses here and is computed
+        # on demand, exactly as before.
+        cached = self._lift_traversal.get((caller_mod, caller_func_name))
+        if cached is not None and cached[0] is func_node:
+            receivers = cached[2]
+        else:
+            receivers = self._instance_bindings(caller_mod, caller_func_name, func_node)
         for stmt in func_node.body:
             if isinstance(stmt, ast.Assign):
                 rhs_repr = ast.unparse(stmt.value) if hasattr(ast, "unparse") else ""
