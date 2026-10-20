@@ -1787,6 +1787,13 @@ CWE3A_NETWORK_SINKS = {
 }
 CWE3A_UPLOAD_SANITIZERS = {"secure_filename", "sanitize_filename", "werkzeug.utils.secure_filename"}
 CWE3A_UPLOAD_RANDOMIZERS = {"uuid4", "uuid.uuid4", "uuid4_rename"}
+# Entry gates for the two full-tree walks in _collect_batch3a_structural_findings. Each set is the
+# union of every `isinstance(node, ast.X)` test that tops a branch of the matching loop; everything
+# else can only reach `cwe_meta = None`, so it emits nothing. If a loop gains or loses a top-level
+# type test, these sets must change with it - a type missing here is a node the loop never sees.
+_GATE_BATCH3A_PRESCAN = frozenset({ast.AnnAssign, ast.Assign, ast.Call, ast.Compare})
+_GATE_BATCH3A_LADDER = frozenset({ast.AnnAssign, ast.Assign, ast.BinOp, ast.Call, ast.Compare,
+                                  ast.FunctionDef, ast.If})
 CWE3A_STORAGE_SANITIZERS = {
     "Fernet.encrypt", "encrypt", "hash_pw", "bcrypt", "bcrypt.hashpw",
     "argon2", "argon2.PasswordHasher.hash", "mask_secret", "redact",
@@ -14350,6 +14357,8 @@ class TaintTracker:
 
 
             for node in self._reachable_nodes(tree):
+                if type(node) not in _GATE_BATCH3A_PRESCAN:
+                    continue
                 if isinstance(node, ast.Compare):
                     names_comp = set()
                     attrs_comp = set()
@@ -14396,6 +14405,8 @@ class TaintTracker:
                             module_csrf_enabled = True
 
             for node in self._reachable_nodes(tree):
+                if type(node) not in _GATE_BATCH3A_LADDER:
+                    continue
                 cwe_meta = None
                 lineno = getattr(node, "lineno", 0)
 
