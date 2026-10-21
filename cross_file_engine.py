@@ -35,6 +35,13 @@ TASK_DISPATCH_METHODS = {"delay", "apply_async"}
 
 
 _SCOPES = (ast.FunctionDef, ast.AsyncFunctionDef, ast.Lambda, ast.ClassDef)
+# Concrete node types the sanitizer scan's two loops can ever read: _sanitized_sites tests
+# ast.Assign / ast.Call on the loop node, and _instance_bindings tests ast.Assign on it. AnnAssign
+# and AugAssign are carried as well so a node can only ever be kept by mistake - the loops below
+# keep their isinstance guards, so a kept-by-mistake node is re-tested and ignored. Dropping a
+# node the other way would cost a suppression, which is how a false negative is born.
+_GATE_SITE_NODES = frozenset({ast.Assign, ast.AnnAssign, ast.AugAssign, ast.Call})
+_GATE_RECEIVER_NODES = frozenset({ast.Assign, ast.AnnAssign, ast.AugAssign})
 
 
 def _ordered_nodes(root: ast.AST, skip_scopes: bool = False):
@@ -81,6 +88,57 @@ def _function_defs(tree: ast.AST):
             if isinstance(child, (ast.FunctionDef, ast.AsyncFunctionDef)):
                 yield child
             stack.append(child)
+
+
+def _has_assign_statement(root: ast.AST) -> bool:
+    """Is there any assignment-shaped statement anywhere below `root`?
+
+    `ast.Assign` only ever sits in statement position - a statement cannot hide inside an
+    `ast.expr` / `ast.pattern` subtree (a lambda body is an expression) - so pruning those, exactly
+    as _function_defs does, still answers yes for every body the full walk would have found an
+    Assign in. A body answering no therefore cannot fill `assigned`, so it cannot yield a site.
+    The test is deliberately assignment-shaped rather than Assign-only: an AnnAssign body costs
+    one extra full walk that then finds nothing, which is cheap, whereas a false "no" would delete
+    a suppression.
+    """
+    stack = [root]
+    while stack:
+        node = stack.pop()
+        for child in ast.iter_child_nodes(node):
+            if isinstance(child, (ast.expr, ast.pattern)):
+                continue
+            if type(child) in _GATE_RECEIVER_NODES:
+                return True
+            stack.append(child)
+    return False
+
+
+def _record_productive(root: ast.AST):
+    """One pre-order walk of a body that records only the nodes the site loops can use.
+
+    Returns (own_scope_assigns, productive):
+      * `productive` is the same sequence _ordered_nodes(root) restricted to _GATE_SITE_NODES
+        would have yielded, so replaying over it keeps the two walks' node order untouched.
+      * `own_scope_assigns` carries the `depth == 0` entries, which is exactly what
+        _ordered_nodes(root, skip_scopes=True) yields for assignments: a nested scope node is
+        itself still own-scope, its children are not. `_sanitized_sites` needs the two separate
+        because the engine builds the receiver map for the WHOLE body first and hands that finished
+        map to every assignment it resolves; folding both loops into one chronological pass would
+        show an earlier line a smaller map, which is a behaviour change, not a speed-up.
+    """
+    own_scope_assigns: List[ast.AST] = []
+    productive: List[ast.AST] = []
+    stack: List[tuple[ast.AST, int]] = [(root, 0)]
+    while stack:
+        node, depth = stack.pop()
+        if depth == 0 and type(node) in _GATE_RECEIVER_NODES:
+            own_scope_assigns.append(node)
+        if type(node) in _GATE_SITE_NODES:
+            productive.append(node)
+        child_depth = depth + 1 if (node is not root and isinstance(node, _SCOPES)) else depth
+        stack.extend((child, child_depth)
+                     for child in reversed(list(ast.iter_child_nodes(node))))
+    return own_scope_assigns, productive
 
 
 def _dotted_prefix(expr: ast.expr) -> str:
@@ -492,11 +550,18 @@ class CrossFileTaintEngine:
         caller_func: str,
     ) -> Set[tuple[str, int]]:
         sites: Set[tuple[str, int]] = set()
+        if not _has_assign_statement(func_node):
+            # `assigned` is only ever filled by an ast.Assign below, and a site needs a non-empty
+            # `relevant` drawn from it, so a body without one has nothing to contribute. The
+            # receiver map is skipped with it: the Assign branch is its only reader here.
+            return sites
         assigned: Set[str] = set()
         sanitized: Set[str] = set()
-        receivers = self._instance_bindings(mod_name, caller_func, func_node)
+        # One walk of the body for both loops instead of the two the same nodes used to pay.
+        own_assigns, productive = _record_productive(func_node)
+        receivers = self._instance_bindings(mod_name, caller_func, func_node, own_assigns=own_assigns)
 
-        for node in _ordered_nodes(func_node):
+        for node in productive:
             if isinstance(node, ast.Assign):
                 summary = self._resolve_call_summary(mod_name, node.value, receivers)
                 neutralized = bool(summary and summary.is_sanitizer)
@@ -980,11 +1045,16 @@ class CrossFileTaintEngine:
         caller_mod: str,
         caller_func: str,
         func_node: ast.AST,
+        own_assigns: Optional[list] = None,
     ) -> Dict[str, tuple[str, str]]:
         """Map receiver identifiers to (class name, defining module) inside one function.
 
         Collects `var = ClassName(...)` bindings in source order (a later rebinding wins) and,
         for methods, the implicit `self`/`cls` receiver derived from the qualified caller name.
+        `own_assigns` is the already-recorded own-scope assignment list from _record_productive,
+        which is the same sequence in the same order the walk below would have produced; passing
+        it saves that walk. The map is still completed before the caller uses it, which is the
+        whole reason the sanitizer scan records first and replays second.
         """
         bindings: Dict[str, tuple[str, str]] = {}
         if "." in caller_func:
@@ -992,7 +1062,9 @@ class CrossFileTaintEngine:
             bindings["self"] = owning_class
             bindings["cls"] = owning_class
 
-        for node in _ordered_nodes(func_node, skip_scopes=True):
+        nodes = own_assigns if own_assigns is not None else _ordered_nodes(
+            func_node, skip_scopes=True)
+        for node in nodes:
             if not isinstance(node, ast.Assign) or not isinstance(node.value, ast.Call):
                 continue
             ctor = node.value.func
