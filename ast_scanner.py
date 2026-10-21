@@ -18902,7 +18902,15 @@ class TaintTracker:
         for mod_name, tree in self.modules.items():
             seen.clear()
             archive_vars: dict[tuple[str, str], str] = {}
-            scoped_nodes = [(node, _scope_for(node, mod_name)) for node in self._reachable_nodes(tree)]
+            # Both loops below re-test the node type at their head (Assign/AnnAssign with a Call
+            # value, plus `elif isinstance(node, ast.With)`; then Call), so any other type was
+            # bound, unpacked twice and skipped twice. `ast.With` is load-bearing, not padding: the
+            # prepass fills archive_vars from `with tarfile.open(p) as tar:` and the ZIP_SLIP
+            # emitter resolves the bare `tar` Name through it. AnnAssign and With are named
+            # explicitly because neither is a subclass of Assign.
+            scoped_nodes = [(node, _scope_for(node, mod_name))
+                            for node in self._reachable_nodes(tree)
+                            if isinstance(node, (ast.Call, ast.Assign, ast.AnnAssign, ast.With))]
             for node, scope_id in scoped_nodes:
                 lineno = getattr(node, "lineno", 1)
                 if isinstance(node, (ast.Assign, ast.AnnAssign)) and isinstance(node.value, ast.Call):
@@ -19231,7 +19239,11 @@ class TaintTracker:
 
         for mod_name, tree in self.modules.items():
             seen.clear()
-            scoped_nodes = [(node, _scope_for(node, mod_name)) for node in self._reachable_nodes(tree)]
+            # The single loop below skips anything that is not `ast.Call` at its head, so this list
+            # is exactly what the loop can consume, with zero node-type slack.
+            scoped_nodes = [(node, _scope_for(node, mod_name))
+                            for node in self._reachable_nodes(tree)
+                            if isinstance(node, (ast.Call,))]
             for node, scope_id in scoped_nodes:
                 if not isinstance(node, ast.Call) or not isinstance(node.func, ast.AST):
                     continue
@@ -20550,7 +20562,14 @@ class TaintTracker:
 
         for mod_name, tree in self.modules.items():
             seen.clear()
-            scoped_nodes = [(node, _scope_for(node, mod_name)) for node in self._reachable_nodes(tree)]
+            # Both loops below re-test the type at their head (Assign/AnnAssign for the CWE-798
+            # branch, Call for the CWE-1333 branch) and those same two branches are the only
+            # callers of `_remove_existing`, so a dropped node could never reach a removal visit
+            # either. The `key_used` / `loaded` pass under this line walks `_module_nodes`, a
+            # different list, and is untouched by this filter.
+            scoped_nodes = [(node, _scope_for(node, mod_name))
+                            for node in self._reachable_nodes(tree)
+                            if isinstance(node, (ast.Call, ast.Assign, ast.AnnAssign))]
             # Proof (2) of `_c798_value_is_storage_key`: what the file does with the name. Names are
             # lower-cased here because `_target_name()` lower-cases them.
             key_used: set = set()
