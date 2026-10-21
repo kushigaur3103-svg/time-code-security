@@ -15849,7 +15849,15 @@ class TaintTracker:
         for mod_name, tree in self.modules.items():
             seen.clear()
             dynamic_response_vars: dict[tuple[str, str], list[int]] = {}
-            scoped_nodes = [(node, _scope_for(node, mod_name)) for node in self._reachable_nodes(tree)]
+            # Both loops below re-test the node type at their head (`isinstance(node, (Assign,
+            # AnnAssign))` at the prepass and `isinstance(node, Call)` with an Assign/AnnAssign elif
+            # in the main pass), so a node of any other type is bound, unpacked twice and then
+            # skipped both times. Binding only the three types they can consume leaves every fed
+            # node, its scope string and the visit order untouched. AnnAssign is named explicitly
+            # because it is not a subclass of Assign.
+            scoped_nodes = [(node, _scope_for(node, mod_name))
+                            for node in self._reachable_nodes(tree)
+                            if isinstance(node, (ast.Call, ast.Assign, ast.AnnAssign))]
 
             for node, scope_id in scoped_nodes:
                 if not isinstance(node, (ast.Assign, ast.AnnAssign)) or not isinstance(node.value, ast.Call):
