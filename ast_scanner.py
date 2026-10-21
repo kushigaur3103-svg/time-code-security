@@ -19690,7 +19690,14 @@ class TaintTracker:
             reachable_nodes = self._reachable_nodes(tree)
             _p7_mark("seg_reachable_nodes", _p7_time.perf_counter() - _p7_seg_t0)
             _p7_seg_t0 = _p7_time.perf_counter()
-            scoped_nodes = [(node, _scope_for(node, mod_name)) for node in reachable_nodes]
+            # Both loops below re-test the node type at their head (`isinstance(node, (Assign,
+            # AnnAssign))` at the prepass and `isinstance(node, Call)` in the main pass), so a node
+            # of any other type is bound, unpacked twice and then skipped both times. Binding only
+            # the three types they can consume leaves every fed node, its scope string and the visit
+            # order untouched. AnnAssign is named explicitly because it is not a subclass of Assign.
+            scoped_nodes = [(node, _scope_for(node, mod_name))
+                            for node in reachable_nodes
+                            if isinstance(node, (ast.Call, ast.Assign, ast.AnnAssign))]
             _p7_mark("seg_scope_binding", _p7_time.perf_counter() - _p7_seg_t0)
             _p7_volume("scoped_nodes", len(scoped_nodes))
 
