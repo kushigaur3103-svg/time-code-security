@@ -2243,17 +2243,42 @@ def is_cursor_call_node(node: ast.AST) -> bool:
         val = val.func.value
     return False
 
-def dotted_name(node: ast.AST) -> Optional[str]:
+def _dotted_name_uncached(node: ast.AST) -> Optional[str]:
     if isinstance(node, ast.Name): return node.id
     if isinstance(node, ast.Attribute):
         if node.attr == "execute" and is_cursor_call_node(node.value):
             unrolled = unroll_chained_call(node)
             if unrolled:
                 return unrolled
-        parent = dotted_name(node.value)
+        parent = _dotted_name_uncached(node.value)
         if parent: return f"{parent}.{node.attr}"
         return node.attr
     return None
+
+# Collector-phase memo for `dotted_name`. The function reads node shape only - `is_cursor_call_node`
+# and `unroll_chained_call` below consult nothing but the AST they are handed - and no AST node is
+# mutated after `ast.fix_missing_locations` in the parse pre-pass, so a name computed during the
+# collector phase cannot go stale. Only the *outermost* ask is cached: a repeat of it returns the
+# final string at once, so the whole attribute chain is served by one entry while the recursion
+# stays uncached and the dict holds roughly one entry per called expression. `id(node)` is safe as
+# the key because the entry also holds the node, and a live object keeps its id from being recycled
+# onto another - `cached[0] is node` re-checks the identity on every hit anyway. `None` outside the
+# collector phase means "no memo": the engine then walks the identical unmemoized path it walked
+# before, and the dict is released with the phase that filled it instead of pinning a whole
+# repository's ASTs. See `_begin_collector_dotted_name_memo`.
+_DOTTED_NAME_MEMO: Optional[dict] = None
+
+def dotted_name(node: ast.AST) -> Optional[str]:
+    memo = _DOTTED_NAME_MEMO
+    if memo is None:
+        return _dotted_name_uncached(node)
+    key = id(node)
+    cached = memo.get(key)
+    if cached is not None and cached[0] is node:
+        return cached[1]
+    value = _dotted_name_uncached(node)
+    memo[key] = (node, value)
+    return value
 
 def extract_subscript_key(slice_node: ast.AST) -> Optional[Union[str, int]]:
     """Extracts a static string or integer key from a subscript slice (Python 3.8-3.12 compatible)."""
@@ -9700,6 +9725,35 @@ class TaintTracker:
         self._alias_name_cache.clear()
         self._param_name_cache = None
 
+    def _begin_collector_dotted_name_memo(self) -> None:
+        """Turn on the `dotted_name` memo for the collector phase, with a dict this tracker owns.
+
+        Every input the resolver and `dotted_name` consult is frozen by now: `assignments_by_scope`
+        and `returns_by_scope` are written only by the parse pre-pass, `imports` by Phase 1, and
+        `call_sites_by_target` by call-site indexing -- all of which run before the first batch. So
+        an answer cached during this phase answers the same question for the rest of it, whichever
+        collector asks next.
+
+        Binding a fresh dict per phase (rather than reusing one) is what makes this safe to start at
+        all: a reused tracker, or a second tracker in the same process, never inherits entries
+        computed over another run's trees. Only one process can hold the module global, and the
+        forked pools that do exist (Phase 2 and the sink gate) both run before this line.
+        """
+        global _DOTTED_NAME_MEMO
+        _DOTTED_NAME_MEMO = self._collector_dotted_name_memo = {}
+
+    def release_collector_dotted_name_memo(self) -> None:
+        """Drop the memo at the phase boundary so no AST node stays pinned past its collector run.
+
+        Memory only, never behaviour: with the global back at None the rest of `analyze` -- the graph
+        cascade and any later pass -- computes `dotted_name` exactly as it did before this memo
+        existed. Re-binding at the next phase start also makes an exception that escapes mid-phase
+        self-correcting on the next run instead of leaking one repository's nodes.
+        """
+        global _DOTTED_NAME_MEMO
+        _DOTTED_NAME_MEMO = None
+        self._collector_dotted_name_memo = None
+
     def _resolve_sink_candidate(self, call_node, caller_scope, lineno):
         """Sink-detection body for one call site -- the statements the serial `raw_calls` loop ran.
 
@@ -11587,6 +11641,13 @@ class TaintTracker:
         """
         table = self._memo_assignment_map(tree)
         for node in self._module_nodes(tree):
+            # `_c601_redirect_target` opens with `if not isinstance(node, ast.Call): return None`, so
+            # this is the callee's own first test lifted to the loop head: the same nodes reach the
+            # same rules in the same BFS order, and nothing that used to survive the callee is now
+            # skipped. Measured on the benchmark corpus, 32,219 of 35,008 rows per pass existed only
+            # to be handed a call that returned None.
+            if not isinstance(node, ast.Call):
+                continue
             target = self._c601_redirect_target(node)
             if target is None:
                 continue
@@ -21564,6 +21625,11 @@ class TaintTracker:
         _sink_deltas: dict[str, int] = {}
         _prev_sinks = len(self.sink_records)
         self._checkpoint_phase = "Collectors (23 structural batches)"
+        # Covers the 23 batches *and* the aggregated blindspot pass below, which is where the
+        # measured 111,632 `dotted_name` asks with 3,653 distinct nodes come from -- 96.7% of them
+        # re-ask a node this phase has already answered, so a repeat costs a dict lookup now instead
+        # of a fresh attribute-chain descent.
+        self._begin_collector_dotted_name_memo()
         for _s1_name, _s1_collector in (
             ("batch2", self._collect_batch2_structural_findings),
             ("batch3a", self._collect_batch3a_structural_findings),
@@ -21647,6 +21713,10 @@ class TaintTracker:
         self._flush_stage1_structural_edges()
         self._checkpoint_collector = None
         self._profile_scope = None
+        # End of the phase the memo was opened for. Nothing past here is measured to re-ask a node
+        # the collectors already answered, so the cascade runs the unmemoized path and the last
+        # strong reference to a repository's worth of call expressions goes away now.
+        self.release_collector_dotted_name_memo()
         self._collector_profile["blindspot_all"] = _time.perf_counter() - _bs_t0
         _sink_deltas["blindspot_all"] = len(self.sink_records) - _prev_sinks
         print("TimeCodeSecurity [PROFILE] Collectors (s): " + " ".join(
