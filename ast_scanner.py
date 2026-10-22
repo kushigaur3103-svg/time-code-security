@@ -17178,6 +17178,19 @@ class TaintTracker:
             if _node.metadata.get("cwe") == "CWE-89":
                 _loc = _node.location
                 cwe89_by_location.setdefault((_loc.file, _loc.line_start), []).append(_record)
+        # `_is_static`'s last line asks the static folder the same question over and over. Measured on
+        # the benchmark corpus this collector's window makes 4,576 folder entry calls off only 10
+        # distinct (node, scope, line) triples -- Name('kind') 1,132x, Name('value') 1,120x,
+        # Name('token') 618x, Name('statement') 563x -- so 99.8% of those subtree walks re-derived an
+        # answer this same collector already had. The memo stores the folder's VALUE, not a verdict, so
+        # a fold to 0 / "" / False stays static exactly as before, and `cached[0] is expr` re-checks
+        # identity in case an id ever gets reused. `lineno` is the CALLER's line, not the node's own,
+        # because the folder picks the assignment in force at that line: two asks of one node at two
+        # lines therefore stay two separate answers. Same shape as the batch3a folder memo at :14283.
+        # Sound because the assignment table the folder reads is written only in the pre-pass, so it
+        # is frozen for the whole collector loop. Local, so it dies when this collector returns and
+        # carries nothing into the next analyze(); measured footprint 10 rows.
+        static_memo: dict[tuple, tuple] = {}
 
         def _scope_for(node: ast.AST, mod_name: str) -> str:
             current = node
@@ -17245,7 +17258,13 @@ class TaintTracker:
                 record = _assigned_value(expr.id, scope_id, lineno)
                 if record is not None and record.value_node is not None:
                     return _is_static(record.value_node, record.scope_id, record.lineno, visited, depth + 1)
-            return _eval_static_constant(expr, self.assignments_by_scope, scope_id, lineno) is not None
+            memo_key = (id(expr), scope_id, lineno)
+            folded = static_memo.get(memo_key)
+            if folded is not None and folded[0] is expr:
+                return folded[1] is not None
+            folded_value = _eval_static_constant(expr, self.assignments_by_scope, scope_id, lineno)
+            static_memo[memo_key] = (expr, folded_value)
+            return folded_value is not None
 
         def _uses_safe_builder(expr: ast.AST, scope_id: str, lineno: int, visited=None) -> bool:
             if expr is None:
