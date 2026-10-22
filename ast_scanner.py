@@ -17648,6 +17648,16 @@ class TaintTracker:
             return (isinstance(body, ast.Call)
                     and _callee_segment(body) in sanitizer_segments)
 
+        # One pass over sink_records keyed by the identity of each record's own security_node, holding
+        # the FIRST Call-typed record per node — which is what the `next(...)` in the loop below
+        # returned. Read-back re-checks `is`, so a recycled id cannot answer for another node.
+        first_call_record: dict[int, tuple] = {}
+        for record in self.sink_records:
+            if isinstance(record.node, ast.Call):
+                call_key = id(record.security_node)
+                if call_key not in first_call_record:
+                    first_call_record[call_key] = (record.security_node, record)
+
         for sink in self.sinks:
             meta = sink.metadata or {}
             if meta.get("cwe") in ("CWE-79", "CWE-80", "CWE-116"):
@@ -17656,8 +17666,8 @@ class TaintTracker:
                 suppressed = (
                     start >= 2 and len(lines) >= start - 1
                     and re.search(r"#\s*ok\b", lines[start - 2], re.IGNORECASE))
-                record = next((r for r in self.sink_records
-                               if r.security_node is sink and isinstance(r.node, ast.Call)), None)
+                call_record = first_call_record.get(id(sink))
+                record = call_record[1] if call_record is not None and call_record[0] is sink else None
                 sanitized = record is not None and _sanitized_response_body(
                     record.node, record.scope_id, start)
                 if suppressed or sanitized:
@@ -17928,6 +17938,13 @@ class TaintTracker:
 
         for mod_name, tree in self.modules.items():
             for node in self._reachable_nodes(tree):
+                # Productive-type gate: every rule below is reached only from a head test on one of
+                # these nine node types, so the scope climb and lineno read are dead work for the
+                # other ~86% of the bound rows. No read, no state change, nothing else is skipped.
+                if not isinstance(node, (ast.Call, ast.Dict, ast.Assign, ast.AugAssign, ast.AnnAssign,
+                                         ast.Return, ast.ClassDef, ast.FunctionDef,
+                                         ast.AsyncFunctionDef)):
+                    continue
                 scope_id = _scope_for(node, mod_name)
                 lineno = getattr(node, "lineno", 1)
 
@@ -21057,6 +21074,12 @@ class TaintTracker:
 
         for mod_name, tree in self.modules.items():
             for node in self._reachable_nodes(tree):
+                # Productive-type gate: the Assign rule below ends in `continue` and the next
+                # statement is `if not isinstance(node, ast.Call): continue`, so only these two node
+                # types ever reach rule logic. Everything before them is a pure read, so skipping the
+                # other ~89% of the bound rows drops scope-climb work, never a detection.
+                if not isinstance(node, (ast.Assign, ast.Call)):
+                    continue
                 scope_id = _scope_for(node, mod_name)
                 lineno = getattr(node, "lineno", 1)
 
