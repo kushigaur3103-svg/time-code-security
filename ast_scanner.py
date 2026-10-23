@@ -1743,10 +1743,23 @@ CLUSTER3_SENSITIVE_PAYLOAD_KEYS = frozenset({
 #   cluster3: 13382/13391 Import+ImportFrom, 13581/13617/14128 Assign, 13589 FunctionDef +
 #             AsyncFunctionDef, 13637/14132 Dict, 13647/13658/13668 Attribute+Name, and
 #             Call-only from 13679/13689/14116 onwards (the 20-rule finale sits behind that).
+#   cluster1: the emit loop hands every node to `_c1_cluster1_candidates`, whose whole body is one
+#             isinstance chain over the loop variable -- 12595 Call, 12668 Subscript, 12674 Dict,
+#             12681 Assign+AnnAssign, 12692 FunctionDef (lines as of this edit). A node of any other
+#             type reaches no branch, returns an empty list, and the emit loop's only statement is
+#             `for cwe_meta in that-list`, so such a row cannot produce a sink, a dedupe key or a
+#             sink id. The two table sweeps that read this same list want a subset of it:
+#             `_c1_namespace_history` (12498) tests Assign/AnnAssign and
+#             `_c1_template_string_consumers` (12544) tests Call, both already in the set, so
+#             filtering once changes neither table.
 # AsyncFunctionDef and AsyncWith are listed even where only FunctionDef/With is tested: the two
 # are siblings on some Python versions and subclasses on others, and a node kept by mistake can
 # never lose a finding, while a node dropped by mistake can. AnnAssign/AugAssign are carried in
 # the cluster 3 set for the same reason.
+_GATE_CLUSTER1 = frozenset({
+    ast.Call, ast.Subscript, ast.Dict, ast.Assign, ast.AnnAssign,
+    ast.FunctionDef, ast.AsyncFunctionDef,
+})
 _GATE_CLUSTER2 = frozenset({
     ast.Import, ast.ImportFrom, ast.FunctionDef, ast.AsyncFunctionDef, ast.Compare,
     ast.With, ast.AsyncWith, ast.Assign, ast.AnnAssign, ast.AugAssign, ast.Return, ast.Call,
@@ -12399,7 +12412,14 @@ class TaintTracker:
             file_path = self.file_paths.get(mod_name, "unknown.py")
             scope_id = f"{mod_name}:global"
             seen: set[tuple[str, int, int]] = set()
-            reachable = list(self._reachable_nodes(tree))
+            # Filtered once per module instead of re-tested three times per node: the emit loop's
+            # dispatcher is a closed isinstance chain (see `_GATE_CLUSTER1`) and both table sweeps
+            # below read only types inside it, so every node dropped here returned no meta and fed
+            # no table. Measured on the benchmark corpus, 35,006 of the 35,008 rows this loop walked
+            # produced nothing. The engine's cached walk is read, never rewritten, so every other
+            # collector still sees the full tree.
+            reachable = [node for node in self._reachable_nodes(tree)
+                         if type(node) in _GATE_CLUSTER1]
             ns_history = self._c1_namespace_history(reachable)
             template_consumers = self._c1_template_string_consumers(reachable, scope_id)
 
