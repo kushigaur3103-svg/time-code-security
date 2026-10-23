@@ -2265,7 +2265,7 @@ def _dotted_name_uncached(node: ast.AST) -> Optional[str]:
 # onto another - `cached[0] is node` re-checks the identity on every hit anyway. `None` outside the
 # collector phase means "no memo": the engine then walks the identical unmemoized path it walked
 # before, and the dict is released with the phase that filled it instead of pinning a whole
-# repository's ASTs. See `_begin_collector_dotted_name_memo`.
+# repository's ASTs. See `_begin_collector_memos`.
 _DOTTED_NAME_MEMO: Optional[dict] = None
 
 def dotted_name(node: ast.AST) -> Optional[str]:
@@ -3221,6 +3221,11 @@ class TaintTracker:
         self._phase7_volumes: dict[str, int] = {}
         self.functions: dict[str, ast.FunctionDef] = {}
         self.returns_by_scope: dict[str, list[ast.Return]] = {}
+        # Opened by `_begin_collector_memos` at the collector phase and `None` everywhere else, which
+        # is the unmemoized path. Must exist here: the resolver is asked from phases that run before
+        # the collectors, and reading a missing attribute would raise on their very first call.
+        self._collector_canonical_memo: Optional[dict] = None
+        self._collector_dotted_name_memo: Optional[dict] = None
         self.raw_calls: list[tuple[ast.Call, str, int]] = []
         self.call_sites_by_target: dict[str, list[tuple[ast.Call, str, int]]] = {}
         self.containment_guards: list[dict] = []
@@ -3537,6 +3542,36 @@ class TaintTracker:
     RESOLVE_MAX_DEPTH = 25
 
     def resolve_canonical_name(self, node: ast.AST, scope_id: str = "", visited: Optional[set[str]] = None,
+                               depth: int = 0) -> Optional[str]:
+        """Answer the resolver, reusing the collector phase's `_collector_canonical_memo` when one is open.
+
+        Only a *top-level* ask is cached -- `visited is None and depth == 0` is exactly the state in
+        which the answer is a function of (`id(node)`, `scope_id`) plus the frozen input tables. A
+        nested ask arrives with a populated `visited` set and a depth, and its answer legitimately
+        depends on the path taken to reach it, so those calls are forwarded untouched.
+
+        Caching is safe here for the same reason it is safe for `dotted_name`, and it was checked the
+        same way: the resolver's whole transitive call closure (`_eval_const_str`,
+        `_eval_const_str_with_params`, `_extract_subscript_key`, `_resolve_function_scope`,
+        `_resolve_transitive_import`) writes no `self.*` at all, and the five tables it reads --
+        `imports`, `assignments_by_scope`, `returns_by_scope`, `functions`, `call_sites_by_target` --
+        are last written before the phase opens (Phase 1, call-site indexing and the parse pre-pass).
+        Its only side effect, `self.resolve_depth_capped`, is a write-only diagnostic with a single
+        occurrence in the file, so a cached hit that skips the increment reaches no finding. Entries
+        hold the node and re-check it with `is`, and the phase releases the dict at its boundary.
+        """
+        memo = self._collector_canonical_memo
+        if memo is None or visited is not None or depth != 0:
+            return self._resolve_canonical_name_uncached(node, scope_id, visited, depth)
+        key = (id(node), scope_id)
+        cached = memo.get(key)
+        if cached is not None and cached[0] is node:
+            return cached[1]
+        value = self._resolve_canonical_name_uncached(node, scope_id, visited, depth)
+        memo[key] = (node, value)
+        return value
+
+    def _resolve_canonical_name_uncached(self, node: ast.AST, scope_id: str = "", visited: Optional[set[str]] = None,
                                depth: int = 0) -> Optional[str]:
         if visited is None:
             visited = set()
@@ -9725,34 +9760,38 @@ class TaintTracker:
         self._alias_name_cache.clear()
         self._param_name_cache = None
 
-    def _begin_collector_dotted_name_memo(self) -> None:
-        """Turn on the `dotted_name` memo for the collector phase, with a dict this tracker owns.
+    def _begin_collector_memos(self) -> None:
+        """Turn on the two collector-phase memos, with dicts this tracker owns.
 
-        Every input the resolver and `dotted_name` consult is frozen by now: `assignments_by_scope`
+        Every input `dotted_name` and the resolver consult is frozen by now: `assignments_by_scope`
         and `returns_by_scope` are written only by the parse pre-pass, `imports` by Phase 1, and
-        `call_sites_by_target` by call-site indexing -- all of which run before the first batch. So
-        an answer cached during this phase answers the same question for the rest of it, whichever
-        collector asks next.
+        `call_sites_by_target` by call-site indexing -- all of which run before the first batch, as
+        does `release_sink_gate_scratch`, the one call that drops derived index scratch. So an answer
+        cached during this phase answers the same question for the rest of it, whichever collector
+        asks next.
 
-        Binding a fresh dict per phase (rather than reusing one) is what makes this safe to start at
+        Binding fresh dicts per phase (rather than reusing them) is what makes this safe to start at
         all: a reused tracker, or a second tracker in the same process, never inherits entries
-        computed over another run's trees. Only one process can hold the module global, and the
-        forked pools that do exist (Phase 2 and the sink gate) both run before this line.
+        computed over another run's trees. Only one process can hold the `dotted_name` module global,
+        and the forked pools that do exist (Phase 2 and the sink gate) both run before this line.
         """
         global _DOTTED_NAME_MEMO
         _DOTTED_NAME_MEMO = self._collector_dotted_name_memo = {}
+        self._collector_canonical_memo = {}
 
-    def release_collector_dotted_name_memo(self) -> None:
-        """Drop the memo at the phase boundary so no AST node stays pinned past its collector run.
+    def release_collector_memos(self) -> None:
+        """Drop both memos at the phase boundary so no AST node stays pinned past its collector run.
 
-        Memory only, never behaviour: with the global back at None the rest of `analyze` -- the graph
-        cascade and any later pass -- computes `dotted_name` exactly as it did before this memo
-        existed. Re-binding at the next phase start also makes an exception that escapes mid-phase
-        self-correcting on the next run instead of leaking one repository's nodes.
+        Memory only, never behaviour: with the global and the attribute back at None, everything past
+        this point -- the flush, the graph cascade and any later pass -- computes names exactly as it
+        did before the memos existed. `analyze` also calls this from its `finally`, so an exception
+        escaping mid-phase cannot leave the dicts attached, and re-binding at the next phase start
+        makes even a skipped release self-correcting on the next run.
         """
         global _DOTTED_NAME_MEMO
         _DOTTED_NAME_MEMO = None
         self._collector_dotted_name_memo = None
+        self._collector_canonical_memo = None
 
     def _resolve_sink_candidate(self, call_node, caller_scope, lineno):
         """Sink-detection body for one call site -- the statements the serial `raw_calls` loop ran.
@@ -21409,6 +21448,10 @@ class TaintTracker:
         try:
             return self._analyze_pipeline()
         finally:
+            # Idempotent (setting both memos to None twice changes nothing) and it makes the
+            # phase-boundary release unconditional: a collector raising halfway through the phase
+            # cannot leave a repository's worth of cached name answers attached to this tracker.
+            self.release_collector_memos()
             if gc_was_enabled:
                 gc.enable()
                 gc.collect()
@@ -21626,10 +21669,11 @@ class TaintTracker:
         _prev_sinks = len(self.sink_records)
         self._checkpoint_phase = "Collectors (23 structural batches)"
         # Covers the 23 batches *and* the aggregated blindspot pass below, which is where the
-        # measured 111,632 `dotted_name` asks with 3,653 distinct nodes come from -- 96.7% of them
-        # re-ask a node this phase has already answered, so a repeat costs a dict lookup now instead
-        # of a fresh attribute-chain descent.
-        self._begin_collector_dotted_name_memo()
+        # measured 111,632 `dotted_name` asks over 3,653 distinct nodes and the 44,215 top-level
+        # `resolve_canonical_name` asks over 3,810 distinct (node, scope) pairs come from -- 96.7%
+        # and 91.4% of them re-ask something this phase has already answered, so a repeat now costs
+        # a dict lookup instead of a fresh attribute-chain or scope-walk descent.
+        self._begin_collector_memos()
         for _s1_name, _s1_collector in (
             ("batch2", self._collect_batch2_structural_findings),
             ("batch3a", self._collect_batch3a_structural_findings),
@@ -21713,10 +21757,10 @@ class TaintTracker:
         self._flush_stage1_structural_edges()
         self._checkpoint_collector = None
         self._profile_scope = None
-        # End of the phase the memo was opened for. Nothing past here is measured to re-ask a node
+        # End of the phase the memos were opened for. Nothing past here is measured to re-ask a node
         # the collectors already answered, so the cascade runs the unmemoized path and the last
         # strong reference to a repository's worth of call expressions goes away now.
-        self.release_collector_dotted_name_memo()
+        self.release_collector_memos()
         self._collector_profile["blindspot_all"] = _time.perf_counter() - _bs_t0
         _sink_deltas["blindspot_all"] = len(self.sink_records) - _prev_sinks
         print("TimeCodeSecurity [PROFILE] Collectors (s): " + " ".join(
