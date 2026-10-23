@@ -1785,8 +1785,14 @@ _GATE_CLUSTER3 = frozenset({
 #                so a row outside the set leaves `cwe_meta` None and hands out no sink id.
 #                The three flag pre-scans above it (imports, try/finally, whitelist) keep their own
 #                single type tests and are untouched.
+#   _GATE_CWE319_VARS: `_collect_cwe319_variable_resolution_findings`' only module-node loop. Its
+#                head test is `if not isinstance(func, (ast.FunctionDef, ast.AsyncFunctionDef)):
+#                continue` and the body opens on `func.args`, so a definition is the whole
+#                population the loop can use. Subtree walks inside the body (`ast.walk(func)`) are
+#                not module sweeps and are deliberately not touched.
 _GATE_CWE93 = frozenset({ast.Assign, ast.Call})
 _GATE_BATCH3B = frozenset({ast.Call, ast.Assign, ast.AnnAssign, ast.Return})
+_GATE_CWE319_VARS = frozenset({ast.FunctionDef, ast.AsyncFunctionDef})
 
 CLUSTER3_STRUCTURAL_SOURCE_IDS = {
     "WEAK_HASH_NEW": "WEAK_HASH_NEW",
@@ -11012,7 +11018,29 @@ class TaintTracker:
                 "CWE-209: Detailed exception or stack trace exposed in response",
                 "STACK_TRACE_EXPOSURE", reuse_existing=True)
 
-        for handler in [node for node in self._module_nodes(tree) if isinstance(node, ast.ExceptHandler)]:
+        # One bucketing pass replaces three scans of the module node list. The two buckets are the
+        # exact filters the comprehensions below used to apply, in the same BFS order, so each loop
+        # iterates the same nodes in the same sequence and hands out the same sink ids:
+        #   handlers      <- `isinstance(node, ast.ExceptHandler)`, previously built twice (the loops
+        #                    above and below `dispatchers`), which is why it is a list and not a
+        #                    generator - the second loop is inside `if dispatchers:` and needs the
+        #                    same sequence again.
+        #   web_handlers  <- `isinstance(node, (FunctionDef, AsyncFunctionDef)) and
+        #                    _c209_is_web_handler(node)`. `_c209_is_web_handler` is a staticmethod
+        #                    that reads only `func.decorator_list`, `func.args.args` and two
+        #                    module-level frozensets, so evaluating it here, before the handler loop
+        #                    has emitted anything, cannot answer differently than it did after.
+        # An `elif` is exact because a node is never both an ExceptHandler and a FunctionDef.
+        handlers = []
+        web_handlers = []
+        for node in self._module_nodes(tree):
+            if isinstance(node, ast.ExceptHandler):
+                handlers.append(node)
+            elif isinstance(node, (ast.FunctionDef, ast.AsyncFunctionDef)) and \
+                    self._c209_is_web_handler(node):
+                web_handlers.append(node)
+
+        for handler in handlers:
             names = self._c209_handler_names(handler)
             for ret in _returns(handler.body):
                 if self._is_bad_error_return(ret, handler.name):
@@ -11020,9 +11048,7 @@ class TaintTracker:
                 if self._c209_exposed_in_reply(ret.value, names, table, ret.lineno):
                     _emit(ret)
 
-        for func in [node for node in self._module_nodes(tree)
-                     if isinstance(node, (ast.FunctionDef, ast.AsyncFunctionDef))
-                     and self._c209_is_web_handler(node)]:
+        for func in web_handlers:
             # A WSGI/route callable assembles the body it returns from its handlers two statements
             # earlier (`ret = str(exc)` inside `except`, `return (ret,)` outside), so the names the
             # handlers detail-carry are in scope for the function-level return after all.
@@ -11033,7 +11059,10 @@ class TaintTracker:
 
         dispatchers = self._c209_reply_dispatcher_scopes(tree, self._module_nodes(tree))
         if dispatchers:
-            for handler in [node for node in self._module_nodes(tree) if isinstance(node, ast.ExceptHandler)]:
+            # The same `handlers` bucket as the first loop: the baseline rebuilt this identical list
+            # by re-scanning the module, and nothing between the two loops can change which nodes are
+            # `ast.ExceptHandler` (the AST is never mutated here), so the reuse is the same sequence.
+            for handler in handlers:
                 # Python unbinds the caught name when the handler ends, so a call that is not lexically
                 # inside a handler cannot be carrying this handler's detail.
                 names = self._c209_handler_detail_names(handler)
@@ -15232,7 +15261,10 @@ class TaintTracker:
                 return None, None
 
             for func in self._module_nodes(tree):
-                if not isinstance(func, (ast.FunctionDef, ast.AsyncFunctionDef)):
+                # See `_GATE_CWE319_VARS`: this loop's own head test, lifted from `isinstance` on a
+                # two-element tuple to one set membership. The body starts at `func.args` and never
+                # runs for a non-definition row, so the set is exactly what the test kept.
+                if type(func) not in _GATE_CWE319_VARS:
                     continue
                 obj_vars = set()
                 var_assigns: dict[str, list[tuple[int, ast.AST]]] = {}
