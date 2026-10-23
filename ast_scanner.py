@@ -15207,6 +15207,9 @@ class TaintTracker:
         """
         verbs = {"get", "post", "put", "delete", "head", "options", "patch",
                  "request", "Request", "urlopen", "urlretrieve"}
+        # `verbs` is a local literal that is never mutated, so `verbs | {"open", "retrieve"}` is the
+        # same set for every one of the ~10k times the two shape loops below used to rebuild it.
+        sink_verbs = verbs | {"open", "retrieve"}
         opener_ctor_names = {"URLopener", "FancyURLopener", "OpenerDirector",
                              "build_opener", "Session"}
         module_roots = {"requests", "httpx"}
@@ -15266,10 +15269,26 @@ class TaintTracker:
                 # runs for a non-definition row, so the set is exactly what the test kept.
                 if type(func) not in _GATE_CWE319_VARS:
                     continue
+                # One descent per definition, serving all three consumers below. `ast.walk` is pure
+                # Python in 3.11 (a deque plus `iter_child_nodes` per node), and the baseline paid for
+                # it twice here - once for `var_assigns`, once for Shape 1 - and once more for every
+                # parameter default carrying a cleartext URL. `Assign` and `Call` are disjoint node
+                # classes, so this `if/elif` is the same pair of tests the two walks each ran.
+                # Each consumer below then iterates exactly the subsequence its own walk produced, in
+                # the same BFS order, which is what keeps `var_assigns` insertion order, the Shape 1
+                # `cands[-1]` pick and the sink ids handed out from them unchanged.
+                assigns = []
+                calls = []
+                for stmt in ast.walk(func):
+                    if isinstance(stmt, ast.Assign):
+                        assigns.append(stmt)
+                    elif isinstance(stmt, ast.Call):
+                        calls.append(stmt)
+
                 obj_vars = set()
                 var_assigns: dict[str, list[tuple[int, ast.AST]]] = {}
-                for stmt in ast.walk(func):
-                    if isinstance(stmt, ast.Assign) and len(stmt.targets) == 1:
+                for stmt in assigns:
+                    if len(stmt.targets) == 1:
                         if isinstance(stmt.targets[0], ast.Name):
                             tname = stmt.targets[0].id
                             var_assigns.setdefault(tname, []).append((stmt.lineno, stmt.value))
@@ -15296,11 +15315,11 @@ class TaintTracker:
                         continue
                     if _suppressed(func.lineno):
                         continue
-                    for call in ast.walk(func):
-                        if not isinstance(call, ast.Call):
-                            continue
+                    for call in calls:
+                        # Was a fresh `ast.walk(func)` per offending default; `calls` is that walk's
+                        # Call subsequence in the same order, so nothing below sees a different node.
                         root, verb = _callee_parts(call)
-                        if verb not in verbs | {"open", "retrieve"}:
+                        if verb not in sink_verbs:
                             continue
                         if root not in module_roots and root not in obj_vars and root != "<ctor>" \
                                 and verb not in {"urlopen", "urlretrieve", "Request"}:
@@ -15319,11 +15338,10 @@ class TaintTracker:
 
                 # Shape 1: local variable holding a cleartext literal URL.
                 assign_hits = {}
-                for call in ast.walk(func):
-                    if not isinstance(call, ast.Call):
-                        continue
+                for call in calls:
+                    # Same subsequence the baseline's second `ast.walk(func)` yielded, same order.
                     root, verb = _callee_parts(call)
-                    if verb not in verbs | {"open", "retrieve"}:
+                    if verb not in sink_verbs:
                         continue
                     if root not in module_roots and root not in obj_vars and root != "<ctor>" \
                             and verb not in {"urlopen", "urlretrieve", "Request"}:
