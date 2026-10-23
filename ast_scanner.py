@@ -1768,6 +1768,25 @@ _GATE_CLUSTER3 = frozenset({
     ast.Import, ast.ImportFrom, ast.Assign, ast.AnnAssign, ast.AugAssign,
     ast.FunctionDef, ast.AsyncFunctionDef, ast.Dict, ast.Attribute, ast.Name, ast.Call,
 })
+# Two more sweeps that walk a whole module list and then reject almost every row on its own first
+# line. Each set is the union of the loop's own head tests, so a row removed here is a row the rules
+# were already rejecting - and the engine defines no `ast` node subclasses (no `class X(ast.Call)`
+# or similar anywhere in this file), so exact-type membership and the callee's `isinstance` answer the
+# same question for every tree `ast.parse` can produce.
+#   _GATE_CWE93: `_collect_cwe93_header_injection`'s first loop. `exprs` is filled only under
+#                `isinstance(node, ast.Assign)` and `isinstance(node, ast.Call)`, and the body's next
+#                statement is `if not exprs: continue`. Attribute, Constant and Subscript appear in
+#                this rule only as tests on `node.targets`, `node.func` and `node.slice` - never as
+#                the loop node - so they are deliberately NOT in the set. The second loop in the same
+#                pass already opens with its own `isinstance(node, ast.Assign)` test and is unchanged.
+#   _GATE_BATCH3B: `_collect_batch3b_structural_findings`' rule dispatch loop, whose entire body is
+#                `cwe_meta = None`, one `if/elif` chain on Call / (Assign, AnnAssign) /
+#                (Return with a value), and `if cwe_meta:`. Nothing else in the loop runs per node,
+#                so a row outside the set leaves `cwe_meta` None and hands out no sink id.
+#                The three flag pre-scans above it (imports, try/finally, whitelist) keep their own
+#                single type tests and are untouched.
+_GATE_CWE93 = frozenset({ast.Assign, ast.Call})
+_GATE_BATCH3B = frozenset({ast.Call, ast.Assign, ast.AnnAssign, ast.Return})
 
 CLUSTER3_STRUCTURAL_SOURCE_IDS = {
     "WEAK_HASH_NEW": "WEAK_HASH_NEW",
@@ -10552,6 +10571,12 @@ class TaintTracker:
     def _collect_cwe93_header_injection(self, tree, filename, source_lines):
         table = self._memo_assignment_map(tree)
         for node in self._module_nodes(tree):
+            # See `_GATE_CWE93`: this is the two branch heads below, lifted above the `exprs`
+            # allocation they were each paid for. Measured on the benchmark+fixtures corpus, 31,557 of
+            # the 35,453 rows this loop walked could not reach either branch, and every one of them
+            # still built a list, ran both tests and hit `if not exprs: continue`.
+            if type(node) not in _GATE_CWE93:
+                continue
             # Only the values that actually land in the header are inspected: the receiver of
             # a method call and the subscript key are the response object's own names.
             exprs = []
@@ -10773,9 +10798,10 @@ class TaintTracker:
         file stay silent.
         """
         table = self._memo_assignment_map(tree)
-        # The CWE-312 pass already asks for this same structure from the module's cached walk, and the
-        # blindspot loop releases that list per module in its `finally`, so serving this pass from the
-        # same list costs a dict lookup instead of a full traversal.
+        # This pass runs first in the module's blindspot iteration, so it builds the handle->open()
+        # map from the module's cached walk; the CWE-312 pass, which asks for the same structure for
+        # the same tree, is served from `_c94_handle_opens`'s per-tree cache instead of scanning
+        # every node a second time. Both lists are released per module in the blindspot `finally`.
         with_opens = self._c94_handle_opens(tree, self._module_nodes(tree))
         for node in self._module_calls(tree):
             if not isinstance(node, ast.Call) or not node.args:
@@ -10802,7 +10828,19 @@ class TaintTracker:
 
     @staticmethod
     def _c94_handle_opens(tree, nodes=None):
-        """`with open(path, mode) as handle:` bindings, mapping the handle name to the open()."""
+        """`with open(path, mode) as handle:` bindings, mapping the handle name to the open().
+
+        Cached on the tree, exactly the way `_module_nodes` caches its walk. The CWE-94 and CWE-312
+        passes both ask for this structure for the same module inside one blindspot iteration, both
+        hand in the same cached node list, and the builder reads nothing outside that list, so the
+        second ask used to rebuild a byte-identical dict by scanning every node again. The result is
+        read-only wherever it goes -- the only consumer is `with_opens.get(handle)` in
+        `_c94_open_call` -- so one shared dict answers the same question twice. Released with the
+        module's other per-module caches in the blindspot loop's `finally`.
+        """
+        cached = tree.__dict__.get("_cached_handle_opens")
+        if cached is not None:
+            return cached
         out = {}
         for node in (nodes if nodes is not None else ast.walk(tree)):
             for item in getattr(node, "items", []):
@@ -10812,6 +10850,7 @@ class TaintTracker:
                     continue
                 if isinstance(item.optional_vars, ast.Name):
                     out[item.optional_vars.id] = value
+        tree.__dict__["_cached_handle_opens"] = out
         return out
 
     def _c94_open_call(self, handle, table, use_lineno, with_opens):
@@ -11567,9 +11606,9 @@ class TaintTracker:
         table = self._memo_assignment_map(tree)
         # Two module-wide structures, both read again at `for node in self._module_calls(tree)` below,
         # so the node list this serves them from is the module's already-warm cached walk, released at
-        # the blindspot loop's `finally`. `_c94_handle_opens` is shared with the CWE-94 pass, which is
-        # not memoized and still builds its own copy - leaving that one untouched keeps this change to
-        # the CWE-312 pass.
+        # the blindspot loop's `finally`. `_c94_handle_opens` is shared with the CWE-94 pass and now
+        # cached per tree, so this pass -- which runs after it in the same iteration -- takes a dict
+        # lookup where it used to pay for a second scan of every node in the module.
         with_opens = self._c94_handle_opens(tree, self._module_nodes(tree))
         scopes = self._c312_stream_scopes(tree, self._module_nodes(tree))
         for node in self._module_calls(tree):
@@ -15386,6 +15425,12 @@ class TaintTracker:
                                 whitelist_checked_vars.add(node.left.id)
 
             for node in self._reachable_nodes(tree):
+                # See `_GATE_BATCH3B`: the union of this chain's own branch heads (Call / Assign /
+                # AnnAssign / Return), lifted above the two per-node statements that ran for every
+                # row. Measured on the benchmark+fixtures corpus, 31,105 of the 35,453 rows this loop
+                # walked matched none of them, so `cwe_meta` stayed None and no sink was built.
+                if type(node) not in _GATE_BATCH3B:
+                    continue
                 cwe_meta = None
                 lineno = getattr(node, "lineno", 0)
 
@@ -21766,11 +21811,13 @@ class TaintTracker:
                 # The shared walk served all 19 passes above; drop it before the next module so the list
                 # of node references is bounded by one module instead of the whole repository. The Call
                 # bucket is a view of that same list, so it is released with it, for the same reason, at
-                # the same point. In a `finally` because one collector raising halfway through the list
-                # must not leave this module's walk and bucket pinned either - no `except` here, so the
-                # original exception still propagates unchanged.
+                # the same point, and so is the handle->open() map `_c94_handle_opens` caches, which the
+                # CWE-94 and CWE-312 passes share. In a `finally` because one collector raising halfway
+                # through the list must not leave this module's walk, bucket or map pinned either - no
+                # `except` here, so the original exception still propagates unchanged.
                 _bs_tree.__dict__.pop("_cached_all_nodes", None)
                 _bs_tree.__dict__.pop("_cached_node_buckets", None)
+                _bs_tree.__dict__.pop("_cached_handle_opens", None)
         # One flush after the loop: every blindspot sink is created with `p4_source_id`, which
         # `_emit_structural_edge` defers, so an in-loop flush could only ever re-scan the stage-1
         # sinks that the per-collector flush above already emitted.
