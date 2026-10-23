@@ -1,9 +1,11 @@
-name: "Benchmark - Boss Arenas 3-in-1 Showdown (Superset / Airflow / Home Assistant)"
+name: "Benchmark - Boss Arenas 5-in-1 Showdown (Superset / Airflow / Home Assistant / Odoo / Ansible)"
 
 # Manual only: no push, pull_request, schedule or workflow_run trigger exists in this file, so the
 # file itself costs zero runner minutes and every `[skip ci]` commit stays inert until a human picks
-# one of the three boss arenas and presses "Run workflow". One file, three targets, `arena` selects
-# exactly one - this is what keeps the next three showdowns off each other's credit bill.
+# one of the five boss arenas and presses "Run workflow". One file, five targets, `arena` selects
+# exactly one - this is what keeps the next showdowns off each other's credit bill. The "3-Way"
+# wording used by the referee steps below is about the three ENGINES (TimeCodeSecurity / CodeQL /
+# Semgrep), not the number of arenas, so it stays 3-Way now that the target list is five.
 on:
   workflow_dispatch:
     inputs:
@@ -16,6 +18,8 @@ on:
           - 'superset'
           - 'airflow'
           - 'homeassistant'
+          - 'odoo'
+          - 'ansible'
 
 # contents:read clones this repo. security-events:write is what codeql-action expects to see even
 # though `upload: false` means no SARIF is ever sent to the code-scanning API.
@@ -31,6 +35,15 @@ jobs:
     # Core: 10,648 files and 327,473 call sites, where the sink-detection pass needed >1130s even
     # after being parallelised. Gate 1 (~5 min) plus setup (~3 min) leaves the rest for CodeQL,
     # Semgrep and the referee, which are capped per step and normally finish far inside it.
+    #
+    # The cap was NOT raised when odoo and ansible were added, and that is deliberate: their tree
+    # sizes were not measured here (a shallow clone of either would blow the 400 MB / disk budget of
+    # the laptop this file is edited on), so there is no number to size a cap against. Instead the
+    # Setup step prints `TARGET_PY_COUNT` and warns in the job log the moment the arena exceeds Home
+    # Assistant's 10,648 .py files, which is the only measured yardstick this repo owns. If an arena
+    # hits exit 124 after that warning, raise `timeout-minutes` and the 2700s scan cap together -
+    # trimming the corpus or excluding directories would trade a timeout for a false negative, which
+    # is the one outcome these runs exist to rule out.
     timeout-minutes: 60
 
     env:
@@ -99,6 +112,14 @@ jobs:
         # Refs verified 2026-10-13 with `git ls-remote --tags` before this file was written:
         # apache/superset 3.0.0 = 40d9c4c, apache/airflow 2.7.3 = f124353,
         # home-assistant/core 2023.11.0 = 0b8d423. All three are tags, so `--branch` resolves them.
+        # The two arenas added 2026-10-23 were verified the same way, from this machine, before the
+        # edit: `git ls-remote --heads https://github.com/odoo/odoo.git 17.0` -> refs/heads/17.0 =
+        # dca5cd22d40f25066919d722bf687be48c51b0ec (a BRANCH, not a tag - Odoo ships per-version
+        # branches), and `git ls-remote --tags https://github.com/ansible/ansible.git v2.16.5` ->
+        # refs/tags/v2.16.5 = ee04df4796af1a438bc80aff33cdd5ca4d5304aa (annotated tag). `--branch`
+        # accepts either, which is why one flag covers all five arenas. Pinned, never `latest` or a
+        # moving default branch: a re-dispatch must land on the same revision or the numbers cannot
+        # be compared file-for-file with this run.
         # An empty $ARENA is the one input no pattern can match, so it is caught here with a plain
         # message instead of surfacing later as a confusing `git clone` exit 1.
         run: |
@@ -121,6 +142,16 @@ jobs:
               REPO="https://github.com/home-assistant/core.git"
               REF="2023.11.0"
               LABEL="home-assistant/core @ 2023.11.0 (aiohttp + ~4k modules, 1800+ integrations)"
+              ;;
+            odoo)
+              REPO="https://github.com/odoo/odoo.git"
+              REF="17.0"
+              LABEL="odoo/odoo @ 17.0 (ORM + Werkzeug RPC, per-version branch, whole addons tree)"
+              ;;
+            ansible)
+              REPO="https://github.com/ansible/ansible.git"
+              REF="v2.16.5"
+              LABEL="ansible/ansible @ v2.16.5 (CLI + module tree, jinja2 templating, ansible-core split across lib/)"
               ;;
             *)
               echo "::error::Unknown arena: $ARENA" >&2
@@ -149,6 +180,22 @@ jobs:
           echo "python files: $(find "$TARGET_DIR" -name '*.py' | wc -l)"
           find "$TARGET_DIR" -type f | sort > benchmark_results/target_files.txt
           echo "arena files: $(wc -l < benchmark_results/target_files.txt)"
+          # Sizing tripwire, printed BEFORE the 2700s scan starts so an oversized arena is visible in
+          # the job log instead of only in a timeout at minute 45. The yardstick is the number this
+          # file already carries for Home Assistant Core: 10,648 python files fit inside the 2700s cap
+          # after the collectors were parallelised. Odoo's per-version branch is a far larger tree, so
+          # it is warned about explicitly - nothing is skipped, excluded or capped here, because a
+          # skipped file would be a false negative. If the warning fires and the scan still finishes,
+          # the cap was simply generous; if it fires and the scan hits 124, raise `timeout-minutes`
+          # and the scan cap together rather than trimming the corpus.
+          PY_COUNT=$(find "$TARGET_DIR" -name '*.py' | wc -l)
+          echo "TARGET_PY_COUNT=$PY_COUNT" >> "$GITHUB_ENV"
+          echo "TARGET_PY_COUNT=$PY_COUNT" >> benchmark_results/provenance.txt
+          if [ "$PY_COUNT" -gt 10648 ]; then
+            echo "::warning::arena $ARENA has $PY_COUNT .py files - more than the 10,648 of Home" \
+              "Assistant Core that the 2700s scan cap and the 60 minute job cap were sized for;" \
+              "expect a longer run and check the cgroup peak before trusting a partial result"
+          fi
 
       - name: Gate 1 Hard Verification (prerequisite, 552 cases)
         # No "|| true" and no continue-on-error: a red engine makes every number in the report
@@ -184,6 +231,43 @@ jobs:
             echo "--- scan started $(date -u +%FT%TZ) on $(git rev-parse HEAD) ---"
             echo "command: timeout --signal=TERM --kill-after=30s 2700s python -u cli.py scan $TARGET_DIR/ --scope all --format json --sarif benchmark_results/tcs.sarif"
           } >> benchmark_results/tcs_stdout.txt
+          # Whole-tree memory accounting, cgroup v2. The engine itself has no cgroup code (verified:
+          # `grep -rn "cgroup" --include=*.py` over the repo excluding scratch/ returns nothing), so the
+          # runner is the only place that can see the kernel's own high-water mark. `memory.peak` is
+          # maintained by the kernel for the whole cgroup, and `cgroup.procs` is the proof that the
+          # process being sampled really belongs to that cgroup - without that check a peak could be
+          # attributed to a sibling that never ran the scan. `/proc/self/cgroup` gives the relative
+          # path (`0::/` on a runner sitting in the root), and if `memory.peak` is not under it the
+          # fallback is the unified root; if neither has the file the sampler says so in the log
+          # instead of inventing a number. Sampled in a background loop so the peak is attributable to
+          # the scan window, not to the 15 minutes of clone + Gate 1 that precede it.
+          CG_REL=$(awk -F: '$1=="0"{print $3}' /proc/self/cgroup 2>/dev/null || echo "")
+          CG_DIR="/sys/fs/cgroup${CG_REL}"
+          [ -f "$CG_DIR/memory.peak" ] || CG_DIR="/sys/fs/cgroup"
+          CG_MEM_LOG=benchmark_results/cgroup_mem.log
+          {
+            echo "--- cgroup v2 sampler ---"
+            echo "self cgroup     : $(cat /proc/self/cgroup 2>/dev/null | tr '\n' ' ')"
+            echo "cgroup dir      : $CG_DIR"
+            echo "memory.peak     : $(cat "$CG_DIR/memory.peak" 2>/dev/null || echo ABSENT)"
+            echo "cgroup.procs    : $(wc -l < "$CG_DIR/cgroup.procs" 2>/dev/null || echo ABSENT)"
+            echo "cgroup controllers: $(cat "$CG_DIR/cgroup.controllers" 2>/dev/null || echo ABSENT)"
+          } > "$CG_MEM_LOG"
+          if [ ! -f "$CG_DIR/memory.peak" ]; then
+            echo "memory.peak NOT AVAILABLE under $CG_DIR (cgroup v1 or hidden)" >> "$CG_MEM_LOG"
+          fi
+          (
+            while :; do
+              _cur=$(cat "$CG_DIR/memory.current" 2>/dev/null || echo na)
+              _pk=$(cat "$CG_DIR/memory.peak" 2>/dev/null || echo na)
+              _pid=$(pgrep -f "cli.py scan" 2>/dev/null | head -1)
+              _in=na; [ -n "$_pid" ] && { grep -qw "$_pid" "$CG_DIR/cgroup.procs" 2>/dev/null && _in=yes || _in=no; }
+              _n=$(wc -l < "$CG_DIR/cgroup.procs" 2>/dev/null || echo na)
+              echo "$(date -u +%FT%TZ) current=${_cur} peak=${_pk} scan_pid=${_pid:-none} in_cgroup.procs=${_in} procs=${_n}"
+              sleep 15
+            done
+          ) >> "$CG_MEM_LOG" 2>&1 &
+          CG_SAMPLER=$!
           set +e
           timeout --signal=TERM --kill-after=30s 2700s \
             python -u cli.py scan "$TARGET_DIR/" --scope all --format json \
@@ -191,7 +275,20 @@ jobs:
             2>&1 | tee -a benchmark_results/tcs_stdout.txt
           TCS_CODE=${PIPESTATUS[0]}
           set -e
+          kill "$CG_SAMPLER" 2>/dev/null || true
+          wait "$CG_SAMPLER" 2>/dev/null || true
           echo "TCS_SCAN_EXIT=$TCS_CODE" >> "$GITHUB_ENV"
+          # The last sample after the scan is the one that carries the run's high-water mark; `peak` is
+          # monotonic, so tail -1 is enough. Recorded into the environment for the artifact step and for
+          # the report, and kept as raw bytes so nobody has to guess the unit.
+          CG_FINAL_PEAK=$(grep -o 'peak=[0-9]*' "$CG_MEM_LOG" 2>/dev/null | tail -1 | cut -d= -f2 || echo "")
+          echo "CGROUP_DIR=$CG_DIR" >> "$GITHUB_ENV"
+          echo "CGROUP_PEAK_BYTES=${CG_FINAL_PEAK:-0}" >> "$GITHUB_ENV"
+          echo "----- cgroup v2 sampler (first / last / peak) -----"
+          head -6 "$CG_MEM_LOG"
+          grep -c 'current=' "$CG_MEM_LOG" 2>/dev/null || true
+          tail -2 "$CG_MEM_LOG"
+          echo "cgroup peak bytes = ${CG_FINAL_PEAK:-unknown}"
           echo "----- forensics extract (also saved to benchmark_results/tcs_profile.txt) -----"
           grep -E "\[PROFILE\]|\[GOVERNOR\]|\[TIMEOUT\]|timeout skipped|skipping unparseable|\[PARSER-MODE\]|\[RESCUED|\[SINKGATE\]|\[progress\]|Traceback|MemoryError" \
             benchmark_results/tcs_stdout.txt > benchmark_results/tcs_profile.txt || true
@@ -206,6 +303,160 @@ jobs:
           if ! grep -q "\[PROFILE\] Outer" benchmark_results/tcs_stdout.txt; then
             echo "::warning::no '[PROFILE] Outer' stage-timer line in the log - the checked-out revision ($(git rev-parse --short HEAD)) does not emit the instrumentation"
           fi
+
+      - name: Materialise Named Arena Artifacts (scan_profile.log / arena_result.json / arena_result.sarif)
+        if: always()
+        # Three fixed names, whatever the arena. `run: |` blocks execute before the upload step and
+        # `if: always()` means a scan that timed out (exit 124) or was killed still produces them, so a
+        # failed arena is still auditable instead of leaving an empty artifact.
+        #
+        # Where each one comes from, stated plainly because it matters for how much to trust it:
+        #   arena_result.sarif - a byte copy of benchmark_results/tcs.sarif, the engine's own SARIF.
+        #   arena_result.json  - DERIVED from that SARIF, not the engine's stdout. `python cli.py scan`
+        #                        has no JSON-file flag (`--sarif` is the only path writer and
+        #                        `--format json` prints to stdout, mixed with the stderr telemetry that
+        #                        this step must not swallow), so re-running the scan just to get a JSON
+        #                        file would double a 45-minute bill. The file says so in its own
+        #                        "source" key.
+        #   scan_profile.log   - the [PROFILE] / [GOVERNOR] extract, the engine's own peakRSS lines,
+        #                        and the cgroup v2 sampler output, in one readable file.
+        run: |
+          set +e
+          cp benchmark_results/tcs.sarif benchmark_results/arena_result.sarif 2>/dev/null
+          if [ -s benchmark_results/arena_result.sarif ]; then
+            echo "arena_result.sarif <- tcs.sarif ($(wc -c < benchmark_results/arena_result.sarif) bytes)"
+          else
+            echo "arena_result.sarif MISSING: the scan produced no SARIF (exit ${TCS_SCAN_EXIT:-not-recorded})"
+          fi
+          {
+            echo "=== arena ==="
+            echo "arena              : ${ARENA:-n/a}"
+            echo "label              : ${ARENA_LABEL:-n/a}"
+            echo "repo / ref         : ${REPO:-n/a} @ ${REF:-n/a}"
+            echo "target clone sha   : ${TARGET_SHA:-n/a}"
+            echo "py files / all     : ${TARGET_PY_COUNT:-n/a} / $(wc -l < benchmark_results/target_files.txt 2>/dev/null || echo n/a)"
+            echo "=== engine ==="
+            echo "tcs commit scored  : ${TCS_HEAD_SHA:-n/a}"
+            echo "tcs scan exit      : ${TCS_SCAN_EXIT:-not-recorded}"
+            echo "scan cap / job cap : 2700s / 60m"
+            echo "=== stage timers and governor lines ==="
+            cat benchmark_results/tcs_profile.txt 2>/dev/null || echo "(no [PROFILE] lines extracted)"
+            echo "=== engine-reported peak RSS ==="
+            grep -o "peakRSS_parent=[0-9]*MB" benchmark_results/tcs_stdout.txt 2>/dev/null | sort -u
+            echo "=== cgroup v2 whole-tree memory ==="
+            cat benchmark_results/cgroup_mem.log 2>/dev/null || echo "(no cgroup samples recorded)"
+          } > benchmark_results/scan_profile.log 2>&1
+          echo "scan_profile.log     $(wc -c < benchmark_results/scan_profile.log) bytes"
+          python - << 'PY'
+          import json
+          import os
+          import re
+
+          src = "benchmark_results/tcs.sarif"
+          peak = int(os.environ.get("CGROUP_PEAK_BYTES") or 0)
+          out = {
+              "arena": os.environ.get("ARENA", "n/a"),
+              "arena_label": os.environ.get("ARENA_LABEL", "n/a"),
+              "repo": os.environ.get("REPO", "n/a"),
+              "ref": os.environ.get("TARGET_REF_USED", os.environ.get("REF", "n/a")),
+              "target_sha": os.environ.get("TARGET_SHA", "n/a"),
+              "tcs_head_sha": os.environ.get("TCS_HEAD_SHA", os.environ.get("GITHUB_SHA", "n/a")),
+              "tcs_scan_exit": os.environ.get("TCS_SCAN_EXIT", "not-recorded"),
+              "target_py_files": int(os.environ.get("TARGET_PY_COUNT") or -1),
+              "source": ("derived from benchmark_results/tcs.sarif; `python cli.py scan --format json` "
+                         "writes JSON to stdout only and the scan log merges stdout with stderr, so no "
+                         "lossless JSON file exists to copy. Engine code is frozen: nothing was re-run."),
+              "memory": {
+                  "cgroup_dir": os.environ.get("CGROUP_DIR", "n/a"),
+                  "memory_peak_bytes": peak,
+                  "memory_peak_mb": round(peak / 1048576.0, 1) if peak else None,
+                  "cgroup_samples_log": "benchmark_results/cgroup_mem.log",
+                  "note": ("memory.peak is the kernel's high-water mark for the whole cgroup, so it "
+                           "covers clone, Gate 1, the scan and the other engines - not the scan alone. "
+                           "For the scan process itself read the engine's own peakRSS_parent lines in "
+                           "scan_profile.log."),
+              },
+              "counts": {},
+              "findings": [],
+          }
+          cwe_re = re.compile(r"\bcwe[/\s-]?(\d{1,4})\b", re.I)
+
+
+          def cwe_numbers(*values):
+              """Same rules as the referee's _cwe_numbers below: walk strings, lists and dicts,
+              keep 0 < n < 10000. Re-implemented here rather than imported because the referee is a
+              later step in this same file and its function is not importable from a `run:` block."""
+              found = set()
+              stack = list(values)
+              while stack:
+                  item = stack.pop()
+                  if isinstance(item, str):
+                      for match in cwe_re.finditer(item):
+                          number = int(match.group(1))
+                          if 0 < number < 10000:
+                              found.add(number)
+                  elif isinstance(item, (list, tuple, set)):
+                      stack.extend(item)
+                  elif isinstance(item, dict):
+                      stack.extend(item.values())
+              return found
+
+
+          try:
+              with open(src, encoding="utf-8") as handle:
+                  data = json.load(handle)
+          except (OSError, ValueError) as exc:
+              out["counts"] = {"status": f"SARIF unreadable: {type(exc).__name__}"}
+              print("arena_result.json: SARIF missing or unreadable -> counts.status records it")
+          else:
+              files, cwes, rules = set(), set(), set()
+              for run_obj in data.get("runs", []):
+                  driver = run_obj.get("tool", {}).get("driver", {})
+                  rule_list = driver.get("rules", []) or []
+                  for rule in rule_list:
+                      rules.add(rule.get("id", ""))
+                  # Join on ruleId, not ruleIndex: Semgrep OSS SARIF carries `ruleIndex: None`, so an
+                  # index lookup loses every CWE stored in the rule metadata. Without this join a
+                  # finding whose only CWE is in `rules[].properties` would be reported as cwe=None.
+                  catalog = {rule.get("id"): rule for rule in rule_list
+                             if isinstance(rule, dict) and rule.get("id")}
+                  for res in run_obj.get("results", []) or []:
+                      rule = catalog.get(res.get("ruleId", "")) or {}
+                      uri, line = "?", 0
+                      for loc in res.get("locations", []) or []:
+                          place = loc.get("physicalLocation", {})
+                          uri = place.get("artifactLocation", {}).get("uri", "?")
+                          line = (place.get("region", {}) or {}).get("startLine", 0) or 0
+                          break
+                      hits = cwe_numbers(
+                          res.get("ruleId"), res.get("rule"),
+                          (res.get("properties") or {}).get("cwe"),
+                          (res.get("properties") or {}).get("tags"),
+                          (rule.get("properties") or {}).get("cwe"),
+                          (rule.get("properties") or {}).get("tags"),
+                          (rule.get("properties") or {}).get("subcategories"),
+                          rule.get("id"), rule.get("name"),
+                          (rule.get("shortDescription") or {}).get("text"),
+                          rule.get("taxonomies"),
+                      )
+                      cwe = min(hits) if hits else None
+                      if cwe is not None:
+                          cwes.add(cwe)
+                      files.add(uri)
+                      out["findings"].append({"file": uri, "line": line, "cwe": cwe,
+                                              "rule": res.get("ruleId", "") or rule.get("id", "") or "?",
+                                              "level": res.get("level", ""),
+                                              "message": (res.get("message", {}) or {}).get("text", "")[:200]})
+              out["counts"] = {"status": "ok", "runs": len(data.get("runs", [])),
+                               "results": len(out["findings"]), "rules": len(rules),
+                               "distinct_files": len(files), "distinct_cwes": len(cwes)}
+          with open("benchmark_results/arena_result.json", "w", encoding="utf-8") as handle:
+              json.dump(out, handle, indent=1, sort_keys=False)
+          print(f"arena_result.json rows={len(out['findings'])} counts={out['counts']}")
+          PY
+          ls -la benchmark_results/scan_profile.log benchmark_results/arena_result.json \
+            benchmark_results/arena_result.sarif benchmark_results/cgroup_mem.log 2>&1 | tail -6
+          set -e
 
       - name: Write CodeQL Config (target directory only)
         # Without this, CodeQL analyses the whole workspace, which here means our own 17k-line engine
@@ -540,7 +791,9 @@ jobs:
                  "- Job timeout: 60 minutes (45 of them available to the TCS scan), Gate 1 first, "
                  "then the three engines share what is left.",
                  "- Artifacts: `benchmark_results/` (three SARIF sets, engine logs, target inventory, "
-                 "this report).", ""]
+                 "this report), plus the named trio `scan_profile.log`, `arena_result.json`, "
+                 "`arena_result.sarif` in the `-named` artifact (whole-tree cgroup v2 `memory.peak` "
+                 "sampler output included, from `cgroup_mem.log`).", ""]
 
           text = "\n".join(md)
           os.makedirs("benchmark_results", exist_ok=True)
@@ -569,3 +822,22 @@ jobs:
           name: boss-arena-${{ github.event.inputs.arena }}-results
           path: benchmark_results/
           if-no-files-found: warn
+
+      # The three required names get their own artifact so they are findable by name alone, without
+      # unpacking the whole directory: a reviewer should be able to grab `scan_profile.log`,
+      # `arena_result.json` and `arena_result.sarif` directly. A separate artifact is used instead of
+      # listing them inside the `path:` of the step above, because those paths are already contained in
+      # `benchmark_results/` and overlapping inputs make upload-artifact@v4's layout unpredictable.
+      # `if-no-files-found: warn` keeps a scan that never wrote a SARIF visible as a warning rather
+      # than turning the whole job red for a missing file that the run legitimately does not have.
+      - name: Upload Named Arena Artifacts
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: boss-arena-${{ github.event.inputs.arena }}-named
+          path: |
+            benchmark_results/scan_profile.log
+            benchmark_results/arena_result.json
+            benchmark_results/arena_result.sarif
+          if-no-files-found: warn
+          compression-level: 9
