@@ -1423,6 +1423,13 @@ SQL_COMPOSITION_BUILDERS = frozenset({
 # `from sqlalchemy import text` and `import sqlalchemy as sa` are the two spellings real code uses.
 SQLALCHEMY_TEXT_ALIASES = frozenset({"sqlalchemy", "sa"})
 SQLALCHEMY_TEXT_NAME = "text"
+# CWE-89: Odoo-style ORM searches take an `order` keyword that is parsed into ORDER BY clauses.
+# `search_read`/`search_count` are Odoo-only spellings; a plain `.search` is additionally gated to
+# a chain carrying `.env`, so generic search APIs (LDAP, Elasticsearch helpers) never enter this
+# rule even if some of them grow an `order` keyword.
+ORM_SEARCH_METHODS = frozenset({"search", "search_read", "search_count"})
+ORM_ORDER_SOURCE_ROOTS = frozenset({"request", "post", "params"})
+ORM_ORDER_PLACEHOLDER_RE = re.compile(r"%[sdrfi]|%\(")
 # ── Enterprise route boundaries whose parameters carry the client payload ─────────────────────
 # Zulip's `@has_request_variables` family: a view only receives client text through these decorators,
 # and nothing in the corpus spells a web framework decorator this way, so the name list is its own
@@ -8342,9 +8349,32 @@ class TaintTracker:
         scope_id: str,
         current_lineno: int,
         visited: Optional[set[str]] = None,
-        call_context: Optional[dict[str, ProvenanceValue]] = None
+        call_context: Optional[dict[str, ProvenanceValue]] = None,
+        depth: int = 0,
+        # 50 recursive frames: typical real-world paths are < 20 hops (~2 frames each) and
+        # resolve fully, while a runaway chain is cut far below Python's ~1000-frame limit.
+        max_depth: int = 50
     ) -> ProvenanceValue:
+        if depth >= max_depth:
+            # Depth guard: return UNKNOWN (not STATIC) so a path cut short can never be
+            # reported as proven-clean -> no missed finding; callers treat it as still-flowing.
+            return ProvenanceValue(
+                state=ProvenanceState.UNKNOWN,
+                confidence=0.50,
+                source_trace=("depth_guard",),
+                origin_node=node
+            )
         if visited is None: visited = set()
+        node_ident = id(node)
+        if node_ident in visited:
+            # Same AST node re-entered inside one resolution chain -> cycle; stop here.
+            return ProvenanceValue(
+                state=ProvenanceState.UNKNOWN,
+                confidence=0.50,
+                source_trace=("circular_node",),
+                origin_node=node
+            )
+        visited.add(node_ident)
         if call_context is None: call_context = {}
         mod_name = scope_module(scope_id)
         file_name = self.file_paths.get(mod_name, f"{mod_name}.py")
@@ -8371,7 +8401,7 @@ class TaintTracker:
             if target_cls_scope:
                 records = self.class_field_assignments.get((target_cls_scope, node.attr), [])
                 if records:
-                    provs = [self.resolve_path_provenance(r.value_node, sink, r.scope_id, r.lineno, visited.copy(), call_context) for r in records]
+                    provs = [self.resolve_path_provenance(r.value_node, sink, r.scope_id, r.lineno, visited.copy(), call_context, depth=depth + 1, max_depth=max_depth) for r in records]
                     tainted = [p for p in provs if p.state == ProvenanceState.TAINTED]
                     if tainted:
                         best_p = max(tainted, key=lambda p: p.confidence)
@@ -8401,8 +8431,8 @@ class TaintTracker:
 
         # Ternary Expressions (ast.IfExp)
         if isinstance(node, ast.IfExp):
-            p_body = self.resolve_path_provenance(node.body, sink, scope_id, current_lineno, visited.copy(), call_context)
-            p_orelse = self.resolve_path_provenance(node.orelse, sink, scope_id, current_lineno, visited.copy(), call_context)
+            p_body = self.resolve_path_provenance(node.body, sink, scope_id, current_lineno, visited.copy(), call_context, depth=depth + 1, max_depth=max_depth)
+            p_orelse = self.resolve_path_provenance(node.orelse, sink, scope_id, current_lineno, visited.copy(), call_context, depth=depth + 1, max_depth=max_depth)
             return compose_path_provenance(p_body, p_orelse, operator="ternary")
 
         # 3. JoinedStr (f-strings)
@@ -8410,11 +8440,11 @@ class TaintTracker:
             parts: list[ProvenanceValue] = []
             for part in node.values:
                 if isinstance(part, ast.FormattedValue):
-                    parts.append(self.resolve_path_provenance(part.value, sink, scope_id, current_lineno, visited.copy(), call_context))
+                    parts.append(self.resolve_path_provenance(part.value, sink, scope_id, current_lineno, visited.copy(), call_context, depth=depth + 1, max_depth=max_depth))
                 elif isinstance(part, ast.Constant):
                     parts.append(ProvenanceValue(state=ProvenanceState.STATIC, confidence=1.0, source_trace=("fstring_const",), origin_node=part))
                 else:
-                    parts.append(self.resolve_path_provenance(part, sink, scope_id, current_lineno, visited.copy(), call_context))
+                    parts.append(self.resolve_path_provenance(part, sink, scope_id, current_lineno, visited.copy(), call_context, depth=depth + 1, max_depth=max_depth))
             if not parts:
                 return ProvenanceValue(state=ProvenanceState.STATIC, confidence=1.0, source_trace=("fstring_empty",), origin_node=node)
             res = parts[0]
@@ -8424,8 +8454,8 @@ class TaintTracker:
 
         # 4. BinOp (path joins via /, +, %)
         if isinstance(node, ast.BinOp):
-            left = self.resolve_path_provenance(node.left, sink, scope_id, current_lineno, visited.copy(), call_context)
-            right = self.resolve_path_provenance(node.right, sink, scope_id, current_lineno, visited.copy(), call_context)
+            left = self.resolve_path_provenance(node.left, sink, scope_id, current_lineno, visited.copy(), call_context, depth=depth + 1, max_depth=max_depth)
+            right = self.resolve_path_provenance(node.right, sink, scope_id, current_lineno, visited.copy(), call_context, depth=depth + 1, max_depth=max_depth)
             op_label = "/" if isinstance(node.op, ast.Div) else ("+" if isinstance(node.op, ast.Add) else "%")
             return compose_path_provenance(left, right, operator=op_label)
 
@@ -8433,7 +8463,7 @@ class TaintTracker:
         if isinstance(node, (ast.List, ast.Tuple, ast.Set)):
             if not node.elts:
                 return ProvenanceValue(state=ProvenanceState.STATIC, confidence=1.0, source_trace=("empty_collection",), origin_node=node)
-            elt_provs = [self.resolve_path_provenance(elt, sink, scope_id, current_lineno, visited.copy(), call_context) for elt in node.elts]
+            elt_provs = [self.resolve_path_provenance(elt, sink, scope_id, current_lineno, visited.copy(), call_context, depth=depth + 1, max_depth=max_depth) for elt in node.elts]
             tainted_elts = [e for e in elt_provs if e.state == ProvenanceState.TAINTED]
             if tainted_elts:
                 best_e = max(tainted_elts, key=lambda e: e.confidence)
@@ -8466,7 +8496,7 @@ class TaintTracker:
             items_to_check.extend(node.values)
             if not items_to_check:
                 return ProvenanceValue(state=ProvenanceState.STATIC, confidence=1.0, source_trace=("empty_dict",), origin_node=node)
-            item_provs = [self.resolve_path_provenance(item, sink, scope_id, current_lineno, visited.copy(), call_context) for item in items_to_check]
+            item_provs = [self.resolve_path_provenance(item, sink, scope_id, current_lineno, visited.copy(), call_context, depth=depth + 1, max_depth=max_depth) for item in items_to_check]
             tainted_items = [e for e in item_provs if e.state == ProvenanceState.TAINTED]
             if tainted_items:
                 best_e = max(tainted_items, key=lambda e: e.confidence)
@@ -8527,7 +8557,7 @@ class TaintTracker:
 
             if fn_base in ("str", "repr", "bytes") or d_base in ("str", "repr", "bytes"):
                 if node.args:
-                    return self.resolve_path_provenance(node.args[0], sink, scope_id, current_lineno, visited.copy(), call_context)
+                    return self.resolve_path_provenance(node.args[0], sink, scope_id, current_lineno, visited.copy(), call_context, depth=depth + 1, max_depth=max_depth)
 
             # 1. User-defined function resolution MUST take precedence over semantic stdlib producer lookup
             func_scope = self._resolve_function_scope(d_name or canon_name, scope_id)
@@ -8537,7 +8567,7 @@ class TaintTracker:
                     visited.add(call_sig)
                     func_node = self.functions[func_scope]
                     param_names = [a.arg for a in func_node.args.args]
-                    arg_provs = [self.resolve_path_provenance(a, sink, scope_id, current_lineno, visited.copy(), call_context) for a in node.args]
+                    arg_provs = [self.resolve_path_provenance(a, sink, scope_id, current_lineno, visited.copy(), call_context, depth=depth + 1, max_depth=max_depth) for a in node.args]
                     new_ctx = {}
                     for idx, p_name in enumerate(param_names):
                         if idx < len(arg_provs):
@@ -8546,13 +8576,13 @@ class TaintTracker:
                             new_ctx[p_name] = ProvenanceValue(state=ProvenanceState.STATIC, confidence=1.0)
                     for kw in getattr(node, "keywords", []):
                         if kw.arg and kw.arg in param_names:
-                            new_ctx[kw.arg] = self.resolve_path_provenance(kw.value, sink, scope_id, current_lineno, visited.copy(), call_context)
+                            new_ctx[kw.arg] = self.resolve_path_provenance(kw.value, sink, scope_id, current_lineno, visited.copy(), call_context, depth=depth + 1, max_depth=max_depth)
                     returns = self.returns_by_scope.get(func_scope, [])
                     if returns:
                         ret_provs = []
                         for r in returns:
                             if r.value:
-                                ret_provs.append(self.resolve_path_provenance(r.value, sink, func_scope, r.lineno, visited.copy(), new_ctx))
+                                ret_provs.append(self.resolve_path_provenance(r.value, sink, func_scope, r.lineno, visited.copy(), new_ctx, depth=depth + 1, max_depth=max_depth))
                             else:
                                 ret_provs.append(ProvenanceValue(state=ProvenanceState.STATIC, confidence=1.0))
                         res_p = ret_provs[0]
@@ -8583,12 +8613,12 @@ class TaintTracker:
 
             # 3. Built-in type conversions / path wrappers (str, bytes, os.fspath)
             if (canon_name in ("str", "bytes", "os.fspath", "builtins.str", "builtins.bytes") or d_name in ("str", "bytes", "os.fspath")) and node.args:
-                return self.resolve_path_provenance(node.args[0], sink, scope_id, current_lineno, visited.copy(), call_context)
+                return self.resolve_path_provenance(node.args[0], sink, scope_id, current_lineno, visited.copy(), call_context, depth=depth + 1, max_depth=max_depth)
 
             if canon_name in ("os.walk", "walk") or d_name in ("os.walk", "walk"):
                 root_expr = node.args[0] if node.args else None
                 if root_expr:
-                    root_prov = self.resolve_path_provenance(root_expr, sink, scope_id, current_lineno, visited.copy(), call_context)
+                    root_prov = self.resolve_path_provenance(root_expr, sink, scope_id, current_lineno, visited.copy(), call_context, depth=depth + 1, max_depth=max_depth)
                 else:
                     root_prov = ProvenanceValue(state=ProvenanceState.UNKNOWN, confidence=0.50)
 
@@ -8618,7 +8648,7 @@ class TaintTracker:
 
             if canon_name in ("Path", "pathlib.Path") or d_name in ("Path", "pathlib.Path"):
                 if node.args:
-                    arg_prov = self.resolve_path_provenance(node.args[0], sink, scope_id, current_lineno, visited.copy(), call_context)
+                    arg_prov = self.resolve_path_provenance(node.args[0], sink, scope_id, current_lineno, visited.copy(), call_context, depth=depth + 1, max_depth=max_depth)
                     return ProvenanceValue(
                         state=arg_prov.state,
                         confidence=arg_prov.confidence,
@@ -8643,7 +8673,7 @@ class TaintTracker:
                 )
 
             if isinstance(node.func, ast.Attribute) and node.func.attr in ("resolve", "absolute", "expanduser"):
-                recv_prov = self.resolve_path_provenance(node.func.value, sink, scope_id, current_lineno, visited.copy(), call_context)
+                recv_prov = self.resolve_path_provenance(node.func.value, sink, scope_id, current_lineno, visited.copy(), call_context, depth=depth + 1, max_depth=max_depth)
                 return ProvenanceValue(
                     state=recv_prov.state,
                     confidence=recv_prov.confidence,
@@ -8660,7 +8690,7 @@ class TaintTracker:
                 else:
                     all_arg_nodes = list(node.args)
 
-                arg_provs = [self.resolve_path_provenance(a, sink, scope_id, current_lineno, visited.copy(), call_context) for a in all_arg_nodes]
+                arg_provs = [self.resolve_path_provenance(a, sink, scope_id, current_lineno, visited.copy(), call_context, depth=depth + 1, max_depth=max_depth) for a in all_arg_nodes]
                 tainted_provs = [p for p in arg_provs if p.state == ProvenanceState.TAINTED]
                 if tainted_provs:
                     best_t = max(tainted_provs, key=lambda a: a.confidence)
@@ -8685,12 +8715,12 @@ class TaintTracker:
                            "os.path.dirname", "posixpath.dirname", "ntpath.dirname",
                            "os.path.abspath", "posixpath.abspath", "ntpath.abspath",
                            "os.path.realpath", "posixpath.realpath", "ntpath.realpath")) and node.args:
-                return self.resolve_path_provenance(node.args[0], sink, scope_id, current_lineno, visited.copy(), call_context)
+                return self.resolve_path_provenance(node.args[0], sink, scope_id, current_lineno, visited.copy(), call_context, depth=depth + 1, max_depth=max_depth)
 
             # Unmodeled / opaque call: check if any arguments are tainted
-            arg_provs = [self.resolve_path_provenance(a, sink, scope_id, current_lineno, visited.copy(), call_context) for a in node.args]
+            arg_provs = [self.resolve_path_provenance(a, sink, scope_id, current_lineno, visited.copy(), call_context, depth=depth + 1, max_depth=max_depth) for a in node.args]
             for kw in getattr(node, "keywords", []):
-                arg_provs.append(self.resolve_path_provenance(kw.value, sink, scope_id, current_lineno, visited.copy(), call_context))
+                arg_provs.append(self.resolve_path_provenance(kw.value, sink, scope_id, current_lineno, visited.copy(), call_context, depth=depth + 1, max_depth=max_depth))
             tainted_args = [a for a in arg_provs if a.state == ProvenanceState.TAINTED]
             if tainted_args:
                 best_t = max(tainted_args, key=lambda a: a.confidence)
@@ -8740,7 +8770,7 @@ class TaintTracker:
                         source_trace=("sanitizer:pathlib.Path.name",),
                         origin_node=node
                     )
-                recv_prov = self.resolve_path_provenance(node.value, sink, scope_id, current_lineno, visited.copy(), call_context)
+                recv_prov = self.resolve_path_provenance(node.value, sink, scope_id, current_lineno, visited.copy(), call_context, depth=depth + 1, max_depth=max_depth)
                 return ProvenanceValue(
                     state=recv_prov.state,
                     confidence=recv_prov.confidence,
@@ -8749,7 +8779,7 @@ class TaintTracker:
                     origin_node=node
                 )
 
-            recv_prov = self.resolve_path_provenance(node.value, sink, scope_id, current_lineno, visited.copy(), call_context)
+            recv_prov = self.resolve_path_provenance(node.value, sink, scope_id, current_lineno, visited.copy(), call_context, depth=depth + 1, max_depth=max_depth)
             if recv_prov.state == ProvenanceState.INTERNAL_DYNAMIC:
                 return ProvenanceValue(
                     state=ProvenanceState.INTERNAL_DYNAMIC,
@@ -8810,7 +8840,7 @@ class TaintTracker:
                     if v_key not in visited:
                         v_copy = visited.copy()
                         v_copy.add(v_key)
-                        return self.resolve_path_provenance(found_record.value_node, sink, found_record.scope_id, found_record.lineno, v_copy, call_context)
+                        return self.resolve_path_provenance(found_record.value_node, sink, found_record.scope_id, found_record.lineno, v_copy, call_context, depth=depth + 1, max_depth=max_depth)
 
             # 2. Check base variable definition if initialized as dict/list literal
             if base_var and key is not None:
@@ -8847,7 +8877,7 @@ class TaintTracker:
                             if key_v_key not in visited:
                                 v_copy = visited.copy()
                                 v_copy.add(key_v_key)
-                                return self.resolve_path_provenance(matched_key_val, sink, found_base_record.scope_id, found_base_record.lineno, v_copy, call_context)
+                                return self.resolve_path_provenance(matched_key_val, sink, found_base_record.scope_id, found_base_record.lineno, v_copy, call_context, depth=depth + 1, max_depth=max_depth)
                     elif isinstance(val_node, (ast.List, ast.Tuple)) and isinstance(key, int):
                         if -len(val_node.elts) <= key < len(val_node.elts):
                             matched_elt = val_node.elts[key]
@@ -8855,18 +8885,18 @@ class TaintTracker:
                             if elt_v_key not in visited:
                                 v_copy = visited.copy()
                                 v_copy.add(elt_v_key)
-                                return self.resolve_path_provenance(matched_elt, sink, found_base_record.scope_id, found_base_record.lineno, v_copy, call_context)
+                                return self.resolve_path_provenance(matched_elt, sink, found_base_record.scope_id, found_base_record.lineno, v_copy, call_context, depth=depth + 1, max_depth=max_depth)
 
             if isinstance(node.value, ast.Dict) and key is not None:
                 for k, v in zip(node.value.keys, node.value.values):
                     k_val = self._extract_subscript_key(k, scope_id)
                     if k_val == key:
-                        return self.resolve_path_provenance(v, sink, scope_id, current_lineno, visited.copy(), call_context)
+                        return self.resolve_path_provenance(v, sink, scope_id, current_lineno, visited.copy(), call_context, depth=depth + 1, max_depth=max_depth)
             elif isinstance(node.value, (ast.List, ast.Tuple)) and isinstance(key, int):
                 if -len(node.value.elts) <= key < len(node.value.elts):
-                    return self.resolve_path_provenance(node.value.elts[key], sink, scope_id, current_lineno, visited.copy(), call_context)
+                    return self.resolve_path_provenance(node.value.elts[key], sink, scope_id, current_lineno, visited.copy(), call_context, depth=depth + 1, max_depth=max_depth)
 
-            val_prov = self.resolve_path_provenance(node.value, sink, scope_id, current_lineno, visited.copy(), call_context)
+            val_prov = self.resolve_path_provenance(node.value, sink, scope_id, current_lineno, visited.copy(), call_context, depth=depth + 1, max_depth=max_depth)
             if val_prov.state == ProvenanceState.TAINTED:
                 return ProvenanceValue(state=ProvenanceState.TAINTED, confidence=val_prov.confidence, source_id=val_prov.source_id, source_trace=(*val_prov.source_trace, "subscript"), origin_node=node)
             elif val_prov.state == ProvenanceState.INTERNAL_DYNAMIC:
@@ -8925,7 +8955,7 @@ class TaintTracker:
 
                 if len(reaching) == 1 and not reaching[0].is_conditional:
                     target_rec = reaching[0]
-                    resolved = self.resolve_path_provenance(target_rec.value_node, sink, target_rec.scope_id, target_rec.lineno, visited, call_context)
+                    resolved = self.resolve_path_provenance(target_rec.value_node, sink, target_rec.scope_id, target_rec.lineno, visited, call_context, depth=depth + 1, max_depth=max_depth)
                     return ProvenanceValue(
                         state=resolved.state,
                         confidence=resolved.confidence,
@@ -8934,7 +8964,7 @@ class TaintTracker:
                         origin_node=node
                     )
                 else:
-                    resolved_list = [self.resolve_path_provenance(r.value_node, sink, r.scope_id, r.lineno, visited.copy(), call_context) for r in reaching]
+                    resolved_list = [self.resolve_path_provenance(r.value_node, sink, r.scope_id, r.lineno, visited.copy(), call_context, depth=depth + 1, max_depth=max_depth) for r in reaching]
                     res_p = resolved_list[0]
                     for rp in resolved_list[1:]:
                         res_p = compose_path_provenance(res_p, rp, operator="branch_merge")
@@ -8986,7 +9016,7 @@ class TaintTracker:
                             if site_key not in visited:
                                 v_copy = visited.copy()
                                 v_copy.add(site_key)
-                                caller_prov = self.resolve_path_provenance(arg_expr, sink, caller_scope, call_lineno, v_copy)
+                                caller_prov = self.resolve_path_provenance(arg_expr, sink, caller_scope, call_lineno, v_copy, depth=depth + 1, max_depth=max_depth)
                                 caller_provs.append(caller_prov)
                     if caller_provs:
                         res_p = caller_provs[0]
@@ -12227,6 +12257,181 @@ class TaintTracker:
                 and statement.func.attr == "format":
             return bool(statement.args or statement.keywords)
         return False
+
+    # ── 12c. CWE-89: request-controlled order= interpolated into an ORM search ────────
+    def _collect_cwe89_orm_order_injection(self, tree, filename, source_lines, module=""):
+        """`Model.search(..., order='... %s ...' % request.params.get('order'))`.
+
+        The cursor sink map cannot see this: the dangerous value is the `order` keyword of an ORM
+        search, not a statement handed to `execute()`. Precision rests on four gates at once - the
+        call is one of the three Odoo search methods (a plain `search` must also sit on a chain
+        carrying `.env`), the `order` value resolves to a string built at runtime, that string has
+        a hole, and the hole resolves to a request payload read. A static literal, an alias of one,
+        and a formatting operation whose hole is itself a constant all stay silent.
+        """
+        if not module:
+            module = next((mod for mod, path in self.file_paths.items() if path == filename), "")
+        if not module:
+            return
+        # One module at a time: this cache never outlives a single collector call.
+        self._c89_orm_callee_cache = {}
+        for node in self._module_calls(tree):
+            if not isinstance(node, ast.Call) or not isinstance(node.func, ast.Attribute):
+                continue
+            if node.func.attr not in ORM_SEARCH_METHODS:
+                continue
+            order_kw = next((kw for kw in node.keywords if kw.arg == "order"), None)
+            if order_kw is None:
+                continue
+            if node.func.attr == "search" and not self._c89_orm_receiver_has_env(node.func.value):
+                continue
+            lineno = getattr(node, "lineno", 0)
+            scope_id = self._c89_orm_scope_at(module, lineno)
+            if not self._c89_orm_order_is_request_interpolated(
+                    order_kw.value, module, scope_id, lineno):
+                continue
+            if self._blindspot_line_suppressed(source_lines, node):
+                continue
+            self._add_blindspot_sink(
+                node, filename, "CWE-89", "SQL_QUERY_EXECUTION", "SQL_INJECTION",
+                "CWE-89: request-controlled order= interpolated into an ORM search",
+                "SQL_INJECTION", reuse_existing=True)
+
+    @staticmethod
+    def _c89_orm_receiver_has_env(receiver):
+        """`request.env[...]`, `self.env[...]` and `...with_context(...)` all carry the env link."""
+        return any(isinstance(sub, ast.Attribute) and sub.attr == "env"
+                   for sub in ast.walk(receiver))
+
+    def _c89_orm_scope_at(self, module, lineno):
+        """The function scope that lexically contains *lineno*, else the module-global scope."""
+        for scope_id, func in self.functions.items():
+            if scope_module(scope_id) != module:
+                continue
+            end = getattr(func, "end_lineno", None) or func.lineno
+            if func.lineno <= lineno <= end:
+                return scope_id
+        return f"{module}:global"
+
+    def _c89_orm_latest_assignment(self, name, module, scope_id, use_lineno):
+        """Latest assignment to *name* in *scope_id* or a module global, above *use_lineno*."""
+        best = None
+        for bucket, records in self.assignments_by_scope.records_by_name.get(name, ()):
+            bucket_scope = bucket[0]
+            if bucket_scope != scope_id and not bucket_scope.endswith(":global"):
+                continue
+            if scope_module(bucket_scope) != module:
+                continue
+            for record in records:
+                if record.lineno < use_lineno and (best is None or record.lineno >= best[0]):
+                    best = (record.lineno, record.value_node)
+        return best[1] if best else None
+
+    def _c89_orm_callee_scope(self, func, module):
+        """The unique same-module function/method *func* names, or "" when unknown or ambiguous."""
+        callee = dotted_name(func) or ""
+        if not callee:
+            return ""
+        last = callee.rsplit(".", 1)[-1]
+        cache = self.__dict__.setdefault("_c89_orm_callee_cache", {})
+        key = (module, last)
+        if key in cache:
+            return cache[key]
+        matches = []
+        for scope_id in self.functions:
+            if not scope_id.startswith(module + ":function:"):
+                continue
+            if scope_id.rsplit(":function:", 1)[-1].rsplit(".", 1)[-1] == last:
+                matches.append(scope_id)
+        resolved = matches[0] if len(matches) == 1 else ""
+        cache[key] = resolved
+        return resolved
+
+    def _c89_orm_resolved_values(self, expr, module, scope_id, use_lineno, depth=2):
+        """Yield `(expr, scope_id, lineno)` through bounded local assignments and call returns."""
+        queue = [(expr, scope_id, use_lineno, depth)]
+        seen = set()
+        while queue:
+            current, current_scope, current_line, remaining = queue.pop(0)
+            if id(current) in seen:
+                continue
+            seen.add(id(current))
+            yield current, current_scope, current_line
+            if remaining <= 0:
+                continue
+            if isinstance(current, ast.Name):
+                value = self._c89_orm_latest_assignment(
+                    current.id, module, current_scope, current_line)
+                if value is not None:
+                    queue.append((value, current_scope,
+                                  getattr(value, "lineno", current_line), remaining - 1))
+            elif isinstance(current, ast.Call) and isinstance(
+                    current.func, (ast.Name, ast.Attribute)):
+                callee_scope = self._c89_orm_callee_scope(current.func, module)
+                for ret in self.returns_by_scope.get(callee_scope, ()) if callee_scope else ():
+                    if ret.value is not None:
+                        queue.append((ret.value, callee_scope,
+                                      getattr(ret, "lineno", current_line), remaining - 1))
+
+    @staticmethod
+    def _c89_orm_format_holes(expr):
+        """The values filling a runtime-built string, or None for a static literal."""
+        if isinstance(expr, ast.JoinedStr):
+            holes = [item.value for item in expr.values if isinstance(item, ast.FormattedValue)]
+            return holes or None
+        if isinstance(expr, ast.BinOp) and isinstance(expr.op, ast.Mod) \
+                and isinstance(expr.left, ast.Constant) and isinstance(expr.left.value, str) \
+                and ORM_ORDER_PLACEHOLDER_RE.search(expr.left.value):
+            right = expr.right
+            if isinstance(right, ast.Tuple):
+                holes = [elt for elt in right.elts if not isinstance(elt, ast.Constant)]
+                return holes or None
+            return None if isinstance(right, ast.Constant) else [right]
+        if isinstance(expr, ast.Call) and isinstance(expr.func, ast.Attribute) \
+                and expr.func.attr == "format":
+            if not any(isinstance(sub, ast.Constant) and isinstance(sub.value, str)
+                       and "{" in sub.value for sub in ast.walk(expr.func.value)):
+                return None
+            holes = list(expr.args) + [kw.value for kw in expr.keywords]
+            return holes or None
+        return None
+
+    def _c89_orm_order_is_request_interpolated(self, expr, module, scope_id, use_lineno):
+        """True when *expr* resolves to a formatted string fed by a request payload read."""
+        for value, value_scope, value_line in self._c89_orm_resolved_values(
+                expr, module, scope_id, use_lineno):
+            holes = self._c89_orm_format_holes(value)
+            if holes is None:
+                continue
+            for hole in holes:
+                for candidate, _scope, _line in self._c89_orm_resolved_values(
+                        hole, module, value_scope, value_line):
+                    if self._c89_orm_request_read(candidate):
+                        return True
+        return False
+
+    @staticmethod
+    def _c89_orm_request_read(expr):
+        """A read off `request` or a controller payload parameter (`post`, `params`)."""
+        for sub in ast.walk(expr):
+            if isinstance(sub, ast.Call) and isinstance(sub.func, ast.Attribute) \
+                    and sub.func.attr in ("get", "getlist", "pop"):
+                if TaintTracker._c89_orm_request_root(sub.func.value):
+                    return True
+            elif isinstance(sub, ast.Subscript) and TaintTracker._c89_orm_request_root(sub.value):
+                return True
+        return False
+
+    @staticmethod
+    def _c89_orm_request_root(node):
+        root = node
+        while isinstance(root, (ast.Attribute, ast.Subscript)):
+            root = root.value
+        if isinstance(root, ast.Call):
+            root = root.func
+            while isinstance(root, ast.Attribute):
+                root = root.value
+        return isinstance(root, ast.Name) and root.id in ORM_ORDER_SOURCE_ROOTS
 
     # ── 12. CWE-502: bytes read off a ZeroMQ/socket channel handed to a deserializer ─
     def _collect_cwe502_socket_deserialization(self, tree, filename, source_lines):
@@ -16955,6 +17160,17 @@ class TaintTracker:
                     _add_finding(node, mod_name, scope_id, "CSRF_EXEMPT_DECORATOR", "CSRF_VULNERABILITY", "CWE-352")
 
     def _collect_intra_file_call_bridge_findings(self) -> None:
+        # Defensive shield at the collector's dispatch: a runaway call chain must never
+        # abort analyze(); skip the remaining bridges and keep every finding collected so far.
+        try:
+            self._collect_intra_file_call_bridge_findings_impl()
+        except RecursionError:
+            if not getattr(self, "_recursion_warned_bridge", False):
+                self._recursion_warned_bridge = True
+                print("TimeCodeSecurity [WARN] intra_call_bridge hit RecursionError; "
+                      "skipping this collector instead of aborting the scan.", file=sys.stderr)
+
+    def _collect_intra_file_call_bridge_findings_impl(self) -> None:
         """Phase 10.1: Intra-file function call resolver (parameter-to-argument bridge).
 
         When a SQL sink argument inside a helper function is a bare parameter Name that
@@ -17222,15 +17438,21 @@ class TaintTracker:
                 scope_id=scope_id,
             ))
 
-        def _bridge_candidates(func_node, param_name: str, mod_name: str, hop: int, visited):
+        def _bridge_candidates(func_node, param_name: str, mod_name: str,
+                               call_depth: int = 0, visited_calls=None,
+                               max_call_depth: int = 20):
             """Yield (expr, scope_id, lineno) candidates from same-file call sites of func_node.
 
             Returns None (sentinel for 'remain silent') if any reachable call site line or
             assignment line is suppressed via # ok:/# nosec.
             """
+            if visited_calls is None:
+                visited_calls = set()
+            if call_depth >= max_call_depth:
+                return []
             candidates = []
             for call_site, caller_fn_name in call_sites_by_name.get(func_node.name, []):
-                if caller_fn_name in visited and call_site is not None and hop > 0:
+                if caller_fn_name in visited_calls and call_site is not None and call_depth > 0:
                     continue
                 spec = _param_spec(func_node, param_name)
                 if spec is None:
@@ -17261,11 +17483,15 @@ class TaintTracker:
                         candidates.append((record.value_node, record.scope_id, record.lineno))
                         continue
                     caller_fn = _enclosing_function(call_site)
-                    if (caller_fn is not None and hop < 1
+                    # call_depth < 1 is the precision cap this bridge has always shipped with;
+                    # max_call_depth is a second, independent safety budget that never binds
+                    # earlier, so detection behaviour is unchanged.
+                    if (caller_fn is not None and call_depth < 1
                             and _param_spec(caller_fn, arg.id) is not None
-                            and caller_fn.name not in visited):
+                            and caller_fn.name not in visited_calls):
                         candidates.extend(_bridge_candidates(
-                            caller_fn, arg.id, mod_name, hop + 1, visited | {caller_fn.name}))
+                            caller_fn, arg.id, mod_name, call_depth + 1,
+                            visited_calls | {caller_fn.name}, max_call_depth))
                     # Unresolvable parameter/global at the boundary: stay silent (zero-FP).
                     continue
                 candidates.append((arg, caller_scope, call_site.lineno))
@@ -17323,7 +17549,8 @@ class TaintTracker:
                 if helper_fn.name not in call_sites_by_name:
                     continue  # helper never invoked in this module — stay silent
                 candidates = _bridge_candidates(
-                    helper_fn, query_expr.id, mod_name, 0, {helper_fn.name})
+                    helper_fn, query_expr.id, mod_name, call_depth=0,
+                    visited_calls={helper_fn.name}, max_call_depth=20)
                 for expr, cand_scope, cand_lineno in candidates:
                     if _is_static(expr, cand_scope, cand_lineno):
                         continue
@@ -21857,6 +22084,7 @@ class TaintTracker:
                 # Appended last for the same reason as the passes above: the sink ids they hand out are
                 # parity-measured, so a new collector can only ever sit after them.
                 self._collect_cwe319_raw_socket_cleartext(_bs_tree, _bs_file, _bs_lines)
+                self._collect_cwe89_orm_order_injection(_bs_tree, _bs_file, _bs_lines, _bs_mod)
             finally:
                 # The shared walk served all 19 passes above; drop it before the next module so the list
                 # of node references is bounded by one module instead of the whole repository. The Call
@@ -22197,7 +22425,20 @@ class TaintTracker:
                 continue
 
             if is_cwe22:
-                prov = self.resolve_path_provenance(target_expr, sink, record.scope_id, record.lineno)
+                # Defensive shield: an unmetered caller path must never abort the whole scan.
+                try:
+                    prov = self.resolve_path_provenance(target_expr, sink, record.scope_id, record.lineno)
+                except RecursionError:
+                    if not getattr(self, "_recursion_warned_path", False):
+                        self._recursion_warned_path = True
+                        print("TimeCodeSecurity [WARN] resolve_path_provenance hit RecursionError; "
+                              "using UNKNOWN provenance instead of aborting the scan.", file=sys.stderr)
+                    prov = ProvenanceValue(
+                        state=ProvenanceState.UNKNOWN,
+                        confidence=0.50,
+                        source_trace=("depth_guard",),
+                        origin_node=target_expr
+                    )
                 full_path_str = " -> ".join(prov.source_trace) if prov.source_trace else "path_provenance"
                 if prov.state in (ProvenanceState.STATIC, ProvenanceState.INTERNAL_DYNAMIC):
                     continue
