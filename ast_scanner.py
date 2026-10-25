@@ -1854,13 +1854,17 @@ CWE3A_NETWORK_SINKS = {
 }
 CWE3A_UPLOAD_SANITIZERS = {"secure_filename", "sanitize_filename", "werkzeug.utils.secure_filename"}
 CWE3A_UPLOAD_RANDOMIZERS = {"uuid4", "uuid.uuid4", "uuid4_rename"}
-# Entry gates for the two full-tree walks in _collect_batch3a_structural_findings. Each set is the
-# union of every `isinstance(node, ast.X)` test that tops a branch of the matching loop; everything
-# else can only reach `cwe_meta = None`, so it emits nothing. If a loop gains or loses a top-level
-# type test, these sets must change with it - a type missing here is a node the loop never sees.
-_GATE_BATCH3A_PRESCAN = frozenset({ast.AnnAssign, ast.Assign, ast.Call, ast.Compare})
-_GATE_BATCH3A_LADDER = frozenset({ast.AnnAssign, ast.Assign, ast.BinOp, ast.Call, ast.Compare,
-                                  ast.FunctionDef, ast.If})
+# batch3a's assignment rules read the folded RHS only for these targets -- `val_const` has no other
+# reader in that collector. An unwatched target must not fold: when the RHS is a bare Name with no
+# local binding, the folder's cross-scope fallback walks every same-named assignment in the repo,
+# and doing that once per assignment is the O(N^2) that timed out Transformers v4.38 at 2700s.
+_BATCH3A_VAL_CONST_SUBSCRIPTS = frozenset({"DEBUG", "SECRET_KEY", "ENV", "WTF_CSRF_ENABLED"})
+_BATCH3A_VAL_CONST_NAMES = frozenset({"DEBUG", "DEBUG_MODE", "CSRF_ENABLED", "authenticated",
+                                      "AUTH_ENABLED"})
+_BATCH3A_VAL_CONST_SUFFIXES = (".config.DEBUG", ".config.SECRET_KEY", ".config.ENV", ".debug")
+_BATCH3A_DEBUG_BOOL_KEYS = frozenset({"DEBUG"})
+_BATCH3A_STRING_CONFIG_KEYS = frozenset({"SECRET_KEY", "ENV"})
+_BATCH3A_ALL_CONFIG_KEYS = _BATCH3A_DEBUG_BOOL_KEYS | _BATCH3A_STRING_CONFIG_KEYS
 CWE3A_STORAGE_SANITIZERS = {
     "Fernet.encrypt", "encrypt", "hash_pw", "bcrypt", "bcrypt.hashpw",
     "argon2", "argon2.PasswordHasher.hash", "mask_secret", "redact",
@@ -2117,11 +2121,18 @@ def _eval_static_constant(node, assignments_by_scope, scope_id="", lineno=0, vis
                 break
         # Cross-scope fallback: resolve when every recorded assignment for this
         # name evaluates to the same constant regardless of scope.
-        candidates = []
+        #
         # O(1) by target name instead of a walk of every key in the table. The bucket is
         # snapshotted because the loop below folds recursively. When the table carries no
         # index the filtered items() walk answers precisely what the old loop answered, so
         # the result never depends on which form the table happens to be in.
+        #
+        # The scan stops at the second *different* value: `all(c == candidates[0])` was already
+        # false at that point, so returning None here is exactly what collecting the rest of the
+        # bucket would decide -- without paying for thousands of unrelated same-named locals on a
+        # monolithic file. A value is returned only when every candidate agrees with the first.
+        have_value = False
+        first_value = None
         by_name = getattr(assignments_by_scope, "records_by_name", None)
         if by_name is None:
             entries = [(key, recs) for key, recs in assignments_by_scope.items()
@@ -2135,10 +2146,15 @@ def _eval_static_constant(node, assignments_by_scope, scope_id="", lineno=0, vis
             if not usable:
                 continue
             val = _eval_static_constant(usable[-1].value_node, assignments_by_scope, usable[-1].scope_id, usable[-1].lineno, visited.copy())
-            if val is not None:
-                candidates.append(val)
-        if candidates and all(c == candidates[0] for c in candidates):
-            return candidates[0]
+            if val is None:
+                continue
+            if not have_value:
+                have_value = True
+                first_value = val
+            elif val != first_value:
+                return None
+        if have_value:
+            return first_value
         return None
     if isinstance(node, ast.Subscript):
         # `{"cmd": "ls"}["cmd"]` and `["ls", "pwd"][0]` are literals wearing an index.
@@ -14698,14 +14714,10 @@ class TaintTracker:
             # *inner* node - the one whose test the branch actually ran - is what gets recorded.
             # Only bodies are mapped: a grant taken in an `else` is taken because the test failed,
             # which is the bypass this rule hunts, never a verification.
-            # Read from `_reachable_nodes`, the same cached list the pass below iterates: a node that
-            # is pruned there can never reach the one lookup (`assignment_guard.get(id(node))`), so
-            # the map keeps exactly the entries that are ever asked for, minus a second full walk.
+            # Filled by the single traversal below from the same cached reachable list, so a node
+            # that is pruned there can never reach the one lookup and the map holds exactly the
+            # entries that are ever asked for.
             assignment_guard: dict[int, ast.If] = {}
-            for _if_node in (n for n in self._reachable_nodes(tree) if isinstance(n, ast.If)):
-                for _stmt in _if_node.body:
-                    if isinstance(_stmt, (ast.Assign, ast.AnnAssign)):
-                        assignment_guard.setdefault(id(_stmt), _if_node)
 
             # Pre-scan module for extension whitelist, sanitizers, CSRF config, auth settings
             has_extension_whitelist = False
@@ -14792,9 +14804,22 @@ class TaintTracker:
                     function_auth_guards[scope_id_f] = has_guard_in_func
 
 
+            # One traversal for the whole module. It accumulates every module-wide fact the rules
+            # read, builds the branch-guard map in the same pass, and records every reachable node
+            # in visit order. The rules then run over that list so every fact is final before the
+            # first one is read -- a view's own @app.route call is a *child* of its FunctionDef, so
+            # evaluating rules mid-pass would read a half-built module. Both former loop-head
+            # `type(node) not in ...: continue` gates are gone: every reachable node is recorded and
+            # then passed through the rule chain, where a node matching no branch simply falls
+            # through it. The list duplicates pointers (not nodes) for one module at a time, so its
+            # footprint is bounded by the largest single file, not by the repository.
+            nodes_in_order: list[ast.AST] = []
             for node in self._reachable_nodes(tree):
-                if type(node) not in _GATE_BATCH3A_PRESCAN:
-                    continue
+                if isinstance(node, ast.If):
+                    for _stmt in node.body:
+                        if isinstance(_stmt, (ast.Assign, ast.AnnAssign)):
+                            assignment_guard.setdefault(id(_stmt), node)
+
                 if isinstance(node, ast.Compare):
                     names_comp = set()
                     attrs_comp = set()
@@ -14840,9 +14865,9 @@ class TaintTracker:
                         elif val_c is True:
                             module_csrf_enabled = True
 
-            for node in self._reachable_nodes(tree):
-                if type(node) not in _GATE_BATCH3A_LADDER:
-                    continue
+                nodes_in_order.append(node)
+
+            for node in nodes_in_order:
                 cwe_meta = None
                 lineno = getattr(node, "lineno", 0)
 
@@ -15218,9 +15243,14 @@ class TaintTracker:
                 # ─── 2. Assignments ───
                 elif isinstance(node, (ast.Assign, ast.AnnAssign)):
                     val_node = node.value
-                    val_const = _fold_static_constant(val_node, scope_id, lineno)
                     targets = node.targets if isinstance(node, ast.Assign) else [node.target]
-
+                    # Describe every target once, then fold the RHS only when a rule below can read
+                    # it. All five `val_const` readers are gated on these exact names, so folding an
+                    # unwatched target is discarded work -- and expensive discarded work: `y = x`
+                    # for an unbound `x` sends the folder into the cross-scope fallback, which scans
+                    # every assignment named `x` in the repo, once per `y = x` line.
+                    target_descriptors = []
+                    needs_val_const = False
                     for target in targets:
                         t_str = ""
                         slice_str = ""
@@ -15231,20 +15261,25 @@ class TaintTracker:
                         elif isinstance(target, ast.Subscript):
                             if isinstance(target.slice, ast.Constant):
                                 slice_str = str(target.slice.value)
+                        target_descriptors.append((t_str, slice_str))
+                        if (slice_str in _BATCH3A_VAL_CONST_SUBSCRIPTS
+                                or t_str in _BATCH3A_VAL_CONST_NAMES
+                                or t_str.endswith(_BATCH3A_VAL_CONST_SUFFIXES)):
+                            needs_val_const = True
+                    val_const = (_fold_static_constant(val_node, scope_id, lineno)
+                                 if needs_val_const else None)
 
+                    for t_str, slice_str in target_descriptors:
                         # CWE-489: hardcoded config keys with literal values.
                         # DEBUG = True -> CWE-489 (active debug code).
                         # SECRET_KEY/ENV string literals -> CWE-489 (hardcoded config per corpus mapping).
                         # Skip if RHS is dynamic (os.environ, os.getenv, etc.).
-                        _DEBUG_BOOL_KEYS = frozenset({"DEBUG"})
-                        _STRING_CONFIG_KEYS = frozenset({"SECRET_KEY", "ENV"})
-                        _ALL_CONFIG_KEYS = _DEBUG_BOOL_KEYS | _STRING_CONFIG_KEYS
-                        is_config_subscript = slice_str in _ALL_CONFIG_KEYS
+                        is_config_subscript = slice_str in _BATCH3A_ALL_CONFIG_KEYS
                         is_config_attr = t_str.endswith(".config.DEBUG") or \
                                          t_str.endswith(".config.SECRET_KEY") or \
                                          t_str.endswith(".config.ENV")
                         if val_const is not None and (is_config_subscript or is_config_attr):
-                            if slice_str in _DEBUG_BOOL_KEYS or t_str.endswith(".DEBUG"):
+                            if slice_str in _BATCH3A_DEBUG_BOOL_KEYS or t_str.endswith(".DEBUG"):
                                 # Only flag DEBUG=True (active debug code), not DEBUG=False
                                 if val_const is True:
                                     cwe_meta = {
@@ -15253,7 +15288,7 @@ class TaintTracker:
                                         "cwe": "CWE-489",
                                     }
                                     break
-                            elif slice_str in _STRING_CONFIG_KEYS or t_str.endswith(".SECRET_KEY") or t_str.endswith(".ENV"):
+                            elif slice_str in _BATCH3A_STRING_CONFIG_KEYS or t_str.endswith(".SECRET_KEY") or t_str.endswith(".ENV"):
                                 # SECRET_KEY/ENV: flag any literal value
                                 cwe_meta = {
                                     "operation": "HARDCODED_CONFIG",
