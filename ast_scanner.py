@@ -1981,7 +1981,7 @@ P3_STRUCTURAL_SOURCE_IDS = {
     "CSRF_EXEMPT_DECORATOR": "CSRF_VULNERABILITY",
 }
 
-def _eval_dict_constants(dict_node, assignments_by_scope, scope_id="", lineno=0):
+def _eval_dict_constants(dict_node, assignments_by_scope, scope_id="", lineno=0, accept_value=None):
     """Evaluates a dictionary node or dictionary Name reference to a dict of {str: val}."""
     if isinstance(dict_node, ast.Name):
         recs = assignments_by_scope.get((scope_id, dict_node.id), [])
@@ -1995,7 +1995,8 @@ def _eval_dict_constants(dict_node, assignments_by_scope, scope_id="", lineno=0)
     res = {}
     for k_node, v_node in zip(dict_node.keys, dict_node.values):
         if isinstance(k_node, ast.Constant) and isinstance(k_node.value, str):
-            val = _eval_static_constant(v_node, assignments_by_scope, scope_id, lineno)
+            val = _eval_static_constant(v_node, assignments_by_scope, scope_id, lineno,
+                                        accept_value=accept_value)
             res[k_node.value] = val
     return res
 
@@ -2058,20 +2059,41 @@ _COLLECTOR_TABLES_FROZEN = False
 # Exactly the node shapes `_eval_static_constant` can return a value for. Every other shape falls
 # through to `return None`, which is why a bucket whose records all have another shape can never
 # contribute to the cross-scope fallback and may be skipped without changing its answer.
-_FOLDABLE_VALUE_SHAPES = (ast.Constant, ast.JoinedStr, ast.BinOp, ast.UnaryOp, ast.Name, ast.Subscript)
+_FOLDABLE_VALUE_SHAPES = (ast.JoinedStr, ast.BinOp, ast.UnaryOp, ast.Name)
+# `_eval_static_constant` reads an index or a `get` key only from a literal spelled inline in the
+# expression; `outputs[0]` and `config.get(...)` always return None because their container is a
+# Name. Requiring the inline container drops those buckets before the per-ask walk starts, which
+# is where the Transformers `hidden_states = outputs[0]`-style buckets spent their time.
+_FOLDABLE_CONTAINERS = (ast.Dict, ast.List, ast.Tuple)
 
 
 def _value_may_fold(node) -> bool:
+    if isinstance(node, ast.Constant):
+        # Float/None constants have no branch in `_eval_static_constant` either.
+        return node.value is not None and isinstance(node.value, (int, str, bool, bytes))
     if isinstance(node, _FOLDABLE_VALUE_SHAPES):
         return True
+    if isinstance(node, ast.Subscript):
+        return isinstance(node.value, _FOLDABLE_CONTAINERS)
     return (isinstance(node, ast.Call) and isinstance(node.func, ast.Attribute)
-            and node.func.attr in ("get", "pop", "setdefault") and bool(node.args))
+            and node.func.attr in ("get", "pop", "setdefault") and bool(node.args)
+            and isinstance(node.func.value, _FOLDABLE_CONTAINERS))
 
 
-def _eval_static_constant(node, assignments_by_scope, scope_id="", lineno=0, visited=None):
+def _eval_static_constant(node, assignments_by_scope, scope_id="", lineno=0, visited=None,
+                          accept_value=None):
     """Deterministically evaluates literal int/str/bool constants, resolving Name
     references through the static assignment chain. Returns None when the
-    expression cannot be proven constant (no speculative findings)."""
+    expression cannot be proven constant (no speculative findings).
+
+    `accept_value` encodes the caller's target set, not a general filter: a rule that can only
+    act on a value in a small set (a URL scheme prefix, an ECB mode name, an SVG MIME type, the
+    `"content-type"` key) passes a predicate for that set. The cross-scope fallback returns a
+    value only when every folded candidate equals the first one, so when that first candidate is
+    outside the set the fallback's answer is either the same out-of-set value or None -- neither
+    can change the caller's decision, and the remaining repo-wide buckets need not be read. That
+    is the O(1) abort; it is never a value filter on the accepted answer.
+    """
     if visited is None:
         visited = set()
     if isinstance(node, ast.Constant) and (node.value is None or isinstance(node.value, (int, str, bool, bytes))):
@@ -2185,6 +2207,11 @@ def _eval_static_constant(node, assignments_by_scope, scope_id="", lineno=0, vis
             if val is None:
                 continue
             if not have_value:
+                # Exact early abort for a target-set caller: the fallback's answer is this value
+                # (all candidates agree) or None (some candidate differs). Both are outside the
+                # caller's set, so neither can change what the caller does.
+                if accept_value is not None and not accept_value(val):
+                    return None
                 have_value = True
                 first_value = val
             elif val != first_value:
@@ -16268,6 +16295,24 @@ class TaintTracker:
         def _matches_registry(names: set[str], registry: set[str]) -> bool:
             return any(name in registry or name.rsplit(".", 1)[-1] in registry for name in names)
 
+        # These four predicates are exactly the value sets the rules below can act on, so they are
+        # the target gate for the cross-scope fallback: an ask whose first folded candidate is
+        # outside the set aborts there instead of walking every same-named assignment in the repo.
+        # A name allowlist would be faster to write but could hide a finding if a real config
+        # variable is spelled unusually; the value set cannot.
+        def _url_target(value) -> bool:
+            return isinstance(value, str) and value.lower().startswith(P3_UNTRUSTED_SCHEMES)
+
+        def _ecb_target(value) -> bool:
+            return isinstance(value, str) and value in P3_ECB_CONSTANT_MODES
+
+        def _svg_type_target(value) -> bool:
+            return (isinstance(value, str)
+                    and value.split(";", 1)[0].strip().lower() in P3_SVG_CONTENT_TYPES)
+
+        def _content_type_key_target(value) -> bool:
+            return isinstance(value, str) and value.lower() == "content-type"
+
         def _assigned_value(name: str, scope_id: str, lineno: int):
             current_scope = scope_id
             mod_name = scope_module(scope_id)
@@ -16291,7 +16336,8 @@ class TaintTracker:
         def _mode_is_ecb(expr: ast.AST, scope_id: str, lineno: int) -> bool:
             if expr is None:
                 return False
-            value = _eval_static_constant(expr, self.assignments_by_scope, scope_id, lineno)
+            value = _eval_static_constant(expr, self.assignments_by_scope, scope_id, lineno,
+                                          accept_value=_ecb_target)
             if isinstance(value, str) and value in P3_ECB_CONSTANT_MODES:
                 return True
             symbol_node = expr.func if isinstance(expr, ast.Call) else expr
@@ -16305,7 +16351,8 @@ class TaintTracker:
                 return None
             if visited is None:
                 visited = set()
-            value = _eval_static_constant(expr, self.assignments_by_scope, scope_id, lineno)
+            value = _eval_static_constant(expr, self.assignments_by_scope, scope_id, lineno,
+                                          accept_value=_url_target)
             if isinstance(value, str):
                 lowered = value.lower()
                 return next((scheme for scheme in P3_UNTRUSTED_SCHEMES if lowered.startswith(scheme)), None)
@@ -16318,7 +16365,8 @@ class TaintTracker:
                 if record is not None:
                     return _url_scheme(record.value_node, record.scope_id, record.lineno, visited)
             elif isinstance(expr, ast.BinOp) and isinstance(expr.op, ast.Add):
-                left_value = _eval_static_constant(expr.left, self.assignments_by_scope, scope_id, lineno)
+                left_value = _eval_static_constant(expr.left, self.assignments_by_scope, scope_id, lineno,
+                                                   accept_value=_url_target)
                 if isinstance(left_value, str):
                     lowered = left_value.lower()
                     scheme = next((item for item in P3_UNTRUSTED_SCHEMES if lowered.startswith(item)), None)
@@ -16339,14 +16387,16 @@ class TaintTracker:
             return None
 
         def _is_svg_content_type(expr: ast.AST, scope_id: str, lineno: int) -> bool:
-            value = _eval_static_constant(expr, self.assignments_by_scope, scope_id, lineno)
+            value = _eval_static_constant(expr, self.assignments_by_scope, scope_id, lineno,
+                                          accept_value=_svg_type_target)
             if not isinstance(value, str):
                 return False
             normalized = value.split(";", 1)[0].strip().lower()
             return normalized in P3_SVG_CONTENT_TYPES
 
         def _headers_are_svg(expr: ast.AST, scope_id: str, lineno: int) -> bool:
-            headers = _eval_dict_constants(expr, self.assignments_by_scope, scope_id, lineno)
+            headers = _eval_dict_constants(expr, self.assignments_by_scope, scope_id, lineno,
+                                           accept_value=_svg_type_target)
             return any(
                 key.lower() == "content-type" and isinstance(value, str)
                 and value.split(";", 1)[0].strip().lower() in P3_SVG_CONTENT_TYPES
@@ -16548,7 +16598,8 @@ class TaintTracker:
                     for target in targets:
                         if not isinstance(target, ast.Subscript):
                             continue
-                        key_value = _eval_static_constant(target.slice, self.assignments_by_scope, scope_id, lineno)
+                        key_value = _eval_static_constant(target.slice, self.assignments_by_scope, scope_id, lineno,
+                                                          accept_value=_content_type_key_target)
                         if not isinstance(key_value, str) or key_value.lower() != "content-type":
                             continue
                         if isinstance(target.value, ast.Name):
