@@ -1,11 +1,11 @@
-name: "Benchmark - Boss Arenas 5-in-1 Showdown (Superset / Airflow / Home Assistant / Odoo / Ansible)"
+name: "Benchmark - Boss Arenas 7-in-1 Showdown (Superset / Airflow / Home Assistant / Odoo / Ansible / Transformers / Sentry)"
 
 # Manual only: no push, pull_request, schedule or workflow_run trigger exists in this file, so the
 # file itself costs zero runner minutes and every `[skip ci]` commit stays inert until a human picks
-# one of the five boss arenas and presses "Run workflow". One file, five targets, `arena` selects
+# one of the seven boss arenas and presses "Run workflow". One file, seven targets, `arena` selects
 # exactly one - this is what keeps the next showdowns off each other's credit bill. The "3-Way"
 # wording used by the referee steps below is about the three ENGINES (TimeCodeSecurity / CodeQL /
-# Semgrep), not the number of arenas, so it stays 3-Way now that the target list is five.
+# Semgrep), not the number of arenas, so it stays 3-Way now that the target list is seven.
 on:
   workflow_dispatch:
     inputs:
@@ -20,6 +20,8 @@ on:
           - 'homeassistant'
           - 'odoo'
           - 'ansible'
+          - 'transformers'
+          - 'sentry'
 
 # contents:read clones this repo. security-events:write is what codeql-action expects to see even
 # though `upload: false` means no SARIF is ever sent to the code-scanning API.
@@ -36,11 +38,12 @@ jobs:
     # after being parallelised. Gate 1 (~5 min) plus setup (~3 min) leaves the rest for CodeQL,
     # Semgrep and the referee, which are capped per step and normally finish far inside it.
     #
-    # The cap was NOT raised when odoo and ansible were added, and that is deliberate: their tree
-    # sizes were not measured here (a shallow clone of either would blow the 400 MB / disk budget of
-    # the laptop this file is edited on), so there is no number to size a cap against. Instead the
-    # Setup step prints `TARGET_PY_COUNT` and warns in the job log the moment the arena exceeds Home
-    # Assistant's 10,648 .py files, which is the only measured yardstick this repo owns. If an arena
+    # The cap was NOT raised when odoo, ansible, transformers and sentry were added, and that is
+    # deliberate: their tree sizes were not measured here (a shallow clone of any of them would
+    # blow the 400 MB / disk budget of the laptop this file is edited on), so there is no number to
+    # size a cap against. Instead the Setup step prints `TARGET_PY_COUNT` and warns in the job log
+    # the moment the arena exceeds Home Assistant's 10,648 .py files, which is the only measured
+    # yardstick this repo owns. If an arena
     # hits exit 124 after that warning, raise `timeout-minutes` and the 2700s scan cap together -
     # trimming the corpus or excluding directories would trade a timeout for a false negative, which
     # is the one outcome these runs exist to rule out.
@@ -112,14 +115,19 @@ jobs:
         # Refs verified 2026-10-13 with `git ls-remote --tags` before this file was written:
         # apache/superset 3.0.0 = 40d9c4c, apache/airflow 2.7.3 = f124353,
         # home-assistant/core 2023.11.0 = 0b8d423. All three are tags, so `--branch` resolves them.
-        # The two arenas added 2026-10-23 were verified the same way, from this machine, before the
-        # edit: `git ls-remote --heads https://github.com/odoo/odoo.git 17.0` -> refs/heads/17.0 =
+        # The two arenas added 2026-10-23 and the two added 2026-10-24 were verified the same way,
+        # from this machine, before the edit: `git ls-remote --heads
+        # https://github.com/odoo/odoo.git 17.0` -> refs/heads/17.0 =
         # dca5cd22d40f25066919d722bf687be48c51b0ec (a BRANCH, not a tag - Odoo ships per-version
-        # branches), and `git ls-remote --tags https://github.com/ansible/ansible.git v2.16.5` ->
-        # refs/tags/v2.16.5 = ee04df4796af1a438bc80aff33cdd5ca4d5304aa (annotated tag). `--branch`
-        # accepts either, which is why one flag covers all five arenas. Pinned, never `latest` or a
-        # moving default branch: a re-dispatch must land on the same revision or the numbers cannot
-        # be compared file-for-file with this run.
+        # branches); `git ls-remote --tags https://github.com/ansible/ansible.git v2.16.5` ->
+        # refs/tags/v2.16.5 = ee04df4796af1a438bc80aff33cdd5ca4d5304aa (annotated tag);
+        # `git ls-remote --tags https://github.com/huggingface/transformers.git v4.38.0` ->
+        # refs/tags/v4.38.0 = 08ab54ada594f8f4cc1e458b1217bf8c53f04dd8 (peeled commit of an
+        # annotated tag); and `git ls-remote --tags https://github.com/getsentry/sentry.git 24.2.0`
+        # -> refs/tags/24.2.0 = cfcff1f4fda857dcddc9401efb689b6af92a3214 (lightweight tag).
+        # `--branch` accepts either form, which is why one flag covers all seven arenas. Pinned,
+        # never `latest` or a moving default branch: a re-dispatch must land on the same revision or
+        # the numbers cannot be compared file-for-file with this run.
         # An empty $ARENA is the one input no pattern can match, so it is caught here with a plain
         # message instead of surfacing later as a confusing `git clone` exit 1.
         run: |
@@ -152,6 +160,16 @@ jobs:
               REPO="https://github.com/ansible/ansible.git"
               REF="v2.16.5"
               LABEL="ansible/ansible @ v2.16.5 (CLI + module tree, jinja2 templating, ansible-core split across lib/)"
+              ;;
+            transformers)
+              REPO="https://github.com/huggingface/transformers.git"
+              REF="v4.38.0"
+              LABEL="huggingface/transformers @ v4.38.0 (Hugging Face Transformers: AI models, dynamic dispatch, serialization)"
+              ;;
+            sentry)
+              REPO="https://github.com/getsentry/sentry.git"
+              REF="24.2.0"
+              LABEL="getsentry/sentry @ 24.2.0 (Sentry: monolithic architecture, custom query builders, data pipelines)"
               ;;
             *)
               echo "::error::Unknown arena: $ARENA" >&2
