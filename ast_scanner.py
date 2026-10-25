@@ -16274,6 +16274,64 @@ class TaintTracker:
                 node = node.value
             return isinstance(node, ast.Name)
 
+        # The resolver only ever answers something other than the plain spelling of a name through
+        # four doors: `__builtins__`, an import bound to the root or to an intermediate prefix of the
+        # chain, an assignment record for the root in this scope chain, and a higher-order parameter
+        # whose call-site argument resolves. Each of those is tested here, so when this returns a root
+        # the resolver provably falls through to `return node.id` and rebuilds the chain level by
+        # level as `f"{base}.{attr}"` -- the spelling it was handed -- and the name set is {spelling}
+        # either way. Skipping the call therefore changes no answer; it only skips the `visited` set,
+        # the memo entry and one recursion per attribute level, which is what a 2,847-file repo pays
+        # for every single call node. Chains whose root IS imported, bound or a parameter (the aliased
+        # `mr = make_response`, `get = requests.get` shapes the resolver exists for) keep it intact.
+        def _free_callee_root(expr: ast.AST, scope_id: str):
+            if isinstance(expr, ast.Name):
+                root = expr.id
+            elif isinstance(expr, ast.Attribute):
+                if expr.attr == "execute":
+                    # `unroll_chained_call` rewrites a cursor call's symbol before the base walk.
+                    return None
+                node = expr
+                while isinstance(node, ast.Attribute):
+                    node = node.value
+                if not isinstance(node, ast.Name):
+                    return None
+                root = node.id
+            else:
+                return None
+            if root == "__builtins__":
+                return None
+            mod_name = scope_module(scope_id)
+            imports_map = self.imports.get(mod_name) if mod_name else None
+            if imports_map:
+                prefix = ""
+                for part in (dotted_name(expr) or "").split("."):
+                    prefix = f"{prefix}.{part}" if prefix else part
+                    if prefix in imports_map:
+                        return None
+            current_scope = scope_id
+            _seen = set()
+            while current_scope and current_scope not in _seen:
+                _seen.add(current_scope)
+                if self.assignments_by_scope.get((current_scope, root)):
+                    return None
+                func_node = self.functions.get(current_scope)
+                if func_node is not None and any(a.arg == root for a in func_node.args.args):
+                    return None
+                if "." in current_scope and "function" in current_scope:
+                    current_scope = current_scope.rsplit(".", 1)[0]
+                elif ":function" in current_scope:
+                    current_scope = f"{mod_name}:global"
+                elif current_scope != f"{mod_name}:global":
+                    current_scope = f"{mod_name}:global"
+                else:
+                    break
+            return root
+
+        def _callee_canonical(expr: ast.AST, scope_id: str):
+            """The resolver's answer without running it, or None when it genuinely has to run."""
+            return (dotted_name(expr) or "") if _free_callee_root(expr, scope_id) else None
+
         def _names_for_call(call: ast.Call, scope_id: str) -> frozenset[str] | set[str]:
             func = call.func
             key = None
@@ -16286,7 +16344,9 @@ class TaintTracker:
                 if cached is not None:
                     return cached
             name = dotted_name(func) or ""
-            canonical = self.resolve_canonical_name(func, scope_id) or ""
+            canonical = _callee_canonical(func, scope_id)
+            if canonical is None:
+                canonical = self.resolve_canonical_name(func, scope_id) or ""
             result = {value for value in (name, canonical) if value}
             if key is not None:
                 _names_memo[key] = frozenset(result)
@@ -16341,7 +16401,9 @@ class TaintTracker:
             if isinstance(value, str) and value in P3_ECB_CONSTANT_MODES:
                 return True
             symbol_node = expr.func if isinstance(expr, ast.Call) else expr
-            symbol = self.resolve_canonical_name(symbol_node, scope_id) or dotted_name(symbol_node) or ""
+            symbol = (_callee_canonical(symbol_node, scope_id)
+                      or self.resolve_canonical_name(symbol_node, scope_id)
+                      or dotted_name(symbol_node) or "")
             if symbol.rsplit(".", 1)[-1] in P3_ECB_MARKER_ATTRS:
                 return True
             return isinstance(expr, ast.Name) and expr.id in P3_ECB_MARKER_ATTRS
@@ -16491,17 +16553,27 @@ class TaintTracker:
             ))
             phase3_sink_index.setdefault((node_location, cwe), sink_node)
 
+        # Every rule in this collector is reached from one of these four node types: a call (ECB mode,
+        # URL scheme, SVG response, headers `.update`), an assignment (dynamic response vars, header
+        # writes) or a subscript. A node of any other type is bound, run through the `isinstance`
+        # chains below and matches nothing -- so on a repository of ~6M AST nodes every one of them
+        # costs two type tests, a `lineno` read and nothing else. `ast.Subscript` is kept in the set
+        # even though the header rules reach their subscript through `Assign.targets`, because a bare
+        # subscript is one of the shapes those rules read and dropping it would change an input.
+        rule_node_types = (ast.Call, ast.Assign, ast.AnnAssign, ast.Subscript)
+
         for mod_name, tree in self.modules.items():
             seen.clear()
             dynamic_response_vars: dict[tuple[str, str], list[int]] = {}
             # One physical traversal, every reachable node in it, and both rules passes below run
-            # over that same list. Nothing is filtered at a loop head: a node of another type is
-            # still bound and tested by the rule chain, it simply matches nothing. The scope walk
-            # is memoised per module (`_scope_for`), so the extra nodes cost a dict lookup.
+            # over that same list, dead-code pruned. The scope walk is memoised per module
+            # (`_scope_for`), so the nodes that do reach a rule cost a dict lookup.
             nodes_in_order = self._reachable_nodes(tree)
             scope_memo: dict[int, tuple] = {}
 
             for node in nodes_in_order:
+                if not isinstance(node, rule_node_types):
+                    continue
                 if isinstance(node, (ast.Assign, ast.AnnAssign)) and isinstance(node.value, ast.Call):
                     scope_id = _scope_for(node, mod_name, scope_memo)
                     response_call = node.value
@@ -16527,6 +16599,8 @@ class TaintTracker:
                             dynamic_response_vars.setdefault((scope_id, target.id), []).append(node.lineno)
 
             for node in nodes_in_order:
+                if not isinstance(node, rule_node_types):
+                    continue
                 lineno = getattr(node, "lineno", 1)
                 if isinstance(node, ast.Call):
                     scope_id = _scope_for(node, mod_name, scope_memo)
