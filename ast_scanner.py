@@ -22051,7 +22051,13 @@ class TaintTracker:
         # and 91.4% of them re-ask something this phase has already answered, so a repeat now costs
         # a dict lookup instead of a fresh attribute-chain or scope-walk descent.
         self._begin_collector_memos()
-        for _s1_name, _s1_collector in (
+        # Live heartbeat, one line per batch. These 23 batches are the engine's longest silent
+        # stretch: without this, a run hung inside one of them is indistinguishable from a run
+        # still working, and the `[PROFILE] Collectors` line only appears after the last batch
+        # returns. Written to stderr with an explicit flush because stdout carries the
+        # `--format json` payload and must stay machine-readable; the arena workflow merges both
+        # streams with `2>&1 | tee`, so these lines reach the live job log immediately.
+        _s1_batches = (
             ("batch2", self._collect_batch2_structural_findings),
             ("batch3a", self._collect_batch3a_structural_findings),
             ("cwe319_vars", self._collect_cwe319_variable_resolution_findings),
@@ -22075,16 +22081,22 @@ class TaintTracker:
             ("cluster2", self._collect_cluster2_structural_findings),
             ("cluster3", self._collect_cluster3_structural_findings),
             ("django_post", self._collect_django_post_validation_findings),
-        ):
+        )
+        _s1_total = len(_s1_batches)
+        for _s1_idx, (_s1_name, _s1_collector) in enumerate(_s1_batches, 1):
             self._checkpoint_collector = _s1_name
             self._profile_scope = _s1_name
+            print(f"TimeCodeSecurity [COLLECTOR-LIVE] ({_s1_idx}/{_s1_total}) Starting {_s1_name}...",
+                  file=_sys.stderr, flush=True)
             _s1_t0 = _time.perf_counter()
             _s1_collector()
-            self._collector_profile[_s1_name] = self._collector_profile.get(_s1_name, 0.0) + (
-                _time.perf_counter() - _s1_t0)
+            _s1_elapsed = _time.perf_counter() - _s1_t0
+            self._collector_profile[_s1_name] = self._collector_profile.get(_s1_name, 0.0) + _s1_elapsed
             self._flush_stage1_structural_edges()
             _sink_deltas[_s1_name] = len(self.sink_records) - _prev_sinks
             _prev_sinks = len(self.sink_records)
+            print(f"TimeCodeSecurity [COLLECTOR-LIVE] ({_s1_idx}/{_s1_total}) Finished {_s1_name} in {_s1_elapsed:.2f}s (delta_sinks={_sink_deltas[_s1_name]})",
+                  file=_sys.stderr, flush=True)
         # Last, so their line+CWE dedup sees every sink the earlier phases already reported.
         self._checkpoint_collector = None
         # One label for the whole pass: `_checkpoint_collector` holds a file path here, so keying the
