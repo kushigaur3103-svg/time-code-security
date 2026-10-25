@@ -32,22 +32,19 @@ permissions:
 jobs:
   boss-arena-showdown:
     runs-on: ubuntu-latest
-    # Hard credit cap for the whole job: clone, Gate 1, all three engines and the referee.
-    # 60 rather than 35 because the TCS arena step alone is allowed 2700s (45 min) on Home Assistant
-    # Core: 10,648 files and 327,473 call sites, where the sink-detection pass needed >1130s even
-    # after being parallelised. Gate 1 (~5 min) plus setup (~3 min) leaves the rest for CodeQL,
-    # Semgrep and the referee, which are capped per step and normally finish far inside it.
+    # Whole-job backstop: clone, Gate 1, all three engines and the referee. The TCS scan itself has
+    # no wall-clock wrapper any more - Transformers v4.38 was killed at 2700s while the scan was
+    # still writing its profile, so the run has to be allowed to finish. 180 minutes is the
+    # replacement backstop: long enough for a full arena scan plus CodeQL, Semgrep and the referee,
+    # and well inside GitHub's 360-minute ceiling for a hosted job. If the job itself hits this cap,
+    # the scan never finished and the missing artifact is the signal to profile the collector that
+    # was still running.
     #
-    # The cap was NOT raised when odoo, ansible, transformers and sentry were added, and that is
-    # deliberate: their tree sizes were not measured here (a shallow clone of any of them would
-    # blow the 400 MB / disk budget of the laptop this file is edited on), so there is no number to
-    # size a cap against. Instead the Setup step prints `TARGET_PY_COUNT` and warns in the job log
-    # the moment the arena exceeds Home Assistant's 10,648 .py files, which is the only measured
-    # yardstick this repo owns. If an arena
-    # hits exit 124 after that warning, raise `timeout-minutes` and the 2700s scan cap together -
-    # trimming the corpus or excluding directories would trade a timeout for a false negative, which
-    # is the one outcome these runs exist to rule out.
-    timeout-minutes: 60
+    # Nothing here skips, excludes or caps the corpus: a skipped file would be a false negative,
+    # which is the one outcome these runs exist to rule out. The Setup step still prints
+    # `TARGET_PY_COUNT` and warns when an arena exceeds Home Assistant's 10,648 .py files, the only
+    # measured yardstick this repo owns.
+    timeout-minutes: 180
 
     env:
       PYTHONUNBUFFERED: "1"
@@ -198,21 +195,21 @@ jobs:
           echo "python files: $(find "$TARGET_DIR" -name '*.py' | wc -l)"
           find "$TARGET_DIR" -type f | sort > benchmark_results/target_files.txt
           echo "arena files: $(wc -l < benchmark_results/target_files.txt)"
-          # Sizing tripwire, printed BEFORE the 2700s scan starts so an oversized arena is visible in
-          # the job log instead of only in a timeout at minute 45. The yardstick is the number this
-          # file already carries for Home Assistant Core: 10,648 python files fit inside the 2700s cap
-          # after the collectors were parallelised. Odoo's per-version branch is a far larger tree, so
-          # it is warned about explicitly - nothing is skipped, excluded or capped here, because a
-          # skipped file would be a false negative. If the warning fires and the scan still finishes,
-          # the cap was simply generous; if it fires and the scan hits 124, raise `timeout-minutes`
-          # and the scan cap together rather than trimming the corpus.
+          # Sizing tripwire, printed BEFORE the scan starts so an oversized arena is visible in the
+          # job log instead of only in a 180-minute job timeout. The yardstick is the number this file
+          # already carries for Home Assistant Core: 10,648 python files completed after the
+          # collectors were parallelised. Odoo's per-version branch is a far larger tree, so it is
+          # warned about explicitly - nothing is skipped, excluded or capped here, because a skipped
+          # file would be a false negative. If the warning fires and the scan still finishes, the job
+          # cap was simply generous; if it fires and the job dies, raise `timeout-minutes` rather than
+          # trimming the corpus.
           PY_COUNT=$(find "$TARGET_DIR" -name '*.py' | wc -l)
           echo "TARGET_PY_COUNT=$PY_COUNT" >> "$GITHUB_ENV"
           echo "TARGET_PY_COUNT=$PY_COUNT" >> benchmark_results/provenance.txt
           if [ "$PY_COUNT" -gt 10648 ]; then
             echo "::warning::arena $ARENA has $PY_COUNT .py files - more than the 10,648 of Home" \
-              "Assistant Core that the 2700s scan cap and the 60 minute job cap were sized for;" \
-              "expect a longer run and check the cgroup peak before trusting a partial result"
+              "Assistant Core that the 180 minute job cap was sized for; expect a longer run and" \
+              "check the cgroup peak before trusting a partial result"
           fi
 
       - name: Gate 1 Hard Verification (prerequisite, 552 cases)
@@ -226,28 +223,27 @@ jobs:
           grep -Eq "False Negatives[[:space:]]*:[[:space:]]*0" benchmark_results/gate1.txt
           echo "GATE1_PASSED=true" >> "$GITHUB_ENV"
 
-      - name: Execute TimeCodeSecurity Scan (guarded, 2700s)
-        # `timeout` is the runner-side credit cap: TERM at 2700s, KILL 30s later if the process
-        # ignores it. Raised from 1380s because Home Assistant Core is 10,648 files / 327,473 call
-        # sites, and its sink-detection pass ran >1130s there serially - the 1380s cap killed it at
-        # 1379s with ~0s of headroom for the remaining phases. The pass is now fanned out over the
-        # RAM governor's 4 workers on this runner, but the cap has to cover the worst case, not the
-        # expected one: no call site is skipped, so the corpus still costs a full resolution.
+      - name: Execute TimeCodeSecurity Scan (no wall-clock guard)
+        # No `timeout` wrapper: the Transformers v4.38 run was killed at 2700s while the scan was
+        # still writing its `[PROFILE]` lines, which destroyed the evidence this step exists to
+        # capture. The scan now runs to completion (or to the 180-minute job backstop). No call site
+        # is skipped, so the corpus still costs a full resolution - the engine's own collectors must
+        # account for that time in the profile, not a wrapper silently truncate it.
         #
         # One merged log, two readers. `2>&1 | tee` puts stdout and stderr in the same file - every
         # `[PROFILE]` line the engine writes goes to stderr, so a stdout-only capture would have
         # hidden the timings that this whole step exists to produce - and the same text lands in the
         # job log, so the numbers are readable without downloading the artifact. The real exit code
         # comes from `PIPESTATUS[0]`, NOT from the pipeline: with Actions' default `bash -eo pipefail`
-        # a `tee` at the end of the pipe would either mask a 124 timeout or abort the step before
-        # `TCS_SCAN_EXIT` is recorded, and the referee would then say "not recorded" instead of
-        # naming the code. `set +e` around the scan is what keeps that bookkeeping honest.
+        # a `tee` at the end of the pipe would abort the step before `TCS_SCAN_EXIT` is recorded, and
+        # the referee would then say "not recorded" instead of naming the code. `set +e` around the
+        # scan is what keeps that bookkeeping honest.
         continue-on-error: true
         run: |
           echo "TCS commit about to be scored: $(git rev-parse --short HEAD)"
           {
             echo "--- scan started $(date -u +%FT%TZ) on $(git rev-parse HEAD) ---"
-            echo "command: timeout --signal=TERM --kill-after=30s 2700s python -u cli.py scan $TARGET_DIR/ --scope all --format json --sarif benchmark_results/tcs.sarif"
+            echo "command: python -u cli.py scan $TARGET_DIR/ --scope all --format json --sarif benchmark_results/tcs.sarif"
           } >> benchmark_results/tcs_stdout.txt
           # Whole-tree memory accounting, cgroup v2. The engine itself has no cgroup code (verified:
           # `grep -rn "cgroup" --include=*.py` over the repo excluding scratch/ returns nothing), so the
@@ -287,8 +283,7 @@ jobs:
           ) >> "$CG_MEM_LOG" 2>&1 &
           CG_SAMPLER=$!
           set +e
-          timeout --signal=TERM --kill-after=30s 2700s \
-            python -u cli.py scan "$TARGET_DIR/" --scope all --format json \
+          python -u cli.py scan "$TARGET_DIR/" --scope all --format json \
               --sarif benchmark_results/tcs.sarif \
             2>&1 | tee -a benchmark_results/tcs_stdout.txt
           TCS_CODE=${PIPESTATUS[0]}
@@ -325,8 +320,8 @@ jobs:
       - name: Materialise Named Arena Artifacts (scan_profile.log / arena_result.json / arena_result.sarif)
         if: always()
         # Three fixed names, whatever the arena. `run: |` blocks execute before the upload step and
-        # `if: always()` means a scan that timed out (exit 124) or was killed still produces them, so a
-        # failed arena is still auditable instead of leaving an empty artifact.
+        # `if: always()` means a scan that failed or was killed still produces them, so a failed
+        # arena is still auditable instead of leaving an empty artifact.
         #
         # Where each one comes from, stated plainly because it matters for how much to trust it:
         #   arena_result.sarif - a byte copy of benchmark_results/tcs.sarif, the engine's own SARIF.
@@ -334,7 +329,7 @@ jobs:
         #                        has no JSON-file flag (`--sarif` is the only path writer and
         #                        `--format json` prints to stdout, mixed with the stderr telemetry that
         #                        this step must not swallow), so re-running the scan just to get a JSON
-        #                        file would double a 45-minute bill. The file says so in its own
+        #                        file would double the scan's bill. The file says so in its own
         #                        "source" key.
         #   scan_profile.log   - the [PROFILE] / [GOVERNOR] extract, the engine's own peakRSS lines,
         #                        and the cgroup v2 sampler output, in one readable file.
@@ -356,7 +351,7 @@ jobs:
             echo "=== engine ==="
             echo "tcs commit scored  : ${TCS_HEAD_SHA:-n/a}"
             echo "tcs scan exit      : ${TCS_SCAN_EXIT:-not-recorded}"
-            echo "scan cap / job cap : 2700s / 60m"
+            echo "scan cap / job cap : none / 180m"
             echo "=== stage timers and governor lines ==="
             cat benchmark_results/tcs_profile.txt 2>/dev/null || echo "(no [PROFILE] lines extracted)"
             echo "=== engine-reported peak RSS ==="
@@ -804,10 +799,11 @@ jobs:
                  "- Clone: `git clone --depth 1 --single-branch --branch <ref>`, `.git` removed.",
                  "- CodeQL: `security-extended`, `build-mode: none`, `upload: false`, config paths "
                  f"scoped to `{TARGET_DIR}`.",
-                 "- TimeCodeSecurity: `timeout --signal=TERM --kill-after=30s 2700s python -u cli.py "
-                 f"scan {TARGET_DIR}/ --scope all --format json --sarif benchmark_results/tcs.sarif`.",
-                 "- Job timeout: 60 minutes (45 of them available to the TCS scan), Gate 1 first, "
-                 "then the three engines share what is left.",
+                 "- TimeCodeSecurity: `python -u cli.py "
+                 f"scan {TARGET_DIR}/ --scope all --format json --sarif benchmark_results/tcs.sarif` "
+                 "(no scan-level wall-clock wrapper).",
+                 "- Job timeout: 180 minutes, Gate 1 first, then the three engines share what is left; "
+                 "there is no separate TCS scan cap.",
                  "- Artifacts: `benchmark_results/` (three SARIF sets, engine logs, target inventory, "
                  "this report), plus the named trio `scan_profile.log`, `arena_result.json`, "
                  "`arena_result.sarif` in the `-named` artifact (whole-tree cgroup v2 `memory.peak` "
