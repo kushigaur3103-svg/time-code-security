@@ -1056,6 +1056,9 @@ class AssignmentNameTable(dict):
         self.names_by_module: Dict[str, set] = {}
         self.names_by_scope: Optional[Dict[str, set]] = {}
         self.records_by_name: Dict[str, list] = {}
+        # Filled by `_eval_static_constant` only while the collector-phase table is frozen; cleared
+        # at that phase boundary so no bucket list outlives the run that built it.
+        self._fallback_shape_cache: Optional[dict] = None
         for key in self:
             self._index(key)
             self._index_records(key, dict.__getitem__(self, key))
@@ -2046,6 +2049,25 @@ def _read_literal_member(container, key_node, assignments_by_scope, scope_id, li
     return None
 
 
+# True only between `_begin_collector_memos` and `release_collector_memos`, the window in which the
+# assignment table is documented as frozen (Phase 1 wrote it; no collector writes it again). That is
+# what makes the per-name shuffle-shape cache in `_eval_static_constant` sound: a bucket list cannot
+# gain a member while the cache is consulted.
+_COLLECTOR_TABLES_FROZEN = False
+
+# Exactly the node shapes `_eval_static_constant` can return a value for. Every other shape falls
+# through to `return None`, which is why a bucket whose records all have another shape can never
+# contribute to the cross-scope fallback and may be skipped without changing its answer.
+_FOLDABLE_VALUE_SHAPES = (ast.Constant, ast.JoinedStr, ast.BinOp, ast.UnaryOp, ast.Name, ast.Subscript)
+
+
+def _value_may_fold(node) -> bool:
+    if isinstance(node, _FOLDABLE_VALUE_SHAPES):
+        return True
+    return (isinstance(node, ast.Call) and isinstance(node.func, ast.Attribute)
+            and node.func.attr in ("get", "pop", "setdefault") and bool(node.args))
+
+
 def _eval_static_constant(node, assignments_by_scope, scope_id="", lineno=0, visited=None):
     """Deterministically evaluates literal int/str/bool constants, resolving Name
     references through the static assignment chain. Returns None when the
@@ -2138,7 +2160,21 @@ def _eval_static_constant(node, assignments_by_scope, scope_id="", lineno=0, vis
             entries = [(key, recs) for key, recs in assignments_by_scope.items()
                        if isinstance(key, tuple) and len(key) == 2 and key[1] == node.id]
         else:
-            entries = list(by_name.get(node.id, ()))
+            entries = None
+            if _COLLECTOR_TABLES_FROZEN and hasattr(assignments_by_scope, "_fallback_shape_cache"):
+                shape_cache = assignments_by_scope._fallback_shape_cache
+                if shape_cache is None:
+                    shape_cache = assignments_by_scope._fallback_shape_cache = {}
+                entries = shape_cache.get(node.id)
+                if entries is None:
+                    # Drop buckets that cannot produce a value for any lineno: every member folds
+                    # to None, so the walk below would skip each one after evaluating it. The
+                    # bucket's records are the same objects, in the same table order.
+                    entries = [(key, recs) for key, recs in by_name.get(node.id, ())
+                               if any(_value_may_fold(record.value_node) for record in recs)]
+                    shape_cache[node.id] = entries
+            if entries is None:
+                entries = list(by_name.get(node.id, ()))
         for (rec_scope, rec_name), recs in entries:
             if rec_name != node.id or not recs:
                 continue
@@ -3227,6 +3263,15 @@ class TaintTracker:
         self.dead_node_ids: set = self._compute_dead_node_ids()
         self.imports = {m: {} for m in self.modules}
         self.sources: list[SecurityNode] = []
+        # Append-only location index for `get_or_create_source`. Values are the *first* source
+        # with that location, which is exactly what its linear scan returned; entries are added
+        # from `_source_loc_index_len` onward so direct appends elsewhere stay covered.
+        self._source_loc_index: Dict[CodeLocation, SecurityNode] = {}
+        self._source_loc_index_len = 0
+        # Last file split into source lines by `get_source_snippet`. One entry only: consecutive
+        # proof nodes almost always come from the same file, and keeping more would hold every
+        # scanned file's line list in RAM.
+        self._snippet_lines_cache: Optional[tuple] = None
         self.sinks: list[SecurityNode] = []
         self.edges: list[DataFlowEdge] = []
         self.assignments_by_scope: dict = AssignmentNameTable()
@@ -3403,7 +3448,12 @@ class TaintTracker:
     def get_source_snippet(self, file_path: str, start_line: int, end_line: int, node: Optional[ast.AST] = None) -> str:
         code = self.files.get(file_path)
         if code is not None:
-            lines = code.splitlines()
+            cache = self._snippet_lines_cache
+            if cache is not None and cache[0] is code:
+                lines = cache[1]
+            else:
+                lines = code.splitlines()
+                self._snippet_lines_cache = (code, lines)
             if 1 <= start_line <= len(lines):
                 end_l = min(end_line if end_line >= start_line else start_line, len(lines))
                 if node and getattr(node, "lineno", None) == getattr(node, "end_lineno", None) == start_line:
@@ -3948,8 +3998,20 @@ class TaintTracker:
 
     def get_or_create_source(self, node: ast.AST, file_path: str, scope_id: str = "") -> SecurityNode:
         loc = location(node, file_path)
-        for existing in self.sources:
-            if existing.location == loc: return existing
+        index = self._source_loc_index
+        current = len(self.sources)
+        if current != self._source_loc_index_len:
+            if current < self._source_loc_index_len:
+                index.clear()
+                start = 0
+            else:
+                start = self._source_loc_index_len
+            for existing in self.sources[start:]:
+                index.setdefault(existing.location, existing)
+            self._source_loc_index_len = current
+        existing = index.get(loc)
+        if existing is not None:
+            return existing
         source_id = self.next_source_id()
         target_node = node.func if isinstance(node, ast.Call) else (node.value if isinstance(node, ast.Subscript) else node)
         canon_name = self.resolve_canonical_name(target_node, scope_id) if scope_id else None
@@ -3974,6 +4036,8 @@ class TaintTracker:
             metadata=source_meta
         )
         self.sources.append(source)
+        index.setdefault(loc, source)
+        self._source_loc_index_len = len(self.sources)
         return source
 
     def _is_builtin_shadowed(self, name: str, scope_id: str, lineno: int = 0) -> bool:
@@ -9859,9 +9923,10 @@ class TaintTracker:
         computed over another run's trees. Only one process can hold the `dotted_name` module global,
         and the forked pools that do exist (Phase 2 and the sink gate) both run before this line.
         """
-        global _DOTTED_NAME_MEMO
+        global _DOTTED_NAME_MEMO, _COLLECTOR_TABLES_FROZEN
         _DOTTED_NAME_MEMO = self._collector_dotted_name_memo = {}
         self._collector_canonical_memo = {}
+        _COLLECTOR_TABLES_FROZEN = True
 
     def release_collector_memos(self) -> None:
         """Drop both memos at the phase boundary so no AST node stays pinned past its collector run.
@@ -9872,10 +9937,12 @@ class TaintTracker:
         escaping mid-phase cannot leave the dicts attached, and re-binding at the next phase start
         makes even a skipped release self-correcting on the next run.
         """
-        global _DOTTED_NAME_MEMO
+        global _DOTTED_NAME_MEMO, _COLLECTOR_TABLES_FROZEN
         _DOTTED_NAME_MEMO = None
         self._collector_dotted_name_memo = None
         self._collector_canonical_memo = None
+        _COLLECTOR_TABLES_FROZEN = False
+        self.assignments_by_scope._fallback_shape_cache = None
 
     def _resolve_sink_candidate(self, call_node, caller_scope, lineno):
         """Sink-detection body for one call site -- the statements the serial `raw_calls` loop ran.
@@ -16136,19 +16203,67 @@ class TaintTracker:
         """Activate the Phase 3 crypto-mode, protocol, and SVG sink registries."""
         function_scopes = {id(function): scope for scope, function in self.functions.items()}
 
-        def _scope_for(node: ast.AST, mod_name: str) -> str:
-            current = node
-            while current is not None:
-                scope = function_scopes.get(id(current))
-                if scope:
-                    return scope
-                current = getattr(current, "parent", None)
-            return f"{mod_name}:global"
+        def _scope_for(node: ast.AST, mod_name: str, memo: dict) -> str:
+            """Enclosing function scope, remembering every ancestor the walk passes through.
 
-        def _names_for_call(call: ast.Call, scope_id: str) -> set[str]:
-            name = dotted_name(call.func) or ""
-            canonical = self.resolve_canonical_name(call.func, scope_id) or ""
-            return {value for value in (name, canonical) if value}
+            The old loop walked from each node to its enclosing function, so a module with a deep
+            expression tree paid depth-per-node and a deeply nested chain turned the pass
+            quadratic. A node's scope is also every descendant's scope unless another function
+            sits between them, so each walk now stops at the first ancestor already answered and
+            back-fills the nodes it crossed. The memo holds the node beside its scope and is
+            checked with `is`, so an id can never answer for a different object.
+            """
+            chain = []
+            current = node
+            scope = None
+            while current is not None:
+                cached = memo.get(id(current))
+                if cached is not None and cached[0] is current:
+                    scope = cached[1]
+                    break
+                mapped = function_scopes.get(id(current))
+                if mapped:
+                    scope = mapped
+                    memo[id(current)] = (current, scope)
+                    break
+                chain.append(current)
+                current = getattr(current, "parent", None)
+            if scope is None:
+                scope = f"{mod_name}:global"
+            for item in chain:
+                memo[id(item)] = (item, scope)
+            return scope
+
+        # A callee made only of Names/Attributes asks a question whose answer depends on the chain
+        # spelling and the scope, never on which node instance asked: `_resolve_canonical_name_uncached`
+        # reads `node.id`/`node.attr`, the assignment/import tables and the chain's shape. Keying those
+        # asks by spelling+scope turns the repeated `self.assert*`/`torch.*` resolutions in one scope
+        # into one resolution. Calls/Subscripts are not keyed this way - their arguments change the
+        # answer, so they keep the per-node resolver memo.
+        _names_memo: dict[tuple[str, str, str], frozenset[str]] = {}
+
+        def _pure_attr_chain(node: ast.AST) -> bool:
+            while isinstance(node, ast.Attribute):
+                node = node.value
+            return isinstance(node, ast.Name)
+
+        def _names_for_call(call: ast.Call, scope_id: str) -> frozenset[str] | set[str]:
+            func = call.func
+            key = None
+            if isinstance(func, ast.Name):
+                key = ("name", func.id, scope_id)
+            elif isinstance(func, ast.Attribute) and _pure_attr_chain(func):
+                key = ("attr", dotted_name(func) or "", scope_id)
+            if key is not None:
+                cached = _names_memo.get(key)
+                if cached is not None:
+                    return cached
+            name = dotted_name(func) or ""
+            canonical = self.resolve_canonical_name(func, scope_id) or ""
+            result = {value for value in (name, canonical) if value}
+            if key is not None:
+                _names_memo[key] = frozenset(result)
+            return result
 
         def _matches_registry(names: set[str], registry: set[str]) -> bool:
             return any(name in registry or name.rsplit(".", 1)[-1] in registry for name in names)
@@ -16260,6 +16375,19 @@ class TaintTracker:
 
         seen: set[tuple[str, int, int]] = set()
 
+        # First sink node per (full location, CWE), for the three CWEs this collector can emit.
+        # `_add_finding` used to walk all of `sink_records` per finding to merge into an existing
+        # sink, which is O(findings x repo sinks) and grows with every module scanned. The dict is
+        # built once from the same records in the same order (`setdefault` keeps the first match,
+        # exactly like the scan did) and is extended when this collector appends a sink, so a later
+        # finding still sees it. Filtering by CWE is safe: every lookup asks for one of these three.
+        phase3_sink_index: dict[tuple, SecurityNode] = {}
+        for _p3_record in self.sink_records:
+            _p3_node = _p3_record.security_node
+            _p3_cwe = _p3_node.metadata.get("cwe")
+            if _p3_cwe in ("CWE-327", "CWE-939", "CWE-79"):
+                phase3_sink_index.setdefault((_p3_node.location, _p3_cwe), _p3_node)
+
         def _is_line_suppressed(lineno: int, mod_name: str) -> bool:
             """Check if a line has # ok: or # nosec suppression comment."""
             source_lines = self._source_lines_by_file.get(self.file_paths.get(mod_name, ""), [])
@@ -16287,11 +16415,10 @@ class TaintTracker:
             file_path = self.file_paths.get(mod_name, "unknown.py")
             node_location = location(node, file_path)
             source_id = P3_STRUCTURAL_SOURCE_IDS.get(operation)
-            for record in self.sink_records:
-                existing = record.security_node
-                if existing.location == node_location and existing.metadata.get("cwe") == cwe:
-                    existing.metadata["p3_source_id"] = source_id
-                    return
+            existing = phase3_sink_index.get((node_location, cwe))
+            if existing is not None:
+                existing.metadata["p3_source_id"] = source_id
+                return
             sink_node = SecurityNode(
                 id=self.next_sink_id(),
                 node_type=NodeType.SINK,
@@ -16312,48 +16439,47 @@ class TaintTracker:
                 lineno=line,
                 scope_id=scope_id,
             ))
+            phase3_sink_index.setdefault((node_location, cwe), sink_node)
 
         for mod_name, tree in self.modules.items():
             seen.clear()
             dynamic_response_vars: dict[tuple[str, str], list[int]] = {}
-            # Both loops below re-test the node type at their head (`isinstance(node, (Assign,
-            # AnnAssign))` at the prepass and `isinstance(node, Call)` with an Assign/AnnAssign elif
-            # in the main pass), so a node of any other type is bound, unpacked twice and then
-            # skipped both times. Binding only the three types they can consume leaves every fed
-            # node, its scope string and the visit order untouched. AnnAssign is named explicitly
-            # because it is not a subclass of Assign.
-            scoped_nodes = [(node, _scope_for(node, mod_name))
-                            for node in self._reachable_nodes(tree)
-                            if isinstance(node, (ast.Call, ast.Assign, ast.AnnAssign))]
+            # One physical traversal, every reachable node in it, and both rules passes below run
+            # over that same list. Nothing is filtered at a loop head: a node of another type is
+            # still bound and tested by the rule chain, it simply matches nothing. The scope walk
+            # is memoised per module (`_scope_for`), so the extra nodes cost a dict lookup.
+            nodes_in_order = self._reachable_nodes(tree)
+            scope_memo: dict[int, tuple] = {}
 
-            for node, scope_id in scoped_nodes:
-                if not isinstance(node, (ast.Assign, ast.AnnAssign)) or not isinstance(node.value, ast.Call):
-                    continue
-                response_call = node.value
-                if not _matches_registry(_names_for_call(response_call, scope_id), P3_SVG_RESPONSE_SINKS):
-                    continue
-                payload = _response_payload(response_call)
-                if payload is None:
-                    continue
-                payload_static = _eval_static_constant(payload, self.assignments_by_scope, scope_id, node.lineno)
-                if payload_static is not None:
-                    continue
-                temporary_sink = SecurityNode(
-                    id="", node_type=NodeType.SINK, symbol="SVG response",
-                    operation="SVG_XSS_RESPONSE", location=location(response_call, self.file_paths.get(mod_name, "unknown.py")),
-                    metadata={"sink_type": "CROSS_SITE_SCRIPTING", "cwe": "CWE-79"},
-                )
-                payload_taint = self.resolve_expression(payload, temporary_sink, scope_id, node.lineno)
-                if payload_taint.state == TaintState.CLEAN:
-                    continue
-                targets = node.targets if isinstance(node, ast.Assign) else [node.target]
-                for target in targets:
-                    if isinstance(target, ast.Name):
-                        dynamic_response_vars.setdefault((scope_id, target.id), []).append(node.lineno)
+            for node in nodes_in_order:
+                if isinstance(node, (ast.Assign, ast.AnnAssign)) and isinstance(node.value, ast.Call):
+                    scope_id = _scope_for(node, mod_name, scope_memo)
+                    response_call = node.value
+                    if not _matches_registry(_names_for_call(response_call, scope_id), P3_SVG_RESPONSE_SINKS):
+                        continue
+                    payload = _response_payload(response_call)
+                    if payload is None:
+                        continue
+                    payload_static = _eval_static_constant(payload, self.assignments_by_scope, scope_id, node.lineno)
+                    if payload_static is not None:
+                        continue
+                    temporary_sink = SecurityNode(
+                        id="", node_type=NodeType.SINK, symbol="SVG response",
+                        operation="SVG_XSS_RESPONSE", location=location(response_call, self.file_paths.get(mod_name, "unknown.py")),
+                        metadata={"sink_type": "CROSS_SITE_SCRIPTING", "cwe": "CWE-79"},
+                    )
+                    payload_taint = self.resolve_expression(payload, temporary_sink, scope_id, node.lineno)
+                    if payload_taint.state == TaintState.CLEAN:
+                        continue
+                    targets = node.targets if isinstance(node, ast.Assign) else [node.target]
+                    for target in targets:
+                        if isinstance(target, ast.Name):
+                            dynamic_response_vars.setdefault((scope_id, target.id), []).append(node.lineno)
 
-            for node, scope_id in scoped_nodes:
+            for node in nodes_in_order:
                 lineno = getattr(node, "lineno", 1)
                 if isinstance(node, ast.Call):
+                    scope_id = _scope_for(node, mod_name, scope_memo)
                     names = _names_for_call(node, scope_id)
                     is_crypto_call = any(
                         name.startswith("Crypto.Cipher.")
@@ -16416,6 +16542,7 @@ class TaintTracker:
                             )
 
                 elif isinstance(node, (ast.Assign, ast.AnnAssign)):
+                    scope_id = _scope_for(node, mod_name, scope_memo)
                     targets = node.targets if isinstance(node, ast.Assign) else [node.target]
                     header_variable = None
                     for target in targets:
