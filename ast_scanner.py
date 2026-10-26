@@ -609,6 +609,10 @@ CWE338_SECURITY_FUNC_KEYWORDS = (
     "verify", "credentials", "cipher", "authenticate"
 )
 CWE327_NON_CRYPTO_KEYWORDS = ("cache_key", "etag", "checksum", "fingerprint", "thumb")
+
+# Module stems that only ever run during packaging, where file paths are literals from
+# the project's own tree. Used by the CWE-770 unbounded-read bypass.
+PACKAGING_SCRIPT_STEMS = frozenset({"setup", "tasks"})
 CWE_PREDICATE_GUARDS = {
     "is_safe_url", "validate_url", "check_domain_allowlist", "is_allowed_domain",
     "validate_private_ip", "is_private_ip", "is_safe_redirect_url", "validate_redirect_url",
@@ -5109,6 +5113,50 @@ class TaintTracker:
             return self._is_http_transport_module(mod_name)
         if cwe_id == "CWE-117":
             return self._log_message_is_numeric_only(node)
+        return False
+
+    def _is_packaging_metadata_read(self, node: ast.Call, stream_name: str, scope_id: str) -> bool:
+        """True when a build script reads a fixed relative metadata file it ships with.
+
+        Packaging only ever opens tracked files from its own tree, so the number of bytes is
+        bounded by the repository rather than by anything a caller controls. Both conditions
+        are required: the file is a packaging script, and the stream was opened with a plain
+        string literal path -- no f-string, concatenation or variable, nothing absolute or
+        climbing out with '..'. A read whose path is computed stays fully reported.
+        """
+        mod_name = self._scope_module(scope_id)
+        if not mod_name:
+            return False
+        path = self._module_source_path(mod_name).replace("\\", "/").lower()
+        stem = path.rsplit("/", 1)[-1]
+        if stem.endswith(".py"):
+            stem = stem[:-3]
+        if stem not in PACKAGING_SCRIPT_STEMS and "/build/" not in path:
+            return False
+        if not stream_name:
+            return False
+        curr = getattr(node, "parent", None)
+        while curr is not None:
+            if isinstance(curr, (ast.With, ast.AsyncWith)):
+                for item in curr.items:
+                    ctx = item.context_expr
+                    if not isinstance(ctx, ast.Call):
+                        continue
+                    if dotted_name(ctx.func) not in ("open", "builtins.open", "io.open"):
+                        continue
+                    if not ctx.args:
+                        continue
+                    first = ctx.args[0]
+                    if not isinstance(first, ast.Constant) or not isinstance(first.value, str):
+                        continue
+                    bound = item.optional_vars
+                    if not isinstance(bound, ast.Name) or bound.id != stream_name:
+                        continue
+                    literal = first.value
+                    if literal.startswith(("/", "\\")) or ".." in literal or ":" in literal:
+                        continue
+                    return True
+            curr = getattr(curr, "parent", None)
         return False
 
     def _is_exempt_cwe327(self, node: ast.Call, scope_id: str = "", lineno: int = 0) -> bool:
@@ -16489,7 +16537,8 @@ class TaintTracker:
                         if not has_path_sanitizer:
                             r_name = (dotted_name(node.func.value) or (node.func.value.id if isinstance(node.func.value, ast.Name) else "")) if isinstance(node.func, ast.Attribute) else ""
                             if ((r_name in ("f", "file", "stream", "self.f", "s", "sock") or "stream" in r_name or fn_name == "recv")
-                                    and not self._read_subordinate_to_traversal(node, scope_id)):
+                                    and not self._read_subordinate_to_traversal(node, scope_id)
+                                    and not self._is_packaging_metadata_read(node, r_name, scope_id)):
                                 cwe_meta = {"operation": "UNBOUNDED_RESOURCE_ALLOCATION", "category": "RESOURCE_EXHAUSTION", "cwe": "CWE-770"}
 
                     # CWE-668: Framework server bound to a public interface.

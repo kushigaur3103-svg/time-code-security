@@ -549,6 +549,55 @@ class _CandidateMatch:
         self.masked_value = masked_value
 
 
+def _docstring_line_numbers(text: str) -> Set[int]:
+    """Line numbers covered by docstrings (module/class/function level).
+
+    Used only as a documentation context oracle for the private-key detector, so a
+    PEM header named inside prose is not mistaken for key material. Returns an empty
+    set on any parse failure; callers gate this on a substring pre-check because
+    parsing every file would cost time and memory this scanner deliberately avoids.
+    """
+    lines: Set[int] = set()
+    try:
+        tree = ast.parse(text)
+    except Exception:
+        return lines
+    for node in ast.walk(tree):
+        if not isinstance(node, (ast.Module, ast.FunctionDef, ast.AsyncFunctionDef, ast.ClassDef)):
+            continue
+        body = getattr(node, "body", None)
+        if not body:
+            continue
+        first = body[0]
+        if not isinstance(first, ast.Expr):
+            continue
+        value = first.value
+        literal = value.s if isinstance(value, ast.Str) else getattr(value, "value", None)
+        if not isinstance(literal, str):
+            continue
+        start = getattr(value, "lineno", 0)
+        end = getattr(value, "end_lineno", None) or start
+        lines.update(range(start, end + 1))
+    return lines
+
+
+def _is_quoted_bare_pem_header(line: str, start: int, end: int) -> bool:
+    """True when the header is a self-delimited string token with no key payload.
+
+    Both neighbours being quote characters means the literal closes right at the
+    header, so no base64 body follows it inside that token. Assignments that open a
+    multi-line body, PEM line lists (header followed by a comma), escaped payloads
+    (header followed by a backslash-n) and string concatenation all fail this test
+    and therefore stay detected.
+    """
+    quotes = "'\""
+    if start <= 0 or line[start - 1] not in quotes:
+        return False
+    if end >= len(line) or line[end] not in quotes:
+        return False
+    return True
+
+
 def scan_text(text: str, filename: str = "<string>") -> List[SecretFinding]:
     """Scan text for secrets and return a deterministic list of findings.
 
@@ -561,6 +610,12 @@ def scan_text(text: str, filename: str = "<string>") -> List[SecretFinding]:
     lines = text.splitlines(keepends=False)
     all_findings: List[SecretFinding] = []
 
+    # Docstring context is only needed by files that mention a PEM header at all;
+    # the substring pre-check keeps the per-file cost at zero everywhere else.
+    pem_doc_lines: Set[int] = (
+        _docstring_line_numbers(text) if "PRIVATE KEY-----" in text else set()
+    )
+
     for line_idx, raw_line in enumerate(lines, start=1):
         clean_line = raw_line.rstrip("\r\n")
         if len(clean_line) > 10000:
@@ -569,6 +624,10 @@ def scan_text(text: str, filename: str = "<string>") -> List[SecretFinding]:
 
         # 1. Private Key (Precedence 1)
         for m in _REGEX_PRIVATE_KEY.finditer(clean_line):
+            if line_idx in pem_doc_lines and _is_quoted_bare_pem_header(
+                clean_line, m.start(), m.end()
+            ):
+                continue
             candidates.append(
                 _CandidateMatch(
                     precedence=1,
@@ -777,6 +836,10 @@ def scan_text(text: str, filename: str = "<string>") -> List[SecretFinding]:
                     if not is_dummy:
                         for var_name, var_col in target_names:
                             if cred_var_regex.search(var_name):
+                                if var_name.lower() == val_str.lower():
+                                    # Value restates its own identifier, so it holds no
+                                    # secret entropy: enum members like PASSWORD = "password".
+                                    continue
                                 line_no = getattr(node, "lineno", 1)
                                 if any(f.line_number == line_no and f.detector != "hardcoded_credential_variable" for f in all_findings):
                                     continue
