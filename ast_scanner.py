@@ -5045,6 +5045,60 @@ class TaintTracker:
         stem, dirs = self._module_stem_and_dirs(mod_name_or_path)
         return stem in HTTP_TRANSPORT_MODULE_STEMS and any(d in HTTP_CLIENT_PACKAGE_DIRS for d in dirs)
 
+    def _numeric_safe_expr(self, expr: ast.AST) -> bool:
+        """True when the expression can only evaluate to a value with no CR/LF in it.
+
+        Only literal numbers and the three keyword constants qualify, so nothing here has a
+        name that another module could rebind: `True`, `False` and `None` are reserved words
+        in Python 3 and int/float arithmetic cannot be overridden on literals. Everything
+        else is unsafe and keeps its finding, including anything that could return text --
+        names, attributes, subscripts, nested f-strings and every call, because a function
+        called `len` or `int` can be defined in the scanned module itself and then returns
+        whatever that author puts into the log line. Comparisons are unsafe too: `==` on a
+        numpy array returns an array whose `str()` spans several lines.
+        """
+        if isinstance(expr, ast.Constant):
+            return isinstance(expr.value, (int, float, complex))
+        if isinstance(expr, ast.Num):
+            return True
+        if isinstance(expr, ast.Name):
+            return expr.id in ("True", "False", "None")
+        if isinstance(expr, ast.UnaryOp):
+            return isinstance(expr.op, (ast.UAdd, ast.USub, ast.Invert)) and self._numeric_safe_expr(expr.operand)
+        if isinstance(expr, ast.BinOp):
+            return self._numeric_safe_expr(expr.left) and self._numeric_safe_expr(expr.right)
+        if isinstance(expr, ast.BoolOp):
+            return all(self._numeric_safe_expr(v) for v in expr.values)
+        if isinstance(expr, ast.IfExp):
+            return (self._numeric_safe_expr(expr.body) and self._numeric_safe_expr(expr.orelse))
+        return False
+
+    def _log_message_is_numeric_only(self, node: ast.Call) -> bool:
+        """True when every interpolated hole in the logged f-strings is numeric-safe.
+
+        All-or-nothing on purpose: a message like f"deleted {len(rows)}: {name}" keeps
+        its finding because one hole can still carry CRLF. Messages with no f-string at
+        all are never exempt, which preserves the multi-hop cases where the tainted
+        f-string is built elsewhere and passed in as a plain name.
+        """
+        joined = [a for a in node.args if isinstance(a, ast.JoinedStr)]
+        if not joined:
+            return False
+        for j in joined:
+            for part in j.values:
+                if not isinstance(part, ast.FormattedValue):
+                    continue
+                if not self._numeric_safe_expr(part.value):
+                    return False
+                spec = getattr(part, "format_spec", None)
+                if isinstance(spec, ast.JoinedStr) and not all(
+                    self._numeric_safe_expr(sp.value)
+                    for sp in spec.values
+                    if isinstance(sp, ast.FormattedValue)
+                ):
+                    return False
+        return True
+
     def _sink_context_exempt(self, cwe_id: str, node: ast.Call, scope_id: str) -> bool:
         mod_name = self._scope_module(scope_id)
         if not mod_name:
@@ -5053,6 +5107,8 @@ class TaintTracker:
             return self._is_pytest_fixture_dynamic_import(node, mod_name)
         if cwe_id == "CWE-918":
             return self._is_http_transport_module(mod_name)
+        if cwe_id == "CWE-117":
+            return self._log_message_is_numeric_only(node)
         return False
 
     def _is_exempt_cwe327(self, node: ast.Call, scope_id: str = "", lineno: int = 0) -> bool:
