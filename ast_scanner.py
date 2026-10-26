@@ -610,9 +610,18 @@ CWE338_SECURITY_FUNC_KEYWORDS = (
 )
 CWE327_NON_CRYPTO_KEYWORDS = ("cache_key", "etag", "checksum", "fingerprint", "thumb")
 
-# Module stems that only ever run during packaging, where file paths are literals from
-# the project's own tree. Used by the CWE-770 unbounded-read bypass.
+# Module stems that only ever run during packaging. Used by the CWE-770 unbounded-read
+# bypass, which also requires the opened path to name one of the metadata files below --
+# a literal path shape alone does not prove the file came from the repository.
 PACKAGING_SCRIPT_STEMS = frozenset({"setup", "tasks"})
+PACKAGING_METADATA_FILES = frozenset({
+    "version.py", "__version__.py", "__version__", "pkg-info", "setup.py", "setup.cfg",
+    "pyproject.toml", "metadata.json", "requirements.txt", "cname",
+})
+PACKAGING_METADATA_PREFIXES = (
+    "readme", "license", "licence", "notice", "authors", "contributors", "changelog",
+    "changes", "history", "version", "requirements", "dependencies",
+)
 CWE_PREDICATE_GUARDS = {
     "is_safe_url", "validate_url", "check_domain_allowlist", "is_allowed_domain",
     "validate_private_ip", "is_private_ip", "is_safe_redirect_url", "validate_redirect_url",
@@ -5116,13 +5125,17 @@ class TaintTracker:
         return False
 
     def _is_packaging_metadata_read(self, node: ast.Call, stream_name: str, scope_id: str) -> bool:
-        """True when a build script reads a fixed relative metadata file it ships with.
+        """True when a packaging script reads a fixed metadata file it ships with.
 
-        Packaging only ever opens tracked files from its own tree, so the number of bytes is
-        bounded by the repository rather than by anything a caller controls. Both conditions
-        are required: the file is a packaging script, and the stream was opened with a plain
-        string literal path -- no f-string, concatenation or variable, nothing absolute or
-        climbing out with '..'. A read whose path is computed stays fully reported.
+        Three conditions are required together: the file is a packaging script (`setup.py`
+        or `tasks.py`), the stream was opened with a plain string literal path -- no
+        f-string, concatenation or variable, nothing absolute and nothing climbing out with
+        '..' -- and that literal names a metadata file. The last one matters because a
+        literal shape says nothing about who writes the file: `open("version.py")` reads a
+        tracked file whose size the repository controls, while `open("logs/app.log")` is the
+        same shape and reads a file the running program grows, so an unbounded read of it is
+        a real exhaustion and must stay reported. Anything the metadata list does not match
+        keeps its finding.
         """
         mod_name = self._scope_module(scope_id)
         if not mod_name:
@@ -5131,7 +5144,7 @@ class TaintTracker:
         stem = path.rsplit("/", 1)[-1]
         if stem.endswith(".py"):
             stem = stem[:-3]
-        if stem not in PACKAGING_SCRIPT_STEMS and "/build/" not in path:
+        if stem not in PACKAGING_SCRIPT_STEMS:
             return False
         if not stream_name:
             return False
@@ -5154,6 +5167,9 @@ class TaintTracker:
                         continue
                     literal = first.value
                     if literal.startswith(("/", "\\")) or ".." in literal or ":" in literal:
+                        continue
+                    base = literal.replace("\\", "/").rsplit("/", 1)[-1].lower()
+                    if base not in PACKAGING_METADATA_FILES and not base.startswith(PACKAGING_METADATA_PREFIXES):
                         continue
                     return True
             curr = getattr(curr, "parent", None)
