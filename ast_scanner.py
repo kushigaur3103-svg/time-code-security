@@ -7123,20 +7123,35 @@ class TaintTracker:
                 else: break
         return False
 
-    def _is_path_expr(self, expr_node: ast.AST, scope_id: str) -> bool:
+    def _is_path_expr(self, expr_node: ast.AST, scope_id: str,
+                      _seen: Optional[set] = None) -> bool:
+        # `x = x` is the shape that used to recurse here forever: the Name branch re-asks the
+        # same (node, scope) question, and `_walk_seen` below only bounds the *scope chain*
+        # inside one frame, not the recursion between frames. A repeated (node, scope) ask can
+        # only mean a cycle -- the earlier ask for it has not answered yet, and if it were going
+        # to answer True the `or` short-circuit would already have returned -- so False is the
+        # same answer the old code would have reached, without the RecursionError that used to
+        # abort `analyze()` and throw away every finding in the run.
+        if _seen is None:
+            _seen = set()
+        key = (expr_node, scope_id)
+        if key in _seen:
+            return False
+        _seen.add(key)
         if isinstance(expr_node, ast.Call):
             fname = self.resolve_canonical_name(expr_node.func, scope_id) or dotted_name(expr_node.func) or ""
             if fname in ("Path", "pathlib.Path"):
                 return True
             if isinstance(expr_node.func, ast.Attribute) and expr_node.func.attr in ("resolve", "absolute", "expanduser", "joinpath"):
-                return self._is_path_expr(expr_node.func.value, scope_id)
+                return self._is_path_expr(expr_node.func.value, scope_id, _seen)
             if isinstance(expr_node.func, ast.Attribute) and expr_node.func.attr in ("cwd", "home"):
                 return fname in ("Path.cwd", "pathlib.Path.cwd", "Path.home", "pathlib.Path.home")
         if isinstance(expr_node, ast.Attribute):
             if expr_node.attr in ("parent", "parents", "name", "stem", "suffix", "suffixes"):
-                return self._is_path_expr(expr_node.value, scope_id)
+                return self._is_path_expr(expr_node.value, scope_id, _seen)
         if isinstance(expr_node, ast.BinOp) and isinstance(expr_node.op, ast.Div):
-            return self._is_path_expr(expr_node.left, scope_id) or self._is_path_expr(expr_node.right, scope_id)
+            return (self._is_path_expr(expr_node.left, scope_id, _seen)
+                    or self._is_path_expr(expr_node.right, scope_id, _seen))
         if isinstance(expr_node, ast.Name):
             curr = scope_id
             mod_name = scope_module(scope_id)
@@ -7146,7 +7161,7 @@ class TaintTracker:
                 recs = self.assignments_by_scope.get((curr, expr_node.id), [])
                 if recs:
                     latest = recs[-1]
-                    if self._is_path_expr(latest.value_node, curr):
+                    if self._is_path_expr(latest.value_node, curr, _seen):
                         return True
                     break
                 if "." in curr and "function" in curr: curr = curr.rsplit(".", 1)[0]
