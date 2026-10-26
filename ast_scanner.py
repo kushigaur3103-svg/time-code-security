@@ -1057,8 +1057,10 @@ class AssignmentNameTable(dict):
         self.names_by_scope: Optional[Dict[str, set]] = {}
         self.records_by_name: Dict[str, list] = {}
         # Filled by `_eval_static_constant` only while the collector-phase table is frozen; cleared
-        # at that phase boundary so no bucket list outlives the run that built it.
-        self._fallback_shape_cache: Optional[dict] = None
+        # at that phase boundary so no bucket list outlives the run that built it. Holds the
+        # cross-scope timeline of one name, not a bare candidate list: see
+        # `_build_cross_scope_triage`.
+        self._fallback_shape_cache: Optional[dict] = {}
         for key in self:
             self._index(key)
             self._index_records(key, dict.__getitem__(self, key))
@@ -2080,6 +2082,308 @@ def _value_may_fold(node) -> bool:
             and isinstance(node.func.value, _FOLDABLE_CONTAINERS))
 
 
+# The cross-scope fallback may fold at most this many *alias* candidates at one time: a candidate
+# whose right-hand side needs the assignment table to fold (`hidden_states = hidden_states`,
+# `config = self.config`), as opposed to a candidate that is a compile-time constant on its own.
+# A repo-wide bucket of aliases is the shape that stalled Transformers run 40219821952: every
+# candidate used to be folded, so one ask cost O(bucket) recursive folds. Python gives a name that
+# is written more than this many times across a repository a different value in each file, so such
+# a bucket cannot describe one unambiguous static constant.
+CROSS_SCOPE_ALIAS_BUDGET = 20
+
+# `_literal_only_value` reports three things: a value (the expression is a compile-time constant),
+# `None` (it is one too, but contributes nothing -- `x = None` is skipped by the fallback exactly
+# like a candidate that cannot be folded), or `_TABLE_DEPENDENT` (it needs the assignment table, so
+# folding it can recurse into another bucket).
+_TABLE_DEPENDENT = object()
+
+# The two answers the literal half of a bucket can have at a given line: no literal candidate is
+# visible yet, or two visible literals disagree.
+_NO_LITERAL = object()
+_LITERAL_CONFLICT = object()
+
+
+def _literal_only_value(node, assignments_by_scope, scope_id="", lineno=0):
+    """The compile-time value of `node` when it is one, else `_TABLE_DEPENDENT`.
+
+    A node qualifies only when every leaf it reads is a literal. `_eval_static_constant` reaches
+    the assignment table through exactly two doors -- an `ast.Name`, and the members or keys of an
+    inline container -- so a node without either folds to the same value here as it does in the
+    folder, with no table read, no recursion and no `visited` copy. That is what lets a repo-wide
+    bucket of `mode = "CBC"`-style literals be answered from a timeline instead of one fold per
+    candidate per ask.
+
+    Every branch mirrors `_eval_static_constant` exactly, including the cases where that folder
+    refuses a value (`x = None`, a float, a non-literal container member), so a bucket that is
+    classified here has the same answer it had before.
+    """
+    if isinstance(node, ast.Constant):
+        if node.value is None:
+            return None
+        if isinstance(node.value, (int, str, bool, bytes)):
+            return node.value
+        return None
+    if isinstance(node, ast.UnaryOp):
+        inner = _literal_only_value(node.operand, assignments_by_scope, scope_id, lineno)
+        if inner is _TABLE_DEPENDENT:
+            return _TABLE_DEPENDENT
+        if isinstance(node.op, ast.USub) and isinstance(inner, int):
+            return -inner
+        if isinstance(node.op, ast.Not) and isinstance(inner, bool):
+            return not inner
+        return None
+    if isinstance(node, ast.JoinedStr):
+        parts = []
+        for value in node.values:
+            if isinstance(value, ast.FormattedValue):
+                if value.conversion is not None or value.format_spec is not None:
+                    # `_eval_static_constant` hands the FormattedValue itself to the folder, which
+                    # has no branch for it: the whole f-string folds to nothing.
+                    return None
+                value = value.value
+            piece = _literal_only_value(value, assignments_by_scope, scope_id, lineno)
+            if piece is _TABLE_DEPENDENT:
+                return _TABLE_DEPENDENT
+            if not isinstance(piece, str):
+                return None
+            parts.append(piece)
+        return "".join(parts)
+    if isinstance(node, ast.BinOp):
+        left = _literal_only_value(node.left, assignments_by_scope, scope_id, lineno)
+        if left is _TABLE_DEPENDENT:
+            return _TABLE_DEPENDENT
+        right = _literal_only_value(node.right, assignments_by_scope, scope_id, lineno)
+        if right is _TABLE_DEPENDENT:
+            return _TABLE_DEPENDENT
+        if left is None or right is None:
+            return None
+        if isinstance(node.op, ast.BitOr) and isinstance(left, int) and isinstance(right, int):
+            return left | right
+        if isinstance(node.op, ast.BitAnd) and isinstance(left, int) and isinstance(right, int):
+            return left & right
+        if isinstance(node.op, ast.Add) and isinstance(left, type(right)):
+            return left + right
+        if isinstance(node.op, ast.Sub) and isinstance(left, int) and isinstance(right, int):
+            return left - right
+        if isinstance(node.op, ast.Mult) and isinstance(left, int) and isinstance(right, int):
+            return left * right
+        return None
+    if isinstance(node, ast.Subscript):
+        base = _literal_only_container(node.value, assignments_by_scope, scope_id, lineno)
+        if base is _TABLE_DEPENDENT:
+            return _TABLE_DEPENDENT
+        if base is None:
+            return None
+        key = _literal_only_value(node.slice, assignments_by_scope, scope_id, lineno)
+        if key is _TABLE_DEPENDENT:
+            return _TABLE_DEPENDENT
+        if key is None:
+            return None
+        if isinstance(base, dict):
+            return base.get(key)
+        if isinstance(base, list) and isinstance(key, int) and not isinstance(key, bool):
+            return base[key] if -len(base) <= key < len(base) else None
+        return None
+    if (isinstance(node, ast.Call) and isinstance(node.func, ast.Attribute)
+            and node.func.attr in ("get", "pop", "setdefault") and node.args):
+        base = _literal_only_container(node.func.value, assignments_by_scope, scope_id, lineno)
+        if base is _TABLE_DEPENDENT:
+            return _TABLE_DEPENDENT
+        if isinstance(base, dict):
+            key = _literal_only_value(node.args[0], assignments_by_scope, scope_id, lineno)
+            if key is _TABLE_DEPENDENT:
+                return _TABLE_DEPENDENT
+            value = base.get(key) if key is not None else None
+            if value is not None:
+                return value
+            if len(node.args) > 1:
+                default = _literal_only_value(node.args[1], assignments_by_scope, scope_id, lineno)
+                if default is _TABLE_DEPENDENT:
+                    return _TABLE_DEPENDENT
+                return default
+        return None
+    return _TABLE_DEPENDENT
+
+
+def _literal_only_container(node, assignments_by_scope, scope_id="", lineno=0):
+    """The folded value of an *inline* literal container, or `_TABLE_DEPENDENT`.
+
+    Mirrors `_fold_inline_literal_container`: a container bound to a name is refused, because it can
+    be rebound between the assignment and the sink.
+    """
+    if isinstance(node, ast.Dict):
+        container = {}
+        for key_node, value_node in zip(node.keys, node.values):
+            if key_node is None:  # {**other}: the key set is not provable
+                return None
+            key = _literal_only_value(key_node, assignments_by_scope, scope_id, lineno)
+            if key is _TABLE_DEPENDENT:
+                return _TABLE_DEPENDENT
+            value = _literal_only_value(value_node, assignments_by_scope, scope_id, lineno)
+            if value is _TABLE_DEPENDENT:
+                return _TABLE_DEPENDENT
+            if key is None or value is None:
+                return None
+            try:
+                container[key] = value
+            except TypeError:
+                return None
+        return container
+    if isinstance(node, (ast.List, ast.Tuple)):
+        items = []
+        for element in node.elts:
+            if isinstance(element, ast.Starred):
+                return None
+            value = _literal_only_value(element, assignments_by_scope, scope_id, lineno)
+            if value is _TABLE_DEPENDENT:
+                return _TABLE_DEPENDENT
+            if value is None:
+                return None
+            items.append(value)
+        return items
+    return None
+
+
+def _canonical_value(value):
+    """A hashable form of `value` that compares equal exactly when the values compare equal."""
+    if isinstance(value, (list, tuple)):
+        return (type(value).__name__, tuple(_canonical_value(item) for item in value))
+    if isinstance(value, dict):
+        return ("dict", tuple(sorted(
+            (repr(_canonical_value(key)), repr(_canonical_value(item)))
+            for key, item in value.items())))
+    if isinstance(value, (set, frozenset)):
+        return ("set", frozenset(repr(_canonical_value(item)) for item in value))
+    return value
+
+
+def _agree_key(value):
+    """The key two values share in the fallback's agreement test.
+
+    The test is `val != first_value`, so equal values must land on the same key. `1` and `True`
+    compare equal, and so must they land on the same key; a list has to be canonicalised first,
+    because it cannot be a dict key.
+    """
+    try:
+        hash(value)
+    except TypeError:
+        return ("#", _canonical_value(value))
+    return value
+
+
+class _CrossScopeTriage:
+    """One name bucket, pre-resolved into a literal timeline and a bounded alias head.
+
+    `breaks` and `verdicts` say what the bucket's compile-time literals mean at a line: no literal
+    is visible yet, one value is visible, or two of them disagree. `alias_snaps` holds the alias
+    candidates that are live at the same line, or `None` when more than
+    `CROSS_SCOPE_ALIAS_BUDGET` of them are. All three are built once per name, so a repo-wide
+    bucket costs one sweep instead of one fold per candidate per ask.
+    """
+
+    __slots__ = ("breaks", "verdicts", "alias_snaps")
+
+    def __init__(self, breaks, verdicts, alias_snaps):
+        self.breaks = breaks
+        self.verdicts = verdicts
+        self.alias_snaps = alias_snaps
+
+    def at(self, lineno):
+        """(verdict, alias snapshot) for a query on `lineno`."""
+        breaks = self.breaks
+        if not breaks:
+            return _NO_LITERAL, ()
+        if not lineno:
+            return self.verdicts[-1], self.alias_snaps[-1]
+        low, high = 0, len(breaks)
+        while low < high:
+            mid = (low + high) // 2
+            if breaks[mid] <= lineno:
+                low = mid + 1
+            else:
+                high = mid
+        if low == 0:
+            return _NO_LITERAL, ()
+        return self.verdicts[low - 1], self.alias_snaps[low - 1]
+
+
+def _build_cross_scope_triage(assignments_by_scope, entries):
+    """Resolve one name bucket into the timeline the cross-scope fallback answers from.
+
+    A bucket is a list of `(scope, name)` keys, each holding the records written to that name in
+    that scope. The fallback used to walk that list per ask and fold every record it found; the
+    timeline replaces the walk with one sweep per name.
+
+    The sweep keeps the fallback's own shadowing rule: the record the fallback would use is the
+    *last* one written at or before the queried line, so a record is live on the line range where
+    no later record in the same scope has been written yet. A literal record contributes its value
+    on that range, an alias record contributes itself, and a record that can never fold contributes
+    nothing -- exactly what the per-ask fold did with it.
+    """
+    intervals = []
+    for _key, recs in entries:
+        if not recs:
+            continue
+        # suffix_min[i] is the earliest line any later record of this scope is written on, so
+        # record i is the one the fallback would pick on [recs[i].lineno, suffix_min[i + 1]).
+        suffix_min = [0] * (len(recs) + 1)
+        suffix_min[len(recs)] = None
+        for index in range(len(recs) - 1, -1, -1):
+            line = recs[index].lineno
+            later = suffix_min[index + 1]
+            suffix_min[index] = line if later is None or line < later else later
+        for index, record in enumerate(recs):
+            lower = record.lineno
+            upper = suffix_min[index + 1]
+            if upper is not None and lower >= upper:
+                continue  # a later record always shadows this one
+            value = _literal_only_value(record.value_node, assignments_by_scope,
+                                        record.scope_id, record.lineno)
+            if value is _TABLE_DEPENDENT:
+                if _value_may_fold(record.value_node):
+                    intervals.append((lower, upper, "alias", record))
+                continue
+            if value is None:
+                continue  # folds to nothing, so the fallback skipped it
+            intervals.append((lower, upper, "lit", value))
+    if not intervals:
+        return _CrossScopeTriage([], [], [])
+    events = {}
+    for lower, upper, kind, payload in intervals:
+        events.setdefault(lower, []).append((1, kind, payload))
+        if upper is not None:
+            events.setdefault(upper, []).append((-1, kind, payload))
+    breaks = sorted(events)
+    verdicts = []
+    alias_snaps = []
+    live_literals = {}      # agreement key -> how many scopes currently write that value
+    literal_values = {}     # agreement key -> the value itself
+    live_aliases = {}       # id(record) -> record
+    for point in breaks:
+        for delta, kind, payload in events[point]:
+            if kind == "lit":
+                key = _agree_key(payload)
+                if delta > 0:
+                    live_literals[key] = live_literals.get(key, 0) + 1
+                    literal_values[key] = payload
+                else:
+                    live_literals[key] = live_literals.get(key, 0) - 1
+            else:
+                if delta > 0:
+                    live_aliases[id(payload)] = payload
+                else:
+                    live_aliases.pop(id(payload), None)
+        if not live_literals:
+            verdicts.append(_NO_LITERAL)
+        elif len(live_literals) == 1:
+            verdicts.append(literal_values[next(iter(live_literals))])
+        else:
+            verdicts.append(_LITERAL_CONFLICT)
+        alias_snaps.append(tuple(live_aliases.values())
+                           if len(live_aliases) <= CROSS_SCOPE_ALIAS_BUDGET else None)
+    return _CrossScopeTriage(breaks, verdicts, alias_snaps)
+
+
 def _eval_static_constant(node, assignments_by_scope, scope_id="", lineno=0, visited=None,
                           accept_value=None):
     """Deterministically evaluates literal int/str/bool constants, resolving Name
@@ -2166,50 +2470,58 @@ def _eval_static_constant(node, assignments_by_scope, scope_id="", lineno=0, vis
         # Cross-scope fallback: resolve when every recorded assignment for this
         # name evaluates to the same constant regardless of scope.
         #
-        # O(1) by target name instead of a walk of every key in the table. The bucket is
-        # snapshotted because the loop below folds recursively. When the table carries no
-        # index the filtered items() walk answers precisely what the old loop answered, so
-        # the result never depends on which form the table happens to be in.
-        #
-        # The scan stops at the second *different* value: `all(c == candidates[0])` was already
-        # false at that point, so returning None here is exactly what collecting the rest of the
-        # bucket would decide -- without paying for thousands of unrelated same-named locals on a
-        # monolithic file. A value is returned only when every candidate agrees with the first.
+        # The bucket is resolved once per name into a timeline (`_build_cross_scope_triage`),
+        # so a repo-wide bucket of aliases costs one sweep instead of one fold per candidate per
+        # ask. The timeline keeps the fallback's own rules: a candidate that folds to nothing is
+        # skipped, a candidate that is shadowed by a later write in its own scope is not used,
+        # and the answer is a value only when every candidate agrees with the first.
         have_value = False
         first_value = None
         by_name = getattr(assignments_by_scope, "records_by_name", None)
         if by_name is None:
             entries = [(key, recs) for key, recs in assignments_by_scope.items()
                        if isinstance(key, tuple) and len(key) == 2 and key[1] == node.id]
+            triage = _build_cross_scope_triage(assignments_by_scope, entries)
         else:
-            entries = None
+            triage = None
             if _COLLECTOR_TABLES_FROZEN and hasattr(assignments_by_scope, "_fallback_shape_cache"):
                 shape_cache = assignments_by_scope._fallback_shape_cache
                 if shape_cache is None:
                     shape_cache = assignments_by_scope._fallback_shape_cache = {}
-                entries = shape_cache.get(node.id)
-                if entries is None:
-                    # Drop buckets that cannot produce a value for any lineno: every member folds
-                    # to None, so the walk below would skip each one after evaluating it. The
-                    # bucket's records are the same objects, in the same table order.
-                    entries = [(key, recs) for key, recs in by_name.get(node.id, ())
-                               if any(_value_may_fold(record.value_node) for record in recs)]
-                    shape_cache[node.id] = entries
-            if entries is None:
-                entries = list(by_name.get(node.id, ()))
-        for (rec_scope, rec_name), recs in entries:
-            if rec_name != node.id or not recs:
-                continue
-            usable = [r for r in recs if r.lineno <= lineno] if lineno else recs
-            if not usable:
-                continue
-            val = _eval_static_constant(usable[-1].value_node, assignments_by_scope, usable[-1].scope_id, usable[-1].lineno, visited.copy())
+                triage = shape_cache.get(node.id)
+                if triage is None:
+                    # The bucket is snapshotted while the table is frozen, so the timeline cannot
+                    # go stale under the collectors that read it.
+                    triage = _build_cross_scope_triage(assignments_by_scope,
+                                                       list(by_name.get(node.id, ())))
+                    shape_cache[node.id] = triage
+            if triage is None:
+                triage = _build_cross_scope_triage(assignments_by_scope,
+                                                   list(by_name.get(node.id, ())))
+        verdict, alias_snapshot = triage.at(lineno)
+        if verdict is _LITERAL_CONFLICT:
+            # Two visible literals disagree, so no single value can be the answer.
+            return None
+        if verdict is not _NO_LITERAL:
+            # Exact early abort for a target-set caller: the fallback's answer is this value
+            # (all candidates agree) or None (some candidate differs). Both are outside the
+            # caller's set, so neither can change what the caller does.
+            if accept_value is not None and not accept_value(verdict):
+                return None
+            have_value = True
+            first_value = verdict
+        if alias_snapshot is None:
+            # More alias candidates are live than the budget allows. They are rejected without
+            # being folded: a name written that many times across a repository has a different
+            # value in each file, so it is not the unambiguous static constant a caller can act
+            # on. A literal that is visible already decides the answer.
+            return first_value if have_value else None
+        for record in alias_snapshot:
+            val = _eval_static_constant(record.value_node, assignments_by_scope,
+                                        record.scope_id, record.lineno, visited.copy())
             if val is None:
                 continue
             if not have_value:
-                # Exact early abort for a target-set caller: the fallback's answer is this value
-                # (all candidates agree) or None (some candidate differs). Both are outside the
-                # caller's set, so neither can change what the caller does.
                 if accept_value is not None and not accept_value(val):
                     return None
                 have_value = True
@@ -3330,6 +3642,45 @@ class TaintTracker:
         self._sink_node_list: Optional[list] = None
         self._sink_node_len = 0
         self._sink_node_tail: Optional[object] = None
+        # Sink records bucketed by `(location.file, location.line_start)`: the line is a prefix of
+        # the full `CodeLocation` equality, so every record the old `for record in self.sink_records`
+        # scan could match is in the bucket that gets read, and the caller's own comparison still
+        # runs inside it. Buckets keep list order, which is what `next(...)` and the
+        # `removed = [...]` comprehensions depend on. Same invalidation triple as `_sink_index`
+        # above: a rebind, a shrink and a shrink refilled to the same length each rebuild it,
+        # plain appends are absorbed from `_sink_line_len` onward.
+        self._sink_line_index: dict[tuple[str, int], list] = {}
+        self._sink_line_list: Optional[list] = None
+        self._sink_line_len = 0
+        self._sink_line_tail: Optional[object] = None
+        # (scope_id, lineno) of every recorded sink whose CWE is CWE-1336. The per-module blindspot
+        # pass asked "is there already an SSTI sink on this line?" by scanning all of `sink_records`
+        # for each response write, which is O(modules x sinks). `metadata["cwe"]` is written only at
+        # construction - no assignment to that key exists anywhere - so the pair can be memoised;
+        # the same identity/length/tail triple rebuilds it when `sink_records` is rebound or shrinks.
+        self._ssti_scope_lines: set = set()
+        self._ssti_list: Optional[list] = None
+        self._ssti_len = 0
+        self._ssti_tail: Optional[object] = None
+        # Sink records bucketed by the identity of their own `node` (the call/return AST object).
+        # `any(rec.node is writer ... for rec in self.sink_records)` runs inside path-traversal
+        # expression analysis, once per candidate reader, so it is quadratic without a bucket.
+        # AST nodes stay alive in `self.modules` for the whole run, so `id()` cannot be recycled.
+        self._sink_node_rec_index: dict[int, list] = {}
+        self._sink_node_rec_list: Optional[list] = None
+        self._sink_node_rec_len = 0
+        self._sink_node_rec_tail: Optional[object] = None
+        # Security nodes bucketed by (location.file, location.line_start) for the two helpers that
+        # used to scan the whole of `self.sinks`: `get_or_create_sink`, called for every sink-shaped
+        # call reached during taint resolution, and the CWE-319 emitter, called for every cleartext
+        # site. Both were O(sinks) per call, so both were quadratic on a big repo. The line is a
+        # prefix of `CodeLocation` equality, so the caller's own comparison still decides; the
+        # bucket only narrows which nodes it has to look at. `self.sinks` only ever grows by append
+        # or is rebound to a filtered copy, which is exactly what the triple below detects.
+        self._sink_nodes_by_line: dict[tuple[str, int], list] = {}
+        self._sink_nodes_list: Optional[list] = None
+        self._sink_nodes_len = 0
+        self._sink_nodes_tail: Optional[object] = None
         # Termination telemetry, read by the SIGTERM/SIGINT flush in cli.py before it writes the
         # partial JSON/SARIF. Only `_analyze_pipeline` writes these and nothing in the engine reads
         # them, so they cannot influence a sink, an edge or a finding.
@@ -5141,8 +5492,8 @@ class TaintTracker:
                 if self._is_self_described(writer.args[0], record.scope_id, record.lineno):
                     return False
                 return any(
-                    rec.node is writer and (rec.security_node.metadata or {}).get("cwe") == "CWE-22"
-                    for rec in self.sink_records
+                    rec.security_node.metadata.get("cwe") == "CWE-22"
+                    for rec in self._sink_node_records(writer)
                 )
         return False
 
@@ -5677,7 +6028,7 @@ class TaintTracker:
 
     def get_or_create_sink(self, node: ast.Call, file_path: str, scope_id: str = "", force_cwe: Optional[str] = None) -> SecurityNode:
         loc = location(node, file_path)
-        for existing in self.sinks:
+        for existing in self._sink_nodes_on_line(loc.file, loc.line_start):
             if existing.location == loc and (force_cwe is None or existing.metadata.get("cwe") == force_cwe):
                 return existing
         sink_id = self.next_sink_id()
@@ -9722,6 +10073,181 @@ class TaintTracker:
         self._sink_buckets_len = len(records)
         self._sink_buckets_tail = records[-1] if records else None
         return buckets.get(filename, {})
+
+    def _sink_line_bucket(self, file_path: str, line_start: int) -> list:
+        """Every `sink_records` entry whose security node sits on one file line, in record order.
+
+        Nineteen collectors asked "is there already a sink at this location?" by scanning the whole
+        of `sink_records` once per candidate. That is quadratic over a repo: O(sinks) candidates
+        times O(sinks) records, and on the 2,847-module corpus it is what stalled the run. The
+        bucket key is the file and the line of the record's own `security_node.location`, so every
+        record the old scan could have matched is in the bucket that is read, and the caller's own
+        comparison still runs inside it.
+
+        Absorbed incrementally with the identity/length/tail invalidation triple
+        `_sink_index_find` uses: a rebind of `sink_records`, an in-place shrink, and a shrink
+        refilled to the same length each rebuild the buckets; plain appends are absorbed from
+        `_sink_line_len` onward.
+        """
+        records = self.sink_records
+        absorbed = self._sink_line_len
+        if (records is not self._sink_line_list or absorbed > len(records)
+                or (absorbed and records[absorbed - 1] is not self._sink_line_tail)):
+            self._sink_line_index = {}
+            self._sink_line_list = records
+            self._profile_cache_rebuild("sink_line_index", len(records))
+            start = 0
+        else:
+            start = absorbed
+        index = self._sink_line_index
+        for i in range(start, len(records)):
+            loc = records[i].security_node.location
+            key = (loc.file, loc.line_start)
+            bucket = index.get(key)
+            if bucket is None:
+                bucket = index[key] = []
+            bucket.append(records[i])
+        self._sink_line_len = len(records)
+        self._sink_line_tail = records[-1] if records else None
+        return index.get((file_path, line_start), [])
+
+    def _sink_records_at(self, node_location, cwe=None) -> list:
+        """Every `sink_records` entry whose security node sits at exactly `node_location`.
+
+        The same records the old `for record in self.sink_records if record.security_node.location
+        == node_location` scan returned, in the same order: the bucket holds every record on that
+        line, and inside it the full five-field `CodeLocation` equality - file, line_start,
+        line_end, column_start, column_end - still has to hold.
+        """
+        matches = [record for record in self._sink_line_bucket(node_location.file,
+                                                              node_location.line_start)
+                   if record.security_node.location == node_location]
+        if cwe is not None:
+            matches = [record for record in matches
+                       if record.security_node.metadata.get("cwe") == cwe]
+        return matches
+
+    def _sink_record_at(self, node_location, cwe=None) -> Optional["SinkRecord"]:
+        """The first `sink_records` entry at exactly `node_location` (and CWE), or None."""
+        matches = self._sink_records_at(node_location, cwe)
+        return matches[0] if matches else None
+
+    def _sink_node_at(self, node_location, cwe=None) -> Optional["SecurityNode"]:
+        """The security node of the first `sink_records` entry at `node_location` (and CWE)."""
+        record = self._sink_record_at(node_location, cwe)
+        return record.security_node if record is not None else None
+
+    def _sink_records_on_line(self, file_path: str, line_start: int, cwe=None) -> list:
+        """Every `sink_records` entry whose security node is on that file line, in record order.
+
+        The column is not compared, which is what the old scans asked for
+        (`location.file == file_path and location.line_start == line`).
+        """
+        records = self._sink_line_bucket(file_path, line_start)
+        if cwe is not None:
+            records = [record for record in records
+                       if record.security_node.metadata.get("cwe") == cwe]
+        return records
+
+    def _sink_record_on_line(self, file_path: str, line_start: int, cwe=None) -> Optional["SinkRecord"]:
+        """The first `sink_records` entry on that file line (and CWE), or None."""
+        matches = self._sink_records_on_line(file_path, line_start, cwe)
+        return matches[0] if matches else None
+
+    def _sink_record_for_node(self, sink) -> Optional["SinkRecord"]:
+        """The first Call-typed `sink_records` entry recorded for `sink` itself, or None.
+
+        The old scans asked the whole list for `record.security_node is sink` (and, in one place,
+        for the same node by its id - `SNK-###` ids come from a counter, so the two are the same
+        node). The node's own location says which bucket holds its records, and the identity check
+        still runs inside that bucket.
+        """
+        for record in self._sink_line_bucket(sink.location.file, sink.location.line_start):
+            if record.security_node is sink and isinstance(record.node, ast.Call):
+                return record
+        return None
+
+    def _sink_node_records(self, node) -> list:
+        """Every `sink_records` entry whose own `node` is `node`, in record order."""
+        records = self.sink_records
+        absorbed = self._sink_node_rec_len
+        if (records is not self._sink_node_rec_list or absorbed > len(records)
+                or (absorbed and records[absorbed - 1] is not self._sink_node_rec_tail)):
+            self._sink_node_rec_index = {}
+            self._sink_node_rec_list = records
+            self._profile_cache_rebuild("sink_node_rec_index", len(records))
+            start = 0
+        else:
+            start = absorbed
+        index = self._sink_node_rec_index
+        for i in range(start, len(records)):
+            record = records[i]
+            key = id(record.node)
+            bucket = index.get(key)
+            if bucket is None:
+                bucket = index[key] = []
+            bucket.append(record)
+        self._sink_node_rec_len = len(records)
+        self._sink_node_rec_tail = records[-1] if records else None
+        return [record for record in index.get(id(node), ()) if record.node is node]
+
+    def _sink_nodes_on_line(self, file_path: str, line_start: int) -> list:
+        """Every `self.sinks` node recorded on one file line, in list order.
+
+        `get_or_create_sink` used to scan the whole of `self.sinks` for a matching location on
+        every sink-shaped call reached during taint resolution, and the CWE-319 emitter rebuilt a
+        repo-wide (file, line) set for every cleartext site. Both are O(sinks) per call, so both
+        are quadratic on a big repo. The bucket key is the (file, line_start) prefix of
+        `CodeLocation` equality, so every node the old scan could match is in the bucket that is
+        read, and the caller's own comparison still runs inside it.
+        """
+        nodes = self.sinks
+        absorbed = self._sink_nodes_len
+        if (nodes is not self._sink_nodes_list or absorbed > len(nodes)
+                or (absorbed and nodes[absorbed - 1] is not self._sink_nodes_tail)):
+            self._sink_nodes_by_line = {}
+            self._sink_nodes_list = nodes
+            self._profile_cache_rebuild("sink_nodes_by_line", len(nodes))
+            start = 0
+        else:
+            start = absorbed
+        index = self._sink_nodes_by_line
+        for i in range(start, len(nodes)):
+            loc = nodes[i].location
+            key = (loc.file, loc.line_start)
+            bucket = index.get(key)
+            if bucket is None:
+                bucket = index[key] = []
+            bucket.append(nodes[i])
+        self._sink_nodes_len = len(nodes)
+        self._sink_nodes_tail = nodes[-1] if nodes else None
+        return index.get((file_path, line_start), [])
+
+    def _has_ssti_record(self, scope_id: str, lineno: int) -> bool:
+        """True when a CWE-1336 sink was already recorded for that scope and call line.
+
+        `rec.lineno` and `rec.scope_id` are the SinkRecord fields the old scan compared, so the
+        memo is keyed on them and not on the security node's location.
+        """
+        records = self.sink_records
+        absorbed = self._ssti_len
+        if (records is not self._ssti_list or absorbed > len(records)
+                or (absorbed and records[absorbed - 1] is not self._ssti_tail)):
+            keys: set = set()
+            self._profile_cache_rebuild("ssti_scope_lines", len(records))
+            start = 0
+        else:
+            keys = self._ssti_scope_lines
+            start = absorbed
+        for i in range(start, len(records)):
+            record = records[i]
+            if record.security_node.metadata.get("cwe") == "CWE-1336":
+                keys.add((record.scope_id, record.lineno))
+        self._ssti_scope_lines = keys
+        self._ssti_list = records
+        self._ssti_len = len(records)
+        self._ssti_tail = records[-1] if records else None
+        return (scope_id, lineno) in keys
 
     def _module_nodes(self, tree: ast.AST) -> list:
         """`list(ast.walk(tree))`, memoised on the tree.
@@ -15707,8 +16233,8 @@ class TaintTracker:
         sink_id = self.next_sink_id()
         loc = CodeLocation(file=file_path, line_start=lineno, line_end=lineno,
                            column_start=0, column_end=0)
-        existing_lines = {(s.location.file, s.lineno) for s in self.sinks}
-        if (file_path, lineno) in existing_lines:
+        existing_on_line = self._sink_nodes_on_line(file_path, lineno)
+        if existing_on_line:
             return
         sink_node = SecurityNode(
             id=sink_id,
@@ -17030,11 +17556,7 @@ class TaintTracker:
                 "CWE-522": "HARDCODED_JWT_SECRET",
                 "CWE-327": "INSECURE_CRYPTOGRAPHY",
             }
-            existing_record = next((
-                record for record in self.sink_records
-                if record.security_node.location == node_location
-                and record.security_node.metadata.get("cwe") == cwe
-            ), None)
+            existing_record = self._sink_record_at(node_location, cwe)
             if existing_record is not None:
                 existing_record.security_node.metadata["p4_source_id"] = source_ids[cwe]
                 if "operation" not in existing_record.security_node.metadata:
@@ -17694,11 +18216,7 @@ class TaintTracker:
                 return
             file_path = self.file_paths.get(mod_name, "unknown.py")
             node_location = location(sink_call, file_path)
-            existing = next((
-                record for record in self.sink_records
-                if record.security_node.location == node_location
-                and record.security_node.metadata.get("cwe") == "CWE-89"
-            ), None)
+            existing = self._sink_record_at(node_location, "CWE-89")
             if existing is not None:
                 return
             bridge_seen.add(key)
@@ -18497,22 +19015,12 @@ class TaintTracker:
             
             # SUPPRESSION: If CWE-1336 (SSTI) is already reported at this line, suppress CWE-79
             file_path = self.file_paths.get(mod_name, "unknown.py")
-            has_ssti = any(
-                record.security_node.metadata.get("cwe") == "CWE-1336"
-                for record in self.sink_records
-                if record.security_node.location.file == file_path
-                and record.security_node.location.line_start == line
-            )
+            has_ssti = bool(self._sink_records_on_line(file_path, line, "CWE-1336"))
             if has_ssti:
                 return  # SSTI finding already covers this line
             
             emitted.add(key)
-            existing = next((
-                record for record in self.sink_records
-                if record.security_node.location.file == file_path
-                and record.security_node.location.line_start == line
-                and record.security_node.metadata.get("cwe") == "CWE-79"
-            ), None)
+            existing = self._sink_record_on_line(file_path, line, "CWE-79")
             if existing is not None:
                 if not any(k.endswith("source_id") for k in existing.security_node.metadata):
                     existing.security_node.metadata["p11_source_id"] = "DYNAMIC_HTML_RESPONSE"
@@ -18834,8 +19342,7 @@ class TaintTracker:
                         if re.search(r"#\s*ok\b", lines[check_line - 1], re.IGNORECASE):
                             suppressed = True
                             break
-                record = next((r for r in self.sink_records
-                               if r.security_node is sink and isinstance(r.node, ast.Call)), None)
+                record = self._sink_record_for_node(sink)
                 sanitized = record is not None and any(
                     _sanitized_path_arg(arg, record.scope_id, start)
                     for arg in record.node.args[:1])
@@ -18915,12 +19422,7 @@ class TaintTracker:
                 return
             emitted.add(key)
             file_path = self.file_paths.get(mod_name, "unknown.py")
-            existing = next((
-                record for record in self.sink_records
-                if record.security_node.location.file == file_path
-                and record.security_node.location.line_start == line
-                and record.security_node.metadata.get("cwe") == cwe
-            ), None)
+            existing = self._sink_record_on_line(file_path, line, cwe)
             if existing is not None:
                 # Reuse existing sink but ensure it has an edge
                 sink_node = existing.security_node
@@ -19227,8 +19729,7 @@ class TaintTracker:
                 
                 # Check for pure static constants in sink records
                 static_constant = False
-                record = next((r for r in self.sink_records
-                               if r.security_node.id == sink.id and isinstance(r.node, ast.Call)), None)
+                record = self._sink_record_for_node(sink)
                 if record is not None:
                     first_arg = record.node.args[0] if record.node.args else None
                     if first_arg is not None:
@@ -19295,12 +19796,7 @@ class TaintTracker:
                 return
             emitted.add(key)
             file_path = self.file_paths.get(mod_name, "unknown.py")
-            existing = next((
-                record for record in self.sink_records
-                if record.security_node.location.file == file_path
-                and record.security_node.location.line_start == line
-                and record.security_node.metadata.get("cwe") == cwe
-            ), None)
+            existing = self._sink_record_on_line(file_path, line, cwe)
             if existing is not None:
                 # Reuse existing sink but ensure it has an edge
                 sink_node = existing.security_node
@@ -19647,11 +20143,7 @@ class TaintTracker:
                 return
             seen.add(key)
             node_location = location(node, self.file_paths.get(mod_name, "unknown.py"))
-            existing = next((
-                record for record in self.sink_records
-                if record.security_node.location == node_location
-                and record.security_node.metadata.get("cwe") == cwe
-            ), None)
+            existing = self._sink_record_at(node_location, cwe)
             if existing is not None:
                 existing.security_node.metadata["p5_source_id"] = source_ids[source_key]
                 return
@@ -19985,11 +20477,7 @@ class TaintTracker:
                 return
             seen.add(key)
             node_location = location(node, self.file_paths.get(mod_name, "unknown.py"))
-            existing = next((
-                record for record in self.sink_records
-                if record.security_node.location == node_location
-                and record.security_node.metadata.get("cwe") == "CWE-89"
-            ), None)
+            existing = self._sink_record_at(node_location, "CWE-89")
             if existing is not None:
                 existing.security_node.metadata["p6_source_id"] = "SQL_INJECTION_VULNERABILITY"
                 return
@@ -20923,25 +21411,30 @@ class TaintTracker:
             if _same_origin_relative_target(target, scope_id, lineno):
                 return True
             if isinstance(target, ast.Name):
-                existing_sink = next((
-                    record.security_node for record in self.sink_records
-                    if record.security_node.location == location(
-                        call, self.file_paths.get(scope_module(scope_id), "unknown.py")
-                    )
-                    and record.security_node.metadata.get("cwe") == "CWE-601"
-                ), None)
+                existing_sink = self._sink_node_at(
+                    location(call, self.file_paths.get(scope_module(scope_id), "unknown.py")),
+                    "CWE-601",
+                )
                 if _relative_guarded(call, target) or self.is_var_contained(
                     target.id, scope_id, lineno, existing_sink
                 ):
                     return True
                 target_var = target.id
-                current_func = None
-                for func_id, f_scope in function_scopes.items():
-                    if f_scope == scope_id:
-                        current_func = self.functions.get(f_scope)
-                        break
+                # `function_scopes` is {id(function): scope}, so the first entry whose scope is
+                # `scope_id` maps straight back to `self.functions.get(scope_id)`; the old loop
+                # walked every function in the repo to recompute that, once per redirect target.
+                current_func = self.functions.get(scope_id)
                 if current_func:
-                    for sub in ast.walk(current_func):
+                    # Call/Attribute subsequence of `ast.walk(current_func)`: the two branches
+                    # below test exactly those two types, so this visits the same nodes in the
+                    # same order. Cached on the function node because the walk used to run again
+                    # for every redirect target in the same function.
+                    func_nodes = current_func.__dict__.get("_cached_redirect_calls")
+                    if func_nodes is None:
+                        func_nodes = [n for n in ast.walk(current_func)
+                                      if isinstance(n, (ast.Call, ast.Attribute))]
+                        current_func.__dict__["_cached_redirect_calls"] = func_nodes
+                    for sub in func_nodes:
                         if isinstance(sub, ast.Call):
                             sub_names = _names_for_call(sub, scope_id)
                             if any(sn in redirect_validators or sn.rsplit(".", 1)[-1] in redirect_validators for sn in sub_names):
@@ -20989,11 +21482,8 @@ class TaintTracker:
             try:
                 node_location = location(node, self.file_paths.get(mod_name, "unknown.py"))
                 _rm_stats["visited"] = len(self.sink_records)
-                removed = [
-                    record for record in self.sink_records
-                    if record.security_node.location == node_location
-                    and record.security_node.metadata.get("cwe") in cwes
-                ]
+                removed = [record for record in self._sink_records_at(node_location)
+                           if record.security_node.metadata.get("cwe") in cwes]
                 if not removed:
                     return
                 _rm_stats["removed"] = len(removed)
@@ -21020,11 +21510,7 @@ class TaintTracker:
                 return
             seen.add(key)
             node_location = location(node, self.file_paths.get(mod_name, "unknown.py"))
-            existing = next((
-                record for record in self.sink_records
-                if record.security_node.location == node_location
-                and record.security_node.metadata.get("cwe") == cwe
-            ), None)
+            existing = self._sink_record_at(node_location, cwe)
             if existing is not None:
                 existing.security_node.metadata["p8_source_id"] = source_id
                 return
@@ -21277,11 +21763,7 @@ class TaintTracker:
             try:
                 node_location = location(node, self.file_paths.get(mod_name, "unknown.py"))
                 _rm_stats["visited"] = len(self.sink_records)
-                removed = [
-                    record for record in self.sink_records
-                    if record.security_node.location == node_location
-                    and record.security_node.metadata.get("cwe") == cwe
-                ]
+                removed = self._sink_records_at(node_location, cwe)
                 if not removed:
                     return
                 _rm_stats["removed"] = len(removed)
@@ -21308,11 +21790,7 @@ class TaintTracker:
                 return
             seen.add(key)
             node_location = location(node, self.file_paths.get(mod_name, "unknown.py"))
-            existing = next((
-                record for record in self.sink_records
-                if record.security_node.location == node_location
-                and record.security_node.metadata.get("cwe") == cwe
-            ), None)
+            existing = self._sink_record_at(node_location, cwe)
             if existing is not None:
                 existing.security_node.metadata["p9_source_id"] = source_id
                 return
@@ -21540,11 +22018,7 @@ class TaintTracker:
                     continue
                 seen.add(key)
                 node_location = location(node, self.file_paths.get(mod_name, "unknown.py"))
-                existing = next((
-                    record for record in self.sink_records
-                    if record.security_node.location == node_location
-                    and record.security_node.metadata.get("cwe") == "CWE-93"
-                ), None)
+                existing = self._sink_record_at(node_location, "CWE-93")
                 if existing is not None:
                     existing.security_node.metadata["p10_source_id"] = "HTTP_RESPONSE_INJECTION"
                     continue
@@ -21771,11 +22245,7 @@ class TaintTracker:
             seen.add(key)
             file_path = self.file_paths.get(mod_name, "unknown.py")
             node_location = location(node, file_path)
-            existing = next((
-                record for record in self.sink_records
-                if record.security_node.location == node_location
-                and record.security_node.metadata.get("cwe") == cwe
-            ), None)
+            existing = self._sink_record_at(node_location, cwe)
             if existing is not None:
                 existing.security_node.metadata["p11_source_id"] = "DYNAMIC_HTML_RESPONSE"
                 return
@@ -21818,11 +22288,7 @@ class TaintTracker:
                         if isinstance(target.value, ast.Attribute) and target.value.attr == "response":
                             if not _is_literal_text(_resolve_once(node.value, scope_id, lineno)):
                                 # Suppress if CWE-1336 (SSTI) already reported at same location
-                                has_ssti = any(
-                                    rec.security_node.metadata.get("cwe") == "CWE-1336"
-                                    for rec in self.sink_records
-                                    if rec.lineno == lineno and rec.scope_id == scope_id
-                                )
+                                has_ssti = self._has_ssti_record(scope_id, lineno)
                                 if not has_ssti:
                                     _add_finding(node, mod_name, scope_id, "HTTP_RESPONSE_HTML", cwe="CWE-79", category="CROSS_SITE_SCRIPTING")
                     continue
@@ -21897,11 +22363,7 @@ class TaintTracker:
                             if is_django_template_render or _is_safe_response_body(content, scope_id, lineno):
                                 if ct_val == "text/html":
                                     # Suppress if CWE-1336 (SSTI) already reported at same location
-                                    has_ssti = any(
-                                        rec.security_node.metadata.get("cwe") == "CWE-1336"
-                                        for rec in self.sink_records
-                                        if rec.lineno == lineno and rec.scope_id == scope_id
-                                    )
+                                    has_ssti = self._has_ssti_record(scope_id, lineno)
                                     if not has_ssti:
                                         _add_finding(node, mod_name, scope_id, "HTTP_RESPONSE_HTML", cwe="CWE-79", category="CROSS_SITE_SCRIPTING")
                             else:
@@ -21917,11 +22379,7 @@ class TaintTracker:
                                     taint = self.resolve_expression(content, temporary_sink, scope_id, lineno)
                                     if taint.state != TaintState.CLEAN or ct_val == "text/html" or not _is_literal_text(_resolve_once(content, scope_id, lineno)):
                                         # Suppress if CWE-1336 (SSTI) already reported at same location
-                                        has_ssti = any(
-                                            rec.security_node.metadata.get("cwe") == "CWE-1336"
-                                            for rec in self.sink_records
-                                            if rec.lineno == lineno and rec.scope_id == scope_id
-                                        )
+                                        has_ssti = self._has_ssti_record(scope_id, lineno)
                                         if not has_ssti:
                                             _add_finding(node, mod_name, scope_id, "HTTP_RESPONSE_HTML", cwe="CWE-79", category="CROSS_SITE_SCRIPTING")
 
