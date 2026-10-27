@@ -1,0 +1,49 @@
+{
+  "_comment": [
+    "Configuration for the tracked verification gates in benchmark/gates/.",
+    "recorded_root is the machine the baseline key files were blessed on; it is what lets a",
+    "baseline holding absolute paths run on any other checkout without changing one byte of it.",
+    "scan_root is the repo-relative tree the gate scans and the prefix its baseline keys carry;",
+    "the gate runs from inside that tree, so the engine's own spelling is put back before diffing.",
+    "corpus_sha256 pins the Big-8 input bytes, because frozen keys are only an authority for the",
+    "input they were made from. pinned_engine_rev is the commit whose output produced them.",
+    "Edit this file only together with the baselines it describes."
+  ],
+  "parity": {
+    "keys_file": "parity_before.keys",
+    "expected_keys": 425,
+    "recorded_root": "C:/Users/aarti gaur/OneDrive/Desktop/time code security",
+    "scan_root": "benchmark"
+  },
+  "big8": {
+    "keys_file": "big8_before.keys",
+    "expected_keys": 154,
+    "recorded_root": null,
+    "corpus_marker": "corpus_big8",
+    "corpus_search_paths": [
+      "benchmark/gates/corpus_big8",
+      "scratch/_p3_big"
+    ],
+    "pinned_engine_rev": "94c5ee2",
+    "corpus_files": [
+      "src__transformers__generation__utils.py",
+      "src__transformers__modeling_utils.py",
+      "src__transformers__trainer.py",
+      "tests__generation__test_utils.py",
+      "tests__models__markuplm__test_tokenization_markuplm.py",
+      "tests__models__whisper__test_modeling_whisper.py",
+      "tests__test_modeling_common.py",
+      "tests__test_tokenization_mistral_common.py"
+    ],
+    "corpus_sha256": {
+      "src__transformers__generation__utils.py": "ece5acedebe8cc3ba448f0e9b0d8ae9ddd7469a6ae017bc2598c2489159b9cbb",
+      "src__transformers__modeling_utils.py": "251aaae7733affbb7cdb5aa05a84157c46cac02518d868898cd6d6282cc14571",
+      "src__transformers__trainer.py": "33ef308cf53cd54511823f05d8888eb25d6bd567c4ef0c777b51abd65306bbef",
+      "tests__generation__test_utils.py": "7443126cd8941e31cad96f64804be632f22f10726c8b53de05e4bc80fa7fd590",
+      "tests__models__markuplm__test_tokenization_markuplm.py": "54582baf0265c9c8404c0e5a145ef9963951e5c949021e2044228fed3dfab6a9",
+      "tests__models__whisper__test_modeling_whisper.py": "16e02b463f12b2bdcbeb4f071b3398954fc3bd8046bea0e9a49f272d52844db6",
+      "tests__test_modeling_common.py": "e88c05100dbd8f4474d966df036206151563ea41b77bca18b49e58e48952c06e",
+      "tests__test_tokenization_mistral_common.py": "28f5adf8987eaff50a03e17c7e33c1ba217b4dcd80ac538119e5fc0c7954a8b4"
+    }
+  }
+}

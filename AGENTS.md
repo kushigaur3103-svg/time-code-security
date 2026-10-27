@@ -44,10 +44,15 @@ The sign-off also carries seven standing instructions:
   tp no`** — a perf or refactor change may only *reduce* false positives and false negatives. True
   positives must never move: every TP in the benchmark was hand-written and costs real effort to
   earn, so losing one is losing hard-won score, and `speed` / `ability` must hold or improve, never
-  regress. Therefore nothing counts as done until these three outputs are shown: benchmark parity
-  (`python scratch/_aa_parity.py` → 425 findings, MISSING=0 NEW=0), the cross-file gate
-  (`python benchmark/cross_runner.py` → PASS, F1=1.0000, FP=0, FN=0, exact-set YES), and the measured
+  regress. Therefore nothing counts as done until these four outputs are shown: benchmark parity
+  (`python benchmark/gates/aa_parity.py` → 425 findings, MISSING=0 NEW=0), the cross-file gate
+  (`python benchmark/cross_runner.py` → PASS, F1=1.0000, FP=0, FN=0, exact-set YES), the real-world
+  Big-8 gate (`python benchmark/gates/big8_ab.py` → 154 findings, MISSING=0 NEW=0), and the measured
   engine clock of the collector that was touched. A claim without those numbers is not a result.
+  Both gate scripts, their frozen baseline key files and `gate_meta.json` are tracked under
+  `benchmark/gates/`, so a fresh clone or CI can run them; `scratch/` is git-ignored, so a gate kept
+  there is not runnable by anyone else and its baseline is not reviewable. The gates scan their own
+  directory, so harness code that trips a rule shows up as a `NEW` key and is fixed, never excused.
 - **Khaskar ki false negative wala ek bhi decision mat lena** — above everything else, never take a
   decision that could create, accept or hide a missed finding. Concretely: no file skipping, no
   collector or candidate gated in a way that a real sink could fall through, no memo/cache that could
