@@ -758,7 +758,13 @@ def _sarif_code_flows(flow_trace, cwd):
     }]
 
 
-def _sarif_document(findings, cwd):
+def _sarif_document(findings, cwd, execution_successful=True):
+    """Build the SARIF 2.1.0 run for `findings`.
+
+    `execution_successful` mirrors reality: the crash and timeout-flush callers pass False, because
+    their JSON siblings already report `status: incomplete` / `status: partial`, and both already
+    exit non-zero -- claiming a successful run in the artefact would contradict them.
+    """
     rules = []
     rule_indexes = {}
     # Rules are keyed by CWE alone, so the secondary ids of *every* finding carrying that CWE
@@ -810,6 +816,7 @@ def _sarif_document(findings, cwd):
         "runs": [{
             "tool": {"driver": {"name": "TimeCodeSecurity", "rules": rules}},
             "results": results,
+            "invocations": [{"executionSuccessful": bool(execution_successful)}],
         }],
     }
 
@@ -1052,7 +1059,8 @@ def _scan_failure(args, exc):
         }, indent=2))
     if getattr(args, "sarif", None):
         try:
-            document = bound_sarif_document(_sarif_document([], Path.cwd().resolve()))
+            document = bound_sarif_document(
+                _sarif_document([], Path.cwd().resolve(), execution_successful=False))
             atomic_write_text(Path(args.sarif), json.dumps(document, indent=2) + "\n")
         except OSError as write_exc:
             print(f"Error writing fallback SARIF file: {write_exc}", file=sys.stderr)
@@ -1151,7 +1159,8 @@ def _flush_partial(reason):
         }, indent=2), flush=True)
     if getattr(args, "sarif", None):
         try:
-            document = bound_sarif_document(_sarif_document(findings, Path.cwd().resolve()))
+            document = bound_sarif_document(
+                _sarif_document(findings, Path.cwd().resolve(), execution_successful=False))
             atomic_write_text(Path(args.sarif), json.dumps(document, indent=2) + "\n")
         except OSError as exc:
             print(f"[warning] Partial SARIF write failed: {exc}", file=sys.stderr, flush=True)
