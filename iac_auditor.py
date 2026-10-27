@@ -4,8 +4,10 @@ Zero-dependency, deterministic analysis of two IaC artefact families:
 
 * Dockerfiles -- CWE-250 / CWE-269 when a container's run instruction executes
   without a preceding non-root ``USER`` instruction.
-* GitHub Actions workflows -- CWE-1357 / CWE-353 when a remote action step is
-  referenced by a mutable tag or branch instead of an immutable commit SHA.
+* GitHub Actions workflows -- one CWE-1357 finding per remote action step that is
+  referenced by a mutable tag or branch instead of an immutable commit SHA, carrying
+  CWE-353 in its metadata because the unpinned reference *is* the missing integrity
+  check and the two ids describe the same line of the same file.
 
 Findings are derived from parsed instruction nodes and structured ``uses:``
 references. There is no whole-file pattern matching and no path allow-listing.
@@ -171,7 +173,7 @@ def _is_remote_action(action_name: str) -> bool:
 
 
 def audit_workflow(file_path: str, source: str) -> List[Dict[str, Any]]:
-    """Emit CWE-1357 / CWE-353 findings for actions pinned to a mutable reference."""
+    """Emit one CWE-1357 finding per action step pinned to a mutable reference."""
     findings: List[Dict[str, Any]] = []
 
     for lineno, raw in enumerate(source.splitlines(), start=1):
@@ -192,18 +194,24 @@ def audit_workflow(file_path: str, source: str) -> List[Dict[str, Any]]:
             f" commit SHA: {action_name}@{reference}. Pin to the full 40-character"
             f" commit SHA so an upstream tag move cannot silently change the code that runs"
         )
-        for cwe, category in (
-            ("CWE-1357", "RELIANCE_ON_UNTRUSTED_COMPONENT"),
-            ("CWE-353", "MISSING_REFERENCE_INTEGRITY"),
-        ):
-            findings.append({
-                "file": file_path,
-                "line": lineno,
-                "cwe": cwe,
-                "severity": "MEDIUM",
-                "category": category,
-                "message": f"{cwe}: {message}",
-            })
+        # One record per vulnerable line. CWE-1357 is the primary id (the pipeline runs code
+        # it does not control). CWE-353 is the same defect seen from the integrity side, so it
+        # rides inside the alert text and in `related_cwes` instead of a second row that doubles
+        # the finding count for one `uses:` line. The id stays in the message because cli.py
+        # builds SARIF tags from the finding's own `cwe` only, and SARIF result text is exactly
+        # this string -- a metadata key alone would make CWE-353 unfindable in SARIF output.
+        findings.append({
+            "file": file_path,
+            "line": lineno,
+            "cwe": "CWE-1357",
+            "severity": "MEDIUM",
+            "category": "RELIANCE_ON_UNTRUSTED_COMPONENT",
+            "message": (
+                f"CWE-1357: {message}"
+                " (missing immutable commit reference — also CWE-353)"
+            ),
+            "related_cwes": ["CWE-353"],
+        })
 
     return findings
 
