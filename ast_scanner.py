@@ -5164,6 +5164,21 @@ class TaintTracker:
             return False
         return self._literal_log_text(node.args[0])
 
+    @staticmethod
+    def _shuffle_receiver_root_name(receiver: ast.AST) -> str:
+        """Dotted name sitting under any number of subscripts: `dsd["train"]` -> `dsd`.
+
+        Only the container is named by a subscript, so the key (`["train"]`) carries no
+        randomness and is deliberately not read. An `ast.Call` base is resolved to its
+        callee so `random.Random(0)["gen"].shuffle()` still spells out `random.Random`;
+        anything with no name at all returns '' and keeps its finding.
+        """
+        while isinstance(receiver, ast.Subscript):
+            receiver = receiver.value
+        if isinstance(receiver, ast.Call):
+            return dotted_name(receiver.func) or ""
+        return dotted_name(receiver) or ""
+
     def _is_dataset_shuffle_call(self, node: ast.Call, receiver_name: str,
                                  receiver_canon: str) -> bool:
         """True for `<data-plumbing object>.shuffle(...)` and nothing else.
@@ -5179,9 +5194,16 @@ class TaintTracker:
         Finally only the last written segment is matched for the dataset words, so
         `self.train_dataloader.shuffle()` is exempt while an unrecognised receiver
         (`td.shuffle()`) stays reported.
+
+        A subscripted receiver (`dataset_dict["train"].shuffle()`) is judged on its root
+        name through the very same two lists, unwrapped first for nested subscripts, so
+        `random_dict["gen"].shuffle()` and `random_state["gen"].shuffle()` stay reported.
         """
         if not isinstance(node.func, ast.Attribute) or node.func.attr != "shuffle":
             return False
+        if isinstance(node.func.value, ast.Subscript):
+            receiver_name = self._shuffle_receiver_root_name(node.func.value)
+            receiver_canon = ""
         if not receiver_name:
             return False
         segments = [s.lower() for s in receiver_name.split(".")]
