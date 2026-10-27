@@ -99,7 +99,7 @@ jobs:
 python scripts/run_all_checks.py
 
 # 2. Run bit-for-bit finding parity check (425 baseline)
-python scratch/_aa_parity.py
+python benchmark/gates/aa_parity.py
 
 # 3. Run PyGoat differential benchmark suite
 python scripts/compare_pygoat.py
