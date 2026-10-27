@@ -693,7 +693,21 @@ def _ascii_table(findings):
     return "\n".join(lines)
 
 
-def _sarif_rule(cwe, category, severity):
+def _sarif_tags(cwe, related):
+    """Tag list for one rule/result: its own CWE plus any secondary CWEs it stands for.
+
+    A deduplicated, order-preserving list, so the same set of secondary ids always renders the
+    same bytes and a CWE that already appears as the primary id is never repeated.
+    """
+    tags = ["security", str(cwe).lower()]
+    for related_cwe in related or ():
+        tag = str(related_cwe).lower()
+        if tag not in tags:
+            tags.append(tag)
+    return tags
+
+
+def _sarif_rule(cwe, category, severity, related=()):
     """Build one driver rule carrying the same required members the SARIF adapter emits."""
     digits = re.search(r"\d+", str(cwe))
     rule_meta = get_rule(cwe)
@@ -710,7 +724,7 @@ def _sarif_rule(cwe, category, severity):
         "defaultConfiguration": {
             "level": "error" if severity in ("CRITICAL", "HIGH") else "warning"
         },
-        "properties": {"tags": ["security", str(cwe).lower()]},
+        "properties": {"tags": _sarif_tags(cwe, related)},
     }
 
 
@@ -747,12 +761,22 @@ def _sarif_code_flows(flow_trace, cwd):
 def _sarif_document(findings, cwd):
     rules = []
     rule_indexes = {}
+    # Rules are keyed by CWE alone, so the secondary ids of *every* finding carrying that CWE
+    # are unioned up front. Reading only the first-seen finding would drop a later finding's
+    # related CWEs and leave the rule under-indexed.
+    related_by_cwe = {}
+    for finding in findings:
+        for related_cwe in finding.get("related_cwes") or ():
+            collected = related_by_cwe.setdefault(finding["cwe"], [])
+            if related_cwe not in collected:
+                collected.append(related_cwe)
     for finding in findings:
         cwe = finding["cwe"]
         if cwe in rule_indexes:
             continue
         rule_indexes[cwe] = len(rules)
-        rules.append(_sarif_rule(cwe, finding["category"], finding["severity"]))
+        rules.append(_sarif_rule(cwe, finding["category"], finding["severity"],
+                                 related_by_cwe.get(cwe)))
 
     level_by_severity = {"CRITICAL": "error", "HIGH": "error", "MEDIUM": "warning", "LOW": "note", "UNKNOWN": "note"}
     results = []
@@ -769,6 +793,12 @@ def _sarif_document(findings, cwd):
                 }
             }],
         }
+        # Mirrors the rule tag list so a reader that only walks results still sees the
+        # secondary CWE. Emitted only when a finding actually carries one, which keeps the
+        # bytes of every existing finding identical.
+        related = finding.get("related_cwes")
+        if related:
+            result["properties"] = {"tags": _sarif_tags(finding["cwe"], related)}
         flow_trace = finding.get("flow_trace")
         if flow_trace:
             result["codeFlows"] = _sarif_code_flows(flow_trace, cwd)
