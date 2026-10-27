@@ -966,6 +966,31 @@ CWE338_RANDOM_NAMES = frozenset({
     "getrandbits", "random",
 })
 
+# ─── CWE-338 dataset-shuffle receiver names ────────────────────────────────
+# `SINK_REGISTRY["shuffle"]` (and the bare leaf "shuffle" in CWE338_RANDOM_NAMES above)
+# matches ANY receiver, so `train_dataset.shuffle()` is reported as an insecure PRNG even
+# though it only reorders training rows. These two tables split the receiver: a name that
+# is or reaches a randomness/crypto source keeps its finding, and only a last segment that
+# clearly belongs to the data-plumbing family is exempted. The blocklist is checked first
+# and wins, so a receiver matching both (`random_state.batch_sampler.shuffle`) stays
+# reported. A bare `shuffle(items)` call never reaches the exemption, because its func is
+# an ast.Name rather than an attribute, and `from random import shuffle` is exactly the
+# insecure pattern this rule exists to catch.
+DATASET_SHUFFLE_RECEIVERS = (
+    "dataset", "dataloader", "data_loader", "loader", "batch", "sampler", "shard", "data",
+)
+RANDOMNESS_RECEIVER_SEGMENTS = frozenset({
+    "np", "os", "rng", "br", "torch", "secrets", "random", "numpy",
+    "systemrandom", "randomstate", "randomgen", "generator", "philox", "threefry",
+    "crypto", "crypt",
+})
+# Long enough to test as substrings of the whole written receiver, so an RNG-holding
+# name with a suffix (`random_state`, `rng_gen`, `seed_rng_sampler`) is still blocked
+# while no word in DATASET_SHUFFLE_RECEIVERS can ever contain one of these.
+RANDOMNESS_NAME_TOKENS = (
+    "random", "rng", "urandom", "secret", "token", "nonce", "salt", "cipher", "crypt",
+)
+
 # ─── O(1) sink fast-path candidate index ───────────────────────────────────
 # is_sink_call() can return True through paths that never consult SINK_REGISTRY:
 # the rule engine's own matchers, the attribute branches at the tail of the
@@ -5112,6 +5137,67 @@ class TaintTracker:
                     return False
         return True
 
+    def _literal_log_text(self, expr: ast.AST) -> bool:
+        """True when the expression is built only out of string constants."""
+        if isinstance(expr, ast.Constant):
+            return isinstance(expr.value, str)
+        if isinstance(expr, ast.JoinedStr):
+            return all(isinstance(v, ast.Constant) and isinstance(v.value, str)
+                       for v in expr.values)
+        if isinstance(expr, ast.BinOp) and isinstance(expr.op, ast.Add):
+            return self._literal_log_text(expr.left) and self._literal_log_text(expr.right)
+        return False
+
+    def _log_message_is_pure_literal(self, node: ast.Call) -> bool:
+        """True when the whole logged payload is one compile-time string constant.
+
+        A constant cannot carry the CR/LF an attacker supplied, so there is no log
+        injection in it. The shape has to be exact: a second positional argument
+        (`log.info("cfg: %s", untrusted)`) is how lazy %-formatting smuggles data into
+        the line and `extra=` is how structured logging does the same, so any keyword or
+        extra argument keeps its finding. Names, attributes, calls, subscripts, `%`
+        formats, `.format()` and hole-bearing f-strings are all rejected by
+        `_literal_log_text`, which leaves every multi-hop case (tainted text built
+        elsewhere and passed in as a plain name) exactly as audited today.
+        """
+        if len(node.args) != 1 or node.keywords:
+            return False
+        return self._literal_log_text(node.args[0])
+
+    def _is_dataset_shuffle_call(self, node: ast.Call, receiver_name: str,
+                                 receiver_canon: str) -> bool:
+        """True for `<data-plumbing object>.shuffle(...)` and nothing else.
+
+        Four conditions hold together. The callee leaf must be exactly `shuffle`, so a
+        bare `shuffle(x)` imported from `random` is never exempt and `random.choice`,
+        `torch.randint` and every token generator are untouched by this rule. Every
+        segment of the receiver as written is checked against RANDOMNESS_RECEIVER_SEGMENTS,
+        so `random.shuffle`, `np.random.shuffle` and `rng.shuffle` keep their finding. The
+        resolved name is checked only on its LAST segment, because canonicalisation
+        prefixes the library path: `loader` folds to `torch.utils.data.DataLoader` and that
+        is the dataset case, while `rng` folds to `random.Random` and that is the PRNG case.
+        Finally only the last written segment is matched for the dataset words, so
+        `self.train_dataloader.shuffle()` is exempt while an unrecognised receiver
+        (`td.shuffle()`) stays reported.
+        """
+        if not isinstance(node.func, ast.Attribute) or node.func.attr != "shuffle":
+            return False
+        if not receiver_name:
+            return False
+        segments = [s.lower() for s in receiver_name.split(".")]
+        lowered = receiver_name.lower()
+        if any(seg in RANDOMNESS_RECEIVER_SEGMENTS for seg in segments):
+            return False
+        if any(token in lowered for token in RANDOMNESS_NAME_TOKENS):
+            return False
+        if receiver_canon:
+            if receiver_canon.lower().rsplit(".", 1)[-1] in RANDOMNESS_RECEIVER_SEGMENTS:
+                return False
+            if any(token in receiver_canon.lower().rsplit(".", 1)[-1]
+                   for token in RANDOMNESS_NAME_TOKENS):
+                return False
+        return any(token in segments[-1] for token in DATASET_SHUFFLE_RECEIVERS)
+
     def _sink_context_exempt(self, cwe_id: str, node: ast.Call, scope_id: str) -> bool:
         mod_name = self._scope_module(scope_id)
         if not mod_name:
@@ -5121,7 +5207,8 @@ class TaintTracker:
         if cwe_id == "CWE-918":
             return self._is_http_transport_module(mod_name)
         if cwe_id == "CWE-117":
-            return self._log_message_is_numeric_only(node)
+            return (self._log_message_is_numeric_only(node)
+                    or self._log_message_is_pure_literal(node))
         return False
 
     def _is_packaging_metadata_read(self, node: ast.Call, stream_name: str, scope_id: str) -> bool:
@@ -6070,6 +6157,8 @@ class TaintTracker:
                                   else receiver_name) or receiver_name
                 if "SystemRandom" in receiver_name or "SystemRandom" in receiver_canon:
                     return False  # CSPRNG instance method - safe
+                if self._is_dataset_shuffle_call(node, receiver_name, receiver_canon):
+                    return False  # epoch reordering of a dataset, not a PRNG draw
             # Flag ALL other random.* calls unconditionally - no security context gate
             pass  # Continue to sink matching
 
