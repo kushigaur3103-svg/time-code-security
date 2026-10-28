@@ -56,8 +56,9 @@ The sign-off also carries seven standing instructions:
   so the one-line "emit an edge only when a real source exists" cleanup deletes all 59 at once and a
   baseline re-blessed afterwards shows an empty diff), and the measured engine clock of the collector
   that was touched. A claim without those numbers is not a result.
-  All four runnable gate scripts (`aa_parity.py`, `big8_ab.py`, `cwe338_ml_math_probe.py`,
-  `cwe117_cwe22_unknown_source_probe.py`), their frozen baseline key files and `gate_meta.json` are
+  All six runnable gate scripts (`aa_parity.py`, `big8_ab.py`, `cwe338_ml_math_probe.py`,
+  `cwe117_cwe22_unknown_source_probe.py`, `cwe117_builtin_seal_probe.py`,
+  `cwe22_dirent_closure_probe.py`), their frozen baseline key files and `gate_meta.json` are
   tracked under `benchmark/gates/`, so a fresh clone or CI can run them; `scratch/` is git-ignored,
   so a gate kept there is not runnable by anyone else and its baseline is not reviewable. The gates
   scan their own directory, so harness code that trips a rule shows up as a `NEW` key and is fixed,
@@ -109,7 +110,8 @@ All engine modifications, precision improvements, and bug fixes must be architec
 4. **Zero Recurring Defects**: A defect or FP pattern once resolved must remain permanently resolved
    across all future refactors and baseline evolutions.
 
-   Items 2 and 3 need a machine that can actually run all five gates. The Big-8 corpus is vendored in
+   Items 2 and 3 need a machine that can actually run every gate under `benchmark/gates/` plus
+   `benchmark/cross_runner.py`. The Big-8 corpus is vendored in
    the repository at `benchmark_gates_data/corpus_big8/` (8 files, 2,105,296 bytes) and `.gitattributes`
    marks that tree `-text`, because `core.autocrlf=true` otherwise rewrites a fresh checkout to CRLF
    and `verify_corpus` fails with `corpus drift` on bytes nobody changed. Measured in a clone outside
