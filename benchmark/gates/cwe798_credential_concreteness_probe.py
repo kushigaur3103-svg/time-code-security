@@ -1,4 +1,4 @@
-"""Fail-loud lock on CWE-798: what keeps `PASSWORD = "password"` silent, and on which path it is still a false positive.
+"""Fail-loud lock on CWE-798: what keeps `PASSWORD = "password"` silent on the gate path, and the file-type scope that closed the same shape on the product path.
 
     python benchmark/gates/cwe798_credential_concreteness_probe.py
 
@@ -26,57 +26,86 @@ already recorded. `password` measures 2.5 bits - below the floor - so it never r
 That is a *general* weak-literal suppression, so it also keeps `SECRET_KEY = "secret_key"` and
 `PASSWORD = "PASSWORD"` silent, and it is why a concrete enum member is still a true positive.
 
-**Path B - the product path (`secret_scanner.py`, reached from `app.py`, `tcs_cli.py`, `tcs_gui.py`,
-never from `cli.py`): DOES reproduce**, and the emitter is a regex, not an AST rule. The rule
+**Path B - the product path (`secret_scanner.py`, reached from `app.py:2217` and `tcs_cli.py:513`,
+never from `cli.py`) - DID reproduce, from a regex, and that is what this seal closed.** The rule
 `hashicorp-tf-password` (`master_rules_bank.py:232`) is Terraform/HCL-shaped - `<name ending in
-password>` `=` `"` `<8..20 chars>` `"` - and its character class is case-folded by `(?i)`, so it
-matches Python assignments:
+password>` `=` `"` `<8..20 chars>` `"` - and its value class is case-folded by `(?i)`, so before the
+scope it matched Python assignments:
 
     PASSWORD = "password"        -> (1, 'hashicorp-tf-password')     FALSE POSITIVE
     class AuthMode(Enum): PASSWORD = "password"        -> (5, 'hashicorp-tf-password')  FALSE POSITIVE
     class AuthMode(str, Enum): PASSWORD = "password"   -> (5, 'hashicorp-tf-password')  FALSE POSITIVE
+    PASSWORD = "PASSWORD"        -> (1, 'hashicorp-tf-password')     FALSE POSITIVE
+    PASSWORD = "change_me_please" -> (1, 'hashicorp-tf-password')    FALSE POSITIVE (its own placeholder)
     PASSWORD = 'password'        -> silent                (single quotes: the rule needs double)
-    PASSWORD = "change_me_please" -> (1, 'hashicorp-tf-password')  FALSE POSITIVE (its own placeholder)
 
-`secret_scanner.py:839-842` *does* skip self-referential names ("enum members like
+`secret_scanner.py:839-842` *did* already skip self-referential names ("enum members like
 `PASSWORD = \"password\"`", shipped in `34c9d81`), but that guard is inside the
-`hardcoded_credential_variable` detector, so it cannot suppress a finding raised by a different
-detector over the same line. The quote-dependence above is the proof that this is a spelling test.
+`hardcoded_credential_variable` detector, so it could not suppress a finding raised by a different
+detector over the same line. The quote-dependence above is the proof that it was a spelling test.
+
+**The shipped fix is a file-type scope, not a rule change.** `_gitleaks_detectors_for(filename)`
+(`secret_scanner.py`, next to `_GITLEAKS_DETECTORS`) drops `_HCL_SCOPED_GITLEAKS_RULES` =
+`{'hashicorp-tf-password'}` when the file is Python (`.py`, `.pyi`, `.pyw`, `.pyz`), and returns the
+whole bank untouched for anything else. It is resolved once per file, above the line loop, so no line
+pays an extra test. `master_rules_bank.py` is untouched: the bank is vendored rule data, and *where a
+rule may run* is scanner policy.
+
+**Why a Python deny-list and not the ".tf/.tfvars only" allow-list the request named - measured,
+because an allow-list is a false negative.** `scratch/_hcl_scope_measure.py` runs a 30-case matrix
+(shape x filename) through both paths; the diff before vs after the fix is exactly ten rows and no
+more:
+
+    5 false-positive rows      -> silent on path B and still silent on path A   (sessions.py / auth.py x2 / settings.py / const.py)
+    4 handover rows            -> 1:hashicorp-tf-password became 1:hardcoded_credential_variable, same line,
+                                  path A CWE-798 unchanged                     (hunter2secret, SuperSecret123, gui.pyw, app.pyz)
+    1 Python row               -> `db_password = "Test-Value-1234"` keeps only the path A CWE-798 at line 1, because
+                                  the dummy regex at `secret_scanner.py:808` calls the value a placeholder
+    11 non-Python rows         -> byte-equal before and after, 219/219 bank rules still offered
+
+The reason an allow-list was refused is those last eleven rows: on `values.yaml`, `config.json` and
+`main.go` the HCL rule is the *only* detector that fires at all - the AST credential pass is skipped
+for the config extensions (`secret_scanner.py:804`) and cannot parse Go - so "run only on .tf/.tfvars"
+would have deleted real credential detections. TIER 5 asserts those files still fire.
 
 **Why no true positive is anywhere near this.** `parity_before.keys` blesses exactly 6 CWE-798 keys and
 `big8_before.keys` blesses 0; TIER 1 re-counts both and asserts that **no baseline row** carries a
-`secret_scanner` detector name, which is what makes a path-B rule change FN-safe *for the gates* - and
-also what makes it unverifiable by them, which is why this probe asserts path B directly. TIER 2
-re-scans the 12 `benchmark/corpus/cwe_798_hardcoded/` fixtures with per-file line-set equality, so the
-6 blessed true positives and the 6 good variants are pinned at the emitter, not in a comment.
-
-**No engine file was modified to produce this page.** `PATTERN_ENUM_SEAL` stays `'abstained'`: the fix
-belongs in `secret_scanner.py` / `master_rules_bank.py`, both of which are outside the gate-blessed
-surface and outside what this repository commits from the secret-scanner side. While abstained, TIER 4
-asserts the false positives are *still there* - a rule that quietly changed shape (broadening to single
-quotes, or a fix nobody documented) fails here first. When the fix lands, flip the flag and the tier
-turns those same rows into silence assertions, with the must-report rows unchanged.
+`secret_scanner` detector name, which is what makes a path-B change FN-safe *for the gates* - and also
+what makes it unverifiable by them, which is why this probe asserts path B directly. TIER 2 re-scans
+the 12 `benchmark/corpus/cwe_798_hardcoded/` fixtures with per-file line-set equality, so the 6 blessed
+true positives and the 6 good variants are pinned at the emitter, not in a comment. All 6 keep their
+path A CWE-798 finding after the scope, and 3 of them additionally keep a path B finding via
+`hardcoded_credential_variable`.
 
 Tiers: TIER 1 - the blessed CWE-798 population of both baselines plus "zero baseline rows come from
 path B". TIER 2 - the 12 CWE-798 corpus fixtures re-scanned in memory, line sets equal to the blessed
 lines (bad) and empty (good). TIER 3 - path A: must-exempt weak/enum shapes silent, must-report concrete
 shapes present, and both halves of the storage-key suppression at `:10185` (same literal, read vs
-unread) pinned. TIER 4 - path B: the enum guard of `hardcoded_credential_variable`, the four live
-`hashicorp-tf-password` false positives, the quote asymmetry, and the concrete values that must stay
-flagged.
+unread) pinned. TIER 4 - path B: the enum guard of `hardcoded_credential_variable`, the five closed
+false positives asserted **silent**, the quote asymmetry asserted on `main.tf`, and the concrete values
+that must stay flagged by the AST detector. TIER 5 - the scope itself: one real credential per Python
+suffix must lose the HCL rule and *keep* a finding on both paths, the bank must be 219/219 rules for
+non-Python names, and 9 HCL/config/Go/env/txt/no-extension/stdin detections must still fire.
 
-Falsification, all four measured with `scratch/_falsify_798.py` - it exec's this file in a private
+Falsification, all seven measured with `scratch/_falsify_798.py` - it exec's this file in a private
 namespace with `__file__` pointed at the tracked path and mutates the engine/scanner singletons in
-memory, so no tracked file is edited and the baseline run still exits 0:
+memory, so no tracked file is edited and the unmodified baseline still exits 0:
 
-    phase-9 credential layer disabled              exit=1  FAIL selfref_module_level want=silent got=[1]
-    storage-key proof always true                  exit=1  FAIL test_v01_bad.py lines=[] want=[1]   (all 6 blessed TPs vanish)
-    hashicorp-tf-password rule neutered            exit=1  FAIL selfref_double_quote want=(1, hashicorp-tf-password) got=silent
-    hashicorp-tf-password broadened to 1 quotes    exit=1  FAIL selfref_single_quote want=silent got=[(1, hashicorp-tf-password)]
+    phase-9 credential layer disabled                  exit=1  FAIL selfref_module_level want=silent got=[1]
+    storage-key proof always true                      exit=1  FAIL test_v01_bad.py lines=[] want=[1]   (all 6 blessed TPs vanish)
+    hashicorp-tf-password rule neutered                exit=1  FAIL tf_password_line main.tf got=[(1, hardcoded_credential_variable)]
+    hashicorp-tf-password broadened to single quotes   exit=1  FAIL selfref_single_quote want=silent got=[(1, hashicorp-tf-password)]
+    HCL rule dropped for every file (removal)          exit=1  FAIL main.tf bank rules offered=218/219
+    Python scope reverted                              exit=1  FAIL selfref_double_quote want=silent got=[(1, hashicorp-tf-password)]
+    HCL allow-list instead of Python deny-list         exit=1  FAIL yaml_credential values.yaml got=silent
 
-The second row is the zero-FN proof of this file: the cheapest way to "fix the enum false positive" -
-make `_c798_value_is_storage_key` answer "yes" - deletes all 6 blessed CWE-798 true positives at once,
-and the corpus tier fails on the fixture bytes before any baseline can be re-blessed around it.
+Row 2 is the path-A zero-FN proof: the cheapest way to "fix the enum false positive" - make
+`_c798_value_is_storage_key` answer "yes" - deletes all 6 blessed CWE-798 true positives at once, and
+the corpus tier fails on the fixture bytes before any baseline can be re-blessed around it. Rows 5 and
+7 are the path-B zero-FN proof: the fix may scope the rule, never shrink the bank. Row 4 also records a
+tier that had to be re-keyed - with the quote-asymmetry rows on a `.py` filename, the broadening
+mutation measured exit=0 (unfalsifiable), because the scoped rule does not execute on Python at all;
+moving the rows to `main.tf` is what made them bite.
 """
 from __future__ import annotations
 
@@ -94,7 +123,7 @@ import cli  # noqa: E402
 import secret_scanner  # noqa: E402
 from gate_common import META, load_keys  # noqa: E402
 
-PATTERN_ENUM_SEAL = 'abstained'   # 'shipped' only when secret_scanner stops matching Python assignments
+PATTERN_ENUM_SEAL = 'shipped'   # HCL bank rules are scoped away from Python by _gitleaks_detectors_for()
 
 CWE_MESSAGE = 'CWE-798: HARDCODED_CREDENTIAL'
 CORPUS_SUBDIR = os.path.join('corpus', 'cwe_798_hardcoded')
@@ -164,25 +193,55 @@ PATTERN_ENUM_GUARD = [
     ('guard_lowercase', 'password = "password"\n'),
 ]
 
-# Live path-B false positives, measured on the engine on disk. Asserted *present* while abstained.
+# The five path-B false positives this seal closes. Each was measured flagged by `hashicorp-tf-password`
+# before the scope landed (same shapes, same `.py` filenames) and is now measured silent on both paths.
 PATTERN_FALSE_POSITIVES = [
     ('selfref_double_quote', 'PASSWORD = "password"\n', 1),
     ('enum_double_quote', ENUM_HEAD + 'class AuthMode(Enum):\n    PASSWORD = "password"\n', 5),
     ('strenum_double_quote', ENUM_HEAD + 'class AuthMode(str, Enum):\n    PASSWORD = "password"\n', 5),
     ('placeholder_double_quote', 'PASSWORD = "change_me_please"\n', 1),
+    ('upper_selfref_double_quote', 'PASSWORD = "PASSWORD"\n', 1),
 ]
 
 # Quote asymmetry: the HCL rule requires double quotes, which is what proves it is a spelling test.
+# Asserted on a `.tf` filename, not a Python one - after the scope the rule does not execute on `.py`,
+# so a Python filename would make this row unfalsifiable (measured: broadening the rule to single
+# quotes passed the whole probe while the tier was keyed on `.py`).
 PATTERN_QUOTE_ASYMMETRY = [
     ('selfref_single_quote', "PASSWORD = 'password'\n"),
     ('enum_single_quote', ENUM_HEAD + "class AuthMode(Enum):\n    PASSWORD = 'password'\n"),
 ]
+PATTERN_QUOTE_ASYMMETRY_FILE = 'main.tf'
 
+# Concrete credentials in Python: after the scope, the AST detector carries them. Measured as a
+# handover on the same line (1:hashicorp-tf-password -> 1:hardcoded_credential_variable), never as a
+# deletion, and path A still reports CWE-798 on every one of them (TIER 3).
 PATTERN_TRUE_POSITIVES = [
-    ('pattern_concrete_password', 'PASSWORD = "SuperSecret123"\nprint(PASSWORD)\n', 'hashicorp-tf-password'),
+    ('pattern_concrete_password', 'PASSWORD = "SuperSecret123"\nprint(PASSWORD)\n', 'hardcoded_credential_variable'),
     ('pattern_concrete_api_key', 'API_KEY = "live_token_abc"\nprint(API_KEY)\n', 'hardcoded_credential_variable'),
+    ('pattern_blessed_hunter2', 'password = "hunter2secret"\nprint(password)\n', 'hardcoded_credential_variable'),
     ('pattern_env_read', 'import os\n\nAPI_KEY = os.environ.get("API_KEY")\n', None),
 ]
+
+# The zero-false-negative half of this seal. The scope is a Python deny-list, not a
+# ".tf/.tfvars only" allow-list, because on these files `hashicorp-tf-password` is the ONLY detector
+# that fires: the AST credential pass at the foot of `scan_text` is skipped for the config extensions
+# (`secret_scanner.py:804`) and cannot parse Go at all. Measured before and after the fix, byte-equal.
+HCL_STILL_RUNS = [
+    ('tf_password_line', 'main.tf', 'password = "hunter2secret"\n', 1),
+    ('tfvars_admin_login', 'terraform.tfvars', 'administrator_login_password = "Abc12345xyz"\n', 1),
+    ('yaml_credential', 'values.yaml', 'db_password: "SuperSecretValue1"\n', 1),
+    ('json_credential', 'config.json', '{"password": "SuperSecretValue1"}\n', 1),
+    ('go_credential', 'main.go', 'const dbPassword = "SuperSecretValue1"\n', 1),
+    ('env_credential', '.env', 'password="SuperSecretValue1"\n', 1),
+    ('txt_credential', 'notes.txt', 'password = "SuperSecretValue1"\n', 1),
+    ('no_extension', 'Dockerfile', 'password = "SuperSecretValue1"\n', 1),
+    ('stdin_default', '<string>', 'password = "SuperSecretValue1"\n', 1),
+]
+
+# Every Python spelling the deny-list covers, one real credential line each: the rule must be gone and
+# the AST detector must be there, so scoping cannot become silencing.
+PYTHON_SUFFIXES = ['sessions.py', 'stub.pyi', 'gui.pyw', 'app.pyz']
 
 
 def scan_ast(label, source):
@@ -194,10 +253,10 @@ def scan_ast(label, source):
     return sorted(row['line'] for row in rows if row['cwe'] == 'CWE-798')
 
 
-def scan_patterns(label, source):
+def scan_patterns(label, source, filename=None):
     """Path B: the product scanner, filtered to the credential detectors named above."""
     with contextlib.redirect_stderr(io.StringIO()):
-        findings = secret_scanner.scan_text(source, f'{label}.py')
+        findings = secret_scanner.scan_text(source, filename or f'{label}.py')
     return sorted({(f.line_number, f.detector) for f in findings if (f.detector or '') in CRED_DETECTORS})
 
 
@@ -307,12 +366,12 @@ def check_path_b():
                          're-measure, and if the false positives are gone flip PATTERN_ENUM_SEAL to '
                          "'shipped' rather than deleting these rows"))
     for label, source in PATTERN_QUOTE_ASYMMETRY:
-        hits = scan_patterns(label, source)
+        hits = scan_patterns(label, source, PATTERN_QUOTE_ASYMMETRY_FILE)
         print(f'  {"ok  " if not hits else "FAIL"} {label:24s} want=silent  got={hits}')
         if hits:
             failures.append((label, 'silent', hits,
-                             'the HCL rule now matches single-quoted Python too - its false-positive '
-                             'surface grew on the path this probe says is not blessed anywhere'))
+                             'the HCL rule now matches single-quoted values too - its false-positive '
+                             'surface grew, on every file type that still runs it'))
     for row in PATTERN_TRUE_POSITIVES:
         label, source, want = row
         hits = scan_patterns(label, source)
@@ -330,6 +389,44 @@ def check_path_b():
     return failures
 
 
+def check_python_scope():
+    """TIER 5: the scope is a scope, not a mute - Terraform keeps its rule and Python keeps a finding."""
+    failures = []
+    source = 'password = "hunter2secret"\nprint(password)\n'
+    for filename in PYTHON_SUFFIXES:
+        hits = scan_patterns('python_scoped', source, filename)
+        by_hcl = [hit for hit in hits if hit[1] == 'hashicorp-tf-password']
+        carried = any(hit[1] == 'hardcoded_credential_variable' for hit in hits)
+        engine_lines = scan_ast('python_scoped', source)
+        ok = not by_hcl and carried and engine_lines == [1]
+        print(f'  {"ok  " if ok else "FAIL"} {filename:24s} hcl_rule={by_hcl or "absent"} '
+              f'ast_detector={carried} path_a={engine_lines or "silent"}')
+        if not ok:
+            failures.append((filename, 'HCL rule absent + hardcoded_credential_variable present + CWE-798 at 1',
+                             (by_hcl, carried, engine_lines),
+                             'scoping the HCL rule off Python removed the finding instead of the false '
+                             'positive - a real credential would now be missed'))
+    full = secret_scanner._GITLEAKS_DETECTORS
+    for filename in ('main.tf', 'terraform.tfvars', 'values.yaml', 'config.json', 'Dockerfile', '<string>'):
+        active = secret_scanner._gitleaks_detectors_for(filename)
+        ok = len(active) == len(full)
+        print(f'  {"ok  " if ok else "FAIL"} {filename:24s} bank rules offered={len(active)}/{len(full)}')
+        if not ok:
+            failures.append((filename, f'{len(full)} rules', f'{len(active)} rules',
+                             'the deny-list grew into an allow-list: this file lost bank rules it never '
+                             'had a Python-semantics excuse to lose'))
+    for label, filename, source, line in HCL_STILL_RUNS:
+        hits = scan_patterns(label, source, filename)
+        ok = (line, 'hashicorp-tf-password') in hits
+        print(f'  {"ok  " if ok else "FAIL"} {label:24s} {filename:18s} '
+              f'want=({line}, hashicorp-tf-password)  got={hits or "silent"}')
+        if not ok:
+            failures.append((label, filename, f'({line}, hashicorp-tf-password)', hits or 'silent',
+                             'the rule no longer fires on a real HCL/config file - the fix became a '
+                             'removal, and on these files nothing else detects this line'))
+    return failures
+
+
 def main() -> int:
     print('TIER 1 - blessed CWE-798 floors, and who owns each detector:')
     failures = check_floors()
@@ -339,9 +436,12 @@ def main() -> int:
     failures += check_path_a()
     print('TIER 4 - path B (secret_scanner pattern rules, app/tcs_cli/tcs_gui):')
     failures += check_path_b()
+    print('TIER 5 - the Python deny-list scoped the rule away without removing the finding:')
+    failures += check_python_scope()
     print(f'\nseal={PATTERN_ENUM_SEAL} locked_cwe798={sum(CWE798_LOCKED.values())} '
           f'fixtures={len(FIXTURE_LINES)} must_exempt={len(MUST_EXEMPT)} must_report={len(MUST_REPORT)} '
           f'storage_key={len(STORAGE_KEY_PAIR)} path_b_fp={len(PATTERN_FALSE_POSITIVES)} '
+          f'hcl_locks={len(HCL_STILL_RUNS)} py_suffixes={len(PYTHON_SUFFIXES)} '
           f'failures={len(failures)}')
     for item in failures[:12]:
         print(f'  !! {item}')
@@ -349,8 +449,9 @@ def main() -> int:
         print('VERDICT: FAIL - the CWE-798 credential layer no longer matches its evidence. Restoring '
               'the finding is the fix; re-blessing a baseline is not.')
         return 1
-    print('VERDICT: PASS - 6 blessed CWE-798 keys held, 12 fixtures exact-set, 6 weak/enum shapes '
-          'silent and 8 concrete shapes reported on path A, path B measured as documented.')
+    print('VERDICT: PASS - 6 blessed CWE-798 keys held, 12 fixtures exact-set, 6 weak/enum shapes silent '
+          'and 8 concrete shapes reported on path A, 5 path-B false positives closed on Python while '
+          f'{len(HCL_STILL_RUNS)} HCL/config/Go/stdin detections still fire.')
     return 0
 
 

@@ -519,6 +519,30 @@ def _build_gitleaks_detectors() -> List[Tuple[str, re.Pattern]]:
 
 _GITLEAKS_DETECTORS: List[Tuple[str, re.Pattern]] = _build_gitleaks_detectors()
 
+# HCL-shaped bank rules are a pure spelling test when they read Python: `password = "x"` is assignment
+# syntax in both languages, and the rule's value group only needs double quotes plus 8..20 characters,
+# so `PASSWORD = "password"` is flagged for its quotes and not for any meaning. Python already owns two
+# AST detectors for the same line - `ast_scanner` CWE-798 and the `hardcoded_credential_variable` pass
+# below - so removing the HCL rule from Python drops no coverage.
+#
+# The scope is a Python deny-list, deliberately not a ".tf/.tfvars only" allow-list, because that was
+# measured to be a false negative: on values.yaml, config.json and main.go `hashicorp-tf-password` is
+# the *only* detector that fires (the AST pass at the foot of scan_text is skipped for the config
+# extensions and cannot parse Go), so an allow-list would delete those findings outright.
+_PYTHON_SOURCE_SUFFIXES = (".py", ".pyi", ".pyw", ".pyz")
+_HCL_SCOPED_GITLEAKS_RULES = frozenset({"hashicorp-tf-password"})
+
+
+def _gitleaks_detectors_for(filename: str) -> List[Tuple[str, re.Pattern]]:
+    """The bank rules that read this file. Called once per scan, never per line."""
+    if not _HCL_SCOPED_GITLEAKS_RULES:
+        return _GITLEAKS_DETECTORS
+    lowered = str(filename or "").lower()
+    is_python = lowered.endswith(_PYTHON_SOURCE_SUFFIXES)
+    if not is_python:
+        return _GITLEAKS_DETECTORS
+    return [row for row in _GITLEAKS_DETECTORS if row[0] not in _HCL_SCOPED_GITLEAKS_RULES]
+
 
 class _CandidateMatch:
     """Internal candidate match before overlap resolution and secret erasure."""
@@ -615,6 +639,10 @@ def scan_text(text: str, filename: str = "<string>") -> List[SecretFinding]:
     pem_doc_lines: Set[int] = (
         _docstring_line_numbers(text) if "PRIVATE KEY-----" in text else set()
     )
+
+    # File-type scoping is resolved once per file: the HCL-shaped rules below simply are not in the
+    # list when the file is Python, so the per-line loop costs no extra test.
+    gitleaks_detectors = _gitleaks_detectors_for(filename)
 
     for line_idx, raw_line in enumerate(lines, start=1):
         clean_line = raw_line.rstrip("\r\n")
@@ -737,7 +765,7 @@ def scan_text(text: str, filename: str = "<string>") -> List[SecretFinding]:
             )
 
         # 8. Gitleaks signature bank (Precedence 8 - lowest; native detectors win overlaps)
-        for gl_type, gl_regex in _GITLEAKS_DETECTORS:
+        for gl_type, gl_regex in gitleaks_detectors:
             for m in gl_regex.finditer(clean_line):
                 if m.start() == m.end():
                     continue
