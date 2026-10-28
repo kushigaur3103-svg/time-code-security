@@ -18,8 +18,8 @@ Not one key moved in either direction. Traced, the reason is an address error, n
 the branch does fire (`join branch names={'os.path.join'} base_safe=True comps=[True]`), but the
 finding for that very shape is emitted by the sink registry, which already holds the sink
 (`metadata={'sink_type': 'PATH_TRAVERSAL', 'cwe': 'CWE-22', 'p5_source_id': 'UNTRUSTED_PATH_TRAVERSAL'}`)
-before `_is_safe_path` is asked anything. All four `SEAL_TARGETS` below still reported under the strict
-seal - a rule planted in `_is_safe_path` cannot reduce this FP class at any strength.
+before `_is_safe_path` is asked anything. Every dirent shape listed here still reported under the
+strict seal - a rule planted in `_is_safe_path` cannot reduce this FP class at any strength.
 
 **Loose** - condition 1 (safe base) dropped, the argument the proposal actually makes:
 
@@ -36,11 +36,48 @@ TIER 2 is the tier that bites: it scans the sha-verified corpus file in memory a
 derivation still reports, so the next attempt fails here even before the baseline diff can be
 re-blessed into invisibility.
 
-Where a dirent exemption *would* belong, if this FP class is ever really pursued: the CWE-22 collector
-`_collect_cwe22_path_traversal_findings` (`ast_scanner.py:19758`), whose own guard
-`_sanitized_path_arg` (`:19782`) already prunes sanitizer-wrapped first arguments at `:19812`. That
-guard runs on the emission path; `_is_safe_path` does not. It prunes a whole sink, so it can also drop
-findings of other CWEs riding the same sink, which is why it needs the full gate suite, not a probe.
+**Round 2 - the same rule at the address that does sit on the emission path.** The collector
+`_collect_cwe22_path_traversal_findings` (`ast_scanner.py:19758`) prunes CWE-22 sinks inside its own
+guard `_sanitized_path_arg` (`:19782`, prune at `:19812`), so a `_dirent_component` binding test was
+written there (90 added lines, 0 removed, dry run only, kept in git-ignored
+`scratch/emission_seal_v2.patch`). Measured
+with the seal on disk and `DIRENT_SEAL` flipped to `'shipped'`:
+
+    cwe22_dirent_closure_probe.py  TIER 1 16/16, TIER 2 ok (3494 present), TIER 3 12/12 report;
+                                   targets silent 3/4 - the unflipped one was `str(p)`
+                                   (peak RSS  92.9 MB)
+    big8_ab.py                     baseline=136 now=136 MISSING=0 NEW=0     (peak RSS 139.8 MB)
+    aa_parity.py                   baseline=425 now=425 MISSING=0 NEW=0     (peak RSS 112.3 MB)
+    cwe117_cwe22_unknown_source_probe.py  59/59 locked keys PASS             (peak RSS  32.1 MB)
+    cwe338_ml_math_probe.py        62 cases, 0 failures                       (peak RSS  24.3 MB)
+    cwe117_builtin_seal_probe.py   PASS                                       (peak RSS  32.5 MB)
+    cross_runner.py                12 TP / 0 FP / 0 FN, F1 1.0000, exact-set YES (peak RSS 33.1 MB)
+    paired clock, collector over 609 files, 7 pairs   median +0.73 ms         (peak RSS  62.3 MB)
+
+So at the right address the rule is provably FN-free and costs nothing measurable. It is still not
+shipped, for one measured reason: it has nothing to fix. Over the 609 tracked benchmark files the
+collector retained 30 of 30 CWE-22 sinks with the seal on - the exemption branch never fired - and
+those files hold exactly 1 directory-listing call (`benchmark/cross_runner.py:201`, the harness's own
+case discovery), 14 multi-argument `os.path.join` calls and 0 `os.walk`. In Big-8 the shape occurs at
+the blessed `modeling_utils.py:3494`, where condition 1 correctly refuses because `save_directory` is
+an unsanitized parameter. A prune that buys zero false positives, deletes whole sinks, and therefore
+can take other CWEs riding the same sink node with it, is a net loss. `DIRENT_SEAL` stays `'abstained'`
+and the engine is back at `d757f9bc8a1cdc97`.
+
+Two facts from that run are kept because they are easy to get wrong:
+
+* `Path(base).iterdir()` passes no positional argument - the directory is on the *receiver*. A rule
+  written as `call.args[0]` misses every pathlib listing silently (measured: 2/4 targets flipped until
+  a `_listing_dir` helper unwrapped `Path`/`PurePath`/`PosixPath`/`WindowsPath(...)` to its argument;
+  3/4 after).
+* `open(str(p))` for a `p` taken from `iterdir()` is not the proposed rule's shape - there is no
+  `join(base, component)` to bound - so it moved from `SEAL_TARGETS` to `SEAL_BUDGET`. It stays a
+  known CWE-22 false positive, named rather than quietly claimed by a seal.
+
+Falsification, run twice with this file left at `'abstained'`: with the patch on disk TIER 3 prints
+`dirent write targets silent: 3/3` and exits 1; with the engine at HEAD all 13 contract rows report and
+it exits 0 (peak RSS 74.0 MB). So a dirent seal added to `ast_scanner.py` cannot land without this file
+being updated to say `'shipped'` and to carry the gate numbers above.
 
 Also measured, and kept so nobody re-derives it: six escape-shaped cases (`entry_path_delete`,
 `walk_root_write`, `name_reassigned_scope2_write` and the read-mode `entry_path_not_entry_name`,
@@ -48,7 +85,8 @@ Also measured, and kept so nobody re-derives it: six escape-shaped cases (`entry
 not listed in `SEAL_BUDGET` - a row that does not report today proves nothing about a future seal.
 
 Tiers: TIER 1 asserts the blessed CWE-22 population from the tracked baseline. TIER 2 asserts the live
-corpus derivation. TIER 3 is the contract any future seal must satisfy, dormant while abstained.
+corpus derivation. TIER 3 re-measures every must-report escape shape on the engine on disk, and adds
+the exemption promise only while `DIRENT_SEAL` says `'shipped'`.
 """
 from __future__ import annotations
 
@@ -66,7 +104,7 @@ import ast_scanner  # noqa: E402
 import cli  # noqa: E402
 from gate_common import META, corpus_dir, load_keys, verify_corpus  # noqa: E402
 
-DIRENT_SEAL = 'abstained'   # 'shipped' only if a dirent-closure exemption lands on the CWE-22 emission path
+DIRENT_SEAL = 'abstained'   # 'shipped' only if a dirent-closure exemption ever lands in ast_scanner.py
 
 LOCKED_CWE22 = 16
 BLESSED_DIRENT_KEY = ('src__transformers__modeling_utils.py', 3494)
@@ -137,11 +175,20 @@ SEAL_BUDGET = [
      'def h():\n    base = os.path.abspath(request.args.get("d"))\n'
      '    user = request.args.get("u")\n    for name in os.listdir(base):\n'
      '        with open(f"{base}/{name}/{user}", "w") as f:\n            f.write("x")\n', 'report'),
+    # `str(p)` of an iterdir entry is a whole path, not a component bound into a join, so it sits outside
+    # the two conditions a dirent seal is allowed to claim. It stays a known CWE-22 false positive,
+    # named here so a future seal cannot quietly absorb it.
+    ('iterdir_path_str_write', REQ_HEAD + 'from pathlib import Path\n'
+     'def h():\n    base = os.path.abspath(request.args.get("d"))\n'
+     '    for p in Path(base).iterdir():\n'
+     '        with open(str(p), "w") as f:\n            f.write("x")\n', 'report'),
 ]
 
-# The exemption's own promise: a write into a sanitized base of a name the OS listed. All four were
-# measured to REPORT on the clean engine - and all four still reported under the strict `_is_safe_path`
-# seal, which is the address error recorded in this file's docstring.
+# The exemption's own promise: a write into a sanitized base of a name the OS listed. All three were
+# measured to REPORT on the clean engine, and all three still reported under the strict `_is_safe_path`
+# seal - the address error recorded in this file's docstring. Under the emission-path seal (round 2) the
+# `listdir` and `scandir().name` rows flip at once; the `iterdir` row flips only when the listing's base
+# is read off the receiver, because `Path(base).iterdir()` has no positional argument.
 SEAL_TARGETS = [
     ('abspath_base_listdir_write', REQ_HEAD + 'import os\n'
      'def h():\n    base = os.path.abspath(request.args.get("d"))\n'
@@ -151,10 +198,6 @@ SEAL_TARGETS = [
      'def h():\n    base = os.path.abspath(request.args.get("d"))\n'
      '    for entry in os.scandir(base):\n'
      '        with open(os.path.join(base, entry.name), "w") as f:\n            f.write("x")\n'),
-    ('abspath_base_iterdir_path_write', REQ_HEAD + 'from pathlib import Path\n'
-     'def h():\n    base = os.path.abspath(request.args.get("d"))\n'
-     '    for p in Path(base).iterdir():\n'
-     '        with open(str(p), "w") as f:\n            f.write("x")\n'),
     ('abspath_base_iterdir_name_write', REQ_HEAD + 'from pathlib import Path\nimport os\n'
      'def h():\n    base = os.path.abspath(request.args.get("d"))\n'
      '    for p in Path(base).iterdir():\n'
@@ -241,23 +284,30 @@ def check_corpus_derivation():
 
 
 def check_seal_budget():
-    """TIER 3: dormant while the seal is abstained; the contract the moment anyone ships one."""
+    """TIER 3: the escape shapes must report on the engine on disk, seal or no seal.
+
+    Checking them while abstained is what makes them a contract instead of a promise - a row that does
+    not report today says nothing about a future seal, so each one is re-measured every run.
+    """
     failures = []
+    for label, source, want in SEAL_BUDGET:
+        got = 'report' if scan(label, source) else 'silent'
+        ok = (got == want)
+        print(f'  {"ok  " if ok else "FAIL"} {label:32s} want={want:6s} got={got}')
+        if not ok:
+            failures.append((label, want, got,
+                             'the dirent seal silenced an escaping shape - false negative'
+                             if DIRENT_SEAL == 'shipped' else
+                             'a must-report shape went silent on the clean engine - the contract rows '
+                             'are no longer live findings'))
+    exempted = [label for label, source in SEAL_TARGETS if not scan(label, source)]
     if DIRENT_SEAL == 'abstained':
-        exempted = [label for label, source in SEAL_TARGETS if not scan(label, source)]
         print(f'  seal abstained; dirent write targets silent: {len(exempted)}/{len(SEAL_TARGETS)} '
               f'{exempted}')
         if exempted:
             failures.append(('DIRENT_SEAL', 'abstained', 'all dirent targets reported', exempted,
                              'a dirent-closure exemption exists but this file still says abstained'))
         return failures
-    for label, source, want in SEAL_BUDGET:
-        got = 'report' if scan(label, source) else 'silent'
-        print(f'  {"ok  " if got == want else "FAIL"} {label:32s} want={want:6s} got={got}')
-        if got != want:
-            failures.append((label, want, got,
-                             'the dirent seal silenced an escaping shape - false negative'))
-    exempted = [label for label, source in SEAL_TARGETS if not scan(label, source)]
     print(f'  seal shipped; dirent write targets silent: {len(exempted)}/{len(SEAL_TARGETS)}')
     if len(exempted) != len(SEAL_TARGETS):
         failures.append(('DIRENT_SEAL', 'shipped', f'{len(SEAL_TARGETS) - len(exempted)} still reported',
@@ -270,7 +320,7 @@ def main() -> int:
     failures = check_floors()
     print('TIER 2 - dirent derivation scanned live from the vendored corpus (the tier that bites):')
     failures += check_corpus_derivation()
-    print('TIER 3 - contract for a dirent-closure seal:')
+    print('TIER 3 - escape shapes that must report, plus the promise of a dirent-closure seal:')
     failures += check_seal_budget()
     print(f'\ndirent_seal={DIRENT_SEAL} locked_cwe22={LOCKED_CWE22} '
           f'budget={len(SEAL_BUDGET)} targets={len(SEAL_TARGETS)} failures={len(failures)}')
