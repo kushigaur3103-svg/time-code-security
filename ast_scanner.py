@@ -5110,17 +5110,99 @@ class TaintTracker:
         stem, dirs = self._module_stem_and_dirs(mod_name_or_path)
         return stem in HTTP_TRANSPORT_MODULE_STEMS and any(d in HTTP_CLIENT_PACKAGE_DIRS for d in dirs)
 
-    def _numeric_safe_expr(self, expr: ast.AST) -> bool:
+    CWE117_BUILTIN_SEALED_NAMES = frozenset({"len", "int", "float", "bool", "ord"})
+
+    def _shadowed_names_in_tree(self, tree) -> frozenset:
+        """Every name a module binds itself, memoised on the tree the way `_module_nodes` is.
+
+        Fail-closed twice over: an unparseable module returns the sealed names plus `builtins`, so
+        no builtin call in it is ever exempted, and the collection is deliberately
+        over-approximated -- `del`, `global`/`nonlocal`, match bindings and the head of a dotted
+        import all count as bound. A name counted as bound that was not merely keeps its finding,
+        which is the direction this rule is allowed to err in.
+        """
+        if tree is None:
+            return self.CWE117_BUILTIN_SEALED_NAMES | {"builtins"}
+        cached = tree.__dict__.get("_cached_shadowed_names")
+        if cached is not None:
+            return cached
+        bound = set()
+        for n in self._module_nodes(tree):
+            if isinstance(n, ast.Name):
+                if isinstance(n.ctx, (ast.Store, ast.Del)):
+                    bound.add(n.id)
+            elif isinstance(n, ast.arg):
+                bound.add(n.arg)
+            elif isinstance(n, (ast.FunctionDef, ast.AsyncFunctionDef, ast.ClassDef)):
+                bound.add(n.name)
+            elif isinstance(n, ast.alias):
+                bound.add(n.asname or n.name.split(".")[0])
+            elif isinstance(n, (ast.Global, ast.Nonlocal)):
+                bound.update(n.names)
+            elif isinstance(n, ast.ExceptHandler):
+                if n.name:
+                    bound.add(n.name)
+            elif isinstance(n, (ast.MatchAs, ast.MatchStar)):
+                bound.add(n.name)
+            elif isinstance(n, ast.MatchMapping) and n.rest:
+                bound.add(n.rest)
+        sealed = frozenset(bound)
+        tree.__dict__["_cached_shadowed_names"] = sealed
+        return sealed
+
+    def _module_shadowed_names(self, mod_name: str) -> frozenset:
+        """`_shadowed_names_in_tree` for the tree registered under *mod_name*."""
+        return self._shadowed_names_in_tree(self.modules.get(mod_name) if mod_name else None)
+
+    def _cwe117_message_is_sealed(self, node: ast.Call, shadowed: frozenset) -> bool:
+        """One answer for every CWE-117 record path, so the exemption cannot half-apply.
+
+        `_sink_context_exempt` is consulted by `is_sink_call` only, while the blindspot collector
+        builds its own sinks and never asks it. Both now call through here, which is what keeps the
+        registry path and the collector path from disagreeing about the same log statement.
+        """
+        return (self._log_message_is_numeric_only(node, shadowed)
+                or self._log_message_is_pure_literal(node))
+
+    def _builtin_sealed_call(self, expr: ast.Call, shadowed: frozenset) -> bool:
+        """True when the call can only return a CPython sealed scalar, whatever it is handed.
+
+        `len()` invokes `__len__`, whose result CPython forces to an `int` or raises; `int()`,
+        `float()`, `bool()` and `ord()` likewise return a genuine builtin instance or raise. So the
+        *argument* cannot influence the shape of the text -- `str()` of those results is digits, a
+        sign, a dot, or one of `inf`/`nan`/`True`/`False`, and none of them can carry CR or LF.
+        That is why nothing here recurses into `expr.args`.
+
+        `str` and `abs` stay out on purpose and each has a blessed true positive behind it:
+        `str(e)` of a caught exception is the message its raiser wrote (parity floor
+        `cwe_1004_cookies/test_v01_good.py:12`), and `abs(x)` returns whatever `type(x).__abs__`
+        chooses, so its `str()` is author-controlled.
+        """
+        func = expr.func
+        receiver = None
+        if isinstance(func, ast.Name):
+            leaf = func.id
+        elif isinstance(func, ast.Attribute) and isinstance(func.value, ast.Name) \
+                and func.value.id == "builtins":
+            leaf, receiver = func.attr, "builtins"
+        else:
+            return False
+        if leaf not in self.CWE117_BUILTIN_SEALED_NAMES or leaf in shadowed:
+            return False
+        return receiver is None or receiver not in shadowed
+
+    def _numeric_safe_expr(self, expr: ast.AST, shadowed: frozenset = None) -> bool:
         """True when the expression can only evaluate to a value with no CR/LF in it.
 
-        Only literal numbers and the three keyword constants qualify, so nothing here has a
-        name that another module could rebind: `True`, `False` and `None` are reserved words
-        in Python 3 and int/float arithmetic cannot be overridden on literals. Everything
-        else is unsafe and keeps its finding, including anything that could return text --
-        names, attributes, subscripts, nested f-strings and every call, because a function
-        called `len` or `int` can be defined in the scanned module itself and then returns
-        whatever that author puts into the log line. Comparisons are unsafe too: `==` on a
-        numpy array returns an array whose `str()` spans several lines.
+        Literal numbers, the three keyword constants, arithmetic over those, and -- only when the
+        caller supplied the module's shadow set -- a call that resolves to one of the five sealed
+        builtins in `CWE117_BUILTIN_SEALED_NAMES`. `shadowed is None` is the un-threaded default
+        and keeps every call unsafe, which is what every other caller has always seen.
+
+        Everything else stays unsafe and keeps its finding: names, attributes, subscripts, nested
+        f-strings, and comparisons, because `==` on a numpy array returns an array whose `str()`
+        spans several lines. A builtin call is refused when the scanned module binds that name
+        anywhere, since then `len` is whatever that module's author wrote.
         """
         if isinstance(expr, ast.Constant):
             return isinstance(expr.value, (int, float, complex))
@@ -5128,23 +5210,29 @@ class TaintTracker:
             return True
         if isinstance(expr, ast.Name):
             return expr.id in ("True", "False", "None")
+        if isinstance(expr, ast.Call):
+            return shadowed is not None and self._builtin_sealed_call(expr, shadowed)
         if isinstance(expr, ast.UnaryOp):
-            return isinstance(expr.op, (ast.UAdd, ast.USub, ast.Invert)) and self._numeric_safe_expr(expr.operand)
+            return isinstance(expr.op, (ast.UAdd, ast.USub, ast.Invert)) and self._numeric_safe_expr(expr.operand, shadowed)
         if isinstance(expr, ast.BinOp):
-            return self._numeric_safe_expr(expr.left) and self._numeric_safe_expr(expr.right)
+            return self._numeric_safe_expr(expr.left, shadowed) and self._numeric_safe_expr(expr.right, shadowed)
         if isinstance(expr, ast.BoolOp):
-            return all(self._numeric_safe_expr(v) for v in expr.values)
+            return all(self._numeric_safe_expr(v, shadowed) for v in expr.values)
         if isinstance(expr, ast.IfExp):
-            return (self._numeric_safe_expr(expr.body) and self._numeric_safe_expr(expr.orelse))
+            return (self._numeric_safe_expr(expr.body, shadowed) and self._numeric_safe_expr(expr.orelse, shadowed))
         return False
 
-    def _log_message_is_numeric_only(self, node: ast.Call) -> bool:
+    def _log_message_is_numeric_only(self, node: ast.Call, shadowed: frozenset = None) -> bool:
         """True when every interpolated hole in the logged f-strings is numeric-safe.
 
         All-or-nothing on purpose: a message like f"deleted {len(rows)}: {name}" keeps
         its finding because one hole can still carry CRLF. Messages with no f-string at
         all are never exempt, which preserves the multi-hop cases where the tainted
         f-string is built elsewhere and passed in as a plain name.
+
+        This is what keeps the Big-8 floor at `src__transformers__modeling_utils.py:3567`, whose
+        multi-line message mixes a sealed `len(...)` with two author-controlled names: the unsafe
+        holes carry the whole finding. Weakening all-or-nothing into a per-hole test deletes it.
         """
         joined = [a for a in node.args if isinstance(a, ast.JoinedStr)]
         if not joined:
@@ -5153,11 +5241,11 @@ class TaintTracker:
             for part in j.values:
                 if not isinstance(part, ast.FormattedValue):
                     continue
-                if not self._numeric_safe_expr(part.value):
+                if not self._numeric_safe_expr(part.value, shadowed):
                     return False
                 spec = getattr(part, "format_spec", None)
                 if isinstance(spec, ast.JoinedStr) and not all(
-                    self._numeric_safe_expr(sp.value)
+                    self._numeric_safe_expr(sp.value, shadowed)
                     for sp in spec.values
                     if isinstance(sp, ast.FormattedValue)
                 ):
@@ -5346,7 +5434,7 @@ class TaintTracker:
         if cwe_id == "CWE-918":
             return self._is_http_transport_module(mod_name)
         if cwe_id == "CWE-117":
-            return (self._log_message_is_numeric_only(node)
+            return (self._log_message_is_numeric_only(node, self._module_shadowed_names(mod_name))
                     or self._log_message_is_pure_literal(node))
         return False
 
@@ -12296,9 +12384,13 @@ class TaintTracker:
         `data = request.get_json()`, `execution_date = data['execution_date']`, then
         `error_message = '...{}'.format(execution_date)` - three hops of plain assignments, and also
         counts a parameter of a route/expose/errorhandler view, because `dag_id` there is whatever the
-        client typed. Precision sits on the guards: a static literal or an int/len cast holds no
-        newline, and any named CRLF sanitizer (or an inline `replace`/`re.sub` on a `\r`/`\n`
-        pattern) anywhere in the derivation clears the value.
+        client typed. Precision sits on the guards: `_cwe117_message_is_sealed` clears a message only
+        when every interpolated hole is a literal or one of the five sealed builtins (`len`/`int`/
+        `float`/`bool`/`ord`) *and* the module binds none of those names anywhere, and any named CRLF
+        sanitizer (or an inline `replace`/`re.sub` on a `\r`/`\n`
+        pattern) anywhere in the derivation clears the value. `str` and `abs` are deliberately not in
+        the set: `str(e)` carries the message its raiser wrote, and `abs()` returns whatever
+        `type(x).__abs__` chooses, so its text is author-controlled.
         """
         table = self._memo_assignment_map(tree)
         func_ranges = [(start, end) for start, end, _params in self._memo_function_ranges(tree)]
@@ -12310,8 +12402,13 @@ class TaintTracker:
             for func, params in self._c117_endpoint_scopes(tree, self._module_nodes(tree))
         ]
         crud = self._c117_crud_param_scopes(tree, filename)
+        shadowed = self._shadowed_names_in_tree(tree)
         for node in self._module_calls(tree):
             if not isinstance(node, ast.Call) or not self._blindspot_is_log_call(node, func_ranges):
+                continue
+            # Same exemption the registry path applies, so a message whose every hole is a sealed
+            # builtin or a literal is inert on both record paths, not only on one of them.
+            if self._cwe117_message_is_sealed(node, shadowed):
                 continue
             arguments = list(node.args) + [
                 keyword.value for keyword in node.keywords
