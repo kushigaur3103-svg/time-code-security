@@ -118,11 +118,20 @@ All engine modifications, precision improvements, and bug fixes must be architec
    whole tree (`gate_meta.json` `parity.scan_root`), so a copy at `benchmark/gates/corpus_big8` leaks
    its third-party findings into parity (measured: `baseline=425 now=561 MISSING=0 NEW=136` → FAIL),
    while `canon_key` collapses every Big-8 file to `<corpus_marker>/<leaf>` so the directory can
-   never move a Big-8 key. One fresh-clone defect remains and it is not corpus-related: 9 `cross_file`
-   rows in `parity_before.keys` carry the blessing machine's absolute path inside their *message*
-   field, which `canon_key` does not rebase, so `aa_parity.py` reports `MISSING=9 NEW=9` on any other
-   checkout. Fix that message canonicalisation — never by re-blessing, which would only bake in a
-   second machine's path — and until it is fixed a parity PASS must name those 9 keys.
+   never move a Big-8 key. The fresh-clone defect that used to be recorded here is **resolved**. 9
+   `cross_file` rows in `parity_before.keys` do still carry the blessing machine's absolute path inside
+   their *message* field, and commit `24d2c68` taught `canon_key` to fold them at comparison time:
+   `scrub_message` (`benchmark/gates/gate_common.py:93`) rewrites any path hanging off the pinned root
+   to `<root>/relative/path` and keeps the tail -- file, line, sink symbol -- byte-for-byte, so a
+   finding that genuinely moved file or line still yields a different key. Measured on this checkout:
+   `python benchmark/gates/aa_parity.py` → `baseline=425 now=425 MISSING=0 NEW=0` → `VERDICT: PASS -
+   parity 425/425, exact-set match.` A parity PASS no longer has to name those 9 keys. Two rules
+   survive the fix. (a) The baseline bytes stay exactly as blessed -- the 9 absolute paths are
+   normalised only during comparison; never scrub or re-bless `parity_before.keys`, because a re-bless
+   bakes in whichever machine happens to run it and makes a real regression invisible. (b) The
+   scrubbing is driven by `parity.recorded_root` in `benchmark/gates/gate_meta.json`, and `_root_re`
+   returns `None` when that value is absent, so `scrub_message` then silently hands back the raw
+   message -- if `MISSING=9 NEW=9` ever returns, check `recorded_root` before suspecting the engine.
 
 ## Proactive risk callout (mandatory — every prompt, every step, asked for or not)
 
