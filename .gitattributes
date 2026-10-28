@@ -1,0 +1,5 @@
+# The Big-8 gate pins its input bytes: benchmark/gates/gate_meta.json carries corpus_sha256 for
+# every corpus file and big8_ab.py refuses to run on any mismatch. `core.autocrlf=true` (the Windows
+# git default) rewrites a fresh checkout to CRLF, which hashes differently and fails the gate with
+# "corpus drift" on a machine that changed nothing. -text keeps the bytes exactly as committed.
+benchmark_gates_data/corpus_big8/** -text
