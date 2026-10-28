@@ -96,6 +96,27 @@ The sign-off also carries seven standing instructions:
   whose 18 removed keys were ML numeric draws that `cwe338_ml_math_probe.py` re-proves every run are
   not credential draws).
 
+### Permanent Fix Mandate (Root-Cause Immunity & Anti-Band-Aid Rule)
+
+All engine modifications, precision improvements, and bug fixes must be architecturally permanent:
+
+1. **Root-Cause Resolution**: Never apply temporary suppression, brittle ad-hoc string checks, or
+   localized file-skips to mask a finding. All fixes must address the core AST semantic data-flow.
+2. **Mandatory Regression Lock**: Every fix must be accompanied by a tracked truth-table test or
+   fail-loud probe under `benchmark/gates/` proving the specific regression cannot recur silently.
+3. **Falsification Requirement**: The test harness must demonstrate that rolling back the fix
+   immediately triggers a FAIL in verification gates.
+4. **Zero Recurring Defects**: A defect or FP pattern once resolved must remain permanently resolved
+   across all future refactors and baseline evolutions.
+
+   Items 2 and 3 are only met on a machine that can actually run all five gates. Today `scratch/` is
+   git-ignored (`.gitignore:7`), so the Big-8 corpus is not in the repository: `git ls-files
+   benchmark/gates` lists 9 files and no `corpus_big8/` — the tracked home `gate_meta.json` declares
+   for it — which means a fresh clone makes `big8_ab.py` raise `GatePathError: big8 corpus not found`
+   instead of running. Until that corpus is vendored, a falsification claim that leans on Big-8 is
+   local-only and must be labelled as such; the parity corpus (552 tracked files) and both
+   corpus-free probes do run anywhere.
+
 ## Proactive risk callout (mandatory — every prompt, every step, asked for or not)
 
 The sign-off above closes a reply. This rule opens one. Before starting a task and while executing
