@@ -8,6 +8,10 @@
     "corpus_sha256 pins the Big-8 input bytes, because frozen keys are only an authority for the",
     "input they were made from. pinned_engine_rev is the commit whose output produced the original",
     "keys; a later intentional re-bless is documented in the header of the keys file it describes.",
+    "The vendored corpus lives OUTSIDE benchmark/ on purpose: the parity gate scans the whole",
+    "benchmark/ tree (scan_root above), so a copy inside benchmark/gates/corpus_big8 leaks 136",
+    "third-party keys into it and parity fails 425 vs 561. Directory choice never moves a key --",
+    "canon_key collapses every Big-8 file to <corpus_marker>/<leaf> -- only the bytes matter.",
     "Edit this file only together with the baselines it describes."
   ],
   "parity": {
@@ -22,6 +26,7 @@
     "recorded_root": null,
     "corpus_marker": "corpus_big8",
     "corpus_search_paths": [
+      "benchmark_gates_data/corpus_big8",
       "benchmark/gates/corpus_big8",
       "scratch/_p3_big"
     ],
