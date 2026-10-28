@@ -109,13 +109,20 @@ All engine modifications, precision improvements, and bug fixes must be architec
 4. **Zero Recurring Defects**: A defect or FP pattern once resolved must remain permanently resolved
    across all future refactors and baseline evolutions.
 
-   Items 2 and 3 are only met on a machine that can actually run all five gates. Today `scratch/` is
-   git-ignored (`.gitignore:7`), so the Big-8 corpus is not in the repository: `git ls-files
-   benchmark/gates` lists 9 files and no `corpus_big8/` — the tracked home `gate_meta.json` declares
-   for it — which means a fresh clone makes `big8_ab.py` raise `GatePathError: big8 corpus not found`
-   instead of running. Until that corpus is vendored, a falsification claim that leans on Big-8 is
-   local-only and must be labelled as such; the parity corpus (552 tracked files) and both
-   corpus-free probes do run anywhere.
+   Items 2 and 3 need a machine that can actually run all five gates. The Big-8 corpus is vendored in
+   the repository at `benchmark_gates_data/corpus_big8/` (8 files, 2,105,296 bytes) and `.gitattributes`
+   marks that tree `-text`, because `core.autocrlf=true` otherwise rewrites a fresh checkout to CRLF
+   and `verify_corpus` fails with `corpus drift` on bytes nobody changed. Measured in a clone outside
+   the blessed root, with no `scratch/` present: `big8_ab.py` → `sha256 verified`, `136/136
+   MISSING=0 NEW=0`. The corpus is deliberately *not* under `benchmark/`: the parity gate scans that
+   whole tree (`gate_meta.json` `parity.scan_root`), so a copy at `benchmark/gates/corpus_big8` leaks
+   its third-party findings into parity (measured: `baseline=425 now=561 MISSING=0 NEW=136` → FAIL),
+   while `canon_key` collapses every Big-8 file to `<corpus_marker>/<leaf>` so the directory can
+   never move a Big-8 key. One fresh-clone defect remains and it is not corpus-related: 9 `cross_file`
+   rows in `parity_before.keys` carry the blessing machine's absolute path inside their *message*
+   field, which `canon_key` does not rebase, so `aa_parity.py` reports `MISSING=9 NEW=9` on any other
+   checkout. Fix that message canonicalisation — never by re-blessing, which would only bake in a
+   second machine's path — and until it is fixed a parity PASS must name those 9 keys.
 
 ## Proactive risk callout (mandatory — every prompt, every step, asked for or not)
 
