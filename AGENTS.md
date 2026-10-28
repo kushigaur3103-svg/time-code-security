@@ -44,13 +44,17 @@ The sign-off also carries seven standing instructions:
   tp no`** — a perf or refactor change may only *reduce* false positives and false negatives. True
   positives must never move: every TP in the benchmark was hand-written and costs real effort to
   earn, so losing one is losing hard-won score, and `speed` / `ability` must hold or improve, never
-  regress. Therefore nothing counts as done until these five outputs are shown: benchmark parity
+  regress. Therefore nothing counts as done until these six outputs are shown: benchmark parity
   (`python benchmark/gates/aa_parity.py` → 425 findings, MISSING=0 NEW=0), the cross-file gate
   (`python benchmark/cross_runner.py` → PASS, F1=1.0000, FP=0, FN=0, exact-set YES), the real-world
   Big-8 gate (`python benchmark/gates/big8_ab.py` → 136 findings, MISSING=0 NEW=0), the truth table
   of any rule that retires keys (`python benchmark/gates/cwe338_ml_math_probe.py` → `VERDICT: PASS`;
   a frozen baseline can only prove what the engine used to report, never that a credential drawn
-  from a newly exempted library is still reported), and the measured engine clock of the collector
+  from a newly exempted library is still reported), the placeholder-edge lock
+  (`python benchmark/gates/cwe117_cwe22_unknown_source_probe.py` → `VERDICT: PASS`, 59/59; 43 CWE-117
+  + 16 CWE-22 Big-8 keys ride on edges whose `source_id` is a placeholder rather than a source node,
+  so the one-line "emit an edge only when a real source exists" cleanup deletes all 59 at once and a
+  baseline re-blessed afterwards shows an empty diff), and the measured engine clock of the collector
   that was touched. A claim without those numbers is not a result.
   Both gate scripts, their frozen baseline key files and `gate_meta.json` are tracked under
   `benchmark/gates/`, so a fresh clone or CI can run them; `scratch/` is git-ignored, so a gate kept
