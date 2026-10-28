@@ -6,7 +6,8 @@
     "scan_root is the repo-relative tree the gate scans and the prefix its baseline keys carry;",
     "the gate runs from inside that tree, so the engine's own spelling is put back before diffing.",
     "corpus_sha256 pins the Big-8 input bytes, because frozen keys are only an authority for the",
-    "input they were made from. pinned_engine_rev is the commit whose output produced them.",
+    "input they were made from. pinned_engine_rev is the commit whose output produced the original",
+    "keys; a later intentional re-bless is documented in the header of the keys file it describes.",
     "Edit this file only together with the baselines it describes."
   ],
   "parity": {
@@ -17,7 +18,7 @@
   },
   "big8": {
     "keys_file": "big8_before.keys",
-    "expected_keys": 154,
+    "expected_keys": 136,
     "recorded_root": null,
     "corpus_marker": "corpus_big8",
     "corpus_search_paths": [

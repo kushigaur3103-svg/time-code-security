@@ -1,3 +1,12 @@
+# Frozen Big-8 finding keys, one per line, as (file, line, cwe, category, message, severity).
+# 154 keys were blessed from engine 94c5ee2 on the sha256-pinned corpus in gate_meta.json.
+# Re-blessed to 136 keys on top of a191dcc: the
+# library-identity gate now retires the torch/numpy.random numeric draws (and the
+# torch.distributions draw its canonicalisation resolves) that were reported as CWE-338 in
+# synthetic test data. Every retired line is LOW, CWE-338 and a numeric draw, and the
+# adversarial boundary -- a credential drawn from those same libraries stays reported -- is
+# pinned by benchmark/gates/cwe338_ml_math_probe.py, which no corpus can prove.
+# Surviving rows are byte-identical to the 154-key file, in original order.
 ('scratch/_p3_big/src__transformers__generation__utils.py', 1077, 'CWE-208', 'TIMING_ATTACK', 'CWE-208: compare', 'MEDIUM')
 ('scratch/_p3_big/src__transformers__generation__utils.py', 1102, 'CWE-208', 'TIMING_ATTACK', 'CWE-208: compare', 'MEDIUM')
 ('scratch/_p3_big/src__transformers__generation__utils.py', 1140, 'CWE-208', 'TIMING_ATTACK', 'CWE-208: compare', 'MEDIUM')
@@ -23,7 +32,6 @@
 ('scratch/_p3_big/src__transformers__modeling_utils.py', 2782, 'CWE-532', 'SENSITIVE_DATA_LOGGING', 'CWE-532: Insertion of sensitive data into log entry', 'HIGH')
 ('scratch/_p3_big/src__transformers__modeling_utils.py', 2801, 'CWE-208', 'TIMING_ATTACK', 'CWE-208: compare', 'MEDIUM')
 ('scratch/_p3_big/src__transformers__modeling_utils.py', 2941, 'CWE-208', 'TIMING_ATTACK', 'CWE-208: compare', 'MEDIUM')
-('scratch/_p3_big/src__transformers__modeling_utils.py', 3036, 'CWE-338', 'INSECURE_RANDOMNESS', 'CWE-338: multivariate_normal.MultivariateNormal.sample', 'LOW')
 ('scratch/_p3_big/src__transformers__modeling_utils.py', 336, 'CWE-22', 'PATH_TRAVERSAL', 'CWE-22: Unvalidated user input or dynamic variable used in file path operation', 'HIGH')
 ('scratch/_p3_big/src__transformers__modeling_utils.py', 3494, 'CWE-22', 'PATH_TRAVERSAL', 'CWE-22: os.remove', 'HIGH')
 ('scratch/_p3_big/src__transformers__modeling_utils.py', 3564, 'CWE-22', 'PATH_TRAVERSAL', 'CWE-22: Unvalidated user input or dynamic variable used in file path operation', 'HIGH')
@@ -87,17 +95,10 @@
 ('scratch/_p3_big/src__transformers__trainer.py', 667, 'CWE-117', 'Injection', 'CWE-117: logger.warning', 'MEDIUM')
 ('scratch/_p3_big/src__transformers__trainer.py', 736, 'CWE-117', 'Injection', 'CWE-117: logger.info', 'MEDIUM')
 ('scratch/_p3_big/tests__generation__test_utils.py', 3106, 'CWE-208', 'TIMING_ATTACK', 'CWE-208: compare', 'MEDIUM')
-('scratch/_p3_big/tests__generation__test_utils.py', 3339, 'CWE-338', 'INSECURE_RANDOMNESS', 'CWE-338: torch.randint', 'LOW')
 ('scratch/_p3_big/tests__generation__test_utils.py', 3352, 'CWE-338', 'INSECURE_RANDOMNESS', 'CWE-338: random.Random', 'LOW')
 ('scratch/_p3_big/tests__generation__test_utils.py', 3367, 'CWE-338', 'INSECURE_RANDOMNESS', 'CWE-338: random.Random.randint', 'LOW')
 ('scratch/_p3_big/tests__generation__test_utils.py', 3384, 'CWE-338', 'INSECURE_RANDOMNESS', 'CWE-338: random.Random.random', 'LOW')
-('scratch/_p3_big/tests__generation__test_utils.py', 3467, 'CWE-338', 'INSECURE_RANDOMNESS', 'CWE-338: torch.randint', 'LOW')
-('scratch/_p3_big/tests__generation__test_utils.py', 4182, 'CWE-338', 'INSECURE_RANDOMNESS', 'CWE-338: torch.randint', 'LOW')
-('scratch/_p3_big/tests__generation__test_utils.py', 4198, 'CWE-338', 'INSECURE_RANDOMNESS', 'CWE-338: torch.randint', 'LOW')
 ('scratch/_p3_big/tests__generation__test_utils.py', 4549, 'CWE-208', 'TIMING_ATTACK', 'CWE-208: compare', 'MEDIUM')
-('scratch/_p3_big/tests__generation__test_utils.py', 4652, 'CWE-338', 'INSECURE_RANDOMNESS', 'CWE-338: torch.randint', 'LOW')
-('scratch/_p3_big/tests__generation__test_utils.py', 4680, 'CWE-338', 'INSECURE_RANDOMNESS', 'CWE-338: torch.randint', 'LOW')
-('scratch/_p3_big/tests__generation__test_utils.py', 4681, 'CWE-338', 'INSECURE_RANDOMNESS', 'CWE-338: torch.randint', 'LOW')
 ('scratch/_p3_big/tests__generation__test_utils.py', 4964, 'CWE-208', 'TIMING_ATTACK', 'CWE-208: compare', 'MEDIUM')
 ('scratch/_p3_big/tests__generation__test_utils.py', 4976, 'CWE-208', 'TIMING_ATTACK', 'CWE-208: compare', 'MEDIUM')
 ('scratch/_p3_big/tests__generation__test_utils.py', 5325, 'CWE-208', 'TIMING_ATTACK', 'CWE-208: compare', 'MEDIUM')
@@ -105,8 +106,6 @@
 ('scratch/_p3_big/tests__generation__test_utils.py', 5537, 'CWE-22', 'PATH_TRAVERSAL', 'CWE-22: open', 'HIGH')
 ('scratch/_p3_big/tests__generation__test_utils.py', 5539, 'CWE-22', 'PATH_TRAVERSAL', 'CWE-22: open', 'HIGH')
 ('scratch/_p3_big/tests__generation__test_utils.py', 5565, 'CWE-22', 'PATH_TRAVERSAL', 'CWE-22: open', 'HIGH')
-('scratch/_p3_big/tests__generation__test_utils.py', 5902, 'CWE-338', 'INSECURE_RANDOMNESS', 'CWE-338: torch.randint', 'LOW')
-('scratch/_p3_big/tests__generation__test_utils.py', 945, 'CWE-338', 'INSECURE_RANDOMNESS', 'CWE-338: torch.randint', 'LOW')
 ('scratch/_p3_big/tests__models__markuplm__test_tokenization_markuplm.py', 1290, 'CWE-208', 'TIMING_ATTACK', 'CWE-208: compare', 'MEDIUM')
 ('scratch/_p3_big/tests__models__markuplm__test_tokenization_markuplm.py', 1291, 'CWE-208', 'TIMING_ATTACK', 'CWE-208: compare', 'MEDIUM')
 ('scratch/_p3_big/tests__models__markuplm__test_tokenization_markuplm.py', 1292, 'CWE-208', 'TIMING_ATTACK', 'CWE-208: compare', 'MEDIUM')
@@ -132,17 +131,9 @@
 ('scratch/_p3_big/tests__test_modeling_common.py', 1280, 'CWE-770', 'RESOURCE_EXHAUSTION', 'CWE-770: UNBOUNDED_RESOURCE_ALLOCATION', 'MEDIUM')
 ('scratch/_p3_big/tests__test_modeling_common.py', 1506, 'CWE-434', 'UNRESTRICTED_FILE_UPLOAD', 'CWE-434: UNRESTRICTED_FILE_UPLOAD', 'HIGH')
 ('scratch/_p3_big/tests__test_modeling_common.py', 1508, 'CWE-434', 'UNRESTRICTED_FILE_UPLOAD', 'CWE-434: UNRESTRICTED_FILE_UPLOAD', 'HIGH')
-('scratch/_p3_big/tests__test_modeling_common.py', 1846, 'CWE-338', 'INSECURE_RANDOMNESS', 'CWE-338: torch.randint', 'LOW')
-('scratch/_p3_big/tests__test_modeling_common.py', 1981, 'CWE-338', 'INSECURE_RANDOMNESS', 'CWE-338: torch.randint', 'LOW')
 ('scratch/_p3_big/tests__test_modeling_common.py', 3013, 'CWE-400', 'RESOURCE_EXHAUSTION', 'CWE-400: re.search', 'LOW')
-('scratch/_p3_big/tests__test_modeling_common.py', 328, 'CWE-338', 'INSECURE_RANDOMNESS', 'CWE-338: torch.randint', 'LOW')
 ('scratch/_p3_big/tests__test_modeling_common.py', 4106, 'CWE-95', 'CODE_EXECUTION', 'CWE-95: torch.compile', 'HIGH')
-('scratch/_p3_big/tests__test_modeling_common.py', 424, 'CWE-338', 'INSECURE_RANDOMNESS', 'CWE-338: numpy.random.uniform', 'LOW')
-('scratch/_p3_big/tests__test_modeling_common.py', 4289, 'CWE-338', 'INSECURE_RANDOMNESS', 'CWE-338: torch.randint', 'LOW')
-('scratch/_p3_big/tests__test_modeling_common.py', 4290, 'CWE-338', 'INSECURE_RANDOMNESS', 'CWE-338: torch.randint', 'LOW')
 ('scratch/_p3_big/tests__test_modeling_common.py', 4293, 'CWE-95', 'CODE_EXECUTION', 'CWE-95: torch.compile', 'HIGH')
-('scratch/_p3_big/tests__test_modeling_common.py', 4452, 'CWE-338', 'INSECURE_RANDOMNESS', 'CWE-338: torch.randint', 'LOW')
-('scratch/_p3_big/tests__test_modeling_common.py', 4459, 'CWE-338', 'INSECURE_RANDOMNESS', 'CWE-338: torch.randint', 'LOW')
 ('scratch/_p3_big/tests__test_modeling_common.py', 5103, 'CWE-400', 'RESOURCE_EXHAUSTION', 'CWE-400: re.search', 'LOW')
 ('scratch/_p3_big/tests__test_modeling_common.py', 6606, 'CWE-338', 'INSECURE_RANDOMNESS', 'CWE-338: random.Random', 'LOW')
 ('scratch/_p3_big/tests__test_modeling_common.py', 6698, 'CWE-338', 'INSECURE_RANDOMNESS', 'CWE-338: random.Random.randint', 'LOW')

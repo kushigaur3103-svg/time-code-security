@@ -1,9 +1,11 @@
-"""Big-8 real-world gate: 154 findings on eight real Transformers files, none lost, none invented.
+"""Big-8 real-world gate: 136 findings on eight real Transformers files, none lost, none invented.
 
 The corpus is eight large Hugging Face Transformers files (~2.1 MB) and the frozen baseline in
 `big8_before.keys` is what the pinned engine (`gate_meta.json` > `big8` > `pinned_engine_rev`)
 found on them. A missing key is a regression against that pinned engine -- a false negative on real
 code, the class of bug the hand-written fixtures cannot show; a new key is an unsupported claim.
+The only intentional shrink so far is the CWE-338 library-identity re-bless (154 -> 136), and the
+header of the keys file lists every retired line and where its adversarial proof lives.
 
 The baseline is not recomputed by re-running the pinned engine, because that would need a second
 1.4 MB engine copy in the tree. Instead the corpus is hash-checked against `corpus_sha256` first:

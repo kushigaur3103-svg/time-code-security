@@ -991,6 +991,33 @@ RANDOMNESS_NAME_TOKENS = (
     "random", "rng", "urandom", "secret", "token", "nonce", "salt", "cipher", "crypt",
 )
 
+# ─── CWE-338 numeric-library (ML math) draw gating ─────────────────────────
+# `CWE338_RANDOM_NAMES` matches on the last written segment, so `torch.randint(0, 50257, (8,))`
+# and `np.random.uniform(size=(b, n))` are reported as an insecure PRNG next to a real
+# `random.randint()` used for a session token. Only the stdlib `random` family is a CSPRNG
+# substitute; a tensor draw from torch/numpy is index arithmetic. The exemption is asymmetric
+# on purpose: the callee root must PROVE it is `torch`/`numpy.random` (as written, or folded by
+# canonicalisation, so `np.random` counts and an unresolved alias does not), the call must not
+# land in a security-named receiver, and `random.*`, `secrets.*`, `os.urandom` and a bare
+# `randint(...)` are outside this rule's vocabulary entirely.
+ML_MATH_RANDOM_PREFIXES = ("torch", "numpy.random")
+CWE338_SECURITY_NAME_WORDS = frozenset({
+    "token", "tokens", "password", "passwd", "pass", "key", "keys", "secret", "secrets",
+    "session", "sessions", "salt", "salts", "auth", "nonce", "nonces", "otp", "csrf", "jwt",
+    "credential", "credentials", "cipher", "ciphers", "crypt", "signature", "signatures",
+    "iv", "seed", "code", "codes", "pin", "pins", "verifier", "challenge", "hash", "hashes",
+})
+# A `token` segment beside one of these is a vocabulary index, not a bearer token. The list is
+# closed to the words actually observed in ML corpora: an unproven qualifier leaves the name
+# guarded, which costs a false positive at worst instead of hiding a credential.
+CWE338_TOKEN_WORDS = frozenset({"token", "tokens"})
+CWE338_ML_VOCAB_QUALIFIERS = frozenset({
+    "eos", "pad", "bos", "unk", "cls", "sep", "mask", "special", "added", "type", "vocab",
+    "position", "positional", "decoder", "encoder", "new", "num", "max",
+})
+_CWE338_NAME_SPLIT = re.compile(
+    r"[^0-9A-Za-z]+|(?<=[a-z0-9])(?=[A-Z])|(?<=[A-Z])(?=[A-Z][a-z])")
+
 # ─── O(1) sink fast-path candidate index ───────────────────────────────────
 # is_sink_call() can return True through paths that never consult SINK_REGISTRY:
 # the rule engine's own matchers, the attribute branches at the tail of the
@@ -5220,6 +5247,96 @@ class TaintTracker:
                 return False
         return any(token in segments[-1] for token in DATASET_SHUFFLE_RECEIVERS)
 
+    @staticmethod
+    def _cwe338_name_is_security_named(name: str) -> bool:
+        """True when a written-out whole word in `name` says "this value guards something".
+
+        Segment matching, not substring: `session_key`, `apiKey` and `reset_code` hit
+        (`key`, `code`), while `max_new_tokens` does not, because its segments are
+        `max`/`new`/`tokens` and the vocabulary demotion only lifts a name whose sole security
+        word is `token`/`tokens` (`token_type_ids`, `eos_token`) when a known ML qualifier sits
+        beside it. `value`, `data`, `inputs` and `labels` are deliberately absent -- they are
+        tensor names in every ML codebase, and treating them as credentials would keep the
+        false positives this rule exists to remove.
+        """
+        lowered = [s.lower() for s in _CWE338_NAME_SPLIT.split(name) if s]
+        hits = {s for s in lowered if s in CWE338_SECURITY_NAME_WORDS}
+        if not hits:
+            return False
+        if hits <= CWE338_TOKEN_WORDS and any(s in CWE338_ML_VOCAB_QUALIFIERS for s in lowered):
+            return False
+        return True
+
+    @staticmethod
+    def _cwe338_assignment_targets(node: ast.AST) -> List[str]:
+        """Names the draw flows into, read from at most four parent links (no tree walk).
+
+        The engine already links every child to its parent when a module is parsed, so the
+        destination is reached in O(1)-ish hops instead of a per-candidate scan. Four hops
+        cover `torch.randint(...).tolist()` (Attribute -> Call -> Assign) and a dict literal
+        inside an assignment, whose string keys are the only name a `{"labels": ...}` draw
+        carries. A `Return`/bare expression stops the climb: a value that is returned is not
+        being stored in a named slot, and inventing a name for it would be guesswork.
+        """
+        names: List[str] = []
+        current = node
+        for _ in range(4):
+            current = getattr(current, "parent", None)
+            if current is None:
+                break
+            if isinstance(current, (ast.Assign, ast.AnnAssign, ast.AugAssign)):
+                for target in getattr(current, "targets", None) or [current.target]:
+                    while isinstance(target, ast.Subscript):
+                        target = target.value
+                    if isinstance(target, (ast.Name, ast.Attribute)):
+                        names.append(target.id if isinstance(target, ast.Name) else target.attr)
+                    elif isinstance(target, (ast.Tuple, ast.List)):
+                        names.extend(el.id for el in target.elts if isinstance(el, ast.Name))
+                if names:
+                    break
+            elif isinstance(current, ast.Dict):
+                names.extend(key.value for key in current.keys
+                             if isinstance(key, ast.Constant) and isinstance(key.value, str))
+            elif isinstance(current, ast.keyword):
+                if current.arg:
+                    names.append(current.arg)
+            elif isinstance(current, (ast.Return, ast.Expr, ast.Module)):
+                break
+        return names
+
+    @classmethod
+    def _is_ml_math_random_draw(cls, node: ast.Call, receiver_name: str,
+                                receiver_canon: str) -> bool:
+        """True only for a proven `torch`/`numpy.random` numeric draw with no crypto name.
+
+        Every branch of this decision errs toward reporting:
+
+        * The receiver must start with `torch` or `numpy.random` at a dot boundary -- as
+          written, or after canonicalisation (so `np.random.uniform` qualifies and a bare
+          `randint(0, 9)`, an unresolved alias, or `secrets.*` never does). An empty receiver
+          name means the callee could not be folded, and unknown is never treated as safe.
+        * Any security-named destination re-enables the finding even when the library is torch,
+          because `session_key = torch.randint(0, 256, (32,))` is an insecure token generator no
+          matter which numeric library it reaches for.
+        * stdlib `random.*` is outside the prefix list entirely, so the parity corpus and every
+          hand-written finding keep their behaviour.
+        """
+        qualified = False
+        for candidate in (receiver_name, receiver_canon):
+            lowered = (candidate or "").lower()
+            if not lowered:
+                continue
+            for prefix in ML_MATH_RANDOM_PREFIXES:
+                if lowered == prefix or lowered.startswith(prefix + "."):
+                    qualified = True
+                    break
+            if qualified:
+                break
+        if not qualified:
+            return False
+        return not any(cls._cwe338_name_is_security_named(name)
+                       for name in cls._cwe338_assignment_targets(node))
+
     def _sink_context_exempt(self, cwe_id: str, node: ast.Call, scope_id: str) -> bool:
         mod_name = self._scope_module(scope_id)
         if not mod_name:
@@ -6181,6 +6298,8 @@ class TaintTracker:
                     return False  # CSPRNG instance method - safe
                 if self._is_dataset_shuffle_call(node, receiver_name, receiver_canon):
                     return False  # epoch reordering of a dataset, not a PRNG draw
+                if self._is_ml_math_random_draw(node, receiver_name, receiver_canon):
+                    return False  # torch/numpy index arithmetic with no credential destination
             # Flag ALL other random.* calls unconditionally - no security context gate
             pass  # Continue to sink matching
 
