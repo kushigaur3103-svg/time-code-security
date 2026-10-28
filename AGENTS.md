@@ -56,9 +56,10 @@ The sign-off also carries seven standing instructions:
   so the one-line "emit an edge only when a real source exists" cleanup deletes all 59 at once and a
   baseline re-blessed afterwards shows an empty diff), and the measured engine clock of the collector
   that was touched. A claim without those numbers is not a result.
-  All six runnable gate scripts (`aa_parity.py`, `big8_ab.py`, `cwe338_ml_math_probe.py`,
+  All seven runnable gate scripts (`aa_parity.py`, `big8_ab.py`, `cwe338_ml_math_probe.py`,
   `cwe117_cwe22_unknown_source_probe.py`, `cwe117_builtin_seal_probe.py`,
-  `cwe22_dirent_closure_probe.py`), their frozen baseline key files and `gate_meta.json` are
+  `cwe22_dirent_closure_probe.py`, `cwe434_local_serialization_probe.py`), their frozen baseline key
+  files and `gate_meta.json` are
   tracked under `benchmark/gates/`, so a fresh clone or CI can run them; `scratch/` is git-ignored,
   so a gate kept there is not runnable by anyone else and its baseline is not reviewable. The gates
   scan their own directory, so harness code that trips a rule shows up as a `NEW` key and is fixed,
@@ -134,6 +135,25 @@ All engine modifications, precision improvements, and bug fixes must be architec
    scrubbing is driven by `parity.recorded_root` in `benchmark/gates/gate_meta.json`, and `_root_re`
    returns `None` when that value is absent, so `scrub_message` then silently hands back the raw
    message -- if `MISSING=9 NEW=9` ever returns, check `recorded_root` before suspecting the engine.
+
+## Proof before claim (PROVEN > CLAIMED)
+
+This rule has existed since the beginning, written three times and named zero times. Naming it adds no
+new obligation; it only gives the three sentences below one address to point at, so a search for the
+phrase lands on a rule instead of only on the sign-off line.
+
+- From the six mandatory outputs, at the end of that same list: **"A claim without those numbers is
+  not a result."**
+- From the permanent-fix instruction, about exemptions: **"an exemption must be narrow *and* be proven
+  still catching the bad input"**.
+- From the proactive-risk-callout section, about the starting state: **"A change is only allowed against
+  a baseline that was measured, never against a number quoted from a prompt. If that baseline turns out
+  to contradict the prompt's stated figure, say so before editing."**
+
+The phrase itself lives inside the sign-off line, which is why it is easy to read as ritual:
+`...100 zayas hai proven then claim  ghade samjha bhaiiiii`. It is not ritual. Read together with the
+three sentences above it means, in order: measure first, quote what the measurement said, and only then
+state the result -- and if the measurement disagrees with the prompt, the prompt loses.
 
 ## Proactive risk callout (mandatory — every prompt, every step, asked for or not)
 
