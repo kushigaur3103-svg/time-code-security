@@ -20,6 +20,7 @@ import json
 import ntpath
 import os
 import posixpath
+import re
 import subprocess
 import sys
 
@@ -53,15 +54,77 @@ def _posix(path) -> str:
     return str(path).replace('\\', '/')
 
 
+def _root_spellings(recorded_root):
+    """Both separators of both roots, longest first.
+
+    Longest-first matters when one root contains the other: a checkout nested inside the blessing
+    path would otherwise keep the inner segment as machine-specific text.
+    """
+    spellings = set()
+    for base in (ROOT_POSIX, _posix(recorded_root or '')):
+        base = str(base).rstrip('/')
+        if base:
+            spellings.add(base)
+            spellings.add(base.replace('/', '\\'))
+    return sorted(spellings, key=len, reverse=True)
+
+
+_ROOT_TOKEN = '<root>'
+_ROOT_RE: dict = {}
+
+
+def _root_re(recorded_root):
+    """`root` + the path run that follows it, as one alternation over both roots and separators.
+
+    Compiled once per root spelling and cached: `canon_key` runs this over every key on both sides.
+    """
+    key = str(recorded_root)
+    if key not in _ROOT_RE:
+        spellings = _root_spellings(recorded_root)
+        if not spellings:
+            _ROOT_RE[key] = None
+        else:
+            _ROOT_RE[key] = re.compile(
+                r'(?P<root>(?:{}))(?P<tail>[^\s,]*)'.format('|'.join(re.escape(s) for s in spellings))
+            )
+    return _ROOT_RE[key]
+
+
+def scrub_message(message, recorded_root):
+    """Rewrite a checkout's absolute path inside a message to `<root>/relative/path`, so one finding
+    reads identically on the blessing machine, on any other clone, and across separators.
+
+    The root *and only the path run hanging off it* are folded: separators become `/` and the tail --
+    file, line, sink symbol -- survives byte-for-byte inside the canonical form. So a finding that
+    moves to another file or line still yields a different key, and text that never started with a
+    known root is left exactly as the engine wrote it. Nine parity messages embed the blessing
+    machine's absolute path (`... flows into ... at C:\\...\\repo01.py:7`), which made
+    `aa_parity.py` unmatchable on any other checkout: MISSING=9 NEW=9 while every true positive was
+    still reported.
+    """
+    if not isinstance(message, str):
+        return message
+    pattern = _root_re(recorded_root)
+    if pattern is None:
+        return message
+
+    def canonical(match) -> str:
+        return f'{_ROOT_TOKEN}/{_posix(match.group("tail")).lstrip("/")}'
+
+    return pattern.sub(canonical, message)
+
+
 def relativise(raw_path, recorded_root):
     """Repo-relative spelling of a path, from the blessing machine or from any other checkout.
 
-    The recorded root is data in `gate_meta.json`, never a guess, so rebasing is exact. A path
-    absolute under neither root raises, because a key this gate cannot place is a key it cannot
-    honestly compare.
+    The live root is tried first: a checkout nested inside the blessing path (a worktree under the
+    recorded root) must rebase against the tree it actually lives in, or its keys come out labelled
+    with the outer path. The recorded root is data in `gate_meta.json`, never a guess, so rebasing
+    is exact. A path absolute under neither root raises, because a key this gate cannot place is a
+    key it cannot honestly compare.
     """
     path = _posix(raw_path)
-    for prefix in (recorded_root, ROOT_POSIX):
+    for prefix in (ROOT_POSIX, recorded_root):
         if not prefix:
             continue
         prefix = _posix(prefix).rstrip('/')
@@ -73,15 +136,17 @@ def relativise(raw_path, recorded_root):
 
 
 def canon_key(row, kind: str):
-    """One finding key with its file component rebased; every other field is untouched.
+    """One finding key, rebased so the same finding hashes identically in every checkout.
 
-    Two rebases, both driven by `gate_meta.json` and neither touching the stored bytes:
+    Three rebases, all driven by `gate_meta.json` and none touching the stored bytes:
 
     - `scan_root` -- the gate scans a tree from inside it, so the engine spells its files relative
       to that tree (`corpus/x/bad.py`) while the baseline spells them from the repo root
       (`benchmark/corpus/x/bad.py`). The recorded prefix is put back.
     - `corpus_files` -- the Big-8 corpus has lived in two directories, so its keys collapse to the
       pinned `<corpus_marker>/<leaf>` form and a stray file in the corpus is an error, not a finding.
+    - message -- an absolute root embedded in a finding's message is this machine's address, not a
+      property of the finding, so it collapses to `<root>` (see `scrub_message`).
     """
     meta = META[kind]
     file_field = relativise(row[0], meta.get('recorded_root'))
@@ -94,7 +159,10 @@ def canon_key(row, kind: str):
         if leaf not in names:
             raise GatePathError(f'{file_field!r} is not a {kind} corpus file')
         file_field = f'{meta["corpus_marker"]}/{leaf}'
-    return (file_field,) + tuple(row[1:])
+    rest = list(row[1:])
+    if len(rest) > 3:
+        rest[3] = scrub_message(rest[3], meta.get('recorded_root'))
+    return (file_field,) + tuple(rest)
 
 
 def load_keys(path: str, kind: str):
@@ -221,6 +289,32 @@ def _selftest() -> int:
     got = canon_key((scanned_from_inside, 1, 'CWE-338', 'Crypto', 'm', 'LOW'), 'parity')[0]
     ok = ok and got == leaf
     print(f'  parity scan-root rebase {scanned_from_inside:26s} -> {got}')
+
+    nested = f'{ROOT_POSIX}/scratch/_wt'
+    saved = ROOT_POSIX
+    try:
+        globals()['ROOT_POSIX'] = nested
+        nested_key = relativise(f'{nested}/{leaf}', meta['recorded_root'])
+    finally:
+        globals()['ROOT_POSIX'] = saved
+        _ROOT_RE.clear()
+    ok = ok and nested_key == leaf
+    print(f'  nested-checkout rebase        -> {nested_key}')
+
+    recorded = _posix(meta['recorded_root'])
+    rel_tail = 'benchmark/fixtures/cross_file/case_01/repo01.py:7'
+    want = f'leak at {_ROOT_TOKEN}/{rel_tail}'
+    win = scrub_message('leak at ' + recorded.replace('/', '\\') + '\\'
+                        + rel_tail.replace('/', '\\'), meta['recorded_root'])
+    fwd = scrub_message(f'leak at {recorded}/{rel_tail}', meta['recorded_root'])
+    ok = ok and win == want and fwd == want
+    print(f'  message scrub both separators -> {fwd}')
+    foreign = '/home/runner/work/other/benchmark/x.py'
+    untouched = scrub_message(f'leak at {foreign}', meta['recorded_root']) == f'leak at {foreign}'
+    moved = scrub_message(f'leak at {recorded}/benchmark/fixtures/cross_file/case_01/repo02.py:7',
+                          meta['recorded_root'])
+    ok = ok and untouched and moved != fwd
+    print(f'  foreign root untouched={untouched}, moved sink still distinct={moved != fwd}')
     print(f'  ROOT={ROOT}')
     print(f'  recorded_root={meta["recorded_root"]}')
     return 0 if ok else 1
