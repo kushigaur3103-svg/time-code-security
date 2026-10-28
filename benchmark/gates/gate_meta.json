@@ -22,7 +22,7 @@
   },
   "big8": {
     "keys_file": "big8_before.keys",
-    "expected_keys": 136,
+    "expected_keys": 119,
     "recorded_root": null,
     "corpus_marker": "corpus_big8",
     "corpus_search_paths": [

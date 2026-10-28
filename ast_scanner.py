@@ -1924,6 +1924,23 @@ CWE3A_NETWORK_SINKS = {
 }
 CWE3A_UPLOAD_SANITIZERS = {"secure_filename", "sanitize_filename", "werkzeug.utils.secure_filename"}
 CWE3A_UPLOAD_RANDOMIZERS = {"uuid4", "uuid.uuid4", "uuid4_rename"}
+# CWE-434 precision is a *positive* whitelist of serializer receivers, never a web-source
+# reachability test: reporting must never require a web source (the blessed parity uploads are
+# `file.save(input())` in modules that contain no request object), only the exemption may be
+# refused for one. Namespaces are matched on canonical segments, so the engine's own alias fold
+# covers `xm.save` -> `torch_xla.core.xla_model.save` and `smp.save` ->
+# `smdistributed.modelparallel.torch.save` without a brittle bare-alias spelling list.
+CWE434_SERIALIZER_NAMESPACES = {"torch", "torch_xla", "smdistributed"}
+CWE434_SERIALIZER_RECEIVERS = {"model_card", "modelcard"}
+CWE434_UPLOAD_SOURCE_ATTRS = {"files", "upload", "uploadedfile", "filestorage", "multipart", "formdata"}
+CWE434_UPLOAD_SOURCE_NAMES = {"request", "files", "upload", "uploadedfile", "filestorage",
+                              "multipart", "formdata", "flask", "werkzeug"}
+# Exact spellings, because the test runs once per Name node in the module pre-scan and `lower()` there
+# would be paid by every file in the repo. `request.FILES["f"]` is a Subscript, not a Call, so the
+# Call-shaped upload-sink test cannot see it; without this the local-serialization exemption would
+# fire inside a module that reads uploaded files.
+CWE434_MODULE_UPLOAD_NAMES = {"request", "Request", "UploadedFile", "UploadFile", "FileStorage",
+                              "MultiPartParser", "MultipartParser"}
 # batch3a's assignment rules read the folded RHS only for these targets -- `val_const` has no other
 # reader in that collector. An unwatched target must not fold: when the RHS is a bare Name with no
 # local binding, the folder's cross-scope fallback walks every same-named assignment in the repo,
@@ -5019,6 +5036,39 @@ class TaintTracker:
             if kw.arg == "usedforsecurity":
                 return _eval_static_constant(kw.value, self.assignments_by_scope, scope_id, lno) is False
         return False
+
+    def _is_local_serialization_save(self, node: ast.Call, name: str, canon: str,
+                                     module_touches_uploads: bool) -> bool:
+        """True when `<serializer>.save(...)` writes program state and nothing a client sent.
+
+        CWE-434 is about a client-supplied file landing on disk. `torch.save(state_dict,
+        os.path.join(output_dir, "model.pt"))` writes an object the program built itself into a
+        directory the program chose, so reporting it is a false positive. The whitelist is positive
+        and narrow: a canonical segment must name a serialisation namespace (`torch`, `torch_xla`,
+        `smdistributed`), or the receiver must be a model-card object, whose single argument is a
+        README path. An unknown receiver (`file.save(dest)`, exactly the parity fixture shape), a
+        `FileField`/`FileStorage` object and a bare `save()` all fail it and keep their finding.
+
+        Two belts refuse the exemption rather than narrow a report, so their worst case is a
+        retained false positive and never a miss: the module must touch no upload source at all -
+        a Call-shaped sink or a bare `request` name, since `request.FILES["f"]` is a Subscript and
+        no Call test can see it - and no argument may mention a web source, which keeps
+        `torch.save(upload, request.args["p"])` reported. The argument descent runs only after the
+        segment test passes, so a non-serializer `.save` call costs one set build.
+        """
+        if module_touches_uploads:
+            return False
+        segments = {s.lower() for s in (canon or name).split(".") if s}
+        if not (segments & CWE434_SERIALIZER_NAMESPACES
+                or segments & CWE434_SERIALIZER_RECEIVERS):
+            return False
+        for arg in list(node.args) + [kw.value for kw in getattr(node, "keywords", [])]:
+            for sub in ast.walk(arg):
+                if isinstance(sub, ast.Attribute) and sub.attr.lower() in CWE434_UPLOAD_SOURCE_ATTRS:
+                    return False
+                if isinstance(sub, ast.Name) and sub.id.lower() in CWE434_UPLOAD_SOURCE_NAMES:
+                    return False
+        return True
 
     def _scope_module(self, scope_id: str) -> str:
         return scope_module(scope_id) if scope_id else ""
@@ -15812,6 +15862,7 @@ class TaintTracker:
             # They replace two `ast.walk(tree)` descents that used to run once per .save() call.
             module_has_upload_sink = False
             module_has_upload_sanitizer = False
+            module_touches_uploads = False
 
             # Decorators are only accepted as auth guards when their own definition
             # performs an explicit authentication branch check. Decorator names are
@@ -15947,6 +15998,11 @@ class TaintTracker:
                         elif val_c is True:
                             module_csrf_enabled = True
 
+                elif isinstance(node, ast.Name) and node.id in CWE434_MODULE_UPLOAD_NAMES:
+                    # Reached only for a Name, since every earlier branch of this chain is a different
+                    # node type; the set is exact-spelled so the hot path pays no `lower()`.
+                    module_touches_uploads = True
+
                 nodes_in_order.append(node)
 
             for node in nodes_in_order:
@@ -16037,7 +16093,10 @@ class TaintTracker:
                             if not module_has_upload_sink:
                                 cwe_meta = None
                         else:
-                            if not module_has_upload_sanitizer and not has_extension_whitelist:
+                            if (not module_has_upload_sanitizer and not has_extension_whitelist
+                                    and not self._is_local_serialization_save(
+                                        node, name, canon,
+                                        module_has_upload_sink or module_touches_uploads)):
                                 cwe_meta = {"operation": "UNRESTRICTED_FILE_UPLOAD", "category": "UNRESTRICTED_FILE_UPLOAD", "cwe": "CWE-434"}
 
                     # ─── CWE-352: Cross-Site Request Forgery (Calls like csrf.exempt(func)) ───

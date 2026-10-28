@@ -6,7 +6,16 @@
 # synthetic test data. Every retired line is LOW, CWE-338 and a numeric draw, and the
 # adversarial boundary -- a credential drawn from those same libraries stays reported -- is
 # pinned by benchmark/gates/cwe338_ml_math_probe.py, which no corpus can prove.
-# Surviving rows are byte-identical to the 154-key file, in original order.
+# Re-blessed to 119 keys on top of 62b11f8: the CWE-434 emitter now exempts local serialization.
+# `TaintTracker._is_local_serialization_save` (ast_scanner.py) drops `<serializer>.save(...)` only
+# when the canonical receiver names a serialisation namespace (`torch`, `torch_xla`, `smdistributed`)
+# or is a model-card object, the module contains no upload sink, and no argument mentions a web
+# source. All 17 retired rows are CWE-434, and each one - code, enclosing scope, payload and the
+# binding of its destination - is documented in docs/cwe434_big8_fp_evidence.md. The must-report
+# boundary is pinned by benchmark/gates/cwe434_local_serialization_probe.py: the 7 parity CWE-434
+# uploads are `file.save(input())` in modules with no request object and are NOT retired, so
+# aa_parity.py stays 425/425 MISSING=0 NEW=0. The 154 -> 136 rows above this block are untouched.
+# Surviving rows are byte-identical to the 136-key file, in original order.
 ('scratch/_p3_big/src__transformers__generation__utils.py', 1077, 'CWE-208', 'TIMING_ATTACK', 'CWE-208: compare', 'MEDIUM')
 ('scratch/_p3_big/src__transformers__generation__utils.py', 1102, 'CWE-208', 'TIMING_ATTACK', 'CWE-208: compare', 'MEDIUM')
 ('scratch/_p3_big/src__transformers__generation__utils.py', 1140, 'CWE-208', 'TIMING_ATTACK', 'CWE-208: compare', 'MEDIUM')
@@ -36,7 +45,6 @@
 ('scratch/_p3_big/src__transformers__modeling_utils.py', 3494, 'CWE-22', 'PATH_TRAVERSAL', 'CWE-22: os.remove', 'HIGH')
 ('scratch/_p3_big/src__transformers__modeling_utils.py', 3564, 'CWE-22', 'PATH_TRAVERSAL', 'CWE-22: Unvalidated user input or dynamic variable used in file path operation', 'HIGH')
 ('scratch/_p3_big/src__transformers__modeling_utils.py', 3567, 'CWE-117', 'Injection', 'CWE-117: logger.info', 'MEDIUM')
-('scratch/_p3_big/src__transformers__modeling_utils.py', 3578, 'CWE-434', 'UNRESTRICTED_FILE_UPLOAD', 'CWE-434: UNRESTRICTED_FILE_UPLOAD', 'HIGH')
 ('scratch/_p3_big/src__transformers__modeling_utils.py', 4622, 'CWE-208', 'TIMING_ATTACK', 'CWE-208: compare', 'MEDIUM')
 ('scratch/_p3_big/src__transformers__modeling_utils.py', 476, 'CWE-400', 'RESOURCE_EXHAUSTION', 'CWE-400: re.search', 'LOW')
 ('scratch/_p3_big/src__transformers__modeling_utils.py', 4853, 'CWE-1333', 'REGULAR_EXPRESSION_DOS', 'CWE-1333: re.compile', 'LOW')
@@ -65,16 +73,6 @@
 ('scratch/_p3_big/src__transformers__trainer.py', 2007, 'CWE-117', 'Injection', 'CWE-117: logger.info', 'MEDIUM')
 ('scratch/_p3_big/src__transformers__trainer.py', 2008, 'CWE-22', 'PATH_TRAVERSAL', 'CWE-22: shutil.rmtree', 'HIGH')
 ('scratch/_p3_big/src__transformers__trainer.py', 2919, 'CWE-117', 'Injection', 'CWE-117: logger.info', 'MEDIUM')
-('scratch/_p3_big/src__transformers__trainer.py', 3472, 'CWE-434', 'UNRESTRICTED_FILE_UPLOAD', 'CWE-434: UNRESTRICTED_FILE_UPLOAD', 'HIGH')
-('scratch/_p3_big/src__transformers__trainer.py', 3474, 'CWE-434', 'UNRESTRICTED_FILE_UPLOAD', 'CWE-434: UNRESTRICTED_FILE_UPLOAD', 'HIGH')
-('scratch/_p3_big/src__transformers__trainer.py', 3485, 'CWE-434', 'UNRESTRICTED_FILE_UPLOAD', 'CWE-434: UNRESTRICTED_FILE_UPLOAD', 'HIGH')
-('scratch/_p3_big/src__transformers__trainer.py', 3493, 'CWE-434', 'UNRESTRICTED_FILE_UPLOAD', 'CWE-434: UNRESTRICTED_FILE_UPLOAD', 'HIGH')
-('scratch/_p3_big/src__transformers__trainer.py', 3495, 'CWE-434', 'UNRESTRICTED_FILE_UPLOAD', 'CWE-434: UNRESTRICTED_FILE_UPLOAD', 'HIGH')
-('scratch/_p3_big/src__transformers__trainer.py', 3501, 'CWE-434', 'UNRESTRICTED_FILE_UPLOAD', 'CWE-434: UNRESTRICTED_FILE_UPLOAD', 'HIGH')
-('scratch/_p3_big/src__transformers__trainer.py', 3527, 'CWE-434', 'UNRESTRICTED_FILE_UPLOAD', 'CWE-434: UNRESTRICTED_FILE_UPLOAD', 'HIGH')
-('scratch/_p3_big/src__transformers__trainer.py', 3539, 'CWE-434', 'UNRESTRICTED_FILE_UPLOAD', 'CWE-434: UNRESTRICTED_FILE_UPLOAD', 'HIGH')
-('scratch/_p3_big/src__transformers__trainer.py', 3554, 'CWE-434', 'UNRESTRICTED_FILE_UPLOAD', 'CWE-434: UNRESTRICTED_FILE_UPLOAD', 'HIGH')
-('scratch/_p3_big/src__transformers__trainer.py', 3560, 'CWE-434', 'UNRESTRICTED_FILE_UPLOAD', 'CWE-434: UNRESTRICTED_FILE_UPLOAD', 'HIGH')
 ('scratch/_p3_big/src__transformers__trainer.py', 3628, 'CWE-117', 'Injection', 'CWE-117: logger.warning', 'MEDIUM')
 ('scratch/_p3_big/src__transformers__trainer.py', 3696, 'CWE-117', 'Injection', 'CWE-117: logger.info', 'MEDIUM')
 ('scratch/_p3_big/src__transformers__trainer.py', 3778, 'CWE-502', 'UNSAFE_DESERIALIZATION', 'CWE-502: torch.load', 'HIGH')
@@ -85,13 +83,9 @@
 ('scratch/_p3_big/src__transformers__trainer.py', 4028, 'CWE-117', 'Injection', 'CWE-117: logger.warning', 'MEDIUM')
 ('scratch/_p3_big/src__transformers__trainer.py', 4030, 'CWE-117', 'Injection', 'CWE-117: logger.warning', 'MEDIUM')
 ('scratch/_p3_big/src__transformers__trainer.py', 4119, 'CWE-117', 'Injection', 'CWE-117: logger.info', 'MEDIUM')
-('scratch/_p3_big/src__transformers__trainer.py', 4155, 'CWE-434', 'UNRESTRICTED_FILE_UPLOAD', 'CWE-434: UNRESTRICTED_FILE_UPLOAD', 'HIGH')
 ('scratch/_p3_big/src__transformers__trainer.py', 4301, 'CWE-22', 'PATH_TRAVERSAL', 'CWE-22: open', 'HIGH')
 ('scratch/_p3_big/src__transformers__trainer.py', 4407, 'CWE-770', 'RESOURCE_EXHAUSTION', 'CWE-770: UNBOUNDED_RESOURCE_ALLOCATION', 'MEDIUM')
-('scratch/_p3_big/src__transformers__trainer.py', 4419, 'CWE-434', 'UNRESTRICTED_FILE_UPLOAD', 'CWE-434: UNRESTRICTED_FILE_UPLOAD', 'HIGH')
 ('scratch/_p3_big/src__transformers__trainer.py', 4592, 'CWE-117', 'Injection', 'CWE-117: logger.info', 'MEDIUM')
-('scratch/_p3_big/src__transformers__trainer.py', 4653, 'CWE-434', 'UNRESTRICTED_FILE_UPLOAD', 'CWE-434: UNRESTRICTED_FILE_UPLOAD', 'HIGH')
-('scratch/_p3_big/src__transformers__trainer.py', 4654, 'CWE-434', 'UNRESTRICTED_FILE_UPLOAD', 'CWE-434: UNRESTRICTED_FILE_UPLOAD', 'HIGH')
 ('scratch/_p3_big/src__transformers__trainer.py', 667, 'CWE-117', 'Injection', 'CWE-117: logger.warning', 'MEDIUM')
 ('scratch/_p3_big/src__transformers__trainer.py', 736, 'CWE-117', 'Injection', 'CWE-117: logger.info', 'MEDIUM')
 ('scratch/_p3_big/tests__generation__test_utils.py', 3106, 'CWE-208', 'TIMING_ATTACK', 'CWE-208: compare', 'MEDIUM')
@@ -129,8 +123,6 @@
 ('scratch/_p3_big/tests__test_modeling_common.py', 1020, 'CWE-400', 'RESOURCE_EXHAUSTION', 'CWE-400: re.search', 'LOW')
 ('scratch/_p3_big/tests__test_modeling_common.py', 1279, 'CWE-22', 'PATH_TRAVERSAL', 'CWE-22: open', 'MEDIUM')
 ('scratch/_p3_big/tests__test_modeling_common.py', 1280, 'CWE-770', 'RESOURCE_EXHAUSTION', 'CWE-770: UNBOUNDED_RESOURCE_ALLOCATION', 'MEDIUM')
-('scratch/_p3_big/tests__test_modeling_common.py', 1506, 'CWE-434', 'UNRESTRICTED_FILE_UPLOAD', 'CWE-434: UNRESTRICTED_FILE_UPLOAD', 'HIGH')
-('scratch/_p3_big/tests__test_modeling_common.py', 1508, 'CWE-434', 'UNRESTRICTED_FILE_UPLOAD', 'CWE-434: UNRESTRICTED_FILE_UPLOAD', 'HIGH')
 ('scratch/_p3_big/tests__test_modeling_common.py', 3013, 'CWE-400', 'RESOURCE_EXHAUSTION', 'CWE-400: re.search', 'LOW')
 ('scratch/_p3_big/tests__test_modeling_common.py', 4106, 'CWE-95', 'CODE_EXECUTION', 'CWE-95: torch.compile', 'HIGH')
 ('scratch/_p3_big/tests__test_modeling_common.py', 4293, 'CWE-95', 'CODE_EXECUTION', 'CWE-95: torch.compile', 'HIGH')
