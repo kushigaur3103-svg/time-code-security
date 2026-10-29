@@ -2844,36 +2844,189 @@ def _literal_text(node, assignments_by_scope, scope_id="", lineno=0, seen=None):
     return None
 
 
-def _json_or_structured_body(call: ast.Call, assignments_by_scope, scope_id: str, lineno: int) -> bool:
-    """True when a response's body is data rather than markup: a structured literal, or a
-    JSON content type the browser will never parse as HTML. Nothing in either can be
-    rendered as script, so an XSS sink claim does not hold."""
+# One markup test for every CWE-79 record path. The response sink, the structural layer and the
+# registry prune each used to ask "does this text contain `<` and `>`", which is equally true of an
+# RFC 2822 address, a Debian maintainer line, a `<cbc:ID>` UBL element and a Python object repr.
+# What a browser parses is `<` or `</` plus an element name plus a delimiter, so that is what is
+# tested here - after every `%s`/`{}` substitution marker and every dynamic hole has been folded to
+# one sentinel character, because `f"<{tag}>{content}</{tag}>"` is markup with the name taken from
+# the request, and `f'"{name}" <{local}@{domain}>'` is an address.
+_MARKUP_HOLE = '\x00'
+_SUBSTITUTION_MARKER_RE = re.compile(
+    r'%\([^)]*\)[#0\- +]*\d*(?:\.\d+)?[sdifrxeogc%]'
+    r'|%[#0\- +]*\d*(?:\.\d+)?[sdifrxeogc%]'
+    r'|\{[^{}]*\}')
+_MARKUP_SHAPE_RE = re.compile(
+    r'<\s*/?\s*(?:[A-Za-z][A-Za-z0-9_-]*(?=[\s>/])'
+    r'|(?:svg|xhtml|math|html|body)\s*:'
+    + r'|(?:' + _MARKUP_HOLE + r')(?=[\s>/]))')
+
+# A `Markup` template is author text when nothing unescaped can reach it: a literal, a translation
+# looked up by a literal key, or only escape-family / numeric calls interpolated into it. markupsafe
+# escapes everything *substituted into* a Markup (`Markup('<b>%s</b>') % '<script>'` renders
+# `<b>&lt;script&gt;</b>`), so the template is the only place client data can survive.
+_XSS_ESCAPE_SEGMENTS = frozenset({'escape', 'escapejs', 'conditional_escape', 'clean', 'strip_tags',
+                                  'urlize', 'format_html', 'smart_urlquote', 'quote', 'quote_plus'})
+_XSS_NUMERIC_SEGMENTS = frozenset({'int', 'float', 'len', 'abs', 'sum', 'round'})
+_XSS_TRANSLATION_SEGMENTS = frozenset({'_', 'gettext', 'ngettext', 'pgettext', 'lazy_gettext',
+                                       'translate'})
+_MARKUP_CALL_SEGMENTS = frozenset({'Markup', 'mark_safe'})
+# Media types a browser will not render as a document, so a response carrying one of them literally
+# cannot execute script. `text/plain` and `application/octet-stream` already had an exact-match list
+# at the response collector; `text/csv`, `text/xml` and a parameterised `...; charset=binary` did not.
+_NON_HTML_MEDIA_PREFIXES = ('application/json', 'text/json', 'text/xml', 'application/xml',
+                            'text/csv', 'application/octet-stream', 'application/pdf',
+                            'application/postscript', 'text/plain',
+                            'image/', 'font/', 'woff', 'video/', 'audio/')
+
+
+def _call_callee_segment(node: ast.AST) -> str:
+    func = node.func if isinstance(node, ast.Call) else node
+    if isinstance(func, ast.Attribute):
+        return func.attr
+    if isinstance(func, ast.Name):
+        return func.id
+    return ""
+
+
+def fold_markup_holes(text: str) -> str:
+    """Replace every printf/``str.format`` substitution marker in *text* with the hole sentinel."""
+    return _SUBSTITUTION_MARKER_RE.sub(_MARKUP_HOLE, text)
+
+
+def text_has_markup_shape(text: str) -> bool:
+    """True when *text* holds something a browser parses as a start or end tag.
+
+    The printf/``str.format`` markers are folded to the hole sentinel before the test, because
+    `"<%s>"` is a tag name taken from the value while `"<b>%s</b>"` already has its name written.
+    That fold only runs for text carrying an angle bracket and no plain tag, so the hot path over
+    every string constant in a module stays one `in` test plus one scan.
+    """
+    if '<' not in text:
+        return False
+    if _MARKUP_SHAPE_RE.search(text):
+        return True
+    folded = fold_markup_holes(text)
+    return folded != text and bool(_MARKUP_SHAPE_RE.search(folded))
+
+
+def markup_skeleton(expr: ast.AST) -> str:
+    """The literal text of *expr* with each dynamic hole collapsed to one sentinel character."""
+    if isinstance(expr, ast.Constant):
+        return expr.value if isinstance(expr.value, str) else ''
+    if isinstance(expr, ast.JoinedStr):
+        out = []
+        for part in expr.values:
+            if isinstance(part, ast.FormattedValue):
+                out.append(_MARKUP_HOLE)
+            elif isinstance(part, ast.Constant) and isinstance(part.value, str):
+                out.append(part.value)
+        return ''.join(out)
+    if isinstance(expr, ast.BinOp):
+        return markup_skeleton(expr.left) + markup_skeleton(expr.right)
+    if isinstance(expr, ast.Call) and isinstance(expr.func, ast.Attribute) and expr.func.attr == "format":
+        return markup_skeleton(expr.func.value)
+    return ''
+
+
+def markup_template_is_author_text(expr: ast.AST) -> bool:
+    """True when no unescaped client byte can sit in a ``Markup`` template."""
+    if isinstance(expr, ast.Constant):
+        return isinstance(expr.value, str)
+    if isinstance(expr, ast.JoinedStr):
+        return all(markup_template_is_author_text(part.value) if isinstance(part, ast.FormattedValue)
+                   else markup_template_is_author_text(part) for part in expr.values)
+    if isinstance(expr, ast.BinOp):
+        return (markup_template_is_author_text(expr.left)
+                and markup_template_is_author_text(expr.right))
+    if isinstance(expr, ast.IfExp):
+        return (markup_template_is_author_text(expr.body)
+                and markup_template_is_author_text(expr.orelse))
+    if isinstance(expr, ast.Call):
+        seg = _call_callee_segment(expr)
+        if seg in _XSS_ESCAPE_SEGMENTS or seg in _XSS_NUMERIC_SEGMENTS:
+            return True
+        if seg in _XSS_TRANSLATION_SEGMENTS:
+            head = expr.args[0] if expr.args else None
+            return isinstance(head, ast.Constant) and isinstance(head.value, str)
+    return False
+
+
+def markup_payload_arg(call: ast.Call):
+    """The template a ``Markup``/``mark_safe`` call starts from."""
+    if call.args:
+        return call.args[0]
+    return next((kw.value for kw in call.keywords if kw.arg in {'object', 'base', 's'}), None)
+
+
+def media_type_is_not_html(text) -> bool:
+    """True for a literal media type the browser will not parse as a document."""
+    if not isinstance(text, str):
+        return False
+    lowered = text.strip().lower()
+    if not lowered or 'html' in lowered:
+        return False
+    head = lowered.split(';', 1)[0].strip()
+    return any(head.startswith(prefix) for prefix in _NON_HTML_MEDIA_PREFIXES)
+
+
+def _response_media_header_is_not_html(call: ast.Call, assignments_by_scope, scope_id: str,
+                                       lineno: int) -> bool:
+    """The media type a response declares: `content_type=`/`mimetype=`, or a `Content-Type` entry in
+    a `headers` mapping or list of tuples, inline or behind a name resolved to its last write."""
+    media = next((kw.value for kw in call.keywords if kw.arg in {"content_type", "mimetype"}), None)
+    if media is not None:
+        text = _literal_text(media, assignments_by_scope, scope_id, lineno)
+        if isinstance(text, str):
+            return media_type_is_not_html(text)
+    headers = next((kw.value for kw in call.keywords if kw.arg == "headers"), None)
+    if headers is None:
+        return False
+    literals = []
+    if isinstance(headers, (ast.Dict, ast.List, ast.Tuple)):
+        literals.append(headers)
+    elif isinstance(headers, ast.Name):
+        for record in _assignment_records(assignments_by_scope, headers.id, scope_id, lineno):
+            if isinstance(record.value_node, (ast.Dict, ast.List, ast.Tuple)):
+                literals.append(record.value_node)
+    for literal in literals:
+        if isinstance(literal, ast.Dict):
+            for key, value in zip(literal.keys, literal.values):
+                name = _literal_text(key, assignments_by_scope, scope_id, lineno)
+                if isinstance(name, str) and name.lower() == "content-type":
+                    declared = _literal_text(value, assignments_by_scope, scope_id, lineno)
+                    if isinstance(declared, str):
+                        return media_type_is_not_html(declared)
+            continue
+        for entry in literal.elts:
+            if not isinstance(entry, (ast.Tuple, ast.List)) or len(entry.elts) != 2:
+                continue
+            name = _literal_text(entry.elts[0], assignments_by_scope, scope_id, lineno)
+            if not (isinstance(name, str) and name.lower() == "content-type"):
+                continue
+            declared = _literal_text(entry.elts[1], assignments_by_scope, scope_id, lineno)
+            if isinstance(declared, str):
+                return media_type_is_not_html(declared)
+    return False
+
+
+def response_is_not_html_document(call: ast.Call, assignments_by_scope, scope_id: str,
+                                  lineno: int) -> bool:
+    """True when a response provably is not an HTML document: structured body, or a literal media
+    type a browser will not render."""
     body = call.args[0] if call.args else next(
         (kw.value for kw in call.keywords if kw.arg in {"content", "data"}), None)
     if isinstance(body, (ast.Dict, ast.List, ast.Tuple, ast.Set)):
         return True
-    media = next((kw.value for kw in call.keywords if kw.arg in {"content_type", "mimetype"}), None)
-    text = _literal_text(media, assignments_by_scope, scope_id, lineno)
-    if isinstance(text, str) and "json" in text.lower():
-        return True
-    headers = next((kw.value for kw in call.keywords if kw.arg == "headers"), None)
-    if headers is not None:
-        literal = headers if isinstance(headers, ast.Dict) else None
-        if literal is None and isinstance(headers, ast.Name):
-            # Same treatment as an inline dict: `_assignment_records` returns the writes
-            # visible at this point, oldest first, so the last one is in effect.
-            for record in _assignment_records(assignments_by_scope, headers.id, scope_id, lineno):
-                if isinstance(record.value_node, ast.Dict):
-                    literal = record.value_node
-        if literal is not None:
-            for key, value in zip(literal.keys, literal.values):
-                name = _literal_text(key, assignments_by_scope, scope_id, lineno)
-                if not isinstance(name, str) or name.lower() != "content-type":
-                    continue
-                declared = _literal_text(value, assignments_by_scope, scope_id, lineno)
-                if isinstance(declared, str) and "json" in declared.lower():
-                    return True
-    return False
+    return _response_media_header_is_not_html(call, assignments_by_scope, scope_id, lineno)
+
+
+def _json_or_structured_body(call: ast.Call, assignments_by_scope, scope_id: str, lineno: int) -> bool:
+    """True when a response's body is data rather than markup: a structured literal, or a
+    content type the browser will never parse as HTML. Nothing in either can be
+    rendered as script, so an XSS sink claim does not hold."""
+    return response_is_not_html_document(call, assignments_by_scope, scope_id, lineno)
+
 
 
 def location(node: ast.AST, file_path: str) -> CodeLocation:
@@ -5849,6 +6002,25 @@ class TaintTracker:
         re.IGNORECASE
     )
 
+    _DEBUG_REPR_NAMES = frozenset({'__repr__', '__str__'})
+
+    def _is_debug_repr_return(self, stmt: ast.Return, scope_id: str) -> bool:
+        """True when a ``return`` sits in ``__repr__``/``__str__`` and nothing in it is a tag a
+        browser knows. ``"<%s %s%s>"`` is an object identity and never becomes a response body, so the
+        HTML-response claim does not hold -- but a ``__str__`` that returns ``<div>%s</div>`` is
+        markup reaching a template, and stays reported.
+        """
+        function = self.functions.get(scope_id)
+        if function is None or getattr(function, "name", "") not in self._DEBUG_REPR_NAMES:
+            return False
+        if stmt.value is None:
+            return True
+        for sub in ast.walk(stmt.value):
+            if (isinstance(sub, ast.Constant) and isinstance(sub.value, str)
+                    and self._HTML_TAGS_RE.search(sub.value)):
+                return False
+        return True
+
     def _is_html_construction_expr(
         self,
         expr: Optional[ast.AST],
@@ -5867,28 +6039,18 @@ class TaintTracker:
         visited_nodes.add(node_id)
 
         if isinstance(expr, ast.JoinedStr):
-            const_strs = []
-            for part in expr.values:
-                if isinstance(part, (ast.Constant, ast.Str)):
-                    val = part.value if isinstance(part, ast.Constant) else part.s
-                    if isinstance(val, str):
-                        const_strs.append(val)
-                        if self._HTML_TAGS_RE.search(val):
-                            return True
-            combined_consts = "".join(const_strs)
-            if ("<" in combined_consts and ">" in combined_consts) or ("</" in combined_consts):
-                if any(isinstance(p, ast.FormattedValue) for p in expr.values):
-                    return True
+            if text_has_markup_shape(markup_skeleton(expr)):
+                return True
         elif isinstance(expr, ast.BinOp) and isinstance(expr.op, ast.Mod):
             if isinstance(expr.left, (ast.Constant, ast.Str)):
                 val = expr.left.value if isinstance(expr.left, ast.Constant) else expr.left.s
-                if isinstance(val, str) and (self._HTML_TAGS_RE.search(val) or ("<" in val and ">" in val)):
+                if isinstance(val, str) and text_has_markup_shape(val):
                     return True
         elif isinstance(expr, ast.Call):
             if isinstance(expr.func, ast.Attribute) and expr.func.attr == "format":
                 if isinstance(expr.func.value, (ast.Constant, ast.Str)):
                     val = expr.func.value.value if isinstance(expr.func.value, ast.Constant) else expr.func.value.s
-                    if isinstance(val, str) and (self._HTML_TAGS_RE.search(val) or ("<" in val and ">" in val)):
+                    if isinstance(val, str) and text_has_markup_shape(val):
                         return True
         elif isinstance(expr, ast.Name) and scope_id:
             curr = scope_id
@@ -7754,7 +7916,8 @@ class TaintTracker:
             elif isinstance(stmt, ast.Return):
                 self.returns_by_scope.setdefault(scope_id, []).append(stmt)
                 if stmt.value:
-                    if self._is_html_construction_expr(stmt.value, scope_id):
+                    if (self._is_html_construction_expr(stmt.value, scope_id)
+                            and not self._is_debug_repr_return(stmt, scope_id)):
                         mod_name = scope_module(scope_id)
                         file_path = self.file_paths.get(mod_name, "unknown.py")
                         sink_id = self.next_sink_id()
@@ -19738,6 +19901,18 @@ class TaintTracker:
             return (isinstance(body, ast.Call)
                     and _callee_segment(body) in sanitizer_segments)
 
+        def _cwe79_payload_is_not_markup(call_node: ast.Call, scope_id: str, lineno: int) -> bool:
+            """A CWE-79 sink call that cannot carry markup a browser parses: a response whose media
+            type is not HTML, or a Markup template that is author text only."""
+            seg = _callee_segment(call_node)
+            if seg == "Response":
+                return response_is_not_html_document(
+                    call_node, self.assignments_by_scope, scope_id, lineno)
+            if seg in _MARKUP_CALL_SEGMENTS:
+                payload = markup_payload_arg(call_node)
+                return payload is not None and markup_template_is_author_text(payload)
+            return False
+
         # One pass over sink_records keyed by the identity of each record's own security_node, holding
         # the FIRST Call-typed record per node — which is what the `next(...)` in the loop below
         # returned. Read-back re-checks `is`, so a recycled id cannot answer for another node.
@@ -19760,7 +19935,10 @@ class TaintTracker:
                 record = call_record[1] if call_record is not None and call_record[0] is sink else None
                 sanitized = record is not None and _sanitized_response_body(
                     record.node, record.scope_id, start)
-                if suppressed or sanitized:
+                data_shaped = (
+                    record is not None and meta.get("cwe") == "CWE-79"
+                    and _cwe79_payload_is_not_markup(record.node, record.scope_id, start))
+                if suppressed or sanitized or data_shaped:
                     pruned.add(sink.id)
                     continue
             kept_sinks.append(sink)
@@ -19894,7 +20072,6 @@ class TaintTracker:
                 scope_id=scope_id,
             ))
 
-        tag_re = re.compile(r"<[a-zA-Z!/][^>]*>")
         ext_re = re.compile(r"\.([A-Za-z0-9_]+)$")
         safe_methods = {
             "escape", "escapejs", "conditional_escape", "clean", "strip_tags",
@@ -19910,6 +20087,37 @@ class TaintTracker:
         html_safe_wrappers = {"escape", "escapejs", "conditional_escape", "clean",
                               "strip_tags", "urlize", "format_html"}
 
+        # A name rebound here and never imported is the project's own helper, not Flask's
+        # autoescaping renderer: `render_template = functions[def_name]` inside a compiler shim
+        # reports through the shim, not through a template extension. An import always wins.
+        module_function_names = self._module_function_names()
+
+        # Two different message contexts, judged apart because they are not equally safe.
+        # A unittest assertion, `re.compile` and `textwrap.dedent` consume text and produce nothing
+        # a browser ever parses, so their arguments are exempt whatever they contain. An exception
+        # message under `raise` is a different story: Odoo and Flask error pages render it, so the
+        # exemption only holds while the text carries no tag -- which keeps
+        # `UserError("<br/>" + detail)` reported.
+        def _never_rendered_callee(call_node: ast.Call) -> bool:
+            if not isinstance(call_node.func, ast.Attribute):
+                return False
+            segment = call_node.func.attr
+            receiver = _recv_text(call_node.func.value)
+            if segment.startswith("assert") and len(segment) > len("assert") and receiver in {"self", "cls"}:
+                return True
+            if segment == "compile" and receiver in {"re", "regex"}:
+                return True
+            return segment == "dedent" and receiver.split(".")[-1] == "textwrap"
+
+        def _is_raise_argument(call_node: ast.Call) -> bool:
+            current = call_node
+            while current is not None and not isinstance(current, ast.stmt):
+                current = getattr(current, "parent", None)
+            return isinstance(current, ast.Raise)
+
+        def _tag_free_payload(expr) -> bool:
+            return not text_has_markup_shape(markup_skeleton(expr))
+
         def _const_tag(expr, scope_id, lineno, visited=None) -> bool:
             if expr is None:
                 return False
@@ -19920,11 +20128,15 @@ class TaintTracker:
                 return False
             expr, scope_id, lineno = resolved
             if isinstance(expr, ast.Constant):
-                return isinstance(expr.value, str) and bool(tag_re.search(expr.value))
+                return isinstance(expr.value, str) and text_has_markup_shape(expr.value)
             if isinstance(expr, ast.JoinedStr):
+                # One part at a time, exactly as before: a template whose literal text is only
+                # `<`, `>` and `</` never spelled a tag, folded together or not. Folding here would
+                # report `f"<{tag}>{escape(content)}</{tag}>"` (corpus cwe_79_xss/test_v02_good.py:4),
+                # which the blessed baseline holds quiet.
                 return any(
                     isinstance(part, ast.Constant) and isinstance(part.value, str)
-                    and tag_re.search(part.value) for part in expr.values
+                    and text_has_markup_shape(part.value) for part in expr.values
                 )
             if isinstance(expr, ast.BinOp) and isinstance(expr.op, (ast.Add, ast.Mod)):
                 return _const_tag(expr.left, scope_id, lineno, visited) or _const_tag(
@@ -20036,7 +20248,11 @@ class TaintTracker:
                     value = node.value
                 elif isinstance(node, ast.Return):
                     value = node.value
-                if value is not None and _dynamic_html(value, scope_id, lineno):
+                if (value is not None and _dynamic_html(value, scope_id, lineno)
+                        and not (isinstance(node, ast.Return)
+                                 and self._is_debug_repr_return(node, scope_id))):
+                    # The same repr guard the response sink consults, so one `__repr__` cannot be
+                    # reported by the structural layer after the collector layer let it go.
                     _emit79(node, mod_name, scope_id, "DYNAMIC_HTML_CONSTRUCTION")
 
                 # Predicate C: dict-literal autoescape flags (context and TEMPLATES OPTIONS).
@@ -20088,15 +20304,27 @@ class TaintTracker:
                 callee_seg = _seg(node.func)
 
                 if callee_seg not in html_safe_wrappers:
+                    template_payload = markup_payload_arg(node) if callee_seg in _MARKUP_CALL_SEGMENTS else None
+                    author_template = (template_payload is not None
+                                       and markup_template_is_author_text(template_payload))
+                    never_rendered = not author_template and _never_rendered_callee(node)
+                    in_raise = (not author_template and not never_rendered
+                                and _is_raise_argument(node))
                     for arg in node.args:
                         if isinstance(arg, (ast.JoinedStr, ast.BinOp)) or (
                                 isinstance(arg, ast.Call) and isinstance(arg.func, ast.Attribute)
                                 and arg.func.attr == "format"):
                             if _dynamic_html(arg, scope_id, lineno):
+                                if (author_template or never_rendered
+                                        or (in_raise and _tag_free_payload(arg))):
+                                    continue
                                 _emit79(arg, mod_name, scope_id, "DYNAMIC_HTML_ARGUMENT")
                     for kw in node.keywords:
                         if kw.arg is not None and isinstance(kw.value, (ast.JoinedStr, ast.BinOp)):
                             if _dynamic_html(kw.value, scope_id, lineno):
+                                if (author_template or never_rendered
+                                        or (in_raise and _tag_free_payload(kw.value))):
+                                    continue
                                 _emit79(kw.value, mod_name, scope_id, "DYNAMIC_HTML_ARGUMENT")
 
                 # Predicate E: Markup.unescape() strips escaping from a dynamic value.
@@ -20117,7 +20345,8 @@ class TaintTracker:
                         _emit79(node, mod_name, scope_id, "HTML_RESPONSE_CONTAINER_BODY")
 
                 # Predicate H: template-name extensions that bypass autoescaping.
-                if call_seg == "render_template":
+                if call_seg == "render_template" and not self._name_is_local_helper(
+                        mod_name, scope_id, module_function_names):
                     t_arg = node.args[0] if node.args else next(
                         (kw.value for kw in node.keywords if kw.arg in {"template_name_or_list", "template"}), None)
                     has_context = len(node.args) > 1 or any(
@@ -22914,6 +23143,29 @@ class TaintTracker:
                     scope_id=scope_id,
                 ))
 
+    def _module_function_names(self) -> dict[str, set]:
+        names: dict[str, set] = {}
+        for function_scope, definition in self.functions.items():
+            names.setdefault(scope_module(function_scope), set()).add(
+                getattr(definition, "name", ""))
+        return names
+
+    def _name_is_local_helper(self, mod_name: str, scope_id: str,
+                              function_names_by_module: dict) -> bool:
+        """True when `render_template` resolves to a binding made in this code rather than to
+        Flask's autoescaping renderer: an import always wins, and after it any write in the calling
+        scope or at module level, or a `def render_template`, makes the call a project helper.
+        A bare unbound name stays Flask's, because that is what the corpus's own fixtures use."""
+        imports = getattr(self, "imports", {})
+        mod_imports = imports.get(mod_name, {}) if isinstance(imports, dict) else {}
+        if isinstance(mod_imports, dict) and "render_template" in mod_imports:
+            return False
+        if self.assignments_by_scope.get((scope_id, "render_template")):
+            return True
+        if self.assignments_by_scope.get((f"{mod_name}:global", "render_template")):
+            return True
+        return "render_template" in function_names_by_module.get(mod_name, ())
+
     def _collect_template_response_xss_findings(self) -> None:
         """Collect tainted HTTP response bodies and dynamic stored template content."""
         function_scopes = {id(function): scope for scope, function in self.functions.items()}
@@ -22934,6 +23186,7 @@ class TaintTracker:
             "flask.render_template_string", "render_template_string", "django.shortcuts.render_to_string",
             "render_to_string",
         }
+        module_function_names = self._module_function_names()
 
         def _scope_for(node: ast.AST, mod_name: str) -> str:
             current = node
@@ -23179,7 +23432,7 @@ class TaintTracker:
                         ct_node = next((kw.value for kw in node.keywords if kw.arg in {"content_type", "mimetype", "contentType"}), None)
                         ct_val = _literal_text(ct_node, self.assignments_by_scope, scope_id, lineno) if ct_node else None
 
-                        if ct_val in {"application/json", "text/json", "text/plain", "application/octet-stream"}:
+                        if media_type_is_not_html(ct_val):
                             pass
                         elif content is not None and not _json_or_structured_body(node, self.assignments_by_scope, scope_id, lineno):
                             # Check if content comes from Django template rendering with autoescape
@@ -23253,7 +23506,8 @@ class TaintTracker:
                                         if not has_ssti:
                                             _add_finding(node, mod_name, scope_id, "HTTP_RESPONSE_HTML", cwe="CWE-79", category="CROSS_SITE_SCRIPTING")
 
-                if call_names & {"render_template", "flask.render_template"} or any(name.endswith(".render_template") for name in call_names):
+                if (call_names & {"render_template", "flask.render_template"} or any(name.endswith(".render_template") for name in call_names)) \
+                        and not self._name_is_local_helper(mod_name, scope_id, module_function_names):
                     mod_imports = getattr(self, "imports", {}).get(mod_name, {})
                     target_mod = mod_imports.get("render_template", "") if isinstance(mod_imports, dict) else ""
                     not_flask = bool(target_mod and not target_mod.startswith("flask"))
