@@ -47,7 +47,7 @@ The sign-off also carries seven standing instructions:
   regress. Therefore nothing counts as done until these six outputs are shown: benchmark parity
   (`python benchmark/gates/aa_parity.py` → 425 findings, MISSING=0 NEW=0), the cross-file gate
   (`python benchmark/cross_runner.py` → PASS, F1=1.0000, FP=0, FN=0, exact-set YES), the real-world
-  Big-8 gate (`python benchmark/gates/big8_ab.py` → 136 findings, MISSING=0 NEW=0), the truth table
+  Big-8 gate (`python benchmark/gates/big8_ab.py` → 119 findings, MISSING=0 NEW=0), the truth table
   of any rule that retires keys (`python benchmark/gates/cwe338_ml_math_probe.py` → `VERDICT: PASS`;
   a frozen baseline can only prove what the engine used to report, never that a credential drawn
   from a newly exempted library is still reported), the placeholder-edge lock
@@ -56,10 +56,11 @@ The sign-off also carries seven standing instructions:
   so the one-line "emit an edge only when a real source exists" cleanup deletes all 59 at once and a
   baseline re-blessed afterwards shows an empty diff), and the measured engine clock of the collector
   that was touched. A claim without those numbers is not a result.
-  All nine runnable gate scripts (`aa_parity.py`, `big8_ab.py`, `cwe338_ml_math_probe.py`,
-  `cwe117_cwe22_unknown_source_probe.py`, `cwe117_builtin_seal_probe.py`,
-  `cwe22_dirent_closure_probe.py`, `cwe434_local_serialization_probe.py`,
-  `cwe611_xml_entity_probe.py`, `cwe798_credential_concreteness_probe.py`), their frozen baseline key
+  All ten runnable gate scripts (`aa_parity.py`, `big8_ab.py`, `cwe338_ml_math_probe.py`,
+  `cwe338_prng_context_probe.py`, `cwe117_cwe22_unknown_source_probe.py`,
+  `cwe117_builtin_seal_probe.py`, `cwe22_dirent_closure_probe.py`,
+  `cwe434_local_serialization_probe.py`, `cwe611_xml_entity_probe.py`,
+  `cwe798_credential_concreteness_probe.py`), their frozen baseline key
   files and `gate_meta.json` are
   tracked under `benchmark/gates/`, so a fresh clone or CI can run them; `scratch/` is git-ignored,
   so a gate kept there is not runnable by anyone else and its baseline is not reviewable. The gates

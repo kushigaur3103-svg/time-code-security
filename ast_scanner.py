@@ -1018,6 +1018,27 @@ CWE338_ML_VOCAB_QUALIFIERS = frozenset({
 _CWE338_NAME_SPLIT = re.compile(
     r"[^0-9A-Za-z]+|(?<=[a-z0-9])(?=[A-Z])|(?<=[A-Z])(?=[A-Z][a-z])")
 
+# ─── CWE-338 display-value context exemption ────────────────────────────────
+# The rule above flags every PRNG draw unconditionally, so a UI colour default costs the same finding
+# as a session token. This table lets ONLY a draw whose whole name vocabulary says "a value the screen
+# consumes" be dropped, and only when nothing in the same expression says "credential". `index` and
+# `page` are deliberately absent: they were asked for, they carry 0 of the 298 measured odoo rows, and
+# the credential shapes that really use them (`page_token = random.randrange(...)`,
+# `otp = "".join(digits[random.randint(0, 9)] ...)`) would go silent. `items`, `data`, `value` and
+# `rows` are absent for the same reason -- they are what a record dict is built out of.
+CWE338_DISPLAY_VALUE_MARKERS = frozenset({
+    "color", "colors", "colour", "colours", "delay", "delays", "jitter", "sleep",
+    "preview", "previews", "display",
+})
+# Only these draws can be a display quantity. `getrandbits` and `randbytes` produce bytes and are
+# never a colour index, and `Random` is the constructor line that blesses two Big-8 keys
+# (`global_rng = random.Random()`), so neither can be exempted by destination vocabulary.
+CWE338_DISPLAY_VALUE_LEAVES = frozenset({
+    "choice", "choices", "sample", "shuffle", "randint", "randrange", "random", "uniform",
+})
+# A pause is the other provably-non-security consumer: `time.sleep(delay + random.random())`.
+CWE338_SLEEP_SINK_LEAVES = frozenset({"sleep", "sleep_until"})
+
 # ─── O(1) sink fast-path candidate index ───────────────────────────────────
 # is_sink_call() can return True through paths that never consult SINK_REGISTRY:
 # the rule engine's own matchers, the attribute branches at the tail of the
@@ -5602,6 +5623,88 @@ class TaintTracker:
         return not any(cls._cwe338_name_is_security_named(name)
                        for name in cls._cwe338_assignment_targets(node))
 
+    @classmethod
+    def _cwe338_expression_names(cls, node, level: int = 0) -> List[str]:
+        """Identifier segments inside one written argument, read at most three hops deep.
+
+        `random.choice(COLOR_LIST)` and `random.randint(0, len(COLORS) - 1)` name the collection they
+        sample, and that name is the whole evidence that the value is a display one. The walk is
+        bounded by node type and depth, never by a full `ast.walk`, so a call argument that happens to
+        be a large expression cannot make this cost the file.
+        """
+        names: List[str] = []
+        if node is None or level > 3:
+            return names
+        if isinstance(node, ast.Name):
+            names.append(node.id)
+        elif isinstance(node, ast.Attribute):
+            names.append(node.attr)
+            names.extend(cls._cwe338_expression_names(node.value, level + 1))
+        elif isinstance(node, ast.Call):
+            names.extend(cls._cwe338_expression_names(node.func, level + 1))
+            for child in list(node.args) + [kw.value for kw in node.keywords]:
+                names.extend(cls._cwe338_expression_names(child, level + 1))
+        elif isinstance(node, ast.BinOp):
+            names.extend(cls._cwe338_expression_names(node.left, level + 1))
+            names.extend(cls._cwe338_expression_names(node.right, level + 1))
+        elif isinstance(node, ast.Subscript):
+            names.extend(cls._cwe338_expression_names(node.value, level + 1))
+        elif isinstance(node, (ast.List, ast.Tuple, ast.Set)):
+            for element in node.elts:
+                names.extend(cls._cwe338_expression_names(element, level + 1))
+        return names
+
+    @classmethod
+    def _cwe338_display_only_draw(cls, node: ast.Call) -> bool:
+        """True only for a PRNG draw whose whole naming vocabulary says "a value the screen consumes".
+
+        Every branch errs toward reporting:
+
+        * the callee leaf must be in CWE338_DISPLAY_VALUE_LEAVES, so `random.getrandbits`,
+          `random.randbytes` and the `random.Random` constructor -- two blessed Big-8 keys are exactly
+          that line, `global_rng = random.Random()` -- can never be exempt here;
+        * the credential veto runs FIRST and wins: `color_password = random.choice(chars)` carries a
+          marker word and a security word, and stays reported;
+        * a marker must be a whole name segment, never a substring. That is what keeps `let_pass`
+          (another blessed Big-8 line) out of `pass` and `alive` out of `iv`;
+        * the names it reads are the ones the draw itself touches -- assignment target, dict key and
+          keyword name through `_cwe338_assignment_targets`, the identifiers inside its own arguments,
+          the enclosing function names, and the callee it is handed to.
+
+        No name and no marker means no exemption: an unresolved or unnamed draw is unknown, and
+        unknown is never treated as safe.
+        """
+        leaf = (node.func.attr if isinstance(node.func, ast.Attribute)
+                else (node.func.id if isinstance(node.func, ast.Name) else ''))
+        if leaf not in CWE338_DISPLAY_VALUE_LEAVES:
+            return False
+        names: List[str] = [name for name in cls._cwe338_assignment_targets(node) if isinstance(name, str)]
+        for argument in list(node.args) + [kw.value for kw in node.keywords]:
+            names.extend(cls._cwe338_expression_names(argument))
+        feeds_a_pause = False
+        current = getattr(node, 'parent', None)
+        for _ in range(6):
+            if current is None:
+                break
+            if isinstance(current, (ast.FunctionDef, ast.AsyncFunctionDef)):
+                names.append(current.name)
+            elif isinstance(current, ast.Call) and current is not node:
+                callee = current.func
+                if isinstance(callee, ast.Attribute):
+                    if callee.attr in CWE338_SLEEP_SINK_LEAVES:
+                        feeds_a_pause = True
+                    names.append(callee.attr)
+                elif isinstance(callee, ast.Name):
+                    names.append(callee.id)
+            current = getattr(current, 'parent', None)
+        if any(cls._cwe338_name_is_security_named(name) for name in names):
+            return False
+        for name in names:
+            segments = [s.lower() for s in _CWE338_NAME_SPLIT.split(name) if s]
+            if any(segment in CWE338_DISPLAY_VALUE_MARKERS for segment in segments):
+                return True
+        return feeds_a_pause
+
     def _sink_context_exempt(self, cwe_id: str, node: ast.Call, scope_id: str) -> bool:
         mod_name = self._scope_module(scope_id)
         if not mod_name:
@@ -6565,7 +6668,14 @@ class TaintTracker:
                     return False  # epoch reordering of a dataset, not a PRNG draw
                 if self._is_ml_math_random_draw(node, receiver_name, receiver_canon):
                     return False  # torch/numpy index arithmetic with no credential destination
-            # Flag ALL other random.* calls unconditionally - no security context gate
+            if self._cwe338_display_only_draw(node):
+                # Provably a display quantity: a whole-segment colour/delay/jitter name in the draw's
+                # own naming vocabulary, and no credential word anywhere in it. Also answers for the
+                # bare aliased spelling (`from random import choice; color = choice(palette)`), so the
+                # two spellings of the same call cannot get two different verdicts.
+                return False
+            # Flag ALL other random.* calls - an unnamed, unresolved or credential-named draw is
+            # unknown, and unknown is reported.
             pass  # Continue to sink matching
 
         # Module 1: getattr(receiver, <dynamic>)(...) on a DB-API / exec / builtins receiver.
