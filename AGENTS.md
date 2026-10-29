@@ -56,10 +56,10 @@ The sign-off also carries seven standing instructions:
   so the one-line "emit an edge only when a real source exists" cleanup deletes all 59 at once and a
   baseline re-blessed afterwards shows an empty diff), and the measured engine clock of the collector
   that was touched. A claim without those numbers is not a result.
-  All eleven runnable gate scripts (`aa_parity.py`, `big8_ab.py`, `cwe338_ml_math_probe.py`,
+  All twelve runnable gate scripts (`aa_parity.py`, `big8_ab.py`, `cwe338_ml_math_probe.py`,
   `cwe338_prng_context_probe.py`, `cwe117_cwe22_unknown_source_probe.py`,
   `cwe117_builtin_seal_probe.py`, `cwe117_numeric_provenance_probe.py`,
-  `cwe22_dirent_closure_probe.py`,
+  `cwe22_dirent_closure_probe.py`, `cwe22_sink_argument_probe.py`,
   `cwe434_local_serialization_probe.py`, `cwe611_xml_entity_probe.py`,
   `cwe798_credential_concreteness_probe.py`), their frozen baseline key
   files and `gate_meta.json` are

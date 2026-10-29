@@ -6243,6 +6243,76 @@ class TaintTracker:
                     return True
         return False
 
+    _MEMORY_BUFFER_LEAVES = frozenset({"BytesIO", "StringIO"})
+    _MEMORY_BUFFER_MODULES = frozenset({"io", "_io"})
+
+    def _is_buffer_construction(self, expr: ast.AST, mod_name: str) -> bool:
+        """True for a call that builds an in-memory stream, and only for one this module took from `io`.
+
+        `io.BytesIO(x)` counts when `io` names a module; a bare `BytesIO(x)` counts only when the
+        module imported that very name from `io`. A class in this module called `BytesIO` is not a
+        stream, and an unimported `io` is not evidence of one, so both keep reporting.
+        """
+        if not isinstance(expr, ast.Call):
+            return False
+        imports = self.imports.get(mod_name) or {}
+        func = expr.func
+        if isinstance(func, ast.Attribute):
+            if func.attr not in self._MEMORY_BUFFER_LEAVES:
+                return False
+            head = func.value
+            while isinstance(head, ast.Attribute):
+                head = head.value
+            if not isinstance(head, ast.Name):
+                return False
+            origin = imports.get(head.id)
+            return origin is not None and origin.split(".")[0] in self._MEMORY_BUFFER_MODULES
+        if isinstance(func, ast.Name):
+            origin = imports.get(func.id)
+            return (func.id in self._MEMORY_BUFFER_LEAVES and origin is not None
+                    and origin.split(".")[0] in self._MEMORY_BUFFER_MODULES
+                    and origin.rsplit(".", 1)[-1] in self._MEMORY_BUFFER_LEAVES)
+        return False
+
+    def _is_in_memory_buffer_path(self, expr: Optional[ast.AST], mod_name: str, scope_id: str,
+                                  lineno: int, depth: int = 0) -> bool:
+        """True when the expression holds a stream rather than a path, one unique binding at a time."""
+        if expr is None or depth > 4 or isinstance(expr, ast.Starred):
+            return False
+        if self._is_buffer_construction(expr, mod_name):
+            return True
+        if isinstance(expr, ast.Name):
+            records = _assignment_records(self.assignments_by_scope, expr.id, scope_id, lineno)
+            if not records:
+                return False
+            nearest = records[-1]
+            if sum(1 for record in records if record.lineno == nearest.lineno) != 1:
+                return False
+            return self._is_in_memory_buffer_path(nearest.value_node, mod_name,
+                                                  nearest.scope_id, nearest.lineno, depth + 1)
+        return False
+
+    def _is_in_memory_buffer_sink(self, node: ast.AST, mod_name: str, scope_id: str,
+                                  lineno: int) -> bool:
+        """True when a path-named sink is handed a stream, so no path string ever reaches it.
+
+        `Image.open(io.BytesIO(resp.content))` decodes the bytes it is given; the callee name says
+        "open" and nothing else, so the traversal sink it suggests is unreachable from that argument.
+        Three clauses keep this narrow. The buffer must be a *positional* first argument, so a sink
+        with no arguments (`extractor.extract()`, `tekken_path.read_bytes()`) is never exempted for a
+        path that does not exist. The buffer must be the argument itself, not a value buried inside
+        the path expression (`open(os.path.join("/srv", io.BytesIO(d)))` still joins a path). And every
+        remaining argument must be a literal, because `send_file(io.BytesIO(d), download_name=name)`
+        and `open(buf, mode)` carry attacker-controlled text past the first slot.
+        """
+        if not isinstance(node, ast.Call) or not node.args:
+            return False
+        if not self._is_in_memory_buffer_path(node.args[0], mod_name, scope_id, lineno):
+            return False
+        if any(not isinstance(arg, ast.Constant) for arg in node.args[1:]):
+            return False
+        return all(isinstance(kw.value, ast.Constant) for kw in node.keywords)
+
     _ORM_READ_SEGS = frozenset({"get", "filter", "exclude", "get_or_create"})
     _REQUEST_SEGS = frozenset({"get", "getlist", "post", "data", "json", "body", "form",
                                "args", "query", "params", "files", "headers", "cookies",
@@ -12074,7 +12144,7 @@ class TaintTracker:
                     return True
         return False
 
-    def _collect_cwe22_parameter_path_sinks(self, tree, filename, source_lines):
+    def _collect_cwe22_parameter_path_sinks(self, tree, filename, source_lines, mod_name=""):
         """Report `open()` on a path whose value arrives from the caller of the function.
 
         Phase 11 recovers a join+open only when a component is a `request` read, so a helper like
@@ -12102,6 +12172,13 @@ class TaintTracker:
             arg = node.args[0]
             # A literal path is chosen by the program, not by a request.
             if isinstance(arg, ast.Constant):
+                continue
+            # A stream in the path slot resolves nothing: `open(io.BytesIO(body), "rb")` reads bytes
+            # that are already in memory. Checked after the literal skip, which is the cheap test.
+            if self._is_in_memory_buffer_sink(
+                    node, mod_name,
+                    self._node_enclosing_scope(node, f"{mod_name}:global" if mod_name else ""),
+                    node.lineno):
                 continue
             if self._blindspot_line_suppressed(source_lines, node, lookback=3):
                 continue
@@ -20066,6 +20143,7 @@ class TaintTracker:
         # SUPPRESSION ENFORCEMENT: prune paths annotated '# ok:' on same or previous line.
         # SANITIZER GUARD: skip paths wrapped in secure_filename/os.path.basename/os.path.abspath.
         pruned: set[str] = set()
+        buffer_records: list = []
         kept_sinks = []
         sanitizer_segments = {"secure_filename", "basename", "abspath", "realpath", "commonpath"}
 
@@ -20115,11 +20193,27 @@ class TaintTracker:
                 if suppressed or sanitized:
                     pruned.add(sink.id)
                     continue
+                if record is not None and self._is_in_memory_buffer_sink(
+                        record.node, scope_module(record.scope_id), record.scope_id, start):
+                    # Only the CWE-22 reading of this node is wrong: another CWE may ride the same
+                    # SecurityNode, so the node is kept and dropped below only once nothing refers to it.
+                    buffer_records.append(record)
+                    kept_sinks.append(sink)
+                    continue
             kept_sinks.append(sink)
         if pruned:
             self.sinks = kept_sinks
             self.sink_records = [r for r in self.sink_records if r.security_node.id not in pruned]
             self.edges = [e for e in self.edges if e.target_id not in pruned]
+        if buffer_records:
+            dropping = {id(record) for record in buffer_records}
+            self.sink_records = [r for r in self.sink_records if id(r) not in dropping]
+            still_used = {id(r.security_node) for r in self.sink_records}
+            orphan_ids = {record.security_node.id for record in buffer_records
+                          if id(record.security_node) not in still_used}
+            if orphan_ids:
+                self.sinks = [s for s in self.sinks if s.id not in orphan_ids]
+                self.edges = [e for e in self.edges if e.target_id not in orphan_ids]
 
         def _scope_for(node: ast.AST, mod_name: str) -> str:
             current = node
@@ -20432,6 +20526,11 @@ class TaintTracker:
                 # An uploaded file handle is a stream in memory, not a filesystem path:
                 # `Image.open(request.FILES['file'])` reads the upload, never `file`'s name.
                 if _is_upload_handle(path_arg, scope_id, lineno):
+                    continue
+
+                # Same reasoning for an explicit stream: `Image.open(io.BytesIO(body))` decodes the
+                # bytes it is handed, so the callee name is the only thing that looked like a path.
+                if self._is_in_memory_buffer_sink(node, mod_name, scope_id, lineno):
                     continue
 
                 # Check for dynamic path construction from request data
@@ -23594,7 +23693,7 @@ class TaintTracker:
                 self._collect_cwe532_logging_leaks(_bs_tree, _bs_file, _bs_lines, _bs_mod)
                 self._collect_cwe668_insecure_host_binding(_bs_tree, _bs_file, _bs_lines)
                 self._collect_cwe93_header_injection(_bs_tree, _bs_file, _bs_lines)
-                self._collect_cwe22_parameter_path_sinks(_bs_tree, _bs_file, _bs_lines)
+                self._collect_cwe22_parameter_path_sinks(_bs_tree, _bs_file, _bs_lines, _bs_mod)
                 self._collect_cwe94_python_source_writes(_bs_tree, _bs_file, _bs_lines)
                 self._collect_cwe79_django_xss(_bs_tree, _bs_file, _bs_lines)
                 self._collect_cwe209_stack_trace_exposure(_bs_tree, _bs_file, _bs_lines)
