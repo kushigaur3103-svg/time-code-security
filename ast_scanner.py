@@ -14479,6 +14479,55 @@ class TaintTracker:
         first = value.args[0] if value.args else None
         return isinstance(first, ast.Constant) and first.value in CLUSTER1_AUTOESCAPE_KEYS
 
+    def _c116_is_odoo_orm_environment(self, node: ast.Call, scope_id: str) -> bool:
+        """True when the callee is *proven* to be the odoo ORM `Environment`, not a template engine.
+
+        The CWE-116 predicate keys on the trailing callee name, so every module that creates an ORM
+        record environment (`api.Environment(cr, uid, {})`) is reported as a template engine with
+        escaping off. The proof that it is not jinja2 is the module's own import table, never the
+        spelling alone:
+
+          * `api.Environment`      with imports['api'] == 'odoo.api'  (`from odoo import api`, and
+            the package-relative `from .. import api` resolves to the same entry);
+          * `odoo.api.Environment` with imports['odoo'] == 'odoo'     (`import odoo`);
+          * a bare or aliased name with imports[name] == 'odoo.api.Environment'
+            (`from odoo.api import Environment [as X]`);
+          * a bare `Environment` bound only by a top-level `class Environment` the module defines
+            itself, in a module that imports no jinja2 - odoo/api.py calls its own class constructor
+            this way.
+
+        Any module that assigns the used name anywhere cancels the exemption
+        (`_module_assigned_names`), so a rebinding such as `Environment = jinja2.Environment` keeps
+        its finding. Everything unresolved, string-fallback or jinja2-backed stays reported: this
+        helper can only take a row away when the import table names the class, and
+        `benchmark/gates/cwe116_template_autoescape_probe.py` re-asserts the bad inputs every run.
+        """
+        mod_name = scope_module(scope_id) if scope_id else ""
+        if not mod_name:
+            return False
+        assigned = self._module_assigned_names(mod_name) or ()
+        func = node.func
+        if isinstance(func, ast.Name):
+            if func.id in assigned:
+                return False
+            imports = self.imports.get(mod_name) or {}
+            if imports.get(func.id) == "odoo.api.Environment":
+                return True
+            return (func.id == "Environment" and not self._is_jinja_imported(mod_name)
+                    and f"{mod_name}:function:Environment" in self.classes)
+        if isinstance(func, ast.Attribute) and func.attr == "Environment" \
+                and isinstance(func.value, (ast.Name, ast.Attribute)):
+            root = func.value.id if isinstance(func.value, ast.Name) else dotted_name(func.value)
+            root = root or ""
+            if root in assigned:
+                return False
+            imports = self.imports.get(mod_name) or {}
+            if root == "api":
+                return imports.get("api") == "odoo.api"
+            if root == "odoo.api":
+                return imports.get("odoo") == "odoo"
+        return False
+
     def _c1_cluster1_candidates(self, node: ast.AST, scope_id: str, ns_history: dict,
                                 template_consumers: set, module_tree: ast.AST | None = None) -> list[dict]:
         lineno = getattr(node, "lineno", 0)
@@ -14543,7 +14592,8 @@ class TaintTracker:
             elif last_names & {"Environment"}:
                 flags = [kw.value for kw in getattr(node, "keywords", [])
                          if kw.arg in CLUSTER1_AUTOESCAPE_KEYS]
-                if not flags or any(self._c116_autoescape_is_dynamic(flag) for flag in flags):
+                if (not flags or any(self._c116_autoescape_is_dynamic(flag) for flag in flags)) \
+                        and not self._c116_is_odoo_orm_environment(node, scope_id):
                     add("TEMPLATE_AUTOESCAPE_DISABLED", "XSS", "CWE-116")
 
             # B. CWE-96: dynamic lookup inside a globals()/locals() namespace.
