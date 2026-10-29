@@ -56,14 +56,21 @@ The sign-off also carries seven standing instructions:
   so the one-line "emit an edge only when a real source exists" cleanup deletes all 59 at once and a
   baseline re-blessed afterwards shows an empty diff), and the measured engine clock of the collector
   that was touched. A claim without those numbers is not a result.
-  All sixteen runnable gate scripts (`aa_parity.py`, `big8_ab.py`, `cwe338_ml_math_probe.py`,
+  A rule whose blessed population is *empty* gets no protection from those two baselines at all: 0
+  CWE-704, 0 CWE-328 and 0 CWE-116 keys live in parity (425) and Big-8 (119), and `MISSING=0 NEW=0`
+  is precisely what deleting such a rule produces. For those three the only lock that exists is their
+  own truth table (`cwe704_type_cast_probe.py`, `cwe328_hash_context_probe.py`,
+  `cwe116_template_autoescape_probe.py`, each `VERDICT: PASS`), so narrowing one of them means
+  shipping that file first, not after.
+  All eighteen runnable gate scripts (`aa_parity.py`, `big8_ab.py`, `cwe338_ml_math_probe.py`,
   `cwe338_prng_context_probe.py`, `cwe117_cwe22_unknown_source_probe.py`,
   `cwe117_builtin_seal_probe.py`, `cwe117_numeric_provenance_probe.py`,
   `cwe22_dirent_closure_probe.py`, `cwe22_sink_argument_probe.py`,
   `cwe434_local_serialization_probe.py`, `cwe611_xml_entity_probe.py`,
   `cwe79_safe_response_probe.py`, `cwe798_credential_concreteness_probe.py`,
   `cwe116_template_autoescape_probe.py`, `cwe770_unbounded_read_probe.py`,
-  `cwe601_relative_redirect_probe.py`), their frozen baseline key
+  `cwe601_relative_redirect_probe.py`, `cwe704_type_cast_probe.py`,
+  `cwe328_hash_context_probe.py`), their frozen baseline key
   files and `gate_meta.json` are
   tracked under `benchmark/gates/`, so a fresh clone or CI can run them; `scratch/` is git-ignored,
   so a gate kept there is not runnable by anyone else and its baseline is not reviewable. The gates
@@ -99,9 +106,13 @@ The sign-off also carries seven standing instructions:
   in the cross-file gate, on the exact code being shipped. A blessed key may leave a baseline only
   when a truth-table probe proves the key was a false positive — never on an instruction alone and
   never on a re-bless, because re-blessing after a suppression makes the missed finding invisible.
-  That is what separates this shield from the FP-only retirements already shipped (Big-8 154→136,
-  whose 18 removed keys were ML numeric draws that `cwe338_ml_math_probe.py` re-proves every run are
-  not credential draws).
+  That is what separates this shield from the FP-only retirements already shipped. Big-8 went
+  154 → 136 → 119: the 18 keys of the first step were ML numeric draws that
+  `cwe338_ml_math_probe.py` re-proves every run are not credential draws, and the 17 of the second
+  were local-serialization saves that `cwe434_local_serialization_probe.py:37` measures as
+  `baseline=136 now=119 MISSING=17 NEW=0`. 119 is the live blessed count
+  (`gate_meta.json` → `big8.expected_keys`); every other number in this file is history, and the two
+  probes above are what keeps that history from being re-litigated with a re-bless.
 
 ### Permanent Fix Mandate (Root-Cause Immunity & Anti-Band-Aid Rule)
 
@@ -122,7 +133,9 @@ All engine modifications, precision improvements, and bug fixes must be architec
    marks that tree `-text`, because `core.autocrlf=true` otherwise rewrites a fresh checkout to CRLF
    and `verify_corpus` fails with `corpus drift` on bytes nobody changed. Measured in a clone outside
    the blessed root, with no `scratch/` present: `big8_ab.py` → `sha256 verified`, `136/136
-   MISSING=0 NEW=0`. The corpus is deliberately *not* under `benchmark/`: the parity gate scans that
+   MISSING=0 NEW=0` -- that figure is the baseline of its day; the live one is 119, and on this
+   checkout the same command reads `sha256 verified` → `VERDICT: PASS - big8 119/119, exact-set
+   match`. The corpus is deliberately *not* under `benchmark/`: the parity gate scans that
    whole tree (`gate_meta.json` `parity.scan_root`), so a copy at `benchmark/gates/corpus_big8` leaks
    its third-party findings into parity (measured: `baseline=425 now=561 MISSING=0 NEW=136` → FAIL),
    while `canon_key` collapses every Big-8 file to `<corpus_marker>/<leaf>` so the directory can

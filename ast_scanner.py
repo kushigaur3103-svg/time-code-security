@@ -1664,6 +1664,26 @@ CLUSTER2_HTTP_POOL_SEGMENT = "HTTPConnectionPool"
 CLUSTER2_NAN_CONVERSIONS = {"float", "bool", "complex"}
 CLUSTER2_NAN_SAFE_WRAPPERS = {"int"}
 CLUSTER2_NAN_GUARD_VALUE = "nan"
+# CWE-704: `bool(x)` sits in a sink named for NaN, and no input can make bool() return one. Its real
+# risk is the *string* coercion: a client- or config-supplied "0"/"False"/"no" is a non-empty string,
+# therefore truthy, therefore a flag the operator turned off stays on. So bool is exempted only when
+# the operand provably cannot be a string, and every callee below returns int / bool / a recordset /
+# a Match object - never a str. `get`, `pop`, `getattr` and `str` are deliberately absent: they are
+# exactly the string-carrying reads the rule exists to catch.
+CLUSTER2_BOOL_NONSTRING_CALLEES = frozenset({
+    # Odoo recordsets: bool(records) is len(records) != 0.
+    "search", "search_count", "browse", "exists", "filtered",
+    # numbers and predicates
+    "len", "any", "all", "sum", "count", "index",
+    "startswith", "endswith", "isdigit", "isalpha", "isalnum", "isspace", "islower", "isupper",
+    "isnumeric", "isidentifier", "isprintable", "isascii",
+    # re objects: Match | None, or an iterator
+    "match", "fullmatch", "finditer",
+})
+# Expressions whose value is a bool, a container, or an iterable - emptiness decides truthiness, so a
+# string content can never be what the test is asking.
+CLUSTER2_BOOL_NONSTRING_NODES = (ast.Compare, ast.UnaryOp, ast.List, ast.Set, ast.Dict,
+                                 ast.ListComp, ast.SetComp, ast.DictComp, ast.GeneratorExp)
 # CWE-601 / CWE-918: untrusted request input reaching a redirect or outbound fetch.
 CLUSTER2_REDIRECT_SINKS = {"redirect", "HttpResponseRedirect"}
 CLUSTER2_REDIRECT_VALIDATORS = {"is_safe_url", "url_has_allowed_host_and_scheme",
@@ -14480,7 +14500,22 @@ class TaintTracker:
         Reading the flag out of a mapping the factory receives moves the decision outside this module:
         every caller that does not ask gets the default, and one that asks for `False` renders raw
         HTML through an environment this file vouches for.
+
+        A `lambda` whose body is a falsy literal is the same decision wearing a callable: jinja2 calls
+        it with the template name and gets `False` back for every name, so escaping is off
+        unconditionally. Only the falsy-literal case is claimed here - `lambda name: name.endswith(
+        ".html")` is `select_autoescape` written inline, and a body that is not a literal stays what
+        it always was.
         """
+        if isinstance(value, ast.Lambda):
+            body = value.body
+            if isinstance(body, ast.Constant):
+                return not body.value
+            if isinstance(body, (ast.List, ast.Set, ast.Tuple)):
+                return not body.elts
+            if isinstance(body, ast.Dict):
+                return not body.keys
+            return False
         if not isinstance(value, ast.Call) or not isinstance(value.func, ast.Attribute):
             return False
         if value.func.attr not in CWE116_MAPPING_READ_METHODS:
@@ -14676,6 +14711,47 @@ class TaintTracker:
         return rows + [(p, d) for p, d in zip(node.args.kwonlyargs, node.args.kw_defaults)
                        if d is not None]
 
+    def _c704_bool_operand_is_nonstring(self, expr, scope_id: str, depth: int = 0) -> bool:
+        """True only when `bool(expr)` cannot be the string-truthiness bug this rule reports.
+
+        `bool()` never yields a NaN, so the only thing left for it to get wrong is treating a
+        non-empty client string as true - `bool(get_param("portal.allow_api_keys"))` is True for the
+        literal "False". That cannot happen if the operand is a number, a bool, a container, a Match
+        or an Odoo recordset, and each of those is decided from the AST alone:
+
+          * a Call whose callee's last name is in `CLUSTER2_BOOL_NONSTRING_CALLEES`;
+          * a comparison, a unary op, a container literal or a comprehension;
+          * a bare Name whose *every* assignment in *this exact scope* qualifies - one hop, no more.
+
+        Deliberately scope-exact: `assignments_by_scope.get((scope_id, name))` and nothing else. The
+        `_eval_static_constant` fallback answers for a bare parameter from an unrelated scope's single
+        literal, and a name that that fallback happens to resolve is a name whose real producer is
+        unknown - which is the one answer this predicate must never give. A conditional reassignment,
+        an attribute read, an unknown callee, a second hop, or no record at all all return False, so
+        the finding stands. The worst case of this rule is a false positive, never a miss.
+        """
+        if expr is None or depth > 2:
+            return False
+        if isinstance(expr, CLUSTER2_BOOL_NONSTRING_NODES):
+            return True
+        if isinstance(expr, ast.Call):
+            callee = expr.func
+            if isinstance(callee, ast.Attribute):
+                return callee.attr in CLUSTER2_BOOL_NONSTRING_CALLEES
+            if isinstance(callee, ast.Name):
+                return callee.id in CLUSTER2_BOOL_NONSTRING_CALLEES
+            return False
+        if isinstance(expr, ast.Name):
+            records = self.assignments_by_scope.get((scope_id, expr.id)) or []
+            if not records:
+                return False
+            return all(record.scope_id == scope_id
+                       and not record.is_conditional
+                       and self._c704_bool_operand_is_nonstring(record.value_node, scope_id,
+                                                               depth + 1)
+                       for record in records)
+        return False
+
     def _collect_cluster2_structural_findings(self) -> None:
         """
         Phase 3 Cluster 2 PURE_STRUCTURAL visitors, eight high-yield predicates:
@@ -14685,8 +14761,8 @@ class TaintTracker:
                    urllib3.PoolManager with cert_reqs disabled.
           CWE-319  cleartext http:// URLs through requests module calls, requests.Session
                    instances, and urllib3 HTTPConnectionPool (522/523 same family).
-          CWE-704  float()/bool()/complex() on request-controlled values without
-                   int()-wrapping or a "nan" guard.
+          CWE-704  float()/complex() on request-controlled values, and bool() on a request value
+                   that is not provably a non-string; int()-wrapping and a "nan" guard clear all.
           CWE-601  request-tainted variable consumed by redirect()/HttpResponseRedirect()
                    in the same scope without a redirect validator (flagged at the source).
           CWE-918  request-tainted variable reaching an outbound HTTP fetch without an
@@ -15354,7 +15430,14 @@ class TaintTracker:
                             isinstance(arg, ast.Name) and
                             arg.id in nan_guarded.get(fn_scope or "", set()))
                         if tainted_arg and not guarded:
-                            _add(node, "NAN_UNVALIDATED_CONVERSION", "TYPE_CONFUSION", "CWE-704")
+                            # `bool` cannot produce a NaN; it keeps its finding unless the operand is
+                            # provably not a string (see _c704_bool_operand_is_nonstring). float() and
+                            # complex() are untouched, including over the very same operand.
+                            if node.func.id == "bool" and self._c704_bool_operand_is_nonstring(
+                                    arg, scope):
+                                pass
+                            else:
+                                _add(node, "NAN_UNVALIDATED_CONVERSION", "TYPE_CONFUSION", "CWE-704")
 
                     # CWE-942: wildcard CORS combined with credentialed requests.
                     if segs & CLUSTER2_CORS_ADD_MW:

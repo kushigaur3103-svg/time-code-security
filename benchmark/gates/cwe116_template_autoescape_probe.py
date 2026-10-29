@@ -17,12 +17,12 @@ real jinja2 environment is a module scaffolder whose render whitelist includes `
 
 The emitter
 -----------
-  path A  ast_scanner.py:14541-14547   any call whose *last* callee name is `Environment` and that has
+  path A  ast_scanner.py:14636-14643   any call whose *last* callee name is `Environment` and that has
                                        no `autoescape` kwarg (`CLUSTER1_AUTOESCAPE_KEYS`, :1634), or a
-                                       kwarg whose value `_c116_autoescape_is_dynamic` (:14465) reads
-                                       out of caller options
-  path B  ast_scanner.py:14571-14576   any dict literal with `"autoescape": False/None`
-  (a third site, ast_scanner.py:20258-20263, emits the same label under CWE-79; it is 0 rows in the
+                                       kwarg whose value `_c116_autoescape_is_dynamic` (:14496) reads
+                                       out of caller options or evaluates to a falsy constant
+  path B  ast_scanner.py:14667-14672   any dict literal with `"autoescape": False/None`
+  (a third site, ast_scanner.py:20512-20517, emits the same label under CWE-79; it is 0 rows in the
    arena and is not this file's contract)
 
 Path A fires on a *spelling*, not on a template. That is the whole defect: the engine asks "is the
@@ -30,8 +30,8 @@ callee called Environment?", never "is the callee jinja2's Environment?".
 
 The narrowing this gate locks
 -----------------------------
-One positive allowlist on provenance the engine already resolves - `_c1_call_names` (:14352) asks
-`resolve_canonical_name` (:4450), and the import table `self.imports[mod]` holds the binding. Emit
+One positive allowlist on provenance the engine already resolves - `_c1_call_names` (:14383) asks
+`resolve_canonical_name` (:4447), and the import table `self.imports[mod]` holds the binding. Emit
 unless the callee is *proven* not to be jinja2:
 
   1. the binding chain is import-backed and lands on `odoo.api.Environment`:
@@ -61,14 +61,27 @@ Measured evidence behind the numbers
                                loads are non-HTML cannot be bounded here - the env object can be
                                handed to another module that renders .html. Those shapes stay loud
                                below so the refusal is recorded in the truth table, not just in prose.
-  known gap                  : `Environment(autoescape=lambda n: False)` is silent today (the lambda
-                               is neither a literal nor a "dynamic mapping read") and stays silent;
-                               that is a separate, additive finding to fix, not part of this contract.
+  gap closed in this revision   : `Environment(autoescape=lambda n: False)` used to be silent - the
+                                  lambda is neither a literal nor a mapping read, so path A had no
+                                  question left to ask. It is now reported: a lambda whose body folds
+                                  to a falsy literal is `autoescape=False` written as a callable. Four
+                                  falsy-callable shapes are asserted loud (`False`, `0`, `None`, `{}`)
+                                  and five that must not be swept up are asserted silent (`True`,
+                                  `n.endswith('.html')`, a truthy string, a free name, a module-level
+                                  function reference). 0 of the 135 arena rows are any of these, and
+                                  `autoescape=lambda` appears in no corpus or fixture file (grep over
+                                  the repo: only this gate and the engine), so the flip cannot move a
+                                  blessed key in either direction.
+  still not claimed             : `autoescape=escapes` where `escapes` is a module function returning
+                                  False is silent, and stays silent - deciding it needs inter-
+                                  procedural analysis, and guessing would print a finding on every
+                                  selective-autoescape environment in the world. Recorded as a row so
+                                  the limit is measured rather than invisible.
 
 Seal semantics - `CWE116_SEAL`
 ------------------------------
-  'shipped' (today) : the five proven-ORM shapes MUST be silent and every must-report row MUST stay
-            loud - narrow AND still catching the bad input.
+  'shipped' (today) : the five proven-ORM shapes MUST be silent, every must-report row MUST stay
+            loud, and a falsy-body lambda MUST now be reported.
   'abstained'       : the five proven-ORM shapes MUST still be loud. If they go quiet while the seal
             says abstained, a narrowing landed without updating this contract.
 Either way a mismatch is exit 1.
@@ -191,12 +204,43 @@ SHAPES = [
     ('jinja_select_autoescape_html', wrap(JINJA, (
         "flag = jinja2.select_autoescape(['html'])\n"
         "env = jinja2.Environment(autoescape=flag)")), 'quiet', 'quiet'),
-    ('jinja_autoescape_lambda_false', wrap(JINJA, (
-        "env = jinja2.Environment(autoescape=lambda n: False)\n"
-        "env.get_template('page.html')")), 'quiet', 'quiet'),
     ('jinja_sql_loader_autoescape_false', wrap(
         JINJA, "jinja2.Environment(autoescape=False).get_template('query.sql')"),
      'quiet', 'quiet'),
+    # ---- callable autoescape: the gap this file used to record, now closed ----
+    # `autoescape=lambda n: False` is `autoescape=False` with a callable around it: jinja2 calls it
+    # with the template name and gets a falsy value back for every name, so nothing is escaped. The
+    # engine used to read a lambda as "not a literal, not a mapping read" and stay silent.
+    ('jinja_autoescape_lambda_false', wrap(JINJA, (
+        "env = jinja2.Environment(autoescape=lambda n: False)\n"
+        "env.get_template('page.html')")), 'quiet', 'loud'),
+    ('jinja_autoescape_lambda_zero', wrap(JINJA, (
+        "env = jinja2.Environment(autoescape=lambda name, template_name=None: 0)\n"
+        "env.get_template('page.html')")), 'quiet', 'loud'),
+    ('jinja_autoescape_lambda_bare_none', wrap(JINJA, (
+        "env = jinja2.Environment(autoescape=lambda: None)\n"
+        "env.get_template('page.html')")), 'quiet', 'loud'),
+    ('jinja_autoescape_lambda_empty_dict', wrap(JINJA, (
+        "env = jinja2.Environment(autoescape=lambda n: {})\n"
+        "env.get_template('page.html')")), 'quiet', 'loud'),
+    # ---- and the callables that DO escape, which must not be swept up by the new branch ----
+    # A lambda whose body is a real decision is `select_autoescape` written inline. Reporting those
+    # would turn a safe configuration into a finding, which is the false-positive half of this rule.
+    ('jinja_autoescape_lambda_true', wrap(JINJA, (
+        "env = jinja2.Environment(autoescape=lambda n: True)\n"
+        "env.get_template('page.html')")), 'quiet', 'quiet'),
+    ('jinja_autoescape_lambda_endswith', wrap(JINJA, (
+        "env = jinja2.Environment(autoescape=lambda n: n.endswith('.html'))\n"
+        "env.get_template('page.html')")), 'quiet', 'quiet'),
+    ('jinja_autoescape_lambda_truthy_str', wrap(JINJA, (
+        "env = jinja2.Environment(autoescape=lambda n: 'yes')\n"
+        "env.get_template('page.html')")), 'quiet', 'quiet'),
+    ('jinja_autoescape_lambda_name', wrap(JINJA, (
+        "flag = True\nenv = jinja2.Environment(autoescape=lambda n: flag)\n"
+        "env.get_template('page.html')")), 'quiet', 'quiet'),
+    ('jinja_autoescape_func_ref', wrap(JINJA + 'def escapes(name):\n    return False\n',
+                                       "env = jinja2.Environment(autoescape=escapes)\n"
+                                       "env.get_template('page.html')"), 'quiet', 'quiet'),
 ]
 
 FP_ROWS = [row for row in SHAPES if row[2] == 'loud' and row[3] == 'quiet']
@@ -331,7 +375,8 @@ def main() -> int:
               'evidence. Restore the answer or update the seal with a re-measured truth table; '
               'never re-bless a baseline.')
         return 1
-    print(f'VERDICT: PASS - 0 blessed CWE-116 keys held, corpus exact-set, '
+    print(f'VERDICT: PASS - no blessed CWE-116 key exists ({CWE116_LOCKED["parity"]} in parity, '
+          f'{CWE116_LOCKED["big8"]} in Big-8), corpus exact-set, '
           f'{len(FP_ROWS)} proven-ORM shapes silent, {len(MUST_REPORT_ROWS)} jinja2/unproven shapes '
           f'reported, {len(ALREADY_QUIET_ROWS)} safe shapes silent, all provenance pairs agreeing.')
     return 0
