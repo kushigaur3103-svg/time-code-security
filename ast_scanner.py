@@ -2633,6 +2633,133 @@ def _eval_static_constant(node, assignments_by_scope, scope_id="", lineno=0, vis
         return None
     return None
 
+XML_ENTITY_DECLARATION_RE = re.compile(r"<\s*!\s*(?:DOCTYPE|ENTITY)", re.IGNORECASE)
+XML_PARSER_FACTORY_LEAF = "XMLParser"
+XML_PARSER_ENTITIES_KEYWORD = "resolve_entities"
+XML_CODEC_HOP_METHODS = frozenset({"encode", "decode"})
+
+
+def _xml_written_document_text(node, depth=0):
+    """The document or path text written *at this call*, or None when the bytes are not here.
+
+    This is a structural read, not a fold: a Constant, a placeholder-free f-string, a concatenation
+    of those, and a codec hop over any of them (`"<root/>".encode()`, `b"<root/>".decode()`, which
+    is how a test hands the parser bytes and still writes them as text). Every byte such an answer
+    contains is in the source line the parser call sits on, so no runtime value can enter it.
+
+    Deliberately absent: the assignment chain. `_eval_static_constant` would resolve a name through
+    its bindings, and a parameter is bound at a call site somewhere else in the module -- measured
+    on `benchmark/corpus/cwe_776_xml_bomb/test_v03_bad.py`, where `ET.parse(path)` inside
+    `process_file(path)` folds to `"config.xml"` because line 7 happens to pass that literal. The
+    file it names is unbounded XML, that function is a true positive, and answering from one call
+    site is exactly how an exemption eats one. A name -- parameter, module constant, or an import --
+    returns None here and stays reported.
+    """
+    if node is None or depth > 3:
+        return None
+    if isinstance(node, ast.Constant) and isinstance(node.value, (str, bytes)):
+        return node.value
+    if isinstance(node, ast.JoinedStr):
+        # An f-string is only written text while none of its holes carry a value.
+        parts = []
+        for value in node.values:
+            if not isinstance(value, ast.Constant) or not isinstance(value.value, str):
+                return None
+            parts.append(value.value)
+        return "".join(parts)
+    if (isinstance(node, ast.BinOp) and isinstance(node.op, ast.Add)):
+        left = _xml_written_document_text(node.left, depth + 1)
+        right = _xml_written_document_text(node.right, depth + 1)
+        if isinstance(left, bytes) and isinstance(right, bytes):
+            return left + right
+        if isinstance(left, str) and isinstance(right, str):
+            return left + right
+        return None
+    if (isinstance(node, ast.Call) and not node.args and not node.keywords
+            and isinstance(node.func, ast.Attribute)
+            and node.func.attr in XML_CODEC_HOP_METHODS):
+        inner = _xml_written_document_text(node.func.value, depth + 1)
+        if node.func.attr == "encode" and isinstance(inner, str):
+            return inner.encode()
+        if node.func.attr == "decode" and isinstance(inner, bytes):
+            return inner.decode()
+    return None
+
+
+def _xml_declares_entity(text) -> bool:
+    """True when a written-down document carries its own entity declaration.
+
+    `<!DOCTYPE` / `<!ENTITY` is the attacker byte *inside* an author-written constant: an XXE test
+    fixture writes `<!ENTITY xxe SYSTEM "file:///etc/passwd">` into the document itself, and an
+    unsafe parser resolves it. So a constant is not the same thing as an inert constant, and this
+    is the one check that no CWE-611 exemption may skip.
+
+    Bytes documents are the normal shape (`fromstring` takes bytes, and a codec hop produces them),
+    so the pattern runs over the decoded text; `errors="replace"` cannot raise and cannot turn a
+    declaration into something that no longer matches.
+    """
+    if isinstance(text, bytes):
+        text = text.decode("utf-8", "replace")
+    return bool(XML_ENTITY_DECLARATION_RE.search(text))
+
+
+def _xml_parser_literal_disables_entities(node) -> bool:
+    """True for a `XMLParser(resolve_entities=False)` written at this call site.
+
+    Deliberately narrower than phase 7's `_parser_is_safe`, which also follows a parser held in a
+    variable through the assignment chain. A narrower answer can only keep a finding phase 7 would
+    drop, never drop one phase 7 would keep, so the two record paths cannot split in the unsafe
+    direction. The keyword test itself matches ast_scanner.py:21301.
+    """
+    if not isinstance(node, ast.Call):
+        return False
+    func = node.func
+    if isinstance(func, ast.Attribute):
+        leaf = func.attr
+    elif isinstance(func, ast.Name):
+        leaf = func.id
+    else:
+        return False
+    if leaf != XML_PARSER_FACTORY_LEAF:
+        return False
+    keyword = next((kw for kw in node.keywords
+                    if kw.arg == XML_PARSER_ENTITIES_KEYWORD), None)
+    return bool(keyword is not None and isinstance(keyword.value, ast.Constant)
+                and keyword.value.value is False)
+
+
+def _xml_parse_is_inert(input_expr, parser_expr, parser_is_safe=None) -> bool:
+    """One answer for every CWE-611 record path, so the exemption cannot half-apply.
+
+    The aliased emitter (ast_scanner.py:14891) and the structural phase-7 removal
+    (ast_scanner.py:21745) both decide whether an XML call is harmless, and until now each asked its
+    own question: the emitter asked only "is the leaf called `parse` and the argument a Constant",
+    phase 7 asked "is the parser configured safe or does the input fold to text". The emitter's
+    answer was the louder one on every shape except the one `parse` special case, which is why an
+    author-written document reached the report at all -- phase 7 had already judged it inert and
+    removed the registry record, and the emitter then added its own back.
+
+    Order matters and is the zero-FN half of the rule: an entity declaration vetoes the answer
+    first, before either the parser-config branch or the written-text branch can return True. A
+    document that carries `<!DOCTYPE`/`<!ENTITY` is reported whatever the parser looks like, so
+    `XMLParser(resolve_entities=False)` cannot talk a live XXE fixture into silence.
+
+    `parser_is_safe` is phase 7's scope-aware predicate. The emitter leaves it None and falls back to
+    the literal-only form, which is the conservative direction: it can keep a finding phase 7 would
+    drop, never drop one phase 7 would keep.
+    """
+    written = _xml_written_document_text(input_expr)
+    if written is not None and _xml_declares_entity(written):
+        return False
+    if parser_expr is not None:
+        if parser_is_safe is not None:
+            if parser_is_safe(parser_expr):
+                return True
+        elif _xml_parser_literal_disables_entities(parser_expr):
+            return True
+    return written is not None
+
+
 def _assignment_records(assignments_by_scope, name: str, scope_id: str, lineno: int):
     """Writes to `name` visible from `scope_id`, oldest first, walking out to the
     enclosing function scopes and the module scope like `_eval_static_constant` does."""
@@ -14772,20 +14899,27 @@ class TaintTracker:
 
                     # CWE-611: XML entry points reached through an xml./lxml. alias.
                     if segs & CLUSTER2_XML_METHODS:
-                        first_arg_const = bool(node.args) and isinstance(node.args[0], ast.Constant)
-                        call_seg = (dotted_name(node.func) or "").split(".")[-1]
-                        for form in forms:
-                            if form.startswith("defusedxml"):
-                                continue
-                            if not form.startswith(CLUSTER2_XML_UNSAFE_ROOTS):
-                                continue
-                            # `parse('literal.xml')` is the audited-safe shape in the upstream
-                            # corpus; parseString()/fromstring()/iterparse() stay flagged.
-                            if call_seg == "parse" and first_arg_const:
-                                continue
-                            _add(node, "ALIASED_UNSAFE_XML_PARSE", "XML_EXTERNAL_ENTITY",
-                                 "CWE-611")
-                            break
+                        aliased_xml = any(not form.startswith("defusedxml")
+                                          and form.startswith(CLUSTER2_XML_UNSAFE_ROOTS)
+                                          for form in forms)
+                        if aliased_xml:
+                            leaf = (dotted_name(node.func) or "").split(".")[-1]
+                            if leaf == XML_PARSER_FACTORY_LEAF:
+                                # The factory call is its own XML entry point and its own parser
+                                # configuration, so the config question is asked of `node`.
+                                parser_expr = node
+                            else:
+                                parser_expr = next((kw.value for kw in node.keywords
+                                                    if kw.arg == "parser"), None)
+                                if parser_expr is None and len(node.args) > 1:
+                                    parser_expr = node.args[1]
+                            # The one question _xml_parse_is_inert also answers in the structural
+                            # pass. The `parse`-only special case this replaced left every other
+                            # leaf re-flagging a document the structural pass had just judged inert.
+                            if not _xml_parse_is_inert(node.args[0] if node.args else None,
+                                                       parser_expr):
+                                _add(node, "ALIASED_UNSAFE_XML_PARSE", "XML_EXTERNAL_ENTITY",
+                                     "CWE-611")
 
                     # CWE-704: unvalidated numeric conversion on a request-controlled value.
                     if isinstance(node.func, ast.Name) and node.func.id in CLUSTER2_NAN_CONVERSIONS \
@@ -21618,20 +21752,25 @@ class TaintTracker:
                     explicit_true = False
                     if parser_expr is not None and isinstance(parser_expr, ast.Call):
                         explicit_true = _bool_keyword(parser_expr, "resolve_entities", scope_id, lineno) is True
+                    # Answered before `unsafe` because a codec hop -- `b"<root/>".decode().encode()`
+                    # -- is a Call, so `_is_dynamic` calls it input even though every byte of it is
+                    # written on this line, and the add would then win over the exemption below.
+                    xml_inert = _xml_parse_is_inert(
+                        input_expr, parser_expr,
+                        parser_is_safe=lambda expr: _parser_is_safe(expr, scope_id, lineno),
+                    )
                     unsafe = explicit_true or (
                         input_expr is not None
                         and _is_dynamic(input_expr, scope_id, lineno)
                         and not _parser_is_safe(parser_expr, scope_id, lineno)
+                        and not xml_inert
                     )
                     if unsafe:
                         _add_finding(
                             node, mod_name, scope_id, "CWE-611", "XML_EXTERNAL_ENTITY",
                             "XXE_INJECTION_VULNERABILITY", "XML_PARSING",
                         )
-                    elif _parser_is_safe(parser_expr, scope_id, lineno) or isinstance(
-                        _fold7(input_expr, scope_id, lineno),
-                        (str, bytes),
-                    ):
+                    elif xml_inert:
                         _remove_existing(node, {"CWE-611"}, mod_name)
                     continue
 
