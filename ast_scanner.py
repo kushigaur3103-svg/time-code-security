@@ -1676,6 +1676,17 @@ CLUSTER2_SSRF_VALIDATORS = {"is_safe_url", "validate_url", "check_domain_allowli
                             "is_safe_destination", "assert_host_allowlisted"}
 CLUSTER2_ROUTE_DECORATOR_SEGMENTS = {"route", "get", "post", "put", "delete", "patch",
                                      "rule", "method"}
+# CWE-770: receiver objects whose no-argument read() cannot exhaust anything. Every one of these is
+# reached through `_c770_callee_origin`, which folds the callee through `self.imports[mod]`, so
+# builtin `open`, a rebinding of the name and any unresolved spelling can never match.
+# benchmark/gates/cwe770_unbounded_read_probe.py re-asserts the bad inputs on every run.
+CWE770_BUFFER_ORIGINS = frozenset({"io.BytesIO", "io.StringIO", "_io.BytesIO", "_io.StringIO"})
+CWE770_WEBSOCKET_ORIGINS = frozenset({"odoo.tests.common.websocket_connect",
+                                      "websocket.create_connection"})
+CWE770_FILE_OPEN_ORIGINS = frozenset({"odoo.tools.file_open", "odoo.tools.misc.file_open"})
+# CWE-601: a query key in a relative anchor that carries a further destination. `Location: /x` is
+# same-origin, but `/web/login?redirect=<hole>` hands the choice of host to the next hop.
+CWE601_RELATIVE_CHAIN_KEYS = ("redirect=", "next=", "url=", "return=", "to=")
 # CWE-611: aliased stdlib/lxml XML entry points (bandit-style `import ... as bad` shapes).
 CLUSTER2_XML_METHODS = {"parse", "parseString", "fromstring", "iterparse", "make_parser",
                         "create_parser", "XMLParser", "expat"}
@@ -17310,6 +17321,115 @@ class TaintTracker:
             scope_id=f"{mod_name}:global",
         ))
 
+    # ── CWE-770 receiver-provenance helpers ──
+
+    def _c770_receiver_products(self, tree: ast.AST) -> dict:
+        """`name -> [producer expression]` for one module, with `with X as name` included.
+
+        The collector's own pre-scan (`assigns_in_module`) records Assign/AnnAssign only, and the
+        bounded reads this predicate has to see are overwhelmingly `with file_open("data/x.xml", "rb")
+        as f:` -- a binding no assignment table holds. Built from the memoized module walk and cached
+        on the tree beside `_cached_all_nodes`, so it is one pass per module and only for a module
+        that actually holds a no-argument read/recv.
+        """
+        cached = tree.__dict__.get("_cached_c770_products")
+        if cached is None:
+            cached = {}
+            for n in self._module_nodes(tree):
+                if isinstance(n, ast.Assign):
+                    pairs = [(t, n.value) for t in n.targets]
+                elif isinstance(n, ast.AnnAssign) and n.value is not None:
+                    pairs = [(n.target, n.value)]
+                elif isinstance(n, ast.With):
+                    pairs = [(item.optional_vars, item.context_expr) for item in n.items]
+                else:
+                    pairs = []
+                for target, value in pairs:
+                    if value is None:
+                        continue
+                    if isinstance(target, ast.Name):
+                        cached.setdefault(target.id, []).append(value)
+                    elif isinstance(target, ast.Tuple) and isinstance(value, (ast.Tuple, ast.List)):
+                        for sub_t, sub_v in zip(target.elts, value.elts):
+                            if isinstance(sub_t, ast.Name):
+                                cached.setdefault(sub_t.id, []).append(sub_v)
+            tree.__dict__["_cached_c770_products"] = cached
+        return cached
+
+    def _c770_callee_origin(self, call: ast.Call, mod_name: str, tree: ast.AST) -> str:
+        """The import-backed origin of a callee, or "" when its binding proves nothing.
+
+        `io.BytesIO` with `import io`, a bare `BytesIO` with `from io import BytesIO`, `fo(...)` with
+        `from odoo.tools.misc import file_open as fo` and `tools.file_open` with `from odoo import
+        tools` each fold to their full dotted origin by replacing the leading segment with its entry
+        in `self.imports[mod]` -- the same backing the shipped CWE-116 ORM narrowing requires, and it
+        resolves a package-relative `from .misc import file_open` because the import table already
+        carries the package. Builtin `open` is never imported, so it has no origin at all.
+
+        The leading segment must still mean the module it was imported as. A name bound to a call on
+        itself (`websocket = websocket.create_connection(...)`, the arena's own spelling) keeps the
+        meaning of `websocket.<attr>` intact and is allowed; a name bound to anything else
+        (`websocket = get_evil()`, `websocket = socket.socket()`, `file_open = open`) cancels the
+        answer, so the following call keeps its finding.
+        """
+        func = call.func
+        if isinstance(func, ast.Name):
+            root, tail = func.id, []
+        else:
+            dotted = dotted_name(func)
+            if not dotted:
+                return ""
+            parts = dotted.split(".")
+            root, tail = parts[0], parts[1:]
+        origin = (self.imports.get(mod_name) or {}).get(root, "")
+        if not origin:
+            return ""
+        for value in self._c770_receiver_products(tree).get(root, ()):
+            if not (isinstance(value, ast.Call)
+                    and (dotted_name(value.func) or "").split(".")[0] == root):
+                return ""
+        return ".".join([origin] + tail)
+
+    def _c770_read_is_bounded(self, node: ast.Call, mod_name: str, tree: ast.AST) -> bool:
+        """True only when every object the receiver name can hold is a proven-bounded source.
+
+        Fail-closed in five ways, each of which is a row of the truth table: an attribute receiver
+        (`self.f.read()`, `sock.makefile().read()`) has no name to look up here, because the object
+        is chosen outside this statement; a receiver with no binding in the module is unproven; a
+        receiver bound twice (`f = io.BytesIO()` and later `f = open(...)`) is only as safe as its
+        worst binding; a buffer built from an argument (`io.BytesIO(request.data)`) carries client
+        bytes; and a `file_open` path that is not a literal written in this very statement is a path
+        a caller chose. The engine's own `_eval_static_constant` is deliberately *not* used for that
+        last test: its cross-scope fallback resolves a bare parameter name whenever one unrelated
+        assignment elsewhere in the repo holds a literal, and `file_open(path)` inside
+        `def _read_file(cls, path, *args)` is not the proof "compile-time literal" asks for.
+        """
+        func = node.func
+        if not isinstance(func, ast.Attribute) or not isinstance(func.value, ast.Name):
+            return False
+        products = self._c770_receiver_products(tree).get(func.value.id)
+        if not products:
+            return False
+        for prod in products:
+            if not isinstance(prod, ast.Call):
+                return False
+            origin = self._c770_callee_origin(prod, mod_name, tree)
+            if not origin:
+                return False
+            if origin in CWE770_BUFFER_ORIGINS:
+                if prod.args or prod.keywords:
+                    return False
+            elif origin in CWE770_WEBSOCKET_ORIGINS:
+                if func.attr != "recv":
+                    return False
+            elif origin in CWE770_FILE_OPEN_ORIGINS:
+                first = prod.args[0] if prod.args else None
+                if not isinstance(first, ast.Constant) or not isinstance(first.value, str):
+                    return False
+            else:
+                return False
+        return True
+
     def _collect_batch3b_structural_findings(self) -> None:
         """
         Batch 3B PURE_STRUCTURAL visitors (data/cwe_blueprint_batch3b.json):
@@ -17474,7 +17594,8 @@ class TaintTracker:
                             r_name = (dotted_name(node.func.value) or (node.func.value.id if isinstance(node.func.value, ast.Name) else "")) if isinstance(node.func, ast.Attribute) else ""
                             if ((r_name in ("f", "file", "stream", "self.f", "s", "sock") or "stream" in r_name or fn_name == "recv")
                                     and not self._read_subordinate_to_traversal(node, scope_id)
-                                    and not self._is_packaging_metadata_read(node, r_name, scope_id)):
+                                    and not self._is_packaging_metadata_read(node, r_name, scope_id)
+                                    and not self._c770_read_is_bounded(node, mod_name, tree)):
                                 cwe_meta = {"operation": "UNBOUNDED_RESOURCE_ALLOCATION", "category": "RESOURCE_EXHAUSTION", "cwe": "CWE-770"}
 
                     # CWE-668: Framework server bound to a public interface.
@@ -22535,6 +22656,25 @@ class TaintTracker:
                 if len(parts) < 2:
                     return False
                 head, rest = parts[0], parts[1:]
+            elif isinstance(expr, ast.BinOp) and isinstance(expr.op, ast.Mod):
+                # `"/forum/%s" % slug(forum)` is odoo's dominant spelling of the very same value the
+                # two branches above already accept, and it was the only one missing: 18 of the 86
+                # redirect-sink rows on odoo/odoo@17.0 are this shape with no client input in the
+                # hole (scratch/_770_601/strict601.json). The anchor must be a literal string that
+                # begins with exactly one '/', and its second character must be literal too --
+                # `"/%s%s" % (lang_code, path)` lets the first hole complete a `//evil.com`
+                # authority, which is a different host rather than a different path.
+                left, right = expr.left, expr.right
+                if not isinstance(left, ast.Constant) or not isinstance(left.value, str):
+                    return False
+                anchor = left.value
+                if (not anchor.startswith("/") or anchor.startswith("//")
+                        or "://" in anchor or "\0" in anchor or len(anchor) < 2
+                        or anchor[1] == "%"
+                        or any(k in anchor for k in CWE601_RELATIVE_CHAIN_KEYS)):
+                    return False
+                rest = list(right.elts) if isinstance(right, ast.Tuple) else [right]
+                head = left
             else:
                 return False
             if not isinstance(head, ast.Constant) or not isinstance(head.value, str):
