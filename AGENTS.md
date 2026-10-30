@@ -197,3 +197,35 @@ prompt. If that baseline turns out to contradict the prompt's stated figure, say
 
 When a contradiction blocks real progress (permissions, destructive scope, or an invariant that
 would move a true positive), stop and ask before acting instead of quietly picking a side.
+
+## Core Protocols
+
+### Rule 15: The "No-Punt & Zero-Speed-Regression" Protocol (Saap bhi mare, lathi na toote)
+1. **Strict Prohibition on Punting / Lazy Tagging:**
+   - When a finding cluster contains True Positives (TPs), abandoning the cluster as "too risky" or downgrading it to metadata/property tagging without elimination is STRICTLY FORBIDDEN.
+   - Punting is not an engineering verdict. Permanent elimination of noise while maintaining Zero-FN is mandatory.
+2. **Iterative Sub-Pattern Partitioning:**
+   - If an initial broad hypothesis touches or endangers a blessed TP, do not surrender the task.
+   - Isolate the exact AST/dataflow sub-shape of the TP (e.g., direct network payload, unvalidated request argument).
+   - Exempt the remaining 90%+ deterministic FP sub-patterns that do not share that shape (e.g., intra-function local builders, literal repo reads, non-security UI values).
+   - Engineering cycle: Hypothesize -> Boundary Probe -> Measure -> Refine -> Ship.
+3. **Speed Invariant (Fastest SAST Guarantee):**
+   - TCS scan latency must NEVER regress. The CPU time ratio must remain <= 1.0x vs baseline.
+   - All filter checks must be O(1) or single-pass AST lookups. No multi-hop recursive graph walks or expensive inter-procedural traces that degrade scan throughput.
+4. **Zero-FN & Zero-TP Loss:**
+   - Parity and Big-8 MISSING=0 is an unbreachable floor. Blessed keys must remain 100% reported.
+### Rule 15: The "No-Punt & Zero-Speed-Regression" Protocol (Saap bhi mare, lathi na toote)
+1. **Strict Prohibition on Punting / Lazy Tagging:**
+   - Agar kisi cluster (jaise CWE-611, CWE-338) mein True Positives (TPs) baithe hain, toh poore cluster ko "too risky" ya "per-file unprovable" bolkar chhodna (drop out karna) ya uspar sirf metadata tagging laga kar chhod dena SAKHT MANA HAI.
+   - Punting is not an engineering verdict. Permanent elimination of noise is mandatory.
+2. **Iterative Sub-Pattern Partitioning:**
+   - Agar tumhara pehla idea (Hypothesis A) kisi blessed TP ko touch karta hai, toh task surrender mat karo.
+   - Analyze karo ki TP kis specific sub-shape par baitha hai (jaise direct HTTP request/network argument).
+   - Us TP shape ko chhodkar, bache hue 90% FPs ka deterministic sub-pattern dhoondo (jaise intra-function producer check, internal builder return, local schema template).
+   - Repeat the cycle: Hypothesize → Boundary Probe → Measure → Refine → Ship.
+3. **Speed Invariant (Fastest SAST Guarantee):**
+   - TCS ka execution time kisi bhi change se REGRESS nahi hona chahiye (CPU time ratio <= 1.0x).
+   - Har naya sub-pattern check $O(1)$ ya single-pass AST lookup hona chahiye. No expensive AST graph walks or recursive multi-hop traversals that degrade scan latency.
+4. **Zero-FN & Zero-TP Loss:**
+   - Blessed keys par MISSING=0 absolute floor hai.
+   - Target is maximum safe FP reduction with 100% TP retention.
