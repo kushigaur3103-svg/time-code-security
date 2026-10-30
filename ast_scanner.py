@@ -1031,8 +1031,9 @@ CWE338_DISPLAY_VALUE_MARKERS = frozenset({
     "preview", "previews", "display",
     # A pause, a retry backoff and a poll cadence are the other provably-non-security destination: a
     # duration is a *number the scheduler consumes*, and no credential is ever stored in
-    # `wait_time`, `sync_interval` or `timeout=`. Measured: these seven words retire 10 of the 34
-    # LiteLLM rows (`seconds=proxy_batch_polling_interval + random.randint(0, 30)`), and 0 of the 16
+    # `wait_time`, `sync_interval` or `timeout=`. Measured paired against `7a420f0`: these seven words
+    # retire 11 of the 34 LiteLLM rows (`seconds=proxy_batch_polling_interval + random.randint(0, 30)`,
+    # and two whose *enclosing function* is `_backoff_seconds` / `_retry_wait_seconds`), and 0 of the 16
     # blessed CWE-338 keys, because no blessed key's own vocabulary contains any of them.
     "interval", "seconds", "timeout", "backoff", "wait", "cooldown", "keepalive",
 })
@@ -1052,6 +1053,22 @@ CWE338_SLEEP_SINK_LEAVES = frozenset({"sleep", "sleep_until"})
 # or a cadence. Kept as a table so the gate can falsify the veto by emptying it, exactly as it can the
 # pause table.
 CWE338_CODE_JOIN_SINK_LEAVES = frozenset({"join"})
+# The demo-data axis, and the only path this engine will trade a finding for. odoo fakes records under a
+# `populate` path segment; a draw there produces a fake phone number or a stock quantity, never a secret.
+# Measured on the 86 pinned arena files: 34 files / 232 of the 277 rows carry the segment in one of its
+# two spellings -- nested (`addons/account/populate/account_move.py`, `odoo/tools/populate.py`) and
+# flattened (`addons__account__populate__account_move`) -- while 0 of the 552 blessed parity-corpus files
+# and 0 of the 16 locked CWE-338 keys carry it, so nothing real can fall through here. Whole-segment
+# matching is what keeps the near-miss loud: `odoo/addons/test_populate/models.py` is a *test* module and
+# 1 measured row, and `test_populate` is not `populate`.
+CWE338_DEMO_PATH_SEGMENTS = frozenset({"populate", "populators"})
+# A path that also names a test tree never buys silence, whatever else it holds: 7 of the 16 locked
+# CWE-338 keys live under a `tests/` directory and 14 of 16 in a `test_`-prefixed module, so exempting
+# `tests/` would delete them at once. That makes `addons/populate/tests/x.py` loud on purpose, and
+# `odoo/addons/test_populate/models.py` loud twice over. `..._PREFIXES` is a tuple because
+# `str.startswith` takes one, which keeps the whole veto a single C-level scan per segment.
+CWE338_DEMO_PATH_VETO_SEGMENTS = frozenset({"tests", "test", "testing", "conftest", "fixtures"})
+CWE338_DEMO_PATH_VETO_PREFIXES = ("test_", "tests_")
 
 # ─── O(1) sink fast-path candidate index ───────────────────────────────────
 # is_sink_call() can return True through paths that never consult SINK_REGISTRY:
@@ -4105,6 +4122,12 @@ class TaintTracker:
         #                       every worker would have to load its own grammar for the same file
         self.execution_mode = "inline"
         self.parallel_fallback_reason = None
+        # The demo-path verdict is a pure function of the module name, so it is cached once per module
+        # instead of re-splitting the path once per reported draw. The key is `mod_name` and nothing
+        # else, and `file_paths[mod_name]` is final before any sink is evaluated (it is written during
+        # the parse fan-out and only re-interned, never re-pointed, afterwards) -- so a cache hit can
+        # only ever answer the same question the cold path would have.
+        self._cwe338_demo_path_memo: dict[str, bool] = {}
         _parallel_parsing_failed = False
         if PARALLEL_PARSING_AVAILABLE and len(self.files) > 10 and self.parser_mode != "treesitter":
             # Only use parallel parsing for larger workloads (>10 files)
@@ -6111,9 +6134,39 @@ class TaintTracker:
                 names.extend(cls._cwe338_expression_names(element, level + 1))
         return names
 
-    @classmethod
-    def _cwe338_display_only_draw(cls, node: ast.Call) -> bool:
-        """True only for a PRNG draw whose whole naming vocabulary says "a value the screen consumes".
+    def _cwe338_module_is_demo_generator(self, scope_id: str) -> bool:
+        """True only for a module whose own path names odoo's fake-data directory.
+
+        Fail-closed in both directions: an unresolved scope has no path, and a path that also names a
+        test tree is vetoed even when it carries `populate` -- 14 of the 16 locked CWE-338 keys live in
+        a `test_` module, so silence bought by a directory must never reach a test file. Cost is one
+        split of one short string *per module*, memoised on the module name because the verdict depends
+        on nothing else: no walk, no recursion, no key that could answer a different question.
+        """
+        mod_name = self._scope_module(scope_id)
+        if not mod_name:
+            return False
+        cached = self._cwe338_demo_path_memo.get(mod_name)
+        if cached is not None:
+            return cached
+        segments = set()
+        for part in self._module_source_path(mod_name).replace("\\", "/").split("/"):
+            for piece in part.split("__"):
+                if not piece:
+                    continue
+                if piece.endswith(".py"):
+                    piece = piece[:-3]
+                segments.add(piece.lower())
+        if any(segment in CWE338_DEMO_PATH_VETO_SEGMENTS
+               or segment.startswith(CWE338_DEMO_PATH_VETO_PREFIXES) for segment in segments):
+            verdict = False
+        else:
+            verdict = bool(segments & CWE338_DEMO_PATH_SEGMENTS)
+        self._cwe338_demo_path_memo[mod_name] = verdict
+        return verdict
+
+    def _cwe338_display_only_draw(self, node: ast.Call, scope_id: str = "") -> bool:
+        """True only for a PRNG draw that is provably not a secret -- by name, by consumer, or by path.
 
         Every branch errs toward reporting:
 
@@ -6133,16 +6186,22 @@ class TaintTracker:
           keyword name through `_cwe338_assignment_targets`, the identifiers inside its own arguments,
           the enclosing function names, and the callee it is handed to.
 
-        No name and no marker means no exemption: an unresolved or unnamed draw is unknown, and
-        unknown is never treated as safe.
+        * a draw in a module whose own path carries a `populate` segment is demo data, but only after
+          all three gates above have passed and never in a test tree -- the path is the *last* axis
+          consulted, so it cannot outrun a credential name or a `.join`. Measured: it retires 229 more
+          arena rows that the name axis could not see, and 0 blessed keys, because 0 of the 16 locked
+          CWE-338 keys and 0 of the 552 parity-corpus files carry the segment.
+
+        No name, no consumer and no demo path means no exemption: an unresolved or unnamed draw is
+        unknown, and unknown is never treated as safe.
         """
         leaf = (node.func.attr if isinstance(node.func, ast.Attribute)
                 else (node.func.id if isinstance(node.func, ast.Name) else ''))
         if leaf not in CWE338_DISPLAY_VALUE_LEAVES:
             return False
-        names: List[str] = [name for name in cls._cwe338_assignment_targets(node) if isinstance(name, str)]
+        names: List[str] = [name for name in self._cwe338_assignment_targets(node) if isinstance(name, str)]
         for argument in list(node.args) + [kw.value for kw in node.keywords]:
-            names.extend(cls._cwe338_expression_names(argument))
+            names.extend(self._cwe338_expression_names(argument))
         feeds_a_pause = False
         feeds_a_string_join = False
         current = getattr(node, 'parent', None)
@@ -6162,7 +6221,7 @@ class TaintTracker:
                 elif isinstance(callee, ast.Name):
                     names.append(callee.id)
             current = getattr(current, 'parent', None)
-        if any(cls._cwe338_name_is_security_named(name) for name in names):
+        if any(self._cwe338_name_is_security_named(name) for name in names):
             return False
         if feeds_a_string_join:
             return False
@@ -6170,7 +6229,10 @@ class TaintTracker:
             segments = [s.lower() for s in _CWE338_NAME_SPLIT.split(name) if s]
             if any(segment in CWE338_DISPLAY_VALUE_MARKERS for segment in segments):
                 return True
-        return feeds_a_pause
+        # Last axis, and only reached by a draw that no name and no consumer could explain: the module
+        # itself is odoo's fake-data generator. The pause flag is tested first because it is already
+        # computed; the path split then runs only on a row that would otherwise be reported.
+        return feeds_a_pause or self._cwe338_module_is_demo_generator(scope_id)
 
     def _sink_context_exempt(self, cwe_id: str, node: ast.Call, scope_id: str) -> bool:
         mod_name = self._scope_module(scope_id)
@@ -7266,7 +7328,7 @@ class TaintTracker:
                     return False  # epoch reordering of a dataset, not a PRNG draw
                 if self._is_ml_math_random_draw(node, receiver_name, receiver_canon):
                     return False  # torch/numpy index arithmetic with no credential destination
-            if self._cwe338_display_only_draw(node):
+            if self._cwe338_display_only_draw(node, scope_id):
                 # Provably a display quantity: a whole-segment colour/delay/jitter name in the draw's
                 # own naming vocabulary, and no credential word anywhere in it. Also answers for the
                 # bare aliased spelling (`from random import choice; color = choice(palette)`), so the

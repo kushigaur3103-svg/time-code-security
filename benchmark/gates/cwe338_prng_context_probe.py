@@ -90,30 +90,54 @@ not ship. Measured on the shipped engine, one process each:
                                    backoff_target) + TIER 4 'duration vocabulary not shipped'
   add_seed_marker       exit=1 CAUGHT on 1 row   ('seed' lands in the forbidden-word check)
   widen_banned_markers  exit=1 CAUGHT on 1 row   (index/page/items land in the same check)
-  no_credential_veto    exit=1 CAUGHT on 9 rows  (color_named_secret and timeout_named_token go
-                                   quiet, and TIER 4's veto list breaks for session_key,
-                                   color_password, page_token, let_pass, otp, salt)
-  no_join_veto          exit=1 CAUGHT on 3 rows  (seconds_join_digits and wait_alphabet_index_join
-                                   go quiet, and the `.join` table check breaks)
-  no_populate_segment   exit=2 SKIP - `ast_scanner.CWE338_DEMO_PATH_SEGMENTS` is not shipped.
-  widen_to_tests_segment exit=2 SKIP - same guard; it is the Step-2 row, and TIER 5 already holds
-                                   the evidence that it must stay narrow (below).
+  no_credential_veto    exit=1 CAUGHT on 10 rows (color_named_secret, timeout_named_token and
+                                   demo-populate-plain-credential go quiet, and TIER 4's veto list
+                                   breaks for session_key, color_password, page_token, let_pass, otp,
+                                   salt)
+  no_join_veto          exit=1 CAUGHT on 4 rows  (seconds_join_digits, wait_alphabet_index_join and
+                                   demo-populate-join-code go quiet, and the `.join` table check breaks)
+  no_populate_segment   exit=1 CAUGHT on 7 rows  (all six demo_quiet rows come back loud, plus the
+                                   TIER 4 exact-allow-set check)
+  widen_to_tests_segment exit=1 CAUGHT on 5 rows (tests-plain-stays-loud and
+                                   populate-under-tests-stays-loud go quiet, and TIER 4 breaks the
+                                   allow set, the veto words and the `test_` prefixes)
+
+Seven mutations, seven exits of 1, zero skips: the two path mutations used to exit 2 because no path
+guard existed, and they exit 1 now that Step 2 shipped it. `test-prefix-module-stays-loud` does NOT
+move under `widen_to_tests_segment` even though the mutation adds `test` to the allow set -- the segment
+in that path is `test_populate`, and whole-segment matching cannot see it. That row is protected by the
+matching rule itself, which no table mutation in this list can soften.
+
+The 231-vs-221 arithmetic
+-------------------------
+232 arena rows live under a `populate` path segment; Step 1 had already retired 1 of them
+(`odoo/tools/populate.py:180`), so 231 were reachable by the path axis and
+`scratch/_c338_timing_ab.py` measures 221 retired. The 10-row gap is the guard *refusing*, and every
+refusal is a leaf-table decision, not a path one (`scratch/_c338_demo_left.py` lists them by line):
+5 `getrandbits`, 1 `random.Random()` and 4 `gauss`/`expovariate` draws -- none of the three is in
+`CWE338_DISPLAY_VALUE_LEAVES`, so the path is never even consulted for them. The credential-name and
+`.join` refusals are additionally reproduced as TIER 5 tripwires (`demo-populate-plain-credential`,
+`demo-populate-join-code`, `demo-populate-rng-ctor`, `demo-populate-getrandbits`) so the shape is
+locked even where the arena happens to contain none of it.
 
 `wait_time_target` is deliberately kept in the table even though rolling the new words back does not
 move it: its enclosing function is named `_retry_sleep`, so the shipped `sleep` marker already covers
 it. Ten rows measured, nine attributable to the new vocabulary, one already covered -- and the
 attribution is what the mutation prints, not what this comment assumes.
 
-Why a directory name is not on the exempt side of this gate
-----------------------------------------------------------
+Why exactly one directory name is on the exempt side, and `tests/` never is
+--------------------------------------------------------------------------
 The 277 arena CWE-338 rows were classified from real AST on the 86 pinned files
 (`scratch/_c338_fast.py`, 1.01 s, 76.1 MB): 261 math/sampling, 10 credential, 3 ambiguous, 2 timing,
 0 colour (the colour family is already retired -- the shipped rule ate them), 1 on a line with no
-call. 231 of those 277 sit under an odoo `populate/` directory and 14 under a `tests/` path or
-`test_` leaf. Measured against the 16 blessed keys themselves: **0 of 16 live in a `populate/` path
+call. 232 of those 277 sit under an odoo `populate` path segment and 14 under a `tests/` path or
+`test_` leaf. Measured against the 16 blessed keys themselves: **0 of 16 live in a `populate` path
 and 14 of 16 live in a `test_`/`tests/` path** (8 parity keys are `test_v0*_bad.py`, all 7 Big-8 keys
-are `tests__*`). So a path rule may be proposed for `populate/` and is refused for `tests/`, and TIER
-5 pins that no path exemption exists today at all.
+are `tests__*`), and 0 of the 552 files in the parity scan corpus carry the demo segment at all. That
+asymmetry is the whole argument: the demo segment has an empty blessed population behind it and the
+test segment has almost all of it, so one may be exempted and the other may not be exempted *under any
+circumstance*, including when it is nested inside a demo directory. TIER 5 pins both halves of that
+sentence, and `widen_to_tests_segment` is the mutation that proves the `tests` half is load-bearing.
 
 The seal switch is still there for the old rollback test: `python scratch/_c338_sealrun.py abstained`
 moves `PRNG_CTX_SEAL` in memory without editing this file, and the display rows come back loud.
@@ -122,6 +146,7 @@ moves `PRNG_CTX_SEAL` in memory without editing this file, and the display rows 
 from __future__ import annotations
 
 import contextlib
+import inspect
 import io
 import os
 import sys
@@ -263,23 +288,84 @@ FP_ROWS = [row for row in SHAPES if row[2] == REPORT and row[3] == QUIET]
 MUST_REPORT_ROWS = [row for row in SHAPES if row[3] == REPORT]
 ALREADY_QUIET_ROWS = [row for row in SHAPES if row[2] == QUIET]
 
-# The Step-2 precondition, locked before Step 2 exists. A `populate/` directory is odoo's fake-data
-# generator and the audit measured 231 of the 277 arena rows inside one, with 0 of the 16 blessed keys
-# there -- so the path is a real boundary. It is NOT wired yet, and these rows are what prove that
-# today nothing in the engine trades a finding for a directory name: the same plain-named draw is loud
-# whether the module is `m.py` or `addons/sale/populate/x.py`. When the path guard ships, the
-# `path-buys-nothing-*` rows are the ones that move, and moving them without updating this table is a
-# gate failure.
+# The demo-data path axis, shipped in Step 2, and the only directory this gate will ever trade a
+# finding for. Measured on the 86 pinned arena files: 34 files / 232 of the 277 rows carry a `populate`
+# segment -- 229 of them still loud after Step 1, which is what the path axis retires -- while **0 of
+# the 552 blessed parity-corpus files and 0 of the 16 locked CWE-338 keys** carry it. The mirror image
+# is the trap: 14 of those 16 keys live in a `test_`/`tests/` module and 7 under a `tests` directory, so
+# a path rule that reached `tests/` would delete most of the blessed population in one line. Both
+# spellings are rows below, because odoo ships nested (`addons/sale/populate/x.py`), the pinned arena
+# is flattened (`addons__sale__populate__x`), and odoo itself is Windows-friendly (`...\populate\`).
+DEMO_PATH_WORDS = ('populate', 'populators')
+DEMO_PATH_VETO_WORDS = ('tests', 'test', 'testing', 'conftest', 'fixtures')
+DEMO_PATH_VETO_PREFIXES = ('test_', 'tests_')
+
 PATH_ROWS = [
-    ('path-buys-nothing-populate-plain', 'addons/sale/populate/res_partner.py',
+    # --- the exemption, in every spelling the guard has to speak -------------------------------
+    ('demo-nested-populate-plain', 'addons/sale/populate/res_partner.py',
      'import random\n\n\ndef _fill(batch_size):\n    count = random.randint(1, batch_size)\n    return count\n',
+     QUIET),
+    ('demo-flattened-populate-plain', 'addons__sale__populate__res_partner.py',
+     'import random\n\n\ndef _fill(batch_size):\n    count = random.randint(1, batch_size)\n    return count\n',
+     QUIET),
+    ('demo-windows-populate-plain', 'addons\\sale\\populate\\res_partner.py',
+     'import random\n\n\ndef _fill(batch_size):\n    count = random.randint(1, batch_size)\n    return count\n',
+     QUIET),
+    # A module-level draw with no enclosing function and no marker word: the name axis is blind here, so
+    # this row is the proof that the path axis is a separate boundary and not a synonym for a marker.
+    ('demo-populate-module-level', 'addons/sale/populate/res_partner.py',
+     'import random\n\nbatch = random.randrange(1, 40)\n',
+     QUIET),
+    # `populate.py` as a FILE, not a directory: the segment must still read `populate`, which is why the
+    # guard strips the suffix before comparing. This is odoo's own faker module.
+    ('demo-populate-module-file', 'odoo/tools/populate.py',
+     'import random\n\nvalue = random.choice(range(100))\n',
+     QUIET),
+    ('demo-populate-dict-value', 'addons/sale/populate/res_partner.py',
+     'import random\n\n\ndef _partner():\n    return {"phone": random.choice("0123456789"),'
+     ' "zip": random.randint(100000, 999999)}\n',
+     QUIET),
+    # --- the tripwires: a directory never outruns a credential, a join, a byte draw or a test -----
+    ('demo-populate-credential-name', 'addons/sale/populate/res_partner.py',
+     'import random\n\nCHARS = "abcdef0123456789"\n\n\ndef _partner():\n'
+     '    session_token = "".join(random.choice(CHARS) for _ in range(16))\n'
+     '    return session_token\n',
      REPORT),
-    ('path-buys-nothing-tests-plain', 'tests/generation/test_utils.py',
+    ('demo-populate-plain-credential', 'addons/sale/populate/res_partner.py',
+     'import random\n\n\ndef _fill():\n    password = random.choice("abcdefgh0123456789")\n'
+     '    return password\n',
+     REPORT),
+    ('demo-populate-join-code', 'addons/sale/populate/res_partner.py',
+     'import random\n\n\ndef _fill():\n    count = "".join(str(random.randint(0, 9)) for _ in range(6))\n'
+     '    return count\n',
+     REPORT),
+    ('demo-populate-rng-ctor', 'addons/sale/populate/res_partner.py',
+     'import random\n\n\ndef _fill():\n    rng = random.Random()\n    return rng.random()\n',
+     REPORT),
+    ('demo-populate-getrandbits', 'addons/sale/populate/res_partner.py',
+     'import random\n\nbits = random.getrandbits(256)\n',
+     REPORT),
+    ('tests-plain-stays-loud', 'tests/generation/test_utils.py',
      'import random\n\n\ndef _ids(rng, vocab_size, total_dims):\n    values = []\n'
      '    for _ in range(total_dims):\n        values.append(rng.randint(0, vocab_size - 1))\n'
      '    return values\n',
      REPORT),
+    # A test *module* whose own name contains the demo word. Whole-segment matching plus the `test_`
+    # prefix veto hold this; a substring path rule would silence it. Measured: 1 arena row.
+    ('test-prefix-module-stays-loud', 'odoo/addons/test_populate/models.py',
+     'import random\n\nvalue = random.randint(1, 10)\n',
+     REPORT),
+    ('populate-under-tests-stays-loud', 'addons/sale/populate/tests/faker.py',
+     'import random\n\nvalue = random.randint(1, 10)\n',
+     REPORT),
+    # No scope -> no path -> no exemption. This is the fail-closed half of the guard.
+    ('no-scope-plain-draw-stays-loud', 'm.py',
+     'import random\n\nvalue = random.randint(1, 10)\n',
+     REPORT),
 ]
+
+DEMO_QUIET_ROWS = [row[0] for row in PATH_ROWS if row[3] == QUIET]
+DEMO_TRIPWIRE_ROWS = [row[0] for row in PATH_ROWS if row[3] == REPORT]
 
 # The duration family the fix is allowed to add, and the words it is forbidden to add. A table, so a
 # mutation can widen or shrink it in memory and the truth tier has to notice.
@@ -395,20 +481,51 @@ def check_vocabulary():
     print(f'  color_password: marker={marker_hit} veto={both} -> reported={both}')
     if not (marker_hit and both):
         failures.append(('marker/veto ordering not exercised by any name', 'color_password'))
+    # The path axis, pinned as tables and not as prose: exact allow-set, veto coverage, and the one
+    # argument the guard is fed. A refactor that widens `populate` to `tests`, drops the test veto, or
+    # stops passing scope_id has to break here.
+    allow = set(getattr(ast_scanner, 'CWE338_DEMO_PATH_SEGMENTS', frozenset()))
+    veto = set(getattr(ast_scanner, 'CWE338_DEMO_PATH_VETO_SEGMENTS', frozenset()))
+    prefixes = tuple(getattr(ast_scanner, 'CWE338_DEMO_PATH_VETO_PREFIXES', ()))
+    print(f'  demo path segments={sorted(allow) or "<none wired>"} veto={sorted(veto) or "<none wired>"} '
+          f'prefixes={list(prefixes) or "<none wired>"}')
+    if allow != set(DEMO_PATH_WORDS):
+        failures.append(('CWE338_DEMO_PATH_SEGMENTS is not exactly ' + str(DEMO_PATH_WORDS), sorted(allow)))
+    missing_veto = [w for w in DEMO_PATH_VETO_WORDS if w not in veto]
+    if missing_veto:
+        failures.append(('demo path veto lost', missing_veto))
+    missing_prefix = [w for w in DEMO_PATH_VETO_PREFIXES if w not in prefixes]
+    if missing_prefix:
+        failures.append(('test_ prefix veto lost', missing_prefix))
+    try:
+        params = list(inspect.signature(ast_scanner.TaintTracker._cwe338_display_only_draw).parameters)
+    except (TypeError, ValueError):
+        params = []
+    print(f'  _cwe338_display_only_draw signature={params}')
+    if 'scope_id' not in params:
+        failures.append(('the path guard has no scope to read', params))
+    if not hasattr(ast_scanner.TaintTracker, '_cwe338_module_is_demo_generator'):
+        failures.append(('demo path helper missing', '_cwe338_module_is_demo_generator'))
     return failures
 
 
 def check_path_rows():
-    """TIER 5: a directory name buys nothing yet. See `PATH_ROWS` for why this row is the Step-2 seed."""
+    """TIER 5: the demo path exempts fake data and nothing else -- 6 quiet spellings, 9 tripwires.
+
+    Every row here is scanned through the real record path with its own module name, so this tier is
+    the behavioural proof for `CWE338_DEMO_PATH_SEGMENTS`: the three spellings of `populate` must go
+    quiet, and a credential name, a `.join`, a byte-shape leaf, a `tests/` directory, a `test_` module
+    or a missing scope must all stay loud.
+    """
     failures = []
     for label, modname, source, expected in PATH_ROWS:
         found = scan_cwe338(source, modname)
         status = REPORT if found else QUIET
         note = '; '.join(f'L{n}:{m.replace("CWE-338: ", "")}' for n, m in found)[:44]
-        print(f'  {label:32s} module={modname[:34]:34s} want={expected:5s} got={status:5s} '
+        print(f'  {label:34s} module={modname[:34]:34s} want={expected:5s} got={status:5s} '
               f'{"ok" if status == expected else "MISMATCH"} {note}')
         if status != expected:
-            failures.append((label, 'path exemption exists but is not shipped', expected, status))
+            failures.append((label, 'the demo-path boundary moved', expected, status))
     return failures
 
 
@@ -424,11 +541,12 @@ def main() -> int:
     failures += check_shapes()
     print('TIER 4 - marker table, leaf table and veto order:')
     failures += check_vocabulary()
-    print('TIER 5 - a directory name alone is not an exemption (Step-2 precondition):')
+    print('TIER 5 - the demo path exempts fake data only, in all three spellings:')
     failures += check_path_rows()
     print(f'\nseal={PRNG_CTX_SEAL} shapes={len(SHAPES)} fp_rows={len(FP_ROWS)} '
           f'must_report={len(MUST_REPORT_ROWS)} already_quiet={len(ALREADY_QUIET_ROWS)} '
-          f'path_rows={len(PATH_ROWS)} '
+          f'path_rows={len(PATH_ROWS)} demo_quiet={len(DEMO_QUIET_ROWS)} '
+          f'demo_tripwires={len(DEMO_TRIPWIRE_ROWS)} '
           f'locked_cwe338={sum(CWE338_LOCKED.values())} failures={len(failures)}')
     for item in failures[:12]:
         print(f'  !! {item}')
@@ -443,7 +561,8 @@ def main() -> int:
           f'{len(ALREADY_QUIET_ROWS)} CSPRNG shapes silent, '
           f'{len(FP_ROWS)} display-value rows '
           + ('still loud at seal=abstained' if PRNG_CTX_SEAL == 'abstained' else 'exempted')
-          + '.')
+          + f', {len(DEMO_QUIET_ROWS)} demo-data paths exempted and {len(DEMO_TRIPWIRE_ROWS)} '
+            'demo-path tripwires still loud.')
     return 0
 
 
@@ -487,21 +606,25 @@ MUTATIONS = {
         'requires': None,
         'apply': lambda: setattr(ast_scanner, 'CWE338_CODE_JOIN_SINK_LEAVES', frozenset()),
     },
-    # Both of these are Step 2. They name the engine symbol each one would have to patch; the driver
-    # checks the symbol exists and refuses to claim a falsification when it does not, so neither can
-    # ever be reported as "the gate proved this" before the guard it tests is actually shipped.
+    # Both path mutations patch the shipped Step-2 guard. `requires` still names the symbol, so if the
+    # guard is ever removed the driver refuses to claim a falsification and exits 2 instead of 1.
     'no_populate_segment': {
-        'what': 'remove the odoo demo-data directory guard (Step 2)',
-        'rows': ['path-buys-nothing-populate-plain'],
+        'what': 'delete the odoo demo-data path guard (populate rows come back loud)',
+        'rows': list(DEMO_QUIET_ROWS),
         'requires': 'CWE338_DEMO_PATH_SEGMENTS',
         'apply': lambda: setattr(ast_scanner, 'CWE338_DEMO_PATH_SEGMENTS', frozenset()),
     },
     'widen_to_tests_segment': {
-        'what': 'widen the path guard to tests/ (Step 2) -- measured to delete 14 of the 16 blessed keys',
-        'rows': ['path-buys-nothing-tests-plain'],
+        'what': 'widen the path guard to tests/test and delete both test vetoes -- measured to reach '
+                '14 of the 16 blessed keys',
+        'rows': ['tests-plain-stays-loud', 'populate-under-tests-stays-loud',
+                 'test-prefix-module-stays-loud'],
         'requires': 'CWE338_DEMO_PATH_SEGMENTS',
-        'apply': lambda: setattr(ast_scanner, 'CWE338_DEMO_PATH_SEGMENTS',
-                                 frozenset({'populate', 'tests', 'test'})),
+        'apply': lambda: (
+            setattr(ast_scanner, 'CWE338_DEMO_PATH_SEGMENTS',
+                    frozenset({'populate', 'populators', 'tests', 'test'})),
+            setattr(ast_scanner, 'CWE338_DEMO_PATH_VETO_SEGMENTS', frozenset()),
+            setattr(ast_scanner, 'CWE338_DEMO_PATH_VETO_PREFIXES', ())),
     },
 }
 
@@ -524,7 +647,7 @@ def run_mutation(name: str) -> int:
     failures = check_shapes()
     print('TIER 4 - marker table, leaf table and veto order:')
     failures += check_vocabulary()
-    print('TIER 5 - a directory name alone is not an exemption:')
+    print('TIER 5 - the demo path exempts fake data only:')
     failures += check_path_rows()
     for item in failures[:12]:
         print(f'  !! {item}')

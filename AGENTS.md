@@ -183,6 +183,41 @@ with the arena at `277 → 274 RETIRED=3 ADDED=0`. The clock is a paired same-pr
 at **12.352 µs vs HEAD's 12.934 µs** — the helper got *cheaper*, because the `.join` check reuses the
 ancestor loop the pause check was already walking; peak RSS 193.4 MB.
 
+The same rule then took the demo-data axis, and it is the only place in the engine where a directory name
+is allowed to buy silence. `CWE338_DEMO_PATH_SEGMENTS` (`ast_scanner.py`) holds exactly `populate` and
+`populators`, matched as a **whole segment** of the module path after `\`→`/` normalisation, `__`-splitting
+(the flattened arena spelling) and `.py` stripping (`odoo/tools/populate.py`), so `addons/sale/populate/x.py`,
+`addons__sale__populate__x` and `addons\sale\populate\x.py` all read the same way while
+`odoo/addons/test_populate/models.py` does not. The exemption is consulted **last** inside
+`_cwe338_display_only_draw`, after the banned-leaf table, the credential-name veto and the `.join` veto, and
+an empty or unresolved `scope_id` fails closed — so a path can never outrun a name. `tests/` is refused under
+every circumstance and that is structural, not incidental: `CWE338_DEMO_PATH_VETO_SEGMENTS` +
+`CWE338_DEMO_PATH_VETO_PREFIXES` veto a test tree even nested inside a demo directory
+(`addons/sale/populate/tests/x.py` stays loud), because 0 of the 16 locked CWE-338 keys and 0 of the 552
+parity-corpus files live under a demo segment while 14 of those 16 live in a `test_`/`tests/` module and 7
+under a `tests` directory — a `tests/` exemption would delete most of the blessed population in one line.
+Measured on the shipped code: arena `274 → 53 RETIRED=221 ADDED=0` out of the 231 rows the axis could
+reach (232 live under a demo segment, 1 of them already retired by Step 1), and the 10-row gap is the
+guard refusing, not missing — every refusal is a leaf-table decision before any path is read: 5
+`getrandbits`, 1 `random.Random()` and 4 `gauss`/`expovariate` draws, none of which is in
+`CWE338_DISPLAY_VALUE_LEAVES`; the credential-name and `.join` refusals are pinned separately as TIER 5
+tripwires among 6 quiet + 9 loud rows. LiteLLM is untouched — `RETIRED=0 ADDED=0`, no demo directory
+exists in that tree — and because `C:\Users\…\litellm-target` is a live, unpinned tree that another scan
+rewrote mid-session (34 rows/17 files → 23/17 → 17/10), only the sign of its delta is reportable there;
+the durable number is the pinned 86-file arena. Parity `425/425 MISSING=0 NEW=0`, Big-8 `119/119
+MISSING=0 NEW=0`, cross-file `F1=1.0000 FP=0 FN=0 exact-set YES`, probe `path_rows=15 demo_quiet=6
+demo_tripwires=9 locked_cwe338=16 failures=0` → PASS with all 16 locked keys, `cwe338_ml_math_probe.py`
+62/62, `cwe117_cwe22_unknown_source_probe.py` 59/59, and all **seven** mutations now exit 1 with zero
+skips — `no_populate_segment` on 7 rows, `widen_to_tests_segment` on 5, and the two demo-path tripwires
+additionally caught by `no_credential_veto` (10 rows) and `no_join_veto` (4), which proves the path rule
+sits *behind* both vetoes rather than beside them. The verdict is memoised per module name (the question
+depends on nothing else, and `file_paths` is final before any sink is evaluated), so the cost is one path
+split per module: cold-and-unmemoised the guard adds **1.056 ms** to a scan, memoised it measures
+**−0.132 ms**, and splitting all 552 parity modules costs 4.15 ms once. The paired order-alternating clock
+against `fc4c5dc` on 96 modules, 4 pairs: **CPU ratio median 0.9473** (mean 0.9416, min 0.7244, max
+1.1472, new ≤ head in 6/8 legs; ratio-of-CPU-medians 0.9028 with head 17.516 s vs new 15.812 s) and wall
+ratio median 0.9401 — under the 1.0x floor, with peak RSS 167.8 MB.
+
 ### Permanent Fix Mandate (Root-Cause Immunity & Anti-Band-Aid Rule)
 
 All engine modifications, precision improvements, and bug fixes must be architecturally permanent:
