@@ -1,0 +1,78 @@
+name: TCS Cloud Security Scan
+
+# Manual only: workflow_dispatch, so the file costs zero runner minutes until a human presses
+# "Run workflow". Inputs reach the shell through env vars, never through `${{ }}` inside a
+# `run:` block, because a repo URL is attacker-influenced text and interpolating it into a
+# shell command is command injection (CWE-78).
+on:
+  workflow_dispatch:
+    inputs:
+      target_repo:
+        description: "Target GitHub Repo URL to audit (e.g., https://github.com/BerriAI/litellm.git)"
+        required: true
+        default: "https://github.com/BerriAI/litellm.git"
+      target_branch:
+        description: "Branch to scan"
+        required: false
+        default: "main"
+
+permissions:
+  contents: read
+
+jobs:
+  run-tcs-scan:
+    runs-on: ubuntu-latest
+    # 30, not 15: the engine is measured at ~10.7 s per MB of source on one worker and the
+    # default target (litellm) is 142 MB / 8,641 files, so a 15-minute ceiling can kill the job
+    # before Step 7 uploads anything.
+    timeout-minutes: 30
+
+    steps:
+      - name: Step 1 - Checkout TCS Scanner Code
+        uses: actions/checkout@v4
+
+      - name: Step 2 - Set up Python Environment
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.11"
+          cache: "pip"
+
+      - name: Step 3 - Install Scanner Dependencies
+        run: |
+          python -m pip install --upgrade pip
+          if [ -f requirements.txt ]; then pip install -r requirements.txt; fi
+
+      - name: Step 4 - Run Gate Check (Parity Baseline)
+        run: |
+          python benchmark/gates/aa_parity.py
+
+      - name: Step 5 - Shallow Clone Target Repository
+        env:
+          TARGET_REPO: ${{ github.event.inputs.target_repo }}
+          TARGET_BRANCH: ${{ github.event.inputs.target_branch }}
+        run: |
+          git clone --depth 1 --branch "$TARGET_BRANCH" "$TARGET_REPO" target_code
+
+      # `cli.py scan` has no `-o`: `--format json` writes the report to stdout, so the shell
+      # redirect is the supported way to land it in a file. The scanner exits 1 when it finds
+      # anything (documented at cli.py:1527), which is a success for an audit, so only exit >= 2
+      # (internal error) is allowed to fail the job - otherwise Step 7 never uploads.
+      - name: Step 6 - Execute TCS Engine
+        run: |
+          mkdir -p output
+          set +e
+          python cli.py scan target_code --scope all --format json --workers 2 > output/report.json
+          code=$?
+          set -e
+          if [ "$code" -gt 1 ]; then
+            echo "scanner crashed with exit code $code" >&2
+            exit "$code"
+          fi
+          echo "scanner exit $code (0 = clean, 1 = findings); report written to output/report.json"
+
+      - name: Step 7 - Save Scan Report as Artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: tcs-audit-report
+          path: output/report.json
+          retention-days: 7
