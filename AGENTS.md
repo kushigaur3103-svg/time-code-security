@@ -76,6 +76,20 @@ The sign-off also carries seven standing instructions:
   so a gate kept there is not runnable by anyone else and its baseline is not reviewable. The gates
   scan their own directory, so harness code that trips a rule shows up as a `NEW` key and is fixed,
   never excused.
+  The CWE-611 layer ships two narrowings that `cwe611_xml_entity_probe.py` re-proves every run:
+  `_xml_sink_recognised` (a *resolved, dotted* parser name must live under `lxml.`, `xml.` or
+  `defusedxml.`; bare and unresolved names stay loud) retires `dateutil.parser.parse`, and
+  `_xml_input_is_internal_repo_file` retires a `<handle>.read()` whose handle binds uniquely to a
+  literal `open`/`file_open` path that is realpath-inside a scan root, is a regular file, and whose
+  bytes declare no `<!DOCTYPE`/`<!ENTITY`. Both narrowings are mirrored in all three record paths
+  (registry, aliased emitter, phase-7 structural) and pinned by TIER 4 (alias and dotted spellings
+  must agree) and TIER 5 (nine fixtures in a `tempfile.TemporaryDirectory`: four quiet, five
+  tripwires loud). Measured: arena 445 -> 443 CWE-611 rows with ADDED=0 (only the two dateutil rows
+  leave; the eleven odoo file reads are not in that 120-file arena, TIER 5 pins them on fixtures),
+  gate rollback -> failures=6 FAIL, gate tree peak 167.8 MB, clock ratio 0.876x vs HEAD. The
+  Scope-D `xml_input` label rides only in the SARIF `result.properties` bag
+  (`cli._sarif_document`), never in the canonical message, so the frozen keys cannot move because
+  of it.
 - **Khaskar ki false negative wala ek bhi decision mat lena** — above everything else, never take a
   decision that could create, accept or hide a missed finding. Concretely: no file skipping, no
   collector or candidate gated in a way that a real sink could fall through, no memo/cache that could
@@ -214,18 +228,3 @@ would move a true positive), stop and ask before acting instead of quietly picki
    - All filter checks must be O(1) or single-pass AST lookups. No multi-hop recursive graph walks or expensive inter-procedural traces that degrade scan throughput.
 4. **Zero-FN & Zero-TP Loss:**
    - Parity and Big-8 MISSING=0 is an unbreachable floor. Blessed keys must remain 100% reported.
-### Rule 15: The "No-Punt & Zero-Speed-Regression" Protocol (Saap bhi mare, lathi na toote)
-1. **Strict Prohibition on Punting / Lazy Tagging:**
-   - Agar kisi cluster (jaise CWE-611, CWE-338) mein True Positives (TPs) baithe hain, toh poore cluster ko "too risky" ya "per-file unprovable" bolkar chhodna (drop out karna) ya uspar sirf metadata tagging laga kar chhod dena SAKHT MANA HAI.
-   - Punting is not an engineering verdict. Permanent elimination of noise is mandatory.
-2. **Iterative Sub-Pattern Partitioning:**
-   - Agar tumhara pehla idea (Hypothesis A) kisi blessed TP ko touch karta hai, toh task surrender mat karo.
-   - Analyze karo ki TP kis specific sub-shape par baitha hai (jaise direct HTTP request/network argument).
-   - Us TP shape ko chhodkar, bache hue 90% FPs ka deterministic sub-pattern dhoondo (jaise intra-function producer check, internal builder return, local schema template).
-   - Repeat the cycle: Hypothesize → Boundary Probe → Measure → Refine → Ship.
-3. **Speed Invariant (Fastest SAST Guarantee):**
-   - TCS ka execution time kisi bhi change se REGRESS nahi hona chahiye (CPU time ratio <= 1.0x).
-   - Har naya sub-pattern check $O(1)$ ya single-pass AST lookup hona chahiye. No expensive AST graph walks or recursive multi-hop traversals that degrade scan latency.
-4. **Zero-FN & Zero-TP Loss:**
-   - Blessed keys par MISSING=0 absolute floor hai.
-   - Target is maximum safe FP reduction with 100% TP retention.

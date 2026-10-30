@@ -478,6 +478,11 @@ def _findings_for(tracker, edges):
             "message": sink.metadata.get("message") or \
                 f"{cwe}: {sink.metadata.get('operation') or sanitize_symbol_display(sink.symbol)}",
         }
+        # Triage-only shape label (CWE-611 today). It rides beside the message, never inside it,
+        # so the canonical keys the baselines compare cannot move because of it.
+        xml_input = sink.metadata.get("xml_input")
+        if xml_input:
+            finding["xml_input"] = xml_input
         identity = (finding["file"], finding["line"], finding["cwe"])
         if identity not in seen:
             seen.add(identity)
@@ -802,9 +807,17 @@ def _sarif_document(findings, cwd, execution_successful=True):
         # Mirrors the rule tag list so a reader that only walks results still sees the
         # secondary CWE. Emitted only when a finding actually carries one, which keeps the
         # bytes of every existing finding identical.
+        properties = {}
         related = finding.get("related_cwes")
         if related:
-            result["properties"] = {"tags": _sarif_tags(finding["cwe"], related)}
+            properties["tags"] = _sarif_tags(finding["cwe"], related)
+        # CWE-611 triage hint: which syntactic shape the parser argument had. It exists only
+        # here, never in the message, so SARIF text consumers keep reading the same sentence.
+        xml_input = finding.get("xml_input")
+        if xml_input:
+            properties["xml_input"] = xml_input
+        if properties:
+            result["properties"] = properties
         flow_trace = finding.get("flow_trace")
         if flow_trace:
             result["codeFlows"] = _sarif_code_flows(flow_trace, cwd)

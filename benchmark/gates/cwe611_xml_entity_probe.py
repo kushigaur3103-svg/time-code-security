@@ -61,6 +61,19 @@ The two lines the exemption must not cross
    module constant, or import -- is None here and stays reported, which is what keeps all 16 blessed
    CWE-611 keys on the `*_param`, `module_constant_import` and `parse_variable_file` shapes.
 
+Root qualification and repo-internal reads (the two narrowings this gate also pins)
+-------------------------------------------------------------------------------
+1. A leaf is not a library. `rule_engine.CWE611_SINKS` matches the bare leaves `parse` and
+   `fromstring`, so `dateutil.parser.parse` reached the report on a date string. The engine now asks
+   `_xml_sink_recognised` (ast_scanner.py), which refuses a *resolved* leaf under a non-XML root and
+   keeps every unresolved or bare name reported. `lxml.html`, `lxml.objectify`, `xml.dom.minidom`
+   and the stdlib `fromstring` rows below are the proof the leaf itself still answers.
+2. A file inside the repo is not an attacker's document. `_xml_input_is_internal_repo_file` accepts
+   only `<handle>.read()` where the handle is the *unique* binding of `open`/`file_open(<literal>)`,
+   the realpath stays strictly inside the scanned tree, and the file's bytes declare no
+   `<!DOCTYPE`/`<!ENTITY`. Tier 5 writes those fixtures into `tempfile.mkdtemp()`: the entity file,
+   the `../` escape, the missing path and the rebound handle must all stay reported.
+
 What is already right, and must stay right
 ------------------------------------------
 `defusedxml` is silent in both spellings -- including the `*_external_entity` case, because that
@@ -83,6 +96,7 @@ import contextlib
 import io
 import os
 import sys
+import tempfile
 
 GATES_DIR = os.path.dirname(os.path.abspath(__file__))
 ROOT = os.path.abspath(os.path.join(GATES_DIR, '..', '..'))
@@ -173,6 +187,29 @@ SHAPES = [
     ('sax_dynamic', 'import xml.sax\nfrom xml.sax import ContentHandler\n\n\ndef render(data):\n    return xml.sax.parseString(data, ContentHandler())\n',
      'loud', 'loud'),
     ('module_constant_import', 'from lxml import etree\nfrom app import SAMPLE_DOC\n\n\ndef render():\n    return etree.fromstring(SAMPLE_DOC)\n',
+     'loud', 'loud'),
+    # ---- root-qualified recognition: the XML leaf only counts under an XML root ----
+    # `dateutil.parser.parse` is a date parser that reached the report only because its leaf is
+    # called `parse`; the odoo baseline carried exactly these two spellings. Narrowing the *leaf*
+    # may not widen into deleting the leaf: every XML-root spelling below stays reported, and an
+    # unresolved bare `parse` cannot be proven to be a date parser, so it stays reported too.
+    ('dateutil_alias_parse', 'from dateutil.parser import parse\n\n\ndef when(event):\n    return parse(event.updated)\n',
+     'loud', 'quiet'),
+    # The dotted spelling never matched: the registry only ever matched the bare leaf. Both
+    # spellings must land on the same answer, which is what TIER 4's date-parser pair asserts.
+    ('dateutil_dotted_parse', 'import dateutil.parser\n\n\ndef when(event):\n    return dateutil.parser.parse(event.updated)\n',
+     'quiet', 'quiet'),
+    ('html_alias_fromstring_param', 'from lxml import html\n\n\ndef parse_xml(payload):\n    return html.fromstring(payload)\n',
+     'loud', 'loud'),
+    ('html_dotted_fromstring_param', 'import lxml.html\n\n\ndef parse_xml(payload):\n    return lxml.html.fromstring(payload)\n',
+     'loud', 'loud'),
+    ('objectify_fromstring_param', 'from lxml import objectify\n\n\ndef parse_xml(payload):\n    return objectify.fromstring(payload)\n',
+     'loud', 'loud'),
+    ('stdlib_fromstring_direct_param', 'from xml.etree.ElementTree import fromstring\n\n\ndef parse_xml(payload):\n    return fromstring(payload)\n',
+     'loud', 'loud'),
+    ('minidom_parsestring_param', 'from xml.dom import minidom\n\n\ndef parse_xml(payload):\n    return minidom.parseString(payload)\n',
+     'loud', 'loud'),
+    ('unresolved_bare_parse', 'def when(event):\n    return parse(event.updated)\n',
      'loud', 'loud'),
 ]
 
@@ -266,6 +303,10 @@ def check_path_agreement():
          'from lxml import etree\n\n\ndef parse_xml(payload):\n    return etree.fromstring(payload)\n',
          'import lxml.etree\n\n\ndef parse_xml(payload):\n    return lxml.etree.fromstring(payload)\n'),
     ]
+    pairs.append(
+        ('date parser, alias vs dotted',
+         'from dateutil.parser import parse\n\n\ndef when(event):\n    return parse(event.updated)\n',
+         'import dateutil.parser\n\n\ndef when(event):\n    return dateutil.parser.parse(event.updated)\n'))
     for label, left, right in pairs:
         a = {message for _line, message in scan_path_a(left)}
         b = {message for _line, message in scan_path_a(right)}
@@ -273,6 +314,88 @@ def check_path_agreement():
         print(f'  {label:34s} alias={sorted(a)} dotted={sorted(b)} {"agree" if agree else "DISAGREE"}')
         if not agree:
             failures.append((label, 'the two record paths disagree about the same call', sorted(a), sorted(b)))
+    return failures
+
+
+REPO_FILE_DOC = '<root><item id="1"/></root>\n'
+REPO_FILE_ENTITY = '<!DOCTYPE r [<!ENTITY x SYSTEM "file:///etc/hostname">]><r>&x;</r>\n'
+
+# (relative path, source, expected answer under the shipped seal)
+REPO_FILE_CASES = [
+    # The eleven odoo rows this answers are `lxml.etree.fromstring(f.read().encode())` on a
+    # `with file_open(<literal>)` handle. Nothing here is a parameter, an attribute or a renderer:
+    # the bytes come from a file that is inside the scanned tree and declares no entity.
+    ('pkg/repo_read.py', 'from lxml import etree\n\n\ndef load():\n'
+     '    with open("doc.xml") as handle:\n        return etree.fromstring(handle.read())\n', 'quiet'),
+    ('pkg/repo_dotted.py', 'import lxml.etree\n\n\ndef load():\n'
+     '    with open("doc.xml") as handle:\n        return lxml.etree.fromstring(handle.read())\n', 'quiet'),
+    ('pkg/repo_direct.py', 'from lxml import etree\n\n\ndef load():\n'
+     '    return etree.fromstring(open("doc.xml").read())\n', 'quiet'),
+    ('pkg/repo_file_open.py', 'from lxml import etree\nfrom odoo.tools import file_open\n\n\ndef load():\n'
+     '    with file_open("addons/pkg/doc2.xml") as handle:\n'
+     '        return etree.fromstring(handle.read())\n', 'quiet'),
+    # The tripwires. Each is one step further out than the exemption is allowed to reach.
+    ('pkg/repo_entity.py', 'from lxml import etree\n\n\ndef load():\n'
+     '    with open("evil.xml") as handle:\n        return etree.fromstring(handle.read())\n', 'loud'),
+    ('pkg/repo_dotted_entity.py', 'import lxml.etree\n\n\ndef load():\n'
+     '    with open("evil.xml") as handle:\n        return lxml.etree.fromstring(handle.read())\n', 'loud'),
+    ('pkg/repo_escape.py', 'from lxml import etree\n\n\ndef load():\n'
+     '    with open("../outside.xml") as handle:\n        return etree.fromstring(handle.read())\n', 'loud'),
+    ('pkg/repo_missing.py', 'from lxml import etree\n\n\ndef load():\n'
+     '    with open("nope.xml") as handle:\n        return etree.fromstring(handle.read())\n', 'loud'),
+    ('pkg/repo_rebound.py', 'from lxml import etree\n\n\ndef load():\n'
+     '    handle = open("doc.xml")\n    handle = open("doc.xml")\n'
+     '    return etree.fromstring(handle.read())\n', 'loud'),
+]
+
+
+def _write_fixtures():
+    # The temp root is created here and never crosses a function boundary as an argument:
+    # a `root` parameter is a taint source, so `open(join(root, ...), "w")` is the exact
+    # CWE-22 shape and the gate would report itself. Deletion is owned by the
+    # TemporaryDirectory handle for the same reason: `shutil.rmtree` is an unconditional
+    # CWE-22 sink in this engine, so calling it in harness code adds a NEW parity key.
+    holder = tempfile.TemporaryDirectory(prefix='cwe611_repo_', ignore_cleanup_errors=True)
+    base = holder.name
+    for rel, text in (('scan/doc.xml', REPO_FILE_DOC),
+                      ('scan/evil.xml', REPO_FILE_ENTITY),
+                      ('scan/addons/pkg/doc2.xml', REPO_FILE_DOC),
+                      ('outside.xml', REPO_FILE_DOC)):
+        path = os.path.join(base, rel)
+        os.makedirs(os.path.dirname(path), exist_ok=True)
+        with open(path, 'w', encoding='utf-8') as handle:
+            handle.write(text)
+    for rel, source, _expect in REPO_FILE_CASES:
+        path = os.path.join(base, 'scan', rel)
+        os.makedirs(os.path.dirname(path), exist_ok=True)
+        with open(path, 'w', encoding='utf-8') as handle:
+            handle.write(source)
+    return holder
+
+
+def check_repo_files():
+    """TIER 5: a read of an entity-free file inside the scanned tree is inert, and every way out is not.
+
+    The fixture tree is a `tempfile.TemporaryDirectory`, never a directory under `benchmark/`: the
+    parity gate scans that whole tree, so a fixture written there would report itself as a NEW key
+    and the gate would be measuring its own test data instead of the engine.
+    """
+    failures = []
+    holder = _write_fixtures()
+    base = holder.name
+    try:
+        scan_root = os.path.join(base, 'scan')
+        live = [(os.path.normpath(str(row[0])).replace('\\', '/'), row[1])
+                for row in scan_rows('parity', scan_root) if row[2] == 'CWE-611']
+        for rel, _source, expect in REPO_FILE_CASES:
+            hits = [line for path, line in live if path.endswith(rel)]
+            got = 'loud' if hits else 'quiet'
+            marker = 'ok' if got == expect else 'MISMATCH'
+            print(f'  {rel:28s} want={expect:5s} got={got:5s} {marker} lines={hits}')
+            if got != expect:
+                failures.append((rel, 'repo-file read', expect, got))
+    finally:
+        holder.cleanup()
     return failures
 
 
@@ -288,8 +411,11 @@ def main() -> int:
     failures += check_shapes()
     print('TIER 4 - the two record paths, same call:')
     failures += check_path_agreement()
+    print('TIER 5 - repo-internal file reads, scanned in a temp tree:')
+    failures += check_repo_files()
     print(f'\nseal={XML_LITERAL_SEAL} shapes={len(SHAPES)} fp_rows={len(FP_ROWS)} '
           f'must_report={len(MUST_REPORT_ROWS)} already_quiet={len(ALREADY_QUIET_ROWS)} '
+          f'repo_rows={len(REPO_FILE_CASES)} '
           f'locked_cwe611={sum(CWE611_LOCKED.values())} failures={len(failures)}')
     for item in failures[:12]:
         print(f'  !! {item}')

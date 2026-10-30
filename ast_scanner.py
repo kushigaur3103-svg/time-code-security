@@ -2690,6 +2690,13 @@ XML_PARSER_FACTORY_LEAF = "XMLParser"
 XML_PARSER_ENTITIES_KEYWORD = "resolve_entities"
 XML_CODEC_HOP_METHODS = frozenset({"encode", "decode"})
 
+# The registry matches bare leaves (`parse`, `fromstring`) so an aliased import keeps working;
+# that match also caught `dateutil.parser.parse` on a date string. A resolved, dotted name is
+# therefore narrowed to these roots, while an unresolved or bare name stays reported.
+XML_ENTITY_PARSER_ROOTS = ("lxml.", "xml.", "defusedxml.")
+XML_ENTITY_PARSER_LEAVES = frozenset({"fromstring", "parse", "parseString", "iterparse",
+                                      "make_parser"})
+
 
 def _xml_written_document_text(node, depth=0):
     """The document or path text written *at this call*, or None when the bytes are not here.
@@ -2780,7 +2787,216 @@ def _xml_parser_literal_disables_entities(node) -> bool:
                 and keyword.value.value is False)
 
 
-def _xml_parse_is_inert(input_expr, parser_expr, parser_is_safe=None) -> bool:
+XML_FILE_OPEN_LEAVES = frozenset({"open", "file_open", "fopen", "savepoint_fileopen"})
+XML_FILE_READ_LEAVES = frozenset({"read", "read_bytes", "read_text"})
+XML_REPO_FILE_MAX_BYTES = 2 * 1024 * 1024
+
+
+def _xml_unwrap_codec(node):
+    """The expression under a no-argument `encode`/`decode` hop, or the node itself."""
+    while (isinstance(node, ast.Call) and not node.args and not node.keywords
+           and isinstance(node.func, ast.Attribute)
+           and node.func.attr in XML_CODEC_HOP_METHODS):
+        node = node.func.value
+    return node
+
+
+def _xml_input_shape(call) -> str:
+    """A short label for the parse argument's syntactic shape, carried in SARIF properties only.
+
+    Triage metadata: it never appears in a result message, so no canonical key can move. The
+    vocabulary is deliberately coarse and stable -- it names the shape a reviewer has to look at,
+    never the value.
+    """
+    if not isinstance(call, ast.Call) or not call.args:
+        return "none"
+    expr = _xml_unwrap_codec(call.args[0])
+    if isinstance(expr, ast.Constant):
+        return "literal"
+    if isinstance(expr, ast.JoinedStr):
+        return "fstring"
+    if isinstance(expr, ast.BinOp):
+        return "binop"
+    if isinstance(expr, ast.BoolOp):
+        return "boolop"
+    if isinstance(expr, ast.Subscript):
+        return "subscript"
+    if isinstance(expr, ast.Attribute):
+        return f"attribute:{expr.attr}"
+    if isinstance(expr, ast.Name):
+        return "name"
+    if isinstance(expr, ast.Call):
+        func = expr.func
+        leaf = func.attr if isinstance(func, ast.Attribute) else (
+            func.id if isinstance(func, ast.Name) else "")
+        return f"call:{leaf}" if leaf else "call"
+    return type(expr).__name__.lower()
+
+
+def _xml_file_open_literal(node):
+    """The written path of `open('<literal>')` / `file_open('<literal>')`, or None.
+
+    A mode keyword, a second positional argument or a non-literal path all return None: a file
+    opened for writing is not the document being parsed, and a parameter cannot be shown to name
+    a file inside the tree.
+    """
+    if not isinstance(node, ast.Call) or node.keywords or len(node.args) != 1:
+        return None
+    func = node.func
+    leaf = func.attr if isinstance(func, ast.Attribute) else (
+        func.id if isinstance(func, ast.Name) else None)
+    if leaf not in XML_FILE_OPEN_LEAVES:
+        return None
+    literal = _xml_written_document_text(node.args[0])
+    if not isinstance(literal, str) or not literal:
+        return None
+    return literal
+
+
+def _xml_collect_handle_bindings(node, name, bindings):
+    """Every binding of `name` in one statement body, never descending into a nested scope."""
+    for child in ast.iter_child_nodes(node):
+        if isinstance(child, (ast.FunctionDef, ast.AsyncFunctionDef, ast.ClassDef, ast.Lambda)):
+            continue
+        if isinstance(child, ast.With):
+            for item in child.items:
+                target = item.optional_vars
+                if isinstance(target, ast.Name) and target.id == name:
+                    bindings.append(item.context_expr)
+                elif target is not None and any(
+                        isinstance(sub, ast.Name) and sub.id == name for sub in ast.walk(target)):
+                    bindings.append(None)
+        elif isinstance(child, ast.Assign):
+            for target in child.targets:
+                if isinstance(target, ast.Name) and target.id == name:
+                    bindings.append(child.value)
+                elif any(isinstance(sub, ast.Name) and sub.id == name
+                         for sub in ast.walk(target)):
+                    bindings.append(None)
+        elif isinstance(child, (ast.AnnAssign, ast.AugAssign)):
+            if isinstance(child.target, ast.Name) and child.target.id == name:
+                bindings.append(None)
+        elif isinstance(child, (ast.For, ast.AsyncFor)):
+            if any(isinstance(sub, ast.Name) and sub.id == name
+                   for sub in ast.walk(child.target)):
+                bindings.append(None)
+        _xml_collect_handle_bindings(child, name, bindings)
+
+
+def _xml_enclosing_scope(node):
+    """The function (or module) whose body can bind a handle read at `node`."""
+    current = getattr(node, "parent", None)
+    while current is not None:
+        if isinstance(current, (ast.FunctionDef, ast.AsyncFunctionDef, ast.Module)):
+            return current
+        if isinstance(current, ast.Lambda):
+            return None
+        current = getattr(current, "parent", None)
+    return None
+
+
+def _xml_unique_handle_literal(name, call_node):
+    """The literal path a handle was opened from, when that handle has exactly one binding.
+
+    `with open('<literal>') as handle` and `handle = open('<literal>')` are the two shapes measured
+    on the odoo test rows. Exactly one binding is required: a rebound handle may hold a request
+    stream by the time the read runs, and picking either binding would be a guess. A parameter, a
+    tuple target, a loop target, an augmented write or a `global`/`nonlocal` declaration all refuse.
+    """
+    scope = _xml_enclosing_scope(call_node)
+    if not isinstance(scope, (ast.FunctionDef, ast.AsyncFunctionDef, ast.Module)):
+        return None
+    if isinstance(scope, (ast.FunctionDef, ast.AsyncFunctionDef)):
+        args = scope.args
+        params = [arg.arg for arg in args.posonlyargs + args.args + args.kwonlyargs]
+        params += [arg.arg for arg in (args.vararg, args.kwarg) if arg is not None]
+        if name in params:
+            return None
+        for sub in ast.walk(scope):
+            if isinstance(sub, (ast.Global, ast.Nonlocal)) and name in sub.names:
+                return None
+    bindings = []
+    _xml_collect_handle_bindings(scope, name, bindings)
+    if len(bindings) != 1:
+        return None
+    return _xml_file_open_literal(bindings[0])
+
+
+def _xml_bound_file_literal(input_expr, call_node):
+    """The literal path behind `<handle>.read()`, or None for every other argument shape."""
+    expr = _xml_unwrap_codec(input_expr)
+    if not (isinstance(expr, ast.Call) and isinstance(expr.func, ast.Attribute)
+            and expr.func.attr in XML_FILE_READ_LEAVES
+            and not expr.args and not expr.keywords):
+        return None
+    handle = expr.func.value
+    if isinstance(handle, ast.Call):
+        return _xml_file_open_literal(handle)
+    if isinstance(handle, ast.Name):
+        return _xml_unique_handle_literal(handle.id, call_node)
+    return None
+
+
+def _xml_repo_file_is_entity_free(path, cache):
+    """True when the file at `path` declares no `<!DOCTYPE`/`<!ENTITY`, memoized per real path."""
+    cached = cache.get(path)
+    if cached is not None:
+        return cached
+    try:
+        if os.path.getsize(path) > XML_REPO_FILE_MAX_BYTES:
+            answer = False
+        else:
+            with open(path, "rb") as handle:
+                answer = not _xml_declares_entity(handle.read())
+    except OSError:
+        answer = False
+    cache[path] = answer
+    return answer
+
+
+def _xml_input_is_internal_repo_file(input_expr, call_node, file_path, scan_roots, cache) -> bool:
+    """True when the parse input is an entity-free file read from inside the scanned tree.
+
+    The whole exemption is this conjunction: `<handle>.read()` over a uniquely bound
+    `open`/`file_open('<literal>')`, a realpath that stays strictly inside the scanned tree, and
+    bytes that carry no entity declaration. The content check is the tripwire: a fixture that
+    declares `<!ENTITY x SYSTEM "file:///...">` is the attacker byte written inside the repo, and it
+    vetoes the answer whatever the path looks like.
+
+    `scan_roots` carries every tree the run can legitimately be reading from: the common directory
+    of the parsed files and the process working directory (the scan target when the CLI scans `.`).
+    Both are realpath'd and containment succeeds only inside one of them, so `../` cannot walk out.
+    """
+    literal = _xml_bound_file_literal(input_expr, call_node)
+    if literal is None or not scan_roots:
+        return False
+    roots = [os.path.realpath(root) for root in scan_roots if root]
+    if not roots:
+        return False
+    base_dir = os.path.dirname(os.path.abspath(file_path)) if file_path else roots[0]
+    if os.path.isabs(literal):
+        candidates = [literal]
+    else:
+        candidates = [os.path.join(base_dir, literal)]
+        for root in roots:
+            candidates.append(os.path.join(root, literal))
+            candidates.append(os.path.join(root, "addons", literal))
+    for candidate in candidates:
+        real = os.path.realpath(candidate)
+        if not os.path.isfile(real):
+            continue
+        real_cmp = os.path.normcase(real)
+        for root in roots:
+            try:
+                if os.path.normcase(os.path.commonpath((root, real))) == os.path.normcase(root):
+                    return _xml_repo_file_is_entity_free(real, cache)
+            except ValueError:
+                continue
+    return False
+
+
+def _xml_parse_is_inert(input_expr, parser_expr, parser_is_safe=None,
+                        repo_file_check=None) -> bool:
     """One answer for every CWE-611 record path, so the exemption cannot half-apply.
 
     The aliased emitter (ast_scanner.py:14891) and the structural phase-7 removal
@@ -2799,6 +3015,10 @@ def _xml_parse_is_inert(input_expr, parser_expr, parser_is_safe=None) -> bool:
     `parser_is_safe` is phase 7's scope-aware predicate. The emitter leaves it None and falls back to
     the literal-only form, which is the conservative direction: it can keep a finding phase 7 would
     drop, never drop one phase 7 would keep.
+
+    `repo_file_check` answers for a read of an entity-free file inside the scanned tree. It is a
+    callable so both record paths ask the same question, and it can only ever move an answer from
+    "report" to "inert": a refusal leaves `written` in charge, exactly as before.
     """
     written = _xml_written_document_text(input_expr)
     if written is not None and _xml_declares_entity(written):
@@ -2809,6 +3029,8 @@ def _xml_parse_is_inert(input_expr, parser_expr, parser_is_safe=None) -> bool:
                 return True
         elif _xml_parser_literal_disables_entities(parser_expr):
             return True
+    if repo_file_check is not None and repo_file_check(input_expr):
+        return True
     return written is not None
 
 
@@ -6807,6 +7029,58 @@ class TaintTracker:
         table[scope_id] = result
         return result
 
+    def _xml_sink_recognised(self, canon_name: Optional[str]) -> bool:
+        """Whether a resolved CWE-611 match still names an XML entity parser.
+
+        `rule_engine.CWE611_SINKS` carries the bare leaves `parse`/`fromstring` for aliased imports,
+        and that is also why `dateutil.parser.parse` reached the report on a date string. Only a
+        resolved, dotted name is narrowed here: an unresolved or bare name cannot be proven to be a
+        non-XML parser, so it stays reported, and every leaf under an XML root (`lxml.html`,
+        `lxml.objectify`, the stdlib spellings, defusedxml) still answers.
+        """
+        if not canon_name or canon_name.startswith("shadowed:"):
+            return True
+        if "." not in canon_name:
+            return True
+        if canon_name.startswith(XML_ENTITY_PARSER_ROOTS):
+            return True
+        return canon_name.rsplit(".", 1)[-1] not in XML_ENTITY_PARSER_LEAVES
+
+    def _xml_scan_roots(self) -> tuple:
+        """Every directory the scan can legitimately be reading from, worked out once.
+
+        The common directory of the parsed files is the tree a library caller scanned; the process
+        working directory is the tree when the CLI scans `.` from inside it. A scan whose files all
+        sit in one subdirectory must still resolve a repo-root-relative literal, which is why both
+        are kept instead of picking one.
+        """
+        cached = getattr(self, "_xml_scan_roots_value", None)
+        if cached is not None:
+            return cached
+        roots = []
+        paths = [os.path.abspath(path) for path in self.file_paths.values() if path]
+        if paths:
+            try:
+                common = os.path.commonpath(paths)
+            except ValueError:
+                common = ""
+            if common:
+                roots.append(common if os.path.isdir(common) else os.path.dirname(common))
+        cwd = os.getcwd()
+        if cwd not in roots:
+            roots.append(cwd)
+        cached = tuple(root for root in roots if root)
+        self._xml_scan_roots_value = cached
+        return cached
+
+    def _xml_repo_file_binding(self, input_expr, call_node, file_path) -> bool:
+        """The repo-file question with this tracker's scan roots and per-run memo."""
+        cache = getattr(self, "_xml_repo_file_cache", None)
+        if cache is None:
+            cache = self._xml_repo_file_cache = {}
+        return _xml_input_is_internal_repo_file(
+            input_expr, call_node, file_path, self._xml_scan_roots(), cache)
+
     def is_sink_call(self, node: ast.AST, scope_id: str = "", lineno: int = 0) -> bool:
         if not isinstance(node, ast.Call): return False
         call_lineno = lineno or getattr(node, "lineno", 0)
@@ -6952,6 +7226,8 @@ class TaintTracker:
                 return False
             matched = match_sink_rule(node, name, canon)
             if matched:
+                if matched.cwe_id == "CWE-611" and not self._xml_sink_recognised(canon):
+                    return False
                 if matched.cwe_id == "CWE-327" and self._is_exempt_cwe327(node, scope_id, call_lineno):
                     return False
                 # CWE-338: no security context gate - flag all random.* calls
@@ -6965,6 +7241,8 @@ class TaintTracker:
                 return False
             matched = match_sink_rule(node, name, canon)
             if matched:
+                if matched.cwe_id == "CWE-611" and not self._xml_sink_recognised(canon):
+                    return False
                 if matched.cwe_id == "CWE-327" and self._is_exempt_cwe327(node, scope_id, call_lineno):
                     return False
                 # CWE-338: no security context gate - flag all random.* calls
@@ -7041,6 +7319,9 @@ class TaintTracker:
             canon_name = None
         else:
             matched_rule = match_sink_rule(node, name, canon_name)
+            if matched_rule and matched_rule.cwe_id == "CWE-611" \
+                    and not self._xml_sink_recognised(canon_name):
+                matched_rule = None
             if matched_rule and isinstance(node.func, ast.Attribute) and node.func.attr == "render":
                 if not self._is_jinja_template_expr(node.func.value, scope_id):
                     matched_rule = None
@@ -7110,6 +7391,10 @@ class TaintTracker:
         sink_meta = {"sink_type": meta.get("category", "UNKNOWN_CATEGORY"), "cwe": meta.get("cwe", "UNKNOWN_CWE")}
         if "target_arg" in meta:
             sink_meta["target_arg"] = meta["target_arg"]
+        if sink_meta.get("cwe") == "CWE-611":
+            # Triage-only: the story a reviewer needs (literal vs name vs call), kept out of the
+            # message so no canonical key moves.
+            sink_meta["xml_input"] = _xml_input_shape(node)
         sink = SecurityNode(
             id=sink_id, node_type=NodeType.SINK, symbol=canon_name or name,
             operation=meta.get("operation", "UNKNOWN_OPERATION"), location=loc,
@@ -15045,6 +15330,8 @@ class TaintTracker:
                                   "p3_source_id": CLUSTER2_STRUCTURAL_SOURCE_IDS.get(operation,
                                                                                        operation)},
                     )
+                    if cwe == "CWE-611":
+                        sink_node.metadata["xml_input"] = _xml_input_shape(node)
                     self.sinks.append(sink_node)
                     self.sink_records.append(SinkRecord(
                         node=node,
@@ -15403,8 +15690,11 @@ class TaintTracker:
                             # The one question _xml_parse_is_inert also answers in the structural
                             # pass. The `parse`-only special case this replaced left every other
                             # leaf re-flagging a document the structural pass had just judged inert.
-                            if not _xml_parse_is_inert(node.args[0] if node.args else None,
-                                                       parser_expr):
+                            if not _xml_parse_is_inert(
+                                    node.args[0] if node.args else None,
+                                    parser_expr,
+                                    repo_file_check=lambda expr: self._xml_repo_file_binding(
+                                        expr, node, file_path)):
                                 _add(node, "ALIASED_UNSAFE_XML_PARSE", "XML_EXTERNAL_ENTITY",
                                      "CWE-611")
 
@@ -22304,6 +22594,8 @@ class TaintTracker:
                         "p7_source_id": source_id,
                     },
                 )
+                if cwe == "CWE-611":
+                    sink_node.metadata["xml_input"] = _xml_input_shape(node)
                 self.sinks.append(sink_node)
                 self.sink_records.append(SinkRecord(
                     node=node,
@@ -22450,6 +22742,8 @@ class TaintTracker:
                     xml_inert = _xml_parse_is_inert(
                         input_expr, parser_expr,
                         parser_is_safe=lambda expr: _parser_is_safe(expr, scope_id, lineno),
+                        repo_file_check=lambda expr: self._xml_repo_file_binding(
+                            expr, node, self.file_paths.get(mod_name, "")),
                     )
                     unsafe = explicit_true or (
                         input_expr is not None
