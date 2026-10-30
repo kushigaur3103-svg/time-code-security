@@ -155,6 +155,34 @@ The sign-off also carries seven standing instructions:
   a named TIER 6 row — so none of the four guards is decorative, and deleting the `ast.Dict` key-slot
   evidence makes `dict_key_proof` report again.
 
+The CWE-338 timing/jitter widening is the same shield on the randomness rule, and it is locked the same
+way. `CWE338_DISPLAY_VALUE_MARKERS` (`ast_scanner.py`) gained seven duration words — `interval`,
+`seconds`, `timeout`, `backoff`, `wait`, `cooldown`, `keepalive` — and nothing else, because `_backoff_*`
+and `_retry_wait_seconds` show that a pause is often named by the *enclosing function*, not by an
+assignment target. `seed` is deliberately excluded and stays in the probe's `FORBIDDEN_MARKERS`: a seed
+is how an RNG gets blessed before a credential draw, so it has a second life that no duration word has.
+The widening could have opened one new hole — a numeric code assembled by a string join whose variable
+happens to be called `interval` — and it is closed by `CWE338_CODE_JOIN_SINK_LEAVES`: a draw that feeds
+`.join` is never a display value, whatever its name says, and that veto is checked after the credential
+veto and before the marker match. Falsified by `run_mutation()` in
+`cwe338_prng_context_probe.py` (exit 1 = the mutation is caught, 0 = the guard is decorative, 2 = the
+guard is not shipped yet): `rollback_markers` exits 1 on 9 rows, `no_credential_veto` on 9, `no_join_veto`
+on 3, and `add_seed_marker` and `widen_banned_markers` each exit 1, so the `seed` ban and the
+`index`/`page`/`items` ban are both load-bearing. `no_populate_segment` and `widen_to_tests_segment`
+exit 2 for one honest reason: no path exemption exists yet, and TIER 5 (`PATH_ROWS`) proves the point by
+keeping `addons/sale/populate/res_partner.py` and `tests/generation/test_utils.py` *loud* — 14 of the 16
+blessed CWE-338 keys live in a `test_`/`tests/` path, so any future `tests/` skip would delete them at
+once, while 0 of 16 live in `populate/` and 0 of the 552 blessed corpus files carry any of the seven
+duration words in their path. Measured on the shipped code: probe `shapes=45 fp_rows=22 must_report=20
+already_quiet=3 path_rows=2 locked_cwe338=16 failures=0` → PASS, `cwe338_ml_math_probe.py` `cases=62
+failures=0` → PASS, parity `425/425 MISSING=0 NEW=0`, Big-8 `119/119 MISSING=0 NEW=0`, cross-file
+`F1=1.0000 FP=0 FN=0 exact-set YES`, and the retired-row delta is LiteLLM `34 → 23 RETIRED=11 ADDED=0`
+with the arena at `277 → 274 RETIRED=3 ADDED=0`. The clock is a paired same-process A/B against `7a420f0`
+(8 pairs, one worker): ratio median **0.9994**, and an isolated micro-clock of
+`_cwe338_display_only_draw` over 396 parent-wired candidate calls × 400 iterations puts the per-call cost
+at **12.352 µs vs HEAD's 12.934 µs** — the helper got *cheaper*, because the `.join` check reuses the
+ancestor loop the pause check was already walking; peak RSS 193.4 MB.
+
 ### Permanent Fix Mandate (Root-Cause Immunity & Anti-Band-Aid Rule)
 
 All engine modifications, precision improvements, and bug fixes must be architecturally permanent:

@@ -1029,7 +1029,16 @@ _CWE338_NAME_SPLIT = re.compile(
 CWE338_DISPLAY_VALUE_MARKERS = frozenset({
     "color", "colors", "colour", "colours", "delay", "delays", "jitter", "sleep",
     "preview", "previews", "display",
+    # A pause, a retry backoff and a poll cadence are the other provably-non-security destination: a
+    # duration is a *number the scheduler consumes*, and no credential is ever stored in
+    # `wait_time`, `sync_interval` or `timeout=`. Measured: these seven words retire 10 of the 34
+    # LiteLLM rows (`seconds=proxy_batch_polling_interval + random.randint(0, 30)`), and 0 of the 16
+    # blessed CWE-338 keys, because no blessed key's own vocabulary contains any of them.
+    "interval", "seconds", "timeout", "backoff", "wait", "cooldown", "keepalive",
 })
+# `seed` is the one word in this family that must NEVER join the table: `seed = random.randint(0, 2**31)`
+# is exactly how an RNG is blessed before a credential draw, and it is a locked-loud shape in
+# `benchmark/gates/cwe338_prng_context_probe.py`. A duration word has no such second life; a seed does.
 # Only these draws can be a display quantity. `getrandbits` and `randbytes` produce bytes and are
 # never a colour index, and `Random` is the constructor line that blesses two Big-8 keys
 # (`global_rng = random.Random()`), so neither can be exempted by destination vocabulary.
@@ -1038,6 +1047,11 @@ CWE338_DISPLAY_VALUE_LEAVES = frozenset({
 })
 # A pause is the other provably-non-security consumer: `time.sleep(delay + random.random())`.
 CWE338_SLEEP_SINK_LEAVES = frozenset({"sleep", "sleep_until"})
+# ...and `.join` is the provably-non-display consumer: a number that gets concatenated into a string is
+# a code being assembled (`"".join(str(random.randint(0, 9)) for _ in range(6))`), never a colour index
+# or a cadence. Kept as a table so the gate can falsify the veto by emptying it, exactly as it can the
+# pause table.
+CWE338_CODE_JOIN_SINK_LEAVES = frozenset({"join"})
 
 # ─── O(1) sink fast-path candidate index ───────────────────────────────────
 # is_sink_call() can return True through paths that never consult SINK_REGISTRY:
@@ -6110,6 +6124,11 @@ class TaintTracker:
           marker word and a security word, and stays reported;
         * a marker must be a whole name segment, never a substring. That is what keeps `let_pass`
           (another blessed Big-8 line) out of `pass` and `alive` out of `iv`;
+        * a draw that is concatenated into a string by an enclosing `.join(...)` is never a display
+          value. Colours, delays and cadences are numbers; `"".join(...)` over a draw is how a code,
+          an OTP or a reset string is assembled -- `interval = "".join(str(random.randint(0, 9))
+          for _ in range(6))` reads like a duration and generates a 6-digit code, so the shape wins
+          over the name;
         * the names it reads are the ones the draw itself touches -- assignment target, dict key and
           keyword name through `_cwe338_assignment_targets`, the identifiers inside its own arguments,
           the enclosing function names, and the callee it is handed to.
@@ -6125,6 +6144,7 @@ class TaintTracker:
         for argument in list(node.args) + [kw.value for kw in node.keywords]:
             names.extend(cls._cwe338_expression_names(argument))
         feeds_a_pause = False
+        feeds_a_string_join = False
         current = getattr(node, 'parent', None)
         for _ in range(6):
             if current is None:
@@ -6136,11 +6156,15 @@ class TaintTracker:
                 if isinstance(callee, ast.Attribute):
                     if callee.attr in CWE338_SLEEP_SINK_LEAVES:
                         feeds_a_pause = True
+                    elif callee.attr in CWE338_CODE_JOIN_SINK_LEAVES:
+                        feeds_a_string_join = True
                     names.append(callee.attr)
                 elif isinstance(callee, ast.Name):
                     names.append(callee.id)
             current = getattr(current, 'parent', None)
         if any(cls._cwe338_name_is_security_named(name) for name in names):
+            return False
+        if feeds_a_string_join:
             return False
         for name in names:
             segments = [s.lower() for s in _CWE338_NAME_SPLIT.split(name) if s]
