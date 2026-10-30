@@ -85,7 +85,13 @@ unread) pinned. TIER 4 - path B: the enum guard of `hardcoded_credential_variabl
 false positives asserted **silent**, the quote asymmetry asserted on `main.tf`, and the concrete values
 that must stay flagged by the AST detector. TIER 5 - the scope itself: one real credential per Python
 suffix must lose the HCL rule and *keep* a finding on both paths, the bank must be 219/219 rules for
-non-Python names, and 9 HCL/config/Go/env/txt/no-extension/stdin detections must still fire.
+non-Python names, and 9 HCL/config/Go/env/txt/no-extension/stdin detections must still fire. TIER 6 -
+the litellm nameplate narrowing: 12 credential-named constants whose literal only re-spells an env-var
+name, an HTTP header, an OAuth URN, a `Final` config key, a JSON payload or a user-facing banner are
+asserted **silent**, each one read somewhere inside its own source so the "nothing loads this name"
+half of the storage-key test cannot be what silences it; 7 tripwires that sit one character away
+(`x-api-key-actual-secret`, `my_org_secret`, a `PASSWORD_MESSAGE` carrying a real pass phrase,
+`x-api-key-90210`, `sk_live_api_key`, a `urn:` holding a JWT, a raw key hash) are asserted **reported**.
 
 Falsification, all seven measured with `scratch/_falsify_798.py` - it exec's this file in a private
 namespace with `__file__` pointed at the tracked path and mutates the engine/scanner singletons in
@@ -106,6 +112,25 @@ the corpus tier fails on the fixture bytes before any baseline can be re-blessed
 tier that had to be re-keyed - with the quote-asymmetry rows on a `.py` filename, the broadening
 mutation measured exit=0 (unfalsifiable), because the scoped rule does not execute on Python at all;
 moving the rows to `main.tf` is what made them bite.
+
+The five TIER 6 mutations, measured on the engine that ships the nameplate branches by a one-shot
+in-memory harness (same technique as above: the engine's methods are swapped in the running process, so
+this file is never edited and the unmodified run still exits 0). The harness is disposable; the numbers
+below are what the tracked tiers pin, and each row names the tier row that bites:
+
+    unmodified                                       exit=0  PASS
+    nameplate branches rolled back                   exit=1  FAIL env_var_nameplate, hash_param_nameplate, header_token_subset, helper_key_camel, urn_token_type, self_class_name -> [1]
+    credential fingerprint veto removed              exit=1  FAIL urn_with_token want=[1] got=silent
+    credential-noun gate removed                     exit=1  FAIL field_path_unread (pinned pair diverged) + hash_param_nameplate, dict_key_proof, unread_kebab_field -> [1]
+    `key_used` evidence dropped                      exit=1  FAIL dict_key_proof -> [1]
+
+Row 3 is the only mutation here that can make a *credential* vanish, which is exactly why
+`_c798_fingerprinted` fences every new branch - without that veto a `urn:` carrying a JWT reads as a
+protocol constant and goes silent. Row 5 is the zero-FN proof for the `ast.Dict` key-slot pass: a
+`Final` config mapping puts the constant in the **key** slot, and if that evidence is deleted the row
+reports again, so the branch is shown to be load-bearing rather than decorative. Row 4 fails the
+*pre-existing* storage-key pair before it fails any nameplate, which records that the credential-noun
+test is a component of that proof, not a second exemption stacked on top of it.
 """
 from __future__ import annotations
 
@@ -180,6 +205,46 @@ MUST_REPORT = [
 STORAGE_KEY_PAIR = [
     ('field_path_unread', 'API_KEY = "live_token_abc"\n', []),
     ('field_path_read', 'API_KEY = "live_token_abc"\nprint(API_KEY)\n', [1]),
+]
+
+# TIER 6 - the litellm nameplate narrowing. Each row is one of the 31 CRITICAL CWE-798 false
+# positives, reduced to the shape that retired it: `MISTRAL_API_KEY_ENV_VAR = "MISTRAL_API_KEY"` is
+# the name minus a role word, `{XGOOGLE_API_KEY: v}` is the engine's own key-usage proof, and
+# `INVALID_API_KEY_ERROR_MESSAGE = "Authentication Error, ..."` is a name that declares it holds a
+# banner. Every row is additionally *read* inside its source (`print`/`connect`/`use`), so nothing here
+# can be silenced by the cheap "nobody loads this name" half of the storage-key test - the branch that
+# retires it has to be the one named in the label.
+NAMEPLATE_EXEMPT = [
+    ('env_var_nameplate', 'MISTRAL_API_KEY_ENV_VAR = "MISTRAL_API_KEY"\nprint(MISTRAL_API_KEY_ENV_VAR)\n'),
+    ('hash_param_nameplate', 'HASH_SECRET_PARAM = "telemetry_deployment_hash_secret"\nconnect(HASH_SECRET_PARAM)\n'),
+    ('header_token_subset', 'custom_litellm_api_key = "x-litellm-api-key"\nsend(custom_litellm_api_key)\n'),
+    ('helper_key_camel', 'API_KEY_HELPER_KEY = "apiKeyHelper"\njson.dump({"k": API_KEY_HELPER_KEY})\n'),
+    ('urn_token_type', 'SUBJECT_TOKEN_TYPE_ACCESS_TOKEN = "urn:ietf:params:oauth:token-type:access_token"'
+                       '\nuse(SUBJECT_TOKEN_TYPE_ACCESS_TOKEN)\n'),
+    ('self_class_name', 'ClientSecretCredential = "ClientSecretCredential"\nregister(ClientSecretCredential)\n'),
+    ('error_message', 'INVALID_API_KEY_ERROR_MESSAGE = "Authentication Error, Invalid API key provided."'
+                      '\nprint(INVALID_API_KEY_ERROR_MESSAGE)\n'),
+    ('url_constant', 'DEFAULT_GITHUB_ACCESS_TOKEN_URL = "https://github.com/login/oauth/access_token"'
+                     '\nrequest(DEFAULT_GITHUB_ACCESS_TOKEN_URL)\n'),
+    ('json_payload', '_PASSWORD_CHANGED_AUDIT_VALUES = \'{"fields_changed": ["password"]}\'\n'
+                     'log(_PASSWORD_CHANGED_AUDIT_VALUES)\n'),
+    ('dict_key_proof', 'XGOOGLE_API_KEY = "x-goog-api-key"\nheaders = {XGOOGLE_API_KEY: key}\n'),
+    ('kebab_field_read', 'OPEN_SANDBOX_API_KEY_ENV_VAR = "OPEN_SANDBOX_API_KEY"\n'
+                         'os.environ.get(OPEN_SANDBOX_API_KEY_ENV_VAR)\n'),
+    ('unread_kebab_field', 'USERNAME_PASSWORD = "profile-username-password"\n'),
+]
+
+# The same tier's other half: seven shapes that sit one character away from an exemption and must stay
+# loud. These are the false negatives this narrowing would otherwise buy.
+NAMEPLATE_TRIPWIRES = [
+    ('header_foreign_token', 'API_KEY = "x-api-key-actual-secret"\nconnect(API_KEY)\n', [1]),
+    ('one_word_core', 'SECRET_KEY = "my_org_secret"\nconnect(SECRET_KEY)\n', [1]),
+    ('prose_smuggler', 'PASSWORD_MESSAGE = "the password is hunter2secret"\nprint(PASSWORD_MESSAGE)\n', [1]),
+    ('digits_in_header', 'API_KEY_HEADER = "x-api-key-90210"\nconnect(API_KEY_HEADER)\n', [1]),
+    ('marker_in_nameplate', 'API_KEY_ENV_VAR = "sk_live_api_key"\nconnect(API_KEY_ENV_VAR)\n', [1]),
+    ('urn_with_token', 'ACCESS_TOKEN_TYPE = "urn:example:oauth:token:eyJhbGciOiJIUzI1NiJ9"\n'
+                       'use(ACCESS_TOKEN_TYPE)\n', [1]),
+    ('hashed_value', 'API_KEY_HASH = "5e2f1a9b7c3d4e6f"\nprint(API_KEY_HASH)\n', [1]),
 ]
 
 # Path B: `secret_scanner` detectors this probe cares about, by name, so a rename shows up as a
@@ -427,6 +492,29 @@ def check_python_scope():
     return failures
 
 
+def check_nameplates():
+    """TIER 6: the litellm nameplate narrowing - 12 identifier shapes silent, 7 tripwires loud."""
+    failures = []
+    for label, source in NAMEPLATE_EXEMPT:
+        lines = scan_ast(label, source)
+        print(f'  {"ok  " if not lines else "FAIL"} {label:22s} want=silent  got={lines or "silent"}')
+        if lines:
+            failures.append((label, 'silent', lines,
+                             'a credential-named identifier nameplate is reported again - the branch '
+                             'named in the label (`_c798_value_is_identifier_nameplate`, '
+                             '`_c798_value_is_non_credential_constant` or the widened key-usage proof) '
+                             'no longer covers this shape'))
+    for label, source, want in NAMEPLATE_TRIPWIRES:
+        lines = scan_ast(label, source)
+        ok = lines == want
+        print(f'  {"ok  " if ok else "FAIL"} {label:22s} want={want}  got={lines or "silent"}')
+        if not ok:
+            failures.append((label, want, lines,
+                             'a real credential went silent behind a nameplate excuse - zero-FN '
+                             'violation: narrow the exemption, never delete this row'))
+    return failures
+
+
 def main() -> int:
     print('TIER 1 - blessed CWE-798 floors, and who owns each detector:')
     failures = check_floors()
@@ -438,10 +526,13 @@ def main() -> int:
     failures += check_path_b()
     print('TIER 5 - the Python deny-list scoped the rule away without removing the finding:')
     failures += check_python_scope()
+    print('TIER 6 - the 12 litellm identifier nameplates and the 7 credentials hiding behind them:')
+    failures += check_nameplates()
     print(f'\nseal={PATTERN_ENUM_SEAL} locked_cwe798={sum(CWE798_LOCKED.values())} '
           f'fixtures={len(FIXTURE_LINES)} must_exempt={len(MUST_EXEMPT)} must_report={len(MUST_REPORT)} '
           f'storage_key={len(STORAGE_KEY_PAIR)} path_b_fp={len(PATTERN_FALSE_POSITIVES)} '
           f'hcl_locks={len(HCL_STILL_RUNS)} py_suffixes={len(PYTHON_SUFFIXES)} '
+          f'nameplates={len(NAMEPLATE_EXEMPT)} tripwires={len(NAMEPLATE_TRIPWIRES)} '
           f'failures={len(failures)}')
     for item in failures[:12]:
         print(f'  !! {item}')
@@ -451,7 +542,9 @@ def main() -> int:
         return 1
     print('VERDICT: PASS - 6 blessed CWE-798 keys held, 12 fixtures exact-set, 6 weak/enum shapes silent '
           'and 8 concrete shapes reported on path A, 5 path-B false positives closed on Python while '
-          f'{len(HCL_STILL_RUNS)} HCL/config/Go/stdin detections still fire.')
+          f'{len(HCL_STILL_RUNS)} HCL/config/Go/stdin detections still fire, and '
+          f'{len(NAMEPLATE_EXEMPT)} identifier nameplates silent with all '
+          f'{len(NAMEPLATE_TRIPWIRES)} tripwire credentials still loud.')
     return 0
 
 

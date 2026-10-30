@@ -128,6 +128,33 @@ The sign-off also carries seven standing instructions:
   (`gate_meta.json` → `big8.expected_keys`); every other number in this file is history, and the two
   probes above are what keeps that history from being re-litigated with a re-bless.
 
+  The CWE-798 identifier-nameplate retirement is the same shield applied to a rule whose blessed
+  population is six keys, and it is locked the same way. In `ast_scanner.py`, the phase-9 gatekeeper
+  (`_collect_phase9_structural_findings`) is the single final arbiter for `Assign`/`AnnAssign`
+  credential nodes: its `else` branch already calls `_remove_existing(node, "CWE-798", mod_name)`, so a
+  finding can only survive by passing the conjunctive emit test. That test now refuses to emit when the
+  literal is a *name of a thing* rather than the thing itself — `_c798_value_is_identifier_nameplate`
+  (name↔value relatedness: identical modulo separators, or name = value + one role word from
+  `CWE798_ROLE_WORDS`, or an `x-`-header whose tokens are a subset of the variable's tokens, or an
+  `urn:` protocol constant) and `_c798_value_is_non_credential_constant` (the variable's own name ends
+  in a declared non-credential noun like `message`/`url`/`template`) — on top of the pre-existing
+  `_c798_value_is_storage_key`, whose `key_used` pass additionally recognises an `ast.Dict` **key** slot.
+  Every branch is fenced by `_c798_fingerprinted`, which vetoes any value carrying a real-secret shape
+  (`sk-`, `sk_live`, `AKIA`, `gh[pousr]_`, `eyJ`, `-----BEGIN`, `ya29.`, `AIza`, or a digit run ≥ 4),
+  so a guard can only ever widen toward silence on a value that looks like a nameplate, never on one
+  that looks like a credential. All six blessed parity CWE-798 keys are single-token values
+  (`hunter2secret`, `sk_live_51abcdef`, `supersecret123`, `eyJhbGciOiJIUzI1NiJ9`, `mysecretkey123`,
+  `correcthorsebatterystaple`) that their own file reads back, so none of them is reachable by any of
+  these branches. The permanent lock is TIER 6 of `cwe798_credential_concreteness_probe.py`
+  (`NAMEPLATE_EXEMPT` 12 rows + `NAMEPLATE_TRIPWIRES` 7), and the tripwires are what make the exemption
+  narrow rather than merely convenient: `PASSWORD_MESSAGE = "the password is hunter2secret"`,
+  `API_KEY_ENV_VAR = "sk_live_api_key"` and `ACCESS_TOKEN_TYPE = "urn:...:eyJhbGciOiJIUzI1NiJ9"` must
+  stay loud even though their names match an exempt shape. Falsified in memory, with the five measured
+  results recorded in that probe's docstring: the unmodified engine exits 0, and each of
+  `rollback_branches`, `no_fingerprint_veto`, `no_credential_noun` and `no_key_used_evidence` exits 1 on
+  a named TIER 6 row — so none of the four guards is decorative, and deleting the `ast.Dict` key-slot
+  evidence makes `dict_key_proof` report again.
+
 ### Permanent Fix Mandate (Root-Cause Immunity & Anti-Band-Aid Rule)
 
 All engine modifications, precision improvements, and bug fixes must be architecturally permanent:

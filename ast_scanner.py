@@ -1298,6 +1298,43 @@ CWE798_TARGET_RE = re.compile(r"(?i).*(password|passwd|secret_key|api_key|access
 # (`TaintTracker._c798_value_is_storage_key`).
 CWE798_FIELD_PATH_VALUE_RE = re.compile(r"^[a-z][a-z0-9]*(?:[._][a-z0-9]+)+$")
 
+# The nameplate families the field-path rule above cannot see: an HTTP header name
+# (`x-goog-api-key`), an OAuth token-type URN, an ALL-CAPS env-var name, a CamelCase class-name
+# string and a kebab-case telemetry field. `SENSITIVE_VALUE_NAME_RE` is anchored on `\b` and `_` is a
+# word character, so it can never match the credential word inside `user_api_key_auth`; splitting the
+# value into tokens first is what makes that word visible. `CWE798_NAMEPLATE_VALUE_RE` widens the
+# separators from `._` to `[-_.:]`, which is why `_c798_fingerprinted` gates every branch: a literal
+# that carries a provider key prefix or a run of four digits stays reported however nameplate-shaped
+# it reads.
+CWE798_NAMEPLATE_VALUE_RE = re.compile(r"^[A-Za-z][A-Za-z0-9]*(?:[-_.:][A-Za-z0-9]+)+$")
+CWE798_NAME_OR_PATH_VALUE_RE = re.compile(r"^[A-Za-z][A-Za-z0-9]*(?:[-_.:][A-Za-z0-9]+)*$")
+CWE798_URN_VALUE_RE = re.compile(r"(?i)^urn:[a-z][a-z0-9_\-]*(?::[a-z0-9][a-z0-9_\-]*)+$")
+CWE798_NAMEPLATE_SPLIT_RE = re.compile(r"[-_.:]")
+CWE798_NON_ALNUM_RE = re.compile(r"[^a-z0-9]+")
+CWE798_NAMEPLATE_NOUNS = frozenset({
+    "password", "passwd", "secret", "secrets", "token", "tokens", "api", "apikey", "auth",
+    "authorization", "credential", "credentials", "certificate", "cert", "pin",
+})
+CWE798_NAMEPLATE_PAIR_NOUNS = frozenset({
+    "api_key", "auth_token", "access_token", "refresh_token", "private_key", "secret_key",
+    "api_secret", "client_secret", "bearer_token", "sign_secret",
+})
+CWE798_ROLE_WORDS = frozenset({
+    "env", "envvar", "var", "name", "key", "header", "type", "alias", "target", "param",
+    "field", "helper", "hash",
+})
+# An HTTP header name: `x-` and nothing but lower-case identifier segments after it.
+CWE798_HEADER_VALUE_RE = re.compile(r"(?i)^x-[a-z][a-z0-9]*(?:-[a-z0-9]+)*$")
+# A constant whose own name declares it is a message, a URL, a hint or a payload. The value still has
+# to read like prose, a URL or a document, so this can never silence a pasted-in token.
+CWE798_NON_CREDENTIAL_NAME_RE = re.compile(
+    r"(?i)(?:message|messages|error|errors|url|urls|hint|hints|rejection|values|template|label|"
+    r"labels|description|prompt|doc|docs|reason|title)$")
+CWE798_SECRET_FINGERPRINT_RE = re.compile(
+    r"(?i)(sk-[a-z0-9]|sk_live|sk_test|pk_live|pk_test|akia|gh[pousr]_|xox[baprs]-|eyJ|-----begin"
+    r"|ya29\.|AIza[0-9A-Za-z\-]{4,}|xapi[a-z0-9]{8,})")
+CWE798_LONG_DIGIT_RUN_RE = re.compile(r"\d{4,}")
+
 # The `if`/`elif` that grants `authenticated = True` is a bypass only when nothing was checked. A
 # callee that says what it does - `validate`, `verify`, `authenticate`, `authorize`, with Home
 # Assistant's `async_` prefix allowed for - is that check (`_c287_branch_verifies`).
@@ -10968,23 +11005,122 @@ class TaintTracker:
                    for flag in ("secure", "httponly", "samesite"))
 
     @staticmethod
-    def _c798_value_is_storage_key(value: str, target_name: str,
+    def _c798_fingerprinted(value: str) -> bool:
+        """True when the literal carries credential bytes no nameplate shape may explain away."""
+        return bool(CWE798_SECRET_FINGERPRINT_RE.search(value) or CWE798_LONG_DIGIT_RUN_RE.search(value))
+
+    @classmethod
+    def _c798_value_has_credential_noun(cls, value: str) -> bool:
+        """Whether the literal names a credential, as a whole (`api_password`) or across separators
+        (`x-goog-api-key`, `user_api_key_auth`, `telemetry_deployment_hash_secret`)."""
+        if SENSITIVE_VALUE_NAME_RE.search(value):
+            return True
+        tokens = [token for token in CWE798_NAMEPLATE_SPLIT_RE.split(value.lower()) if token]
+        if any(token in CWE798_NAMEPLATE_NOUNS for token in tokens):
+            return True
+        return any(f"{first}_{second}" in CWE798_NAMEPLATE_PAIR_NOUNS
+                   for first, second in zip(tokens, tokens[1:]))
+
+    @staticmethod
+    def _c798_value_is_header_name(value: str, name_tokens: list) -> bool:
+        """True for `custom_litellm_api_key = "x-litellm-api-key"`.
+
+        A header name is only a nameplate when every word in it is already a word in the constant's
+        own name: any digit, or one token the name does not carry, keeps the value reported, so
+        `API_KEY = "x-api-key-actual-secret"` cannot talk its way out here.
+        """
+        if not CWE798_HEADER_VALUE_RE.match(value) or len(value) > 40:
+            return False
+        if any(character.isdigit() for character in value):
+            return False
+        value_tokens = {token for token in CWE798_NAMEPLATE_SPLIT_RE.split(value.lower()) if token}
+        value_tokens.discard("x")
+        return bool(value_tokens) and value_tokens <= (set(name_tokens) - {"x"})
+
+    @classmethod
+    def _c798_value_is_identifier_nameplate(cls, value: str, target_name: str) -> bool:
+        """True when the literal only re-spells the constant's own identifier, or is a registered URN.
+
+        `OPEN_SANDBOX_API_KEY_ENV_VAR = "OPEN_SANDBOX_API_KEY"` and `API_KEY_HELPER_KEY =
+        "apiKeyHelper"` are nameplates: the name is the value plus one role word, so the string cannot
+        be the secret an operator pastes. Only the *name* may be longer than the value - the test never
+        reads the other direction, so `DB_PASSWORD = "db_password_for_prod"` cannot pass it. A
+        `urn:`-prefixed value is a protocol namespace identifier and is matched on its own, because
+        nothing that leaks a credential starts with `urn:`. Every branch dies on
+        `_c798_fingerprinted`, and the namespace-prefix branch additionally demands that the literal
+        read like a credential word list, so a hash or a random blob never reaches it.
+        """
+        if cls._c798_fingerprinted(value) or " " in value or len(value) > 64:
+            return False
+        if CWE798_URN_VALUE_RE.match(value):
+            return True
+        if not CWE798_NAME_OR_PATH_VALUE_RE.match(value):
+            return False
+        value_norm = CWE798_NON_ALNUM_RE.sub("", value.lower())
+        name_norm = CWE798_NON_ALNUM_RE.sub("", target_name)
+        if not value_norm or not name_norm:
+            return False
+        name_tokens = [token for token in CWE798_NAMEPLATE_SPLIT_RE.split(target_name.lower()) if token]
+        if value_norm == name_norm:
+            return True
+        for role in CWE798_ROLE_WORDS:
+            if name_norm == value_norm + role or name_norm == role + value_norm:
+                return True
+            # `HASH_SECRET_PARAM = "telemetry_deployment_hash_secret"`: the value is the constant's
+            # own core with a namespace in front of it. The name must carry a role word and at least
+            # three tokens, so `SECRET_KEY = "my_org_secret"` - two tokens, no role word - stays
+            # reported, and so does anything whose core is a single word.
+            core = name_norm[:len(name_norm) - len(role)]
+            if (name_tokens[-1] == role and len(name_tokens) >= 3 and len(core) >= 6
+                    and cls._c798_value_has_credential_noun(value)
+                    and value_norm.endswith(core)):
+                return True
+        return cls._c798_value_is_header_name(value, name_tokens)
+
+    @classmethod
+    def _c798_value_is_non_credential_constant(cls, value: str, target_name: str) -> bool:
+        """True when the constant's own name says it is a message, URL, hint or payload.
+
+        The name has to carry the role suffix *and* the value has to read like prose, a URL or a
+        document - a three-word string in `INVALID_USER_PASSWORD_MESSAGE` is a banner, the same three
+        words in `API_KEY` would not reach here at all. `_c798_fingerprinted` vetoes the pass phrase
+        that happens to have spaces in it.
+        """
+        if not CWE798_NON_CREDENTIAL_NAME_RE.search(target_name):
+            return False
+        if cls._c798_fingerprinted(value):
+            return False
+        stripped = value.strip()
+        if stripped[:1] in ("{", "[", "<"):
+            return True
+        if stripped.lower().startswith(("http://", "https://")):
+            return True
+        # Three words *and* sentence punctuation: a banner reads like prose end to end, so
+        # `PASSWORD_MESSAGE = "the password is hunter2secret"` - three words, no full stop - stays
+        # reported instead of being excused by its own name.
+        return (" " in stripped and len(stripped.split()) >= 3
+                and any(mark in stripped for mark in (".", ",", ";", "!")))
+
+    @classmethod
+    def _c798_value_is_storage_key(cls, value: str, target_name: str,
                                    key_used: set, loaded: set) -> bool:
         """True when a credential-named constant holds a mapping key, not the secret it names.
 
         Two proofs, and both are required, so a weak real password cannot talk its way out:
-        (1) the literal's own shape - `api_password`, `http.auth.sign_secret` (see
-        `CWE798_FIELD_PATH_VALUE_RE`);
+        (1) the literal's own shape - `api_password`, `http.auth.sign_secret`, `x-goog-api-key` (see
+        `CWE798_FIELD_PATH_VALUE_RE` and `CWE798_NAMEPLATE_VALUE_RE`) - and a credential word inside
+        it, with `_c798_fingerprinted` as the veto;
         (2) what the file does with the name. Either it indexes something with it
-        (`hass.data[DATA_SIGN_SECRET]`, `hass.data.get(DATA_SIGN_SECRET)`) or nothing in the file ever
-        *reads* it, so there is no code path that could hand the literal to anything as a value.
-        `password = "admin_password"` followed by `connect(password)` fails (2) - the name is read as a
-        value - and is still reported.
+        (`hass.data[DATA_SIGN_SECRET]`, `hass.data.get(DATA_SIGN_SECRET)`, `{X_LITELLM_API_KEY: v}`)
+        or nothing in the file ever *reads* it, so there is no code path that could hand the literal
+        to anything as a value. `password = "admin_password"` followed by `connect(password)` fails
+        (2) - the name is read as a value - and is still reported.
         """
-        if not CWE798_FIELD_PATH_VALUE_RE.match(value):
+        if not (CWE798_FIELD_PATH_VALUE_RE.match(value) or CWE798_NAMEPLATE_VALUE_RE.match(value)):
             return False
-        if not any(SENSITIVE_VALUE_NAME_RE.search(segment)
-                   for segment in re.split(r"[._]", value)):
+        if not cls._c798_value_has_credential_noun(value):
+            return False
+        if cls._c798_fingerprinted(value):
             return False
         return target_name in key_used or target_name not in loaded
 
@@ -23496,11 +23632,21 @@ class TaintTracker:
             key_used: set = set()
             loaded: set = set()
             for sub in self._module_nodes(tree):
-                if isinstance(sub, ast.Subscript) and isinstance(sub.slice, (ast.Name, ast.Attribute)):
-                    key_used.add((sub.slice.id if isinstance(sub.slice, ast.Name)
-                                  else sub.slice.attr).lower())
+                # One isinstance call for both shapes, so adding the `ast.Dict` case costs no extra
+                # per-node test: this loop visits every node of every module.
+                if isinstance(sub, (ast.Subscript, ast.Dict)):
+                    if isinstance(sub, ast.Subscript) and isinstance(sub.slice, (ast.Name, ast.Attribute)):
+                        key_used.add((sub.slice.id if isinstance(sub.slice, ast.Name)
+                                      else sub.slice.attr).lower())
+                    # `{X_LITELLM_API_KEY: value}` puts the constant in the key slot, which is the
+                    # same evidence as indexing with it. Only `keys` are collected, never `values`.
+                    elif isinstance(sub, ast.Dict):
+                        for dict_key in sub.keys:
+                            if isinstance(dict_key, (ast.Name, ast.Attribute)):
+                                key_used.add((dict_key.id if isinstance(dict_key, ast.Name)
+                                              else dict_key.attr).lower())
                 elif (isinstance(sub, ast.Call) and isinstance(sub.func, ast.Attribute)
-                      and sub.func.attr == "get" and len(sub.args) == 1
+                      and sub.func.attr in ("get", "getenv", "pop", "setdefault") and len(sub.args) == 1
                       and isinstance(sub.args[0], (ast.Name, ast.Attribute))):
                     key_used.add((sub.args[0].id if isinstance(sub.args[0], ast.Name)
                                   else sub.args[0].attr).lower())
@@ -23516,8 +23662,13 @@ class TaintTracker:
                     if not sensitive:
                         continue
                     if isinstance(value_node, ast.Constant) and isinstance(value_node.value, str):
-                        if _credential_is_concrete(value_node.value) and not self._c798_value_is_storage_key(
-                                value_node.value, _target_name(sensitive[0]), key_used, loaded):
+                        cred_literal = value_node.value
+                        cred_name = _target_name(sensitive[0])
+                        if (_credential_is_concrete(cred_literal)
+                                and not self._c798_value_is_storage_key(
+                                    cred_literal, cred_name, key_used, loaded)
+                                and not self._c798_value_is_identifier_nameplate(cred_literal, cred_name)
+                                and not self._c798_value_is_non_credential_constant(cred_literal, cred_name)):
                             _add_finding(
                                 node, mod_name, scope_id, "CWE-798", "HARDCODED_CREDENTIALS",
                                 "HARDCODED_CREDENTIAL", "HARDCODED_CREDENTIAL_LEAK",
