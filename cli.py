@@ -17,9 +17,12 @@ from typing import Optional
 from cross_file_engine import CrossFileTaintEngine
 from ast_scanner import TaintTracker, PARSER_MODES, DEFAULT_PARSER_MODE
 from ci_reporter import sanitize_symbol_display
+from diff_scan import changed_line_intervals, resolve_repo_root
 from html_auditor import audit_templates, is_template_path
 from iac_auditor import audit_iac_files, is_iac_path
 from rule_engine import get_rule
+from suppression_resolver import resolve_line_suppressions
+from tcs_config import load_config
 from remediation.patch_engine import RemediationEngine
 from sarif_adapter import bound_sarif_document
 from sarif_exporter import atomic_write_text
@@ -66,6 +69,14 @@ PROGRESS_FILE_EVERY = 250
 # their auditors, everything else is Python. --scope selects which collectors run.
 SCOPE_ORDER = ("python", "docker", "html")
 SCOPE_LABELS = {"python": "Python Code", "docker": "Container/Config", "html": "HTML Templates"}
+
+# Confidence is a display label, never a detection decision: `--min-confidence` hides rows
+# from the report, the engine still emits every finding it emitted before.
+CONFIDENCE_ORDER = {"LOW": 1, "MEDIUM": 2, "HIGH": 3}
+# Sinks whose finding is a heuristic over an in-process comparison rather than data arriving
+# at a dangerous operation: CWE-208 reports `token == expected`, where both operands are
+# already local values, so the shape alone cannot prove an attacker reaches it.
+LOW_CONFIDENCE_SINK_TYPES = frozenset({"TIMING_ATTACK"})
 
 
 def _scope_of(path):
@@ -232,12 +243,15 @@ def _iter_tree_files(root):
             yield path
 
 
-def _collect_files(scan_path, exclude_patterns=None):
+def _collect_files(scan_path, exclude_patterns=None, config_excludes=None):
     """Collect Python files from scan path, optionally excluding by glob patterns.
 
     Args:
         scan_path: Path object (file or directory)
         exclude_patterns: List of glob patterns to exclude (e.g., ['tests', 'test_*'])
+        config_excludes: Optional callable taking a CWD-relative POSIX path and returning
+            True when `.tcs.yaml` excludes it. A file named on the command line is never
+            dropped, matching how a tree walk treats `--exclude`.
 
     Phase-1 instrumentation only: the enumerate/read split names the cold-tree serial
     read cost that the pre-existing `duration_ms` anchor cannot see (it starts later).
@@ -257,6 +271,7 @@ def _collect_files(scan_path, exclude_patterns=None):
             if path.suffix.lower() == ".py"
             and not any(part in IGNORED_DIRS for part in path.parts)
             and not _is_excluded(path, scan_path, exclude_patterns)
+            and not (config_excludes and config_excludes(_file_key(path, cwd)))
         )
     else:
         raise ValueError(f"Path is not a regular file or directory: {scan_path}")
@@ -303,12 +318,13 @@ def _collect_files(scan_path, exclude_patterns=None):
     return files
 
 
-def _collect_auxiliary_files(scan_path, exclude_patterns=None):
+def _collect_auxiliary_files(scan_path, exclude_patterns=None, config_excludes=None):
     """Collect non-Python artefacts in one walk: (templates, IaC documents).
 
     Keys match _collect_files so findings share a single path namespace, and
     `--exclude` applies here too: a template under an excluded directory is just as
-    out of scope as a .py file under it.
+    out of scope as a .py file under it. `config_excludes` carries the same contract
+    as in _collect_files.
     """
     cwd = Path.cwd().resolve()
     if not scan_path.exists():
@@ -321,6 +337,7 @@ def _collect_auxiliary_files(scan_path, exclude_patterns=None):
             path for path in _iter_tree_files(scan_path)
             if not any(part in IGNORED_DIRS for part in path.parts)
             and not _is_excluded(path, scan_path, exclude_patterns)
+            and not (config_excludes and config_excludes(_file_key(path, cwd)))
         )
     else:
         return {}, {}
@@ -425,6 +442,10 @@ def _consolidate_family(family, group):
             (member["severity"] for member in group),
             key=lambda value: SEVERITY_RANK.get(value, 0),
         ),
+        "confidence": max(
+            (member.get("confidence", "MEDIUM") for member in group),
+            key=lambda value: CONFIDENCE_ORDER.get(value, 0),
+        ),
         "message": _family_message(family, primary, members_by_cwe),
         "consolidated_from": [f"{member['cwe']}@{member['line']}" for member in consolidated],
     }
@@ -455,8 +476,7 @@ def consolidate_findings(findings):
 
 def _findings_for(tracker, edges):
     sinks = {sink.id: sink for sink in tracker.sinks}
-    findings = []
-    seen = set()
+    by_identity = {}
     for edge in edges:
         sink = sinks.get(edge.target_id)
         if sink is None:
@@ -468,12 +488,24 @@ def _findings_for(tracker, edges):
         rule = get_rule(cwe)
         confidence_label = "CONFIRMED" if edge.kind == "CONFIRMED_DATA_FLOW" else "POTENTIAL"
         severity = rule.get_severity(confidence_label).upper() if rule else "HIGH"
+        # HIGH follows the engine's own CONFIRMED label. Phase collectors record a sink with a
+        # synthetic source id (`OS_COMMAND_EXECUTION`, `WEAK_HASH_ALGORITHM`) and still say
+        # CONFIRMED, so this over-claims rather than under-claims: a `--min-confidence high`
+        # run may show a pattern row, but it can never hide a traced flow behind a filter.
+        sink_type = sink.metadata.get("sink_type") or sink.metadata.get("category")
+        if sink_type in LOW_CONFIDENCE_SINK_TYPES:
+            confidence = "LOW"
+        elif edge.kind == "CONFIRMED_DATA_FLOW":
+            confidence = "HIGH"
+        else:
+            confidence = "MEDIUM"
         location = sink.location
         finding = {
             "file": location.file.replace("\\", "/"),
             "line": location.line_start,
             "cwe": cwe,
             "severity": severity,
+            "confidence": confidence,
             "category": sink.metadata.get("category") or (rule.category if rule else "Security"),
             "message": sink.metadata.get("message") or \
                 f"{cwe}: {sink.metadata.get('operation') or sanitize_symbol_display(sink.symbol)}",
@@ -484,10 +516,15 @@ def _findings_for(tracker, edges):
         if xml_input:
             finding["xml_input"] = xml_input
         identity = (finding["file"], finding["line"], finding["cwe"])
-        if identity not in seen:
-            seen.add(identity)
-            findings.append(finding)
-    return sorted(findings, key=lambda item: (item["file"], item["line"], item["cwe"]))
+        existing = by_identity.get(identity)
+        if existing is None:
+            by_identity[identity] = finding
+        elif CONFIDENCE_ORDER[confidence] > CONFIDENCE_ORDER[existing["confidence"]]:
+            # One site can be reached by several edges; the loudest label wins so a
+            # confidence filter can never hide a confirmed flow behind a weaker edge.
+            existing["confidence"] = confidence
+    return sorted(by_identity.values(),
+                  key=lambda item: (item["file"], item["line"], item["cwe"]))
 
 
 def _parse_line_ranges(spec):
@@ -536,6 +573,75 @@ def _scope_findings_to_lines(findings, ranges):
         if _in_line_ranges(line, ranges):
             scoped.append(finding)
     return scoped
+
+
+def _apply_inline_suppressions(findings, sources):
+    """Drop findings named by a `# tcs: ignore[CWE-XXX]` comment on the finding's own line.
+
+    `sources` maps every scanned path to its text (Python, templates and IaC alike).
+    A finding whose file is absent from that map is kept: an unreadable source can
+    never suppress anything.
+    """
+    if not findings or not sources:
+        return findings
+    resolve_line_suppressions(findings, sources)
+    return [finding for finding in findings if not finding.get("suppressed")]
+
+
+def _scope_findings_to_diff(findings, intervals, repo_root):
+    """Keep findings reported on added/modified lines of the working tree versus a ref.
+
+    `intervals` is keyed by repo-relative paths; findings carry CWD-relative keys, so both
+    sides are mapped through `_file_key`. A finding without a usable line number in a
+    changed file is kept, mirroring `_scope_findings_to_lines`.
+    """
+    cwd = Path.cwd().resolve()
+    changed = {}
+    for rel_path, spans in intervals.items():
+        try:
+            changed[_file_key((repo_root / rel_path).resolve(), cwd)] = spans
+        except OSError:
+            continue
+    kept = []
+    for finding in findings:
+        spans = changed.get(finding.get("file"))
+        if spans is None:
+            continue
+        line = finding.get("line")
+        if not isinstance(line, int) or any(start <= line <= end for start, end in spans):
+            kept.append(finding)
+    return kept
+
+
+def _filter_by_confidence(findings, minimum):
+    """Hide findings below `minimum` from the report; detection itself is untouched."""
+    if not minimum:
+        return findings
+    floor = CONFIDENCE_ORDER[minimum.upper()]
+    return [
+        finding for finding in findings
+        if CONFIDENCE_ORDER.get(str(finding.get("confidence") or "MEDIUM").upper(), 2) >= floor
+    ]
+
+
+def _apply_config_filters(findings, config, path_excludes):
+    """Apply root `.tcs.yaml` to findings: path exclusions and per-rule path overrides.
+
+    `path_excludes` is False when the user named a single file on the command line --
+    then only the rule-level overrides apply, because an explicitly named file is
+    always analysed (same contract as `--exclude`).
+    """
+    if config is None:
+        return findings
+    kept = []
+    for finding in findings:
+        path_key = str(finding.get("file", ""))
+        if path_excludes and config.excludes_path(path_key):
+            continue
+        if config.rule_excluded(str(finding.get("cwe", "")), path_key):
+            continue
+        kept.append(finding)
+    return kept
 
 
 def _statement_span(source_code, line_number):
@@ -906,11 +1012,13 @@ def _cross_trace_report(findings, cwd):
 
 class CrossFinding(dict):
     """Hybrid finding: acts as dict and object simultaneously."""
-    def __init__(self, cwe, file_path, lineno, message, severity="HIGH", flow_trace=None):
+    def __init__(self, cwe, file_path, lineno, message, severity="HIGH", flow_trace=None,
+                 confidence="HIGH"):
         super().__init__(
             cwe=cwe,
             rule_id=cwe,
             severity="HIGH",
+            confidence=confidence,
             file_path=file_path,
             file=file_path,
             path=file_path,
@@ -923,6 +1031,7 @@ class CrossFinding(dict):
             flow_trace=flow_trace or [],
         )
         self.category = "cross_file"
+        self.confidence = confidence
         self.flow_trace = flow_trace or []
         self.cwe = cwe
         self.rule_id = cwe
@@ -1044,6 +1153,7 @@ def _js_ts_findings(path):
             "line": finding.get("line_number") or 1,
             "cwe": finding.get("cwe") or "UNKNOWN_CWE",
             "severity": str(finding.get("severity") or "HIGH").upper(),
+            "confidence": "MEDIUM",
             "category": finding.get("category") or "Security",
             "message": finding.get("message") or "",
         })
@@ -1291,7 +1401,12 @@ def _scan(args):
     try:
         line_ranges = _parse_line_ranges(getattr(args, "lines", None))
         exclude_patterns = _parse_exclude_patterns(getattr(args, "exclude", None))
-        templates, iac = _collect_auxiliary_files(args.path, exclude_patterns)
+        # Root configuration is optional and read from the working directory only, so a
+        # checkout without `.tcs.yaml` keeps the byte-identical default scan.
+        config = load_config()
+        config_excludes = config.excludes_path if config is not None else None
+        tree_scan = args.path.is_dir()
+        templates, iac = _collect_auxiliary_files(args.path, exclude_patterns, config_excludes)
         if scope not in ("all", "html"):
             templates = {}
         if scope not in ("all", "docker"):
@@ -1301,7 +1416,8 @@ def _scan(args):
         files = {}
         if scope in ("all", "python"):
             try:
-                files = _collect_files(args.path, exclude_patterns=exclude_patterns)
+                files = _collect_files(args.path, exclude_patterns=exclude_patterns,
+                                       config_excludes=config_excludes)
             except ValueError:
                 if not templates and not iac:
                     raise
@@ -1384,6 +1500,10 @@ def _scan(args):
                                   getattr(tracker, "parallel_fallback_reason", None))
         findings = _merge_findings(ast_findings, audit_templates(templates), audit_iac_files(iac))
         findings = consolidate_findings(findings)
+        # Template/IaC auditors report a structural match and no data-flow provenance, which
+        # is exactly MEDIUM; AST findings arrive with their own label.
+        for finding in findings:
+            finding.setdefault("confidence", "MEDIUM")
         _clock.mark("Merge+Consolidate")
         _PARTIAL["findings"] = findings
         if scope in ("all", "python"):
@@ -1406,6 +1526,24 @@ def _scan(args):
         # extension whose access violation takes the whole process down.
         if getattr(args, "include_js", False) and _JS_TS_SCANNER_AVAILABLE and js_ts_available():
             findings = _merge_findings(findings, _js_ts_findings(args.path))
+
+        # Root `.tcs.yaml`: path exclusions and per-rule path overrides from the working
+        # directory. Applied after every producer so cross-file and JS rows obey it too.
+        findings = _apply_config_filters(findings, config, path_excludes=tree_scan)
+        findings = _apply_inline_suppressions(findings, {**files, **templates, **iac})
+
+        # --diff narrows *reporting* to added/modified lines. The analysis above already
+        # saw the whole tree, so cross-file context is never truncated.
+        diff_ref = getattr(args, "diff", None)
+        if diff_ref:
+            _diff_repo_root = resolve_repo_root()
+            findings = _scope_findings_to_diff(
+                findings, changed_line_intervals(_diff_repo_root, diff_ref), _diff_repo_root)
+
+        # Display-only confidence filter; the engine's emission set is already final.
+        confidence_minimum = getattr(args, "min_confidence", None)
+        findings = _filter_by_confidence(findings, confidence_minimum)
+        _PARTIAL["findings"] = findings
 
         # Generate autofix suggestions if requested (JSON only)
         if args.with_autofix and args.format == "json" and files:
@@ -1443,6 +1581,8 @@ def _scan(args):
         print(json.dumps({
             "scope": scope,
             "line_filter": [list(r) for r in line_ranges] if line_ranges else None,
+            "diff_ref": diff_ref,
+            "confidence_filter": confidence_minimum,
             "total_discovered_files": total_discovered_files,
             "scanned_files": scanned_files,
             "scanned_files_by_scope": file_counts,
@@ -1735,6 +1875,18 @@ def main(argv=None):
     scan_parser.add_argument(
         "--lines", metavar="START[-END][,START[-END]...]", default=None,
         help="Incremental scan: restrict findings to the given 1-indexed line ranges, e.g. --lines 4-5",
+    )
+    scan_parser.add_argument(
+        "--diff", nargs="?", const="HEAD", default=None, metavar="REF",
+        help="Report only findings on lines added or modified in the working tree versus REF "
+             "(default REF: HEAD). The whole tree is still analysed, so cross-file context is "
+             "never truncated. Requires a git repository",
+    )
+    scan_parser.add_argument(
+        "--min-confidence", choices=("low", "medium", "high"), default=None,
+        help="Only show findings at or above this confidence level: high = an explicit "
+             "source->sink flow, medium = pattern/structural match, low = heuristic comparison. "
+             "Default: every finding is shown. Detection is unchanged",
     )
     scan_parser.add_argument(
         "--include-js", dest="include_js", action="store_true", default=False,
