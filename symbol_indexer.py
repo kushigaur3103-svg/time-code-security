@@ -105,7 +105,8 @@ class GlobalSymbolIndex:
         return sys.intern(".".join(parts))
 
     def build(self, max_workers: Optional[int] = None,
-              reuse_trees: Optional[dict[str, tuple[str, ast.AST]]] = None) -> GlobalSymbolIndex:
+              reuse_trees: Optional[dict[str, tuple[str, ast.AST]]] = None,
+              on_indexed=None) -> GlobalSymbolIndex:
         """Pass 1: Discover and index all Python definitions and imports.
 
         `reuse_trees` optionally maps a resolved absolute path string to the scanner's own
@@ -113,6 +114,13 @@ class GlobalSymbolIndex:
         yields a source byte-for-byte equal to the cached snapshot - so a file the scanner
         parsed is exactly the file this index would have parsed. Any miss, read error or
         content mismatch falls back to the original read+parse path, unchanged.
+
+        `on_indexed(mod_name, file_path, tree)` turns this into a streaming pass: every
+        module name is still registered first, but files are parsed one at a time, handed to
+        the callback, and released. The index then stores no ASTs at all (`_ast_cache` stays
+        empty), which is what lets the cross-file engine run on a compact fact table. The
+        callback runs outside the `_index_file` try, because a consumer failure would silently
+        drop facts and must be loud instead.
         """
         _t_walk0 = time.perf_counter()
         # Observational reset so resolver counters belong to this engine run.
@@ -140,6 +148,49 @@ class GlobalSymbolIndex:
             self.module_to_file[mod_name] = p
             self.modules[mod_name] = ModuleIndex(module_name=mod_name, file_path=p)
         self._build_suffix_index()
+
+        # Streaming branch: registration above is already complete, so every symbol reference
+        # resolves; from here one tree is alive at a time and none is retained.
+        if on_indexed is not None:
+            _t_stream0 = time.perf_counter()
+            reused = 0
+            parent_chars = 0
+            trees = 0
+            for p in py_files:
+                mod_name = self.file_to_module[p]
+                entry = None
+                if reuse_trees:
+                    cached = reuse_trees.get(str(p))
+                    if cached is not None and cached[1] is not None:
+                        try:
+                            if Path(str(p)).read_text(
+                                    encoding="utf-8", errors="replace") == cached[0]:
+                                entry = {"tree": cached[1], "source": cached[0]}
+                                reused += 1
+                        except Exception:
+                            entry = None
+                if entry is None:
+                    entry = _read_and_parse_one(str(p))
+                    parent_chars += len(entry["source"] or "")
+                tree = entry["tree"]
+                if tree is None:
+                    continue
+                trees += 1
+                try:
+                    self._index_file(mod_name, p, tree)
+                except Exception:
+                    # Same contract as the batched path: a file with an odd top-level
+                    # statement is still summarised and harvested from its tree.
+                    pass
+                on_indexed(mod_name, p, tree)
+                del tree, entry
+            _t_stream1 = time.perf_counter()
+            print(f"TimeCodeSecurity [PROFILE] SymbolIndex: walk={_t_stream0 - _t_walk0:.2f}s "
+                  f"py_files={len(py_files)} stream={_t_stream1 - _t_stream0:.2f}s "
+                  f"trees={trees} reused={reused} parent_chars={parent_chars} "
+                  f"modules={len(self.modules)} "
+                  f"TOTAL={_t_stream1 - _t_walk0:.2f}s", file=sys.stderr)
+            return self
 
         # 2. Parse and index symbols.
         # This pass reads and parses the whole tree a *second* time - the scanner already parsed it -

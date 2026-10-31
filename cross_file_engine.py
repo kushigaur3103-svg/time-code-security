@@ -6,13 +6,15 @@ Stitches global symbol index and function taint contracts to detect multi-file e
 from __future__ import annotations
 
 import ast
+import io
 import sys
 import time
+import tokenize
 from dataclasses import dataclass, field
 from pathlib import Path
-from typing import Dict, List, Optional, Set
+from typing import Dict, List, NamedTuple, Optional, Set
 
-from symbol_indexer import GlobalSymbolIndex, SymbolDefinition
+from symbol_indexer import GlobalSymbolIndex
 from function_summarizer import KNOWN_SANITIZERS, FunctionSummarizer, FunctionSummary, ParamSinkEdge
 
 
@@ -30,8 +32,8 @@ SIGNAL_FACTORY_METHODS = {"Signal"}
 SIGNAL_SUBSCRIBE_DECORATORS = {"receiver"}
 SIGNAL_EMISSION_METHODS = {"send", "send_robust"}
 TASK_DECORATOR_NAMES = {"shared_task", "task"}
-TASK_DECORATOR_ATTRS = {"task"}
 TASK_DISPATCH_METHODS = {"delay", "apply_async"}
+_DISPATCH_ATTRS = SIGNAL_EMISSION_METHODS | TASK_DISPATCH_METHODS
 
 
 _SCOPES = (ast.FunctionDef, ast.AsyncFunctionDef, ast.Lambda, ast.ClassDef)
@@ -171,6 +173,404 @@ def _name_uses(expr: ast.expr) -> Set[str]:
     }
 
 
+def _callee_tail(func: ast.AST) -> str:
+    """Trailing identifier of a callee expression, '' when it is not a Name/Attribute."""
+    if isinstance(func, ast.Name):
+        return func.id
+    if isinstance(func, ast.Attribute):
+        return func.attr
+    return ""
+
+
+def _func_descriptor(func: ast.AST) -> Optional[str]:
+    """Source spelling of a callee (`cursor.execute`), None when unparse is unavailable/fails."""
+    if not hasattr(ast, "unparse"):
+        return None
+    try:
+        return ast.unparse(func)
+    except Exception:
+        return None
+
+
+def _is_signal_factory(value: ast.AST) -> bool:
+    """True for `x = Signal()` / `x = django.dispatch.Signal()` (Django, Blinker)."""
+    if not isinstance(value, ast.Call):
+        return False
+    callee = value.func
+    if isinstance(callee, ast.Name):
+        return callee.id in SIGNAL_FACTORY_METHODS
+    return isinstance(callee, ast.Attribute) and callee.attr in SIGNAL_FACTORY_METHODS
+
+
+def _decorator_label(decorator: ast.AST) -> Optional[str]:
+    """Trailing dotted component of a decorator, whether bare, dotted, or called."""
+    target = decorator.func if isinstance(decorator, ast.Call) else decorator
+    if isinstance(target, ast.Name):
+        return target.id
+    if isinstance(target, ast.Attribute):
+        return target.attr
+    return None
+
+
+# ─── PEP 695 tolerance: 3.12 type-parameter syntax on a 3.11 ast ────────────────
+# `ast.parse(..., feature_version=(3, 11))` cannot help here: feature_version can only *restrict*
+# the grammar, never enable newer syntax, and on a 3.11 interpreter (3, 11) is already the default.
+# So a file the default parse rejects gets one retry on a rewritten source that removes exactly the
+# three PEP 695 constructs (`type X[T] =`, `def f[T](`, `class C[T](`/`:`) by overwriting those
+# characters with spaces. Newlines are never touched, so every line number - and therefore every
+# finding line - stays identical to the original file. The retry tree is used only when the rewritten
+# source parses; otherwise the file is skipped exactly as it was before.
+def _matching_bracket(tokens: List[tokenize.TokenInfo], open_index: int) -> Optional[int]:
+    depth = 0
+    for index in range(open_index, len(tokens)):
+        text = tokens[index].string
+        if text == "[":
+            depth += 1
+        elif text == "]":
+            depth -= 1
+            if depth == 0:
+                return index
+    return None
+
+
+def _rewrite_pep695(source: str) -> Optional[str]:
+    """Blank PEP 695 type-parameter tokens, preserving every line and column offset."""
+    try:
+        tokens = [t for t in tokenize.generate_tokens(io.StringIO(source).readline)
+                  if t.type not in (tokenize.NL, tokenize.COMMENT, tokenize.ENCODING)]
+    except (tokenize.TokenError, IndentationError, SyntaxError):
+        return None
+
+    starts = [0]
+    for line in source.splitlines(keepends=True):
+        starts.append(starts[-1] + len(line))
+
+    def offset(position) -> int:
+        row, col = position
+        return starts[row - 1] + col
+
+    words = ("def", "class", "type")
+    # (start, end, replacement): a `type` alias moves its name to the start of the span rather
+    # than blanking the `type ` prefix -- blanking would leave the name indented by five
+    # columns and the module-level statement would be an `unexpected indent`. Moving the name
+    # keeps the line's total width, so every token after the span keeps its column.
+    edits: List[tuple[int, int, str]] = []
+    total = len(tokens)
+    for index, token in enumerate(tokens):
+        if token.type != tokenize.NAME or token.string not in words:
+            continue
+        previous = tokens[index - 1] if index else None
+        at_statement_start = (
+            previous is None
+            or previous.type in (tokenize.NEWLINE, tokenize.INDENT, tokenize.DEDENT)
+            or previous.string == ";"
+        )
+        if token.string == "def" and previous is not None and previous.string == "async":
+            before_async = tokens[index - 2] if index >= 2 else None
+            at_statement_start = (
+                before_async is None
+                or before_async.type in (tokenize.NEWLINE, tokenize.INDENT, tokenize.DEDENT)
+                or before_async.string == ";"
+            )
+        if not at_statement_start or index + 2 >= total:
+            continue
+        name_token = tokens[index + 1]
+        if name_token.type != tokenize.NAME:
+            continue
+        marker = tokens[index + 2]
+        if marker.string == "[":
+            close = _matching_bracket(tokens, index + 2)
+            if close is None or close + 1 >= total:
+                continue
+            after = tokens[close + 1].string
+            if token.string == "type":
+                if after != "=":
+                    continue
+                edits.append((offset(token.start), offset(name_token.end),
+                              name_token.string))
+                edits.append((offset(marker.start), offset(tokens[close].end), ""))
+            elif token.string == "def":
+                if after != "(":
+                    continue
+                edits.append((offset(marker.start), offset(tokens[close].end), ""))
+            else:
+                if after not in ("(", ":"):
+                    continue
+                edits.append((offset(marker.start), offset(tokens[close].end), ""))
+        elif token.string == "type" and marker.string == "=":
+            edits.append((offset(token.start), offset(name_token.end), name_token.string))
+
+    if not edits:
+        return None
+    characters = list(source)
+    for start, end, text in edits:
+        position = start
+        for character in text:
+            while position < end and characters[position] in ("\n", "\r"):
+                position += 1
+            if position >= end:
+                break
+            characters[position] = character
+            position += 1
+        while position < end:
+            if characters[position] not in ("\n", "\r"):
+                characters[position] = " "
+            position += 1
+    return "".join(characters)
+
+
+def _parse_source(path: str, source: str) -> Optional[ast.AST]:
+    """Parse `source`, retrying once on a PEP 695-rewritten spelling; None when both fail."""
+    try:
+        return ast.parse(source, filename=path)
+    except Exception:
+        pass
+    rewritten = _rewrite_pep695(source)
+    if rewritten is None:
+        return None
+    try:
+        return ast.parse(rewritten, filename=path)
+    except Exception:
+        return None
+
+
+# ─── Compact symbol facts: the cross-file symbol table ─────────────────────────
+# Nothing below retains an AST. The engine keeps, per module, only what the six cross-module
+# passes ask of a tree: who a call names, how its receiver is spelled, which arguments are bare
+# names (the only shape the parameter-forwarding lift can follow), the decorator shapes, the
+# class bases, and the call spelling on the right-hand side of assignments (the only shape the
+# sanitizer replay can start from). Source stays on disk; a module is re-parsed only when the
+# caller analysis or the sanitizer audit actually has to run its AST.
+_SITE_FUNC_OTHER = 0   # callee is neither a Name nor an Attribute
+_SITE_FUNC_NAME = 1    # foo(...)
+_SITE_FUNC_ATTR = 2    # <receiver>.foo(...)
+
+_SITE_RECV_OTHER = 0   # receiver is neither a Name, a Name-call, nor an attribute chain
+_SITE_RECV_NAME = 1    # receiver is a bare Name
+_SITE_RECV_CTOR = 2    # receiver is ClassName(...) with a bare constructor
+_SITE_RECV_ATTR = 3    # receiver is an attribute chain
+
+
+class CallShape(NamedTuple):
+    """Everything about a call that resolution reads, minus its line number.
+
+    Shapes are pooled per run, so a repeated spelling (`self.db.execute(query)`) is one object
+    shared by every site that writes it.
+    """
+    fkind: int
+    fname: str
+    rkind: int
+    rname: str
+    rprefix: str
+    rprefix_bare: bool
+    argn: tuple          # positional argument spellings: interned Name id or None
+    kwn: tuple           # ((keyword, interned Name id or None), ...)
+
+
+class DecoFacts(NamedTuple):
+    """One decorator: its label, whether it is a call, and the shape of its first argument."""
+    label: Optional[str]
+    is_call: bool
+    bare: Optional[str]   # resolvable name for a non-call decorator, None otherwise
+    arg0kind: int         # 0 = Name, 1 = Attribute, 2 = other or absent
+    arg0name: str
+    arg0prefix: str
+    arg0bare: bool
+
+
+class WrapperShape(NamedTuple):
+    """The provable decorator shape `_wrapper_sanitized_slots` accepts, precomputed at harvest."""
+    ok: bool
+    wparams: tuple        # wrapper positional parameter names
+    flen: int             # forwarded argument count
+    fargs: tuple          # per forwarded argument: (used names, is_call, callee tail)
+
+
+class FuncFacts:
+    """Facts for one contracted function: its contract, calls, receivers and decorators."""
+    __slots__ = ("qual", "summary", "recv", "calls", "decos", "wrapper")
+
+    def __init__(self, qual, summary, recv, calls, decos, wrapper):
+        self.qual = qual
+        self.summary = summary
+        self.recv = recv
+        self.calls = calls
+        self.decos = decos
+        self.wrapper = wrapper
+
+
+class ModuleFacts:
+    """The symbol-table row for one module; holds no AST and no source text."""
+    __slots__ = ("funcs", "bases", "signals", "sink_lines", "assign_callees")
+
+    def __init__(self, funcs, bases, signals, sink_lines, assign_callees):
+        self.funcs = funcs
+        self.bases = bases
+        self.signals = signals
+        self.sink_lines = sink_lines
+        self.assign_callees = assign_callees
+
+
+def _call_shape(call: ast.Call, pool: Dict[CallShape, CallShape]) -> CallShape:
+    func = call.func
+    if isinstance(func, ast.Name):
+        fkind, fname = _SITE_FUNC_NAME, func.id
+        rkind, rname, rprefix, rprefix_bare = _SITE_RECV_OTHER, "", "", False
+    elif isinstance(func, ast.Attribute):
+        fkind, fname = _SITE_FUNC_ATTR, func.attr
+        value = func.value
+        if isinstance(value, ast.Name):
+            rkind, rname, rprefix, rprefix_bare = _SITE_RECV_NAME, value.id, "", False
+        elif isinstance(value, ast.Call) and isinstance(value.func, ast.Name):
+            rkind, rname, rprefix, rprefix_bare = _SITE_RECV_CTOR, value.func.id, "", False
+        elif isinstance(value, ast.Attribute):
+            rkind = _SITE_RECV_ATTR
+            rname = value.attr
+            rprefix = _dotted_prefix(value.value)
+            rprefix_bare = isinstance(value.value, ast.Name)
+        else:
+            rkind, rname, rprefix, rprefix_bare = _SITE_RECV_OTHER, "", "", False
+    else:
+        fkind, fname = _SITE_FUNC_OTHER, ""
+        rkind, rname, rprefix, rprefix_bare = _SITE_RECV_OTHER, "", "", False
+
+    shape = CallShape(
+        fkind, sys.intern(fname), rkind, sys.intern(rname), sys.intern(rprefix),
+        rprefix_bare,
+        tuple(sys.intern(a.id) if isinstance(a, ast.Name) else None for a in call.args),
+        tuple((sys.intern(k.arg), sys.intern(k.value.id)
+               if isinstance(k.value, ast.Name) else None)
+              for k in call.keywords if k.arg),
+    )
+    pooled = pool.get(shape)
+    if pooled is None:
+        pool[shape] = shape
+        return shape
+    return pooled
+
+
+def _deco_facts(decorator: ast.AST) -> DecoFacts:
+    is_call = isinstance(decorator, ast.Call)
+    label = _decorator_label(decorator)
+    bare = label if not is_call else None
+    kind, name, prefix, bare_inner = 2, "", "", False
+    if is_call and decorator.args:
+        argument = decorator.args[0]
+        if isinstance(argument, ast.Name):
+            kind, name = 0, argument.id
+        elif isinstance(argument, ast.Attribute):
+            kind, name = 1, argument.attr
+            prefix = _dotted_prefix(argument.value)
+            bare_inner = isinstance(argument.value, ast.Name)
+    return DecoFacts(label, is_call, bare, kind, sys.intern(name), sys.intern(prefix), bare_inner)
+
+
+def _wrapper_shape(node: ast.FunctionDef | ast.AsyncFunctionDef) -> Optional[WrapperShape]:
+    """Precompute the decorator-wrapper result `_wrapper_sanitized_slots` used to walk for."""
+    wrapper = None
+    for stmt in node.body:
+        if isinstance(stmt, (ast.FunctionDef, ast.AsyncFunctionDef)):
+            wrapper = stmt
+            break
+    if wrapper is None:
+        return None
+    if wrapper.args.vararg or wrapper.args.kwarg or wrapper.args.kwonlyargs:
+        return WrapperShape(False, (), 0, ())
+    wrapper_params = tuple(sys.intern(a.arg) for a in wrapper.args.args)
+    wrapped_names = {a.arg for a in node.args.args}
+    forwarded = None
+    for inner in ast.walk(wrapper):
+        if (isinstance(inner, ast.Call) and isinstance(inner.func, ast.Name)
+                and inner.func.id in wrapped_names):
+            forwarded = inner
+            break
+    if forwarded is None or forwarded.keywords:
+        return WrapperShape(False, (), 0, ())
+    fargs = tuple(
+        (tuple(sorted(sys.intern(name) for name in _name_uses(argument))),
+         isinstance(argument, ast.Call),
+         sys.intern(_callee_tail(argument.func)) if isinstance(argument, ast.Call) else "")
+        for argument in forwarded.args
+    )
+    return WrapperShape(True, wrapper_params, len(forwarded.args), fargs)
+
+
+def _harvest_module(mod_name: str, tree: ast.AST,
+                    summaries: List[FunctionSummary],
+                    pool: Dict[CallShape, CallShape]) -> ModuleFacts:
+    """One walk of a freshly parsed module -> its symbol-table row; the tree is dropped after."""
+    by_qual = {summary.qualname: summary for summary in summaries}
+    sink_lines = {edge.lineno for summary in summaries for edge in summary.param_sinks}
+
+    funcs: Dict[str, FuncFacts] = {}
+    for node, qual in _contracted_functions(tree):
+        summary = by_qual.get(qual)
+        if summary is None:
+            continue
+        calls = [
+            (getattr(call, "lineno", 0), _call_shape(call, pool))
+            for call in ast.walk(node) if isinstance(call, ast.Call)
+        ]
+        recv = []
+        for inner in _ordered_nodes(node, skip_scopes=True):
+            if (isinstance(inner, ast.Assign) and isinstance(inner.value, ast.Call)
+                    and isinstance(inner.value.func, ast.Name)):
+                targets = tuple(sys.intern(t.id) for t in inner.targets
+                                if isinstance(t, ast.Name))
+                if targets:
+                    recv.append((targets, sys.intern(inner.value.func.id)))
+        funcs[qual] = FuncFacts(
+            qual, summary, tuple(recv), tuple(calls),
+            tuple(_deco_facts(d) for d in node.decorator_list),
+            _wrapper_shape(node),
+        )
+
+    bases: Dict[str, tuple] = {}
+    signals: List[str] = []
+    assign_callees: Set[str] = set()
+    sink_desc: Dict[int, list] = {}
+    for inner in ast.walk(tree):
+        if isinstance(inner, ast.Assign) and isinstance(inner.value, ast.Call):
+            tail = _callee_tail(inner.value.func)
+            if tail:
+                assign_callees.add(tail)
+        if isinstance(inner, ast.Call):
+            lineno = getattr(inner, "lineno", 0)
+            if lineno in sink_lines:
+                descriptor = _func_descriptor(inner.func)
+                if descriptor is not None:
+                    entry = sink_desc.get(lineno)
+                    if entry is None:
+                        sink_desc[lineno] = [descriptor, {}]
+                    else:
+                        tail = _callee_tail(inner.func)
+                        if tail and tail not in entry[1]:
+                            entry[1][tail] = descriptor
+    for stmt in tree.body:
+        if isinstance(stmt, ast.ClassDef):
+            named = []
+            for base in stmt.bases:
+                if isinstance(base, ast.Name):
+                    named.append((True, sys.intern(base.id)))
+                elif isinstance(base, ast.Attribute):
+                    named.append((True, sys.intern(base.attr)))
+                else:
+                    named.append((False, ""))
+            bases[stmt.name] = tuple(named)
+        elif isinstance(stmt, ast.Assign) and _is_signal_factory(stmt.value):
+            for target in stmt.targets:
+                if isinstance(target, ast.Name):
+                    signals.append(target.id)
+
+    return ModuleFacts(
+        funcs,
+        bases,
+        tuple(signals),
+        {lineno: (entry[0], dict(entry[1])) for lineno, entry in sink_desc.items()},
+        frozenset(assign_callees),
+    )
+
+
 @dataclass(slots=True)
 class TraceHop:
     """One labelled node in an exploit path: role is SOURCE, ROUTE or SINK."""
@@ -195,7 +595,14 @@ class CrossFileFinding:
 
 
 class CrossFileTaintEngine:
-    """Pass 2: Traces data flow across modules using precomputed contracts."""
+    """Pass 2: Traces data flow across modules using precomputed contracts.
+
+    The engine no longer keeps the parsed trees: `GlobalSymbolIndex` is built in streaming mode
+    (each module is indexed, summarised and harvested, then its tree is released), and every
+    cross-module decision runs on the compact `ModuleFacts` table. Only two phases re-read source:
+    the caller analysis, for the small set of modules whose facts show a call into a sink-bearing
+    contract, and the sanitizer audit, for the modules whose assignments can reach a sanitizer.
+    """
 
     def __init__(self, root_dir: str | Path,
                  reuse_trees: Optional[dict] = None):
@@ -206,6 +613,8 @@ class CrossFileTaintEngine:
         self.indexer = GlobalSymbolIndex(self.root_dir)
         self.summarizer: Optional[FunctionSummarizer] = None
         self.contracts: dict[tuple[str, str], FunctionSummary] = {}
+        # Per-module compact symbol table: signatures, call sites, receivers, decorators, bases.
+        self.module_facts: dict[str, ModuleFacts] = {}
         self.findings: list[CrossFileFinding] = []
         # ParamSinkEdge carries no file field, so transitively lifted edges record the
         # module that actually owns the sink here: (mod, qualname, param_idx, sink, lineno) -> path.
@@ -223,55 +632,88 @@ class CrossFileTaintEngine:
         # Observational only (Phase-1 instrumentation): rounds actually executed by the
         # fixed-point loop below; never read by a decision.
         self._propagation_rounds = 0
-        # (caller module, qualname) -> (func node, Call nodes in ast.walk order, receiver
-        # bindings). The fixed point re-reads these every round and nothing in the loop can
-        # change them, so they are built on round 1 and reused. The caller stage below walks the
-        # same nodes with the same qualname keys, so it reads the receiver map from here instead
-        # of recomputing it; the cache is dropped at the end of run() and is only ever read,
-        # never mutated.
-        self._lift_traversal: dict[tuple[str, str], tuple[ast.AST, list, Dict[str, tuple[str, str]]]] = {}
         # Raw file path spelling -> owning module (None when the file is outside the indexed
         # tree). `file_to_module` is filled by indexer.build() and never mutated again, so one
         # path string always answers the same module; `Path.resolve()` is an OS call that would
         # otherwise repeat per call site. Negative hits are cached for the same reason.
         self._path_to_module_memo: dict[str, Optional[str]] = {}
+        # Call-shape pool: identical call spellings share one CallShape object.
+        self._shape_pool: Dict[CallShape, CallShape] = {}
+        # Observational counters for the PROFILE line.
+        self._summary_seconds = 0.0
+        self._caller_modules = 0
+        self._sanitizer_modules = 0
+        self._sanitizer_sites_cache: Optional[frozenset] = None
+        self._sanitizer_tails: Optional[frozenset] = None
+        self._sanitizer_aliases: dict[str, frozenset] = {}
 
     def run(self) -> list[CrossFileFinding]:
         # Phase-1 instrumentation: disjoint stage clocks over the existing sequence.
         # Nothing here changes an algorithm, an iteration order, or a finding.
         _t0 = time.perf_counter()
-        # 1. Build Index & Contracts
-        self.indexer.build(reuse_trees=self.reuse_trees)
-        _t1 = time.perf_counter()
+        # 1. Build Index & Contracts. The indexer streams: it registers every module first (so
+        # symbol resolution already sees the whole project), then parses one file at a time,
+        # hands the tree to the callback below, and releases it before reading the next.
         self.summarizer = FunctionSummarizer(self.indexer)
-        self.contracts = self.summarizer.build_all_summaries()
-        _t2 = time.perf_counter()
+        self.indexer.build(reuse_trees=self.reuse_trees, on_indexed=self._on_module_indexed)
+        self.contracts = self.summarizer.summaries
+        _t1 = time.perf_counter()
         self._propagate_transitive_sink_contracts()
-        _t3 = time.perf_counter()
+        _t2 = time.perf_counter()
         self._build_event_catalog()
-        _t4 = time.perf_counter()
+        _t3 = time.perf_counter()
 
-        # 2. Analyze Callers across all modules
-        for mod_name, mod_idx in self.indexer.modules.items():
-            tree = self.indexer._ast_cache.get(mod_name)
-            if not tree:
+        # 2. Analyze Callers. Only modules whose facts contain a call into a sink-bearing
+        # contract (or a dispatch into a sink-bearing handler) can emit a finding, so only they
+        # are re-read and run through the unchanged AST analysis.
+        for mod_name, facts in self.module_facts.items():
+            if not self._module_emits(mod_name, facts):
+                continue
+            mod_idx = self.indexer.modules.get(mod_name)
+            if mod_idx is None:
+                continue
+            tree = self._tree_for(mod_name)
+            if tree is None:
                 continue
             self._analyze_module_calls(mod_name, mod_idx.file_path, tree)
-        _t5 = time.perf_counter()
-        # The lift traversal is retained through the caller stage above, so it has to be
-        # released here: after run() the cache is empty, exactly as it always was, and
-        # sanitized_sink_locations() (called by runners after this) recomputes its own bindings.
-        self._lift_traversal.clear()
+            self._caller_modules += 1
+            del tree
+        _t4 = time.perf_counter()
 
         from symbol_indexer import resolver_stats_line
         print(f"TimeCodeSecurity [PROFILE] CrossEngine: IndexBuild={_t1 - _t0:.2f}s "
-              f"Summaries={_t2 - _t1:.2f}s Propagate={_t3 - _t2:.2f}s "
-              f"(rounds={self._propagation_rounds}) EventCatalog={_t4 - _t3:.2f}s "
-              f"CallerAnalysis={_t5 - _t4:.2f}s TOTAL={_t5 - _t0:.2f}s "
+              f"Summaries={self._summary_seconds:.2f}s Propagate={_t2 - _t1:.2f}s "
+              f"(rounds={self._propagation_rounds}) EventCatalog={_t3 - _t2:.2f}s "
+              f"CallerAnalysis={_t4 - _t3:.2f}s (modules={self._caller_modules}) "
+              f"TOTAL={_t4 - _t0:.2f}s "
               f"modules={len(self.indexer.modules)} contracts={len(self.contracts)} "
-              f"findings={len(self.findings)} | {resolver_stats_line()}",
+              f"facts={len(self.module_facts)} findings={len(self.findings)} "
+              f"| {resolver_stats_line()}",
               file=sys.stderr)
         return self.findings
+
+    def _on_module_indexed(self, mod_name: str, file_path: Path, tree: ast.AST) -> None:
+        """Streaming hook: summarise one module, harvest its facts, and let the tree go."""
+        started = time.perf_counter()
+        summaries = self.summarizer.summarize_module(mod_name, file_path, tree)
+        self._summary_seconds += time.perf_counter() - started
+        self.module_facts[mod_name] = _harvest_module(
+            mod_name, tree, summaries, self._shape_pool)
+
+    def _tree_for(self, mod_name: str) -> Optional[ast.AST]:
+        """Re-read one module's tree on demand; the scanner's snapshot is reused when it matches."""
+        path = self.indexer.module_to_file.get(mod_name)
+        if path is None:
+            return None
+        path_str = str(path)
+        try:
+            source = Path(path_str).read_text(encoding="utf-8", errors="replace")
+        except Exception:
+            return None
+        cached = self.reuse_trees.get(path_str) if self.reuse_trees else None
+        if cached is not None and cached[1] is not None and cached[0] == source:
+            return cached[1]
+        return _parse_source(path_str, source)
 
     # ─── Framework event bus: Django signals and Celery tasks ───
     def _build_event_catalog(self) -> None:
@@ -281,71 +723,69 @@ class CrossFileTaintEngine:
         handle, so without this catalog the call graph has no edge into the handler and the sinks
         behind it stay invisible across modules.
         """
-        for mod_name, tree in self.indexer._ast_cache.items():
-            for stmt in tree.body:
-                if isinstance(stmt, ast.Assign) and self._is_signal_factory(stmt.value):
-                    for target in stmt.targets:
-                        if isinstance(target, ast.Name):
-                            self.signal_definitions.add((mod_name, target.id))
-            for func_node, qualname in _contracted_functions(tree):
-                self._register_event_handler(mod_name, func_node, qualname)
+        for mod_name, facts in self.module_facts.items():
+            for name in facts.signals:
+                self.signal_definitions.add((mod_name, name))
+            for qual, func in facts.funcs.items():
+                for decorator in func.decos:
+                    if decorator.label is None:
+                        continue
+                    if (decorator.label in SIGNAL_SUBSCRIBE_DECORATORS
+                            and decorator.is_call and decorator.arg0kind != 2):
+                        signal_ref = self._resolve_reference_fact(
+                            mod_name, decorator.arg0kind, decorator.arg0name,
+                            decorator.arg0prefix, decorator.arg0bare)
+                        if signal_ref is not None:
+                            self.signal_definitions.add(signal_ref)
+                            self.signal_subscribers.setdefault(signal_ref, []).append(
+                                (mod_name, qual))
+                    elif decorator.label in TASK_DECORATOR_NAMES:
+                        self.task_definitions.add((mod_name, qual))
 
-    @staticmethod
-    def _is_signal_factory(value: ast.AST) -> bool:
-        """True for `x = Signal()` / `x = django.dispatch.Signal()` (Django, Blinker)."""
-        if not isinstance(value, ast.Call):
-            return False
-        callee = value.func
-        if isinstance(callee, ast.Name):
-            return callee.id in SIGNAL_FACTORY_METHODS
-        return isinstance(callee, ast.Attribute) and callee.attr in SIGNAL_FACTORY_METHODS
+    def _resolve_name_reference(self, mod_name: str, name: str) -> tuple[str, str]:
+        """(defining module, symbol) a bare reference spelling points at."""
+        mod_idx = self.indexer.modules.get(mod_name)
+        binding = mod_idx.imports.get(name) if mod_idx else None
+        if binding is not None:
+            target_mod = self.indexer._match_registered_module(binding.source_module)
+            if target_mod:
+                return (target_mod, binding.imported_name or name)
+        return (mod_name, name)
 
-    @staticmethod
-    def _decorator_label(decorator: ast.AST) -> Optional[str]:
-        """Trailing dotted component of a decorator, whether bare, dotted, or called."""
-        target = decorator.func if isinstance(decorator, ast.Call) else decorator
-        if isinstance(target, ast.Name):
-            return target.id
-        if isinstance(target, ast.Attribute):
-            return target.attr
-        return None
+    def _resolve_attr_reference(self, base: str, attr: str) -> tuple[str, str]:
+        """(defining module, symbol) a dotted reference spelling points at."""
+        return (self.indexer._match_registered_module(base) or base, attr)
 
-    def _register_event_handler(
+    def _resolve_reference_fact(
         self,
         mod_name: str,
-        func_node: ast.FunctionDef | ast.AsyncFunctionDef,
-        qualname: str,
-    ) -> None:
-        for decorator in func_node.decorator_list:
-            label = self._decorator_label(decorator)
-            if label is None:
-                continue
-            if (label in SIGNAL_SUBSCRIBE_DECORATORS and isinstance(decorator, ast.Call)
-                    and decorator.args):
-                signal_ref = self._resolve_reference(mod_name, decorator.args[0])
-                if signal_ref is not None:
-                    self.signal_definitions.add(signal_ref)
-                    self.signal_subscribers.setdefault(signal_ref, []).append((mod_name, qualname))
-            elif label in TASK_DECORATOR_NAMES:
-                self.task_definitions.add((mod_name, qualname))
+        kind: int,
+        name: str,
+        prefix: str,
+        prefix_bare: bool,
+    ) -> Optional[tuple[str, str]]:
+        """Fact spelling of `_resolve_reference` for a name/attribute expression."""
+        if kind == 0:
+            return self._resolve_name_reference(mod_name, name)
+        if kind == 1:
+            if prefix_bare and prefix in ("self", "cls"):
+                return None
+            if not prefix:
+                return None
+            return self._resolve_attr_reference(prefix, name)
+        return None
 
     def _resolve_reference(self, mod_name: str, expr: ast.AST) -> Optional[tuple[str, str]]:
         """(defining module, symbol) a receiver or decorator argument points at."""
         if isinstance(expr, ast.Name):
-            mod_idx = self.indexer.modules.get(mod_name)
-            binding = mod_idx.imports.get(expr.id) if mod_idx else None
-            if binding is not None:
-                target_mod = self.indexer._match_registered_module(binding.source_module)
-                if target_mod:
-                    return (target_mod, binding.imported_name or expr.id)
-            return (mod_name, expr.id)
+            return self._resolve_name_reference(mod_name, expr.id)
         if isinstance(expr, ast.Attribute):
             if isinstance(expr.value, ast.Name) and expr.value.id in ("self", "cls"):
                 return None
             base = _dotted_prefix(expr.value)
             if not base:
                 return None
-            return (self.indexer._match_registered_module(base) or base, expr.attr)
+            return self._resolve_attr_reference(base, expr.attr)
         return None
 
     def _resolve_event_emission(
@@ -411,15 +851,12 @@ class CrossFileTaintEngine:
         while True:
             self._propagation_rounds += 1
             changed = False
-            for mod_name, mod_idx in self.indexer.modules.items():
-                tree = self.indexer._ast_cache.get(mod_name)
-                if not tree:
-                    continue
-                for func_node, qualname in _contracted_functions(tree):
-                    summary = self.contracts.get((mod_name, qualname))
-                    if summary is None or not summary.params:
+            for mod_name, facts in self.module_facts.items():
+                for qual, func in facts.funcs.items():
+                    summary = func.summary
+                    if not summary.params:
                         continue
-                    if self._lift_callee_sinks(mod_name, summary, func_node):
+                    if self._lift_callee_sinks(mod_name, summary, func):
                         changed = True
             if not changed:
                 return
@@ -428,7 +865,7 @@ class CrossFileTaintEngine:
         self,
         caller_mod: str,
         summary: FunctionSummary,
-        func_node: ast.AST,
+        func: FuncFacts,
     ) -> bool:
         param_index = {name: idx for idx, name in enumerate(summary.params)}
         known = {
@@ -436,19 +873,10 @@ class CrossFileTaintEngine:
             for edge in summary.param_sinks
         }
         added = False
-        # The Call list and the receiver map depend only on the syntax of this function and
-        # on the (immutable) symbol index, so round 1 pays for them and later rounds reuse
-        # them. The identity check guards against a re-parsed node landing on a freed id.
-        cached = self._lift_traversal.get((caller_mod, summary.qualname))
-        if cached is not None and cached[0] is func_node:
-            calls, receivers = cached[1], cached[2]
-        else:
-            calls = [n for n in ast.walk(func_node) if isinstance(n, ast.Call)]
-            receivers = self._instance_bindings(caller_mod, summary.qualname, func_node)
-            self._lift_traversal[(caller_mod, summary.qualname)] = (func_node, calls, receivers)
+        receivers = self._fact_receivers(caller_mod, summary.qualname, func)
 
-        for call in calls:
-            resolved = self._resolve_call_contract(caller_mod, call, receivers)
+        for call_lineno, call in func.calls:
+            resolved = self._resolve_site_contract(caller_mod, call, receivers)
             if resolved is None:
                 continue
             callee_mod, callee_summary = resolved
@@ -458,18 +886,20 @@ class CrossFileTaintEngine:
             # not lift either; otherwise the same leak would reappear one layer further out.
             neutralized = self._decorator_sanitized_params(callee_mod, callee_summary)
 
-            for arg_idx, arg in sorted(
-                self._bind_call_args(
+            for arg_idx, arg_name in sorted(
+                self._bind_site_args(
                     call,
                     callee_summary.params,
-                    self._receiver_offset(caller_mod, call, callee_summary, receivers),
+                    self._receiver_offset_site(caller_mod, call, callee_summary, receivers),
                 ).items()
             ):
                 if arg_idx in neutralized:
                     continue
-                if not isinstance(arg, ast.Name):
+                # Only a bare name forwards a parameter; the AST walk this replaces tested
+                # isinstance(arg, ast.Name) for exactly the same reason.
+                if arg_name is None:
                     continue
-                caller_param_idx = param_index.get(arg.id)
+                caller_param_idx = param_index.get(arg_name)
                 if caller_param_idx is None:
                     continue
 
@@ -495,12 +925,165 @@ class CrossFileTaintEngine:
                         origin_key, callee_summary.file_path
                     )
                     self.sink_route[lifted_key] = [
-                        (summary.file_path, call.lineno,
+                        (summary.file_path, call_lineno,
                          f"{caller_mod}.{summary.qualname}")
                     ] + self.sink_route.get(origin_key, [])
                     added = True
 
         return added
+
+    def _fact_receivers(
+        self,
+        caller_mod: str,
+        caller_func: str,
+        func: FuncFacts,
+    ) -> Dict[str, tuple[str, str]]:
+        """`_instance_bindings` over harvested facts: own-scope `var = ClassName(...)` bindings."""
+        bindings: Dict[str, tuple[str, str]] = {}
+        if "." in caller_func:
+            owning_class = (caller_func.split(".", 1)[0], caller_mod)
+            bindings["self"] = owning_class
+            bindings["cls"] = owning_class
+        for targets, ctor in func.recv:
+            class_ref = self._class_of_name(ctor, caller_mod)
+            if class_ref is None:
+                continue
+            for target in targets:
+                bindings[target] = class_ref
+        return bindings
+
+    def _resolve_site_contract(
+        self,
+        caller_mod: str,
+        site: CallShape,
+        receivers: Optional[Dict[str, tuple[str, str]]] = None,
+    ) -> Optional[tuple[str, FunctionSummary]]:
+        """Fact spelling of `_resolve_call_contract` for one harvested call site."""
+        if site.fkind == _SITE_FUNC_NAME:
+            call_name = site.fname
+        elif site.fkind == _SITE_FUNC_ATTR:
+            resolved_method = self._resolve_site_method(site, caller_mod, receivers)
+            if resolved_method is not None:
+                return resolved_method
+            resolved_module = self._resolve_site_module_attribute(site, caller_mod)
+            if resolved_module is not None:
+                return resolved_module
+            call_name = site.fname
+        else:
+            return None
+
+        symbol_def = self.indexer.resolve_symbol(caller_mod, call_name)
+        if not symbol_def:
+            return None
+
+        callee_mod = self._resolve_file_module(symbol_def.file_path)
+        if not callee_mod:
+            return None
+
+        summary = self.contracts.get((callee_mod, symbol_def.name))
+        if summary is None:
+            return None
+        return callee_mod, summary
+
+    def _resolve_site_method(
+        self,
+        site: CallShape,
+        caller_mod: str,
+        receivers: Optional[Dict[str, tuple[str, str]]],
+    ) -> Optional[tuple[str, FunctionSummary]]:
+        class_ref: Optional[tuple[str, str]] = None
+        if site.rkind == _SITE_RECV_NAME:
+            class_ref = ((receivers or {}).get(site.rname)
+                         or self._class_of_name(site.rname, caller_mod))
+        elif site.rkind == _SITE_RECV_CTOR:
+            class_ref = self._class_of_name(site.rname, caller_mod)
+        if class_ref is None:
+            return None
+        return self._resolve_inherited_method(class_ref, site.fname)
+
+    def _resolve_site_module_attribute(
+        self,
+        site: CallShape,
+        caller_mod: str,
+    ) -> Optional[tuple[str, FunctionSummary]]:
+        if site.rkind != _SITE_RECV_NAME:
+            return None
+        target_mod = self._imported_module_of(site.rname, caller_mod)
+        if target_mod is None:
+            return None
+        summary = self.contracts.get((target_mod, site.fname))
+        return None if summary is None else (target_mod, summary)
+
+    def _bind_site_args(
+        self,
+        site: CallShape,
+        param_names: List[str],
+        arg_offset: int = 0,
+    ) -> Dict[int, Optional[str]]:
+        """`_bind_call_args` over facts: parameter index -> bare argument name (None otherwise)."""
+        bound: Dict[int, Optional[str]] = {}
+        for idx, name in enumerate(site.argn):
+            param_idx = idx - arg_offset
+            if 0 <= param_idx < len(param_names):
+                bound[param_idx] = name
+        param_to_idx = {name: idx for idx, name in enumerate(param_names)}
+        for keyword, name in site.kwn:
+            if keyword in param_to_idx:
+                bound[param_to_idx[keyword]] = name
+            else:
+                slot = self._kwarg_slot_index(param_names, keyword)
+                if slot is not None:
+                    bound[slot] = name
+        return bound
+
+    def _receiver_offset_site(
+        self,
+        caller_mod: str,
+        site: CallShape,
+        summary: FunctionSummary,
+        receivers: Optional[Dict[str, tuple[str, str]]] = None,
+    ) -> int:
+        """`_receiver_offset` over facts: 1 for an unbound `Class.method(receiver, ...)` call."""
+        if not summary.takes_receiver or site.fkind != _SITE_FUNC_ATTR:
+            return 0
+        if site.rkind != _SITE_RECV_NAME:
+            return 0
+        if receivers and site.rname in receivers:
+            return 0
+        class_ref = self._class_of_name(site.rname, caller_mod)
+        if class_ref is None:
+            return 0
+        resolved = self._resolve_inherited_method(class_ref, site.fname)
+        return 1 if resolved is not None and resolved[1] is summary else 0
+
+    def _module_emits(self, mod_name: str, facts: ModuleFacts) -> bool:
+        """Could any call in this module reach a sink-bearing contract?
+
+        Deliberately an over-approximation: every shape that can emit a finding resolves to a
+        contract with a `param_sinks` edge, so answering no here proves the AST analysis has
+        nothing to add. Answering yes only costs one re-parse.
+        """
+        for qual, func in facts.funcs.items():
+            receivers = self._fact_receivers(mod_name, qual, func)
+            for _lineno, site in func.calls:
+                resolved = self._resolve_site_contract(mod_name, site, receivers)
+                if resolved is not None and resolved[1].param_sinks:
+                    return True
+                if site.fkind != _SITE_FUNC_ATTR or site.fname not in _DISPATCH_ATTRS:
+                    continue
+                ref = self._resolve_reference_fact(
+                    mod_name, site.rkind, site.rname, site.rprefix, site.rprefix_bare)
+                if ref is None:
+                    continue
+                if site.fname in SIGNAL_EMISSION_METHODS:
+                    targets = self.signal_subscribers.get(ref, ())
+                else:
+                    targets = (ref,) if ref in self.task_definitions else ()
+                for target in targets:
+                    summary = self.contracts.get(target)
+                    if summary is not None and summary.param_sinks:
+                        return True
+        return False
 
     def sanitized_sink_locations(self) -> Set[tuple[str, int]]:
         """Call sites whose locally-assigned arguments were all neutralized by a
@@ -509,19 +1092,32 @@ class CrossFileTaintEngine:
         Single-file scanners cannot see the callee contract, so they report these sites
         as injectable. The returned keys are (resolved file path, call lineno).
         """
-        suppressed: Set[tuple[str, int]] = set()
         _t_s0 = time.perf_counter()
         try:
+            if self._sanitizer_sites_cache is not None:
+                return set(self._sanitizer_sites_cache)
+            suppressed: Set[tuple[str, int]] = set()
             if not any(summary.is_sanitizer for summary in self.contracts.values()):
                 print(f"TimeCodeSecurity [PROFILE] CrossSanitizers: scan={time.perf_counter() - _t_s0:.2f}s "
                       f"(no sanitizer contracts; 0 trees walked) sites=0", file=sys.stderr)
                 return suppressed
-            _modules_walked = 0
-            for mod_name, mod_idx in self.indexer.modules.items():
-                tree = self.indexer._ast_cache.get(mod_name)
-                if not tree:
+
+            # A site needs an assignment whose right-hand side resolves to a sanitizer, so a
+            # module whose assignment spellings share no name with any sanitizer contract
+            # cannot contribute one. The spelling test is a superset of every resolution path
+            # (direct name, import alias, module attribute, method tail), which is what keeps
+            # this selection from ever skipping a module that could suppress a finding.
+            selected = [
+                mod_name for mod_name, facts in self.module_facts.items()
+                if facts.assign_callees and self._may_hold_sanitizer_site(mod_name, facts)
+            ]
+            for mod_name in selected:
+                mod_idx = self.indexer.modules.get(mod_name)
+                if mod_idx is None:
                     continue
-                _modules_walked += 1
+                tree = self._tree_for(mod_name)
+                if tree is None:
+                    continue
                 file_key = str(Path(mod_idx.file_path).resolve())
                 qualnames = {id(node): name for node, name in _contracted_functions(tree)}
                 for node in _function_defs(tree):
@@ -530,9 +1126,12 @@ class CrossFileTaintEngine:
                             mod_name, file_key, node, qualnames.get(id(node), node.name)
                         )
                     )
+                self._sanitizer_modules += 1
+                del tree
+            self._sanitizer_sites_cache = frozenset(suppressed)
             print(f"TimeCodeSecurity [PROFILE] CrossSanitizers: "
                   f"scan={time.perf_counter() - _t_s0:.2f}s "
-                  f"(trees_walked={_modules_walked}/{len(self.indexer.modules)}) "
+                  f"(trees_walked={self._sanitizer_modules}/{len(self.indexer.modules)}) "
                   f"sites={len(suppressed)}", file=sys.stderr)
             return suppressed
         finally:
@@ -541,6 +1140,38 @@ class CrossFileTaintEngine:
             # end of run() - releasing it earlier would make this phase re-issue every OS path
             # lookup it has just been handed the answer to.
             self._path_to_module_memo.clear()
+
+    def _sanitizer_tail_set(self) -> frozenset:
+        if self._sanitizer_tails is None:
+            self._sanitizer_tails = frozenset(
+                qual.rsplit(".", 1)[-1]
+                for (_mod, qual), summary in self.contracts.items()
+                if summary.is_sanitizer
+            )
+        return self._sanitizer_tails
+
+    def _module_sanitizer_aliases(self, mod_name: str) -> frozenset:
+        cached = self._sanitizer_aliases.get(mod_name)
+        if cached is not None:
+            return cached
+        found = set()
+        mod_idx = self.indexer.modules.get(mod_name)
+        if mod_idx is not None:
+            for local_name, binding in mod_idx.imports.items():
+                target_mod = self.indexer._match_registered_module(binding.source_module)
+                if not target_mod:
+                    continue
+                imported = binding.imported_name or local_name
+                summary = self.contracts.get((target_mod, imported))
+                if summary is not None and summary.is_sanitizer:
+                    found.add(local_name)
+        result = frozenset(found)
+        self._sanitizer_aliases[mod_name] = result
+        return result
+
+    def _may_hold_sanitizer_site(self, mod_name: str, facts: ModuleFacts) -> bool:
+        spellings = self._sanitizer_tail_set() | self._module_sanitizer_aliases(mod_name)
+        return bool(facts.assign_callees & spellings)
 
     def _sanitized_sites(
         self,
@@ -608,16 +1239,7 @@ class CrossFileTaintEngine:
             if arg.arg in ("request", "req"):
                 tainted_vars.add(arg.arg)
 
-        # Track local assignments from sources. The propagation fixed point already computed
-        # the receiver bindings for this exact node under the same (module, qualname) key, so
-        # reuse that read-only mapping instead of re-walking the body. A function that never
-        # reached the lift stage (no contract, or no params) simply misses here and is computed
-        # on demand, exactly as before.
-        cached = self._lift_traversal.get((caller_mod, caller_func_name))
-        if cached is not None and cached[0] is func_node:
-            receivers = cached[2]
-        else:
-            receivers = self._instance_bindings(caller_mod, caller_func_name, func_node)
+        receivers = self._instance_bindings(caller_mod, caller_func_name, func_node)
         for stmt in func_node.body:
             if isinstance(stmt, ast.Assign):
                 rhs_repr = ast.unparse(stmt.value) if hasattr(ast, "unparse") else ""
@@ -849,33 +1471,21 @@ class CrossFileTaintEngine:
 
     def _base_classes(self, class_name: str, class_mod: str) -> List[tuple[str, str]]:
         """Resolve the base classes of `class_name` to (class, module) pairs, in source order."""
-        node = self._class_node(class_mod, class_name)
-        if node is None:
+        facts = self.module_facts.get(class_mod)
+        if facts is None:
+            return []
+        bases = facts.bases.get(class_name)
+        if bases is None:
             return []
 
         parents: List[tuple[str, str]] = []
-        for base in node.bases:
+        for named, spelling in bases:
             # Only a bare or dotted name identifies an inheritable class; call and subscript
             # bases (Generic[T], metaclass kwargs) carry no statically named class.
-            if isinstance(base, ast.Name):
-                parent = self._class_of_name(base.id, class_mod)
-            elif isinstance(base, ast.Attribute):
-                parent = self._class_of_name(base.attr, class_mod)
-            else:
-                parent = None
+            parent = self._class_of_name(spelling, class_mod) if named else None
             if parent is not None:
                 parents.append(parent)
         return parents
-
-    def _class_node(self, mod_name: str, class_name: str) -> Optional[ast.ClassDef]:
-        """Top-level ClassDef node for a module, as indexed by GlobalSymbolIndex."""
-        tree = self.indexer._ast_cache.get(mod_name)
-        if tree is None:
-            return None
-        for stmt in tree.body:
-            if isinstance(stmt, ast.ClassDef) and stmt.name == class_name:
-                return stmt
-        return None
 
     def _resolve_module_attribute_contract(
         self,
@@ -924,100 +1534,44 @@ class CrossFileTaintEngine:
         if cached is not None:
             return cached
 
-        node = self._function_node(callee_mod, summary.qualname)
         sanitized: Set[int] = set()
-        if node is not None and summary.params:
-            for decorator in node.decorator_list:
-                definition = self._decorator_definition(callee_mod, decorator)
-                if definition is not None:
-                    sanitized |= self._wrapper_sanitized_slots(definition, summary.params)
+        facts = self.module_facts.get(callee_mod)
+        func = facts.funcs.get(summary.qualname) if facts is not None else None
+        if func is not None and summary.params:
+            for decorator in func.decos:
+                if decorator.bare is None:
+                    continue
+                symbol_def = self.indexer.resolve_symbol(callee_mod, decorator.bare)
+                if symbol_def is None or symbol_def.kind not in ("function", "async_function"):
+                    continue
+                decorator_mod = self._resolve_file_module(symbol_def.file_path)
+                if decorator_mod is None:
+                    continue
+                definition_facts = self.module_facts.get(decorator_mod)
+                definition = (definition_facts.funcs.get(symbol_def.name)
+                              if definition_facts is not None else None)
+                if definition is None or definition.wrapper is None:
+                    continue
+                sanitized |= self._wrapper_slots(definition.wrapper, summary.params)
         self._decorator_slots[key] = sanitized
         return sanitized
 
-    def _decorator_definition(self, caller_mod: str, expr: ast.expr) -> Optional[ast.FunctionDef]:
-        """FunctionDef of the decorator itself, resolving its name through the import table."""
-        name = expr.id if isinstance(expr, ast.Name) else (
-            expr.attr if isinstance(expr, ast.Attribute) else None
-        )
-        if name is None:
-            return None
-        symbol_def = self.indexer.resolve_symbol(caller_mod, name)
-        if symbol_def is None or symbol_def.kind not in ("function", "async_function"):
-            return None
-        decorator_mod = self._resolve_file_module(symbol_def.file_path)
-        if decorator_mod is None:
-            return None
-        return self._function_node(decorator_mod, symbol_def.name)
-
     @staticmethod
-    def _wrapper_sanitized_slots(
-        decorator: ast.FunctionDef,
-        decorated_params: List[str],
-    ) -> Set[int]:
+    def _wrapper_slots(shape: WrapperShape, decorated_params: List[str]) -> Set[int]:
         """Slots the decorator's wrapper rebuilds through a sanitizer before calling through."""
-        wrapper = next(
-            (
-                stmt
-                for stmt in decorator.body
-                if isinstance(stmt, (ast.FunctionDef, ast.AsyncFunctionDef))
-            ),
-            None,
-        )
-        if (
-            wrapper is None
-            or wrapper.args.vararg
-            or wrapper.args.kwarg
-            or wrapper.args.kwonlyargs
-        ):
+        if not shape.ok:
             return set()
-
-        wrapper_params = [arg.arg for arg in wrapper.args.args]
-        if len(wrapper_params) != len(decorated_params):
+        if len(shape.wparams) != len(decorated_params):
             return set()
-
-        wrapped_names = {arg.arg for arg in decorator.args.args}
-        forwarded = next(
-            (
-                node
-                for node in ast.walk(wrapper)
-                if isinstance(node, ast.Call)
-                and isinstance(node.func, ast.Name)
-                and node.func.id in wrapped_names
-            ),
-            None,
-        )
-        if forwarded is None or forwarded.keywords or len(forwarded.args) != len(decorated_params):
+        if shape.flen != len(decorated_params):
             return set()
-
         slots: Set[int] = set()
-        for index, argument in enumerate(forwarded.args):
-            source = wrapper_params[index]
-            if _name_uses(argument) - {source}:
+        for index, (used, is_call, tail) in enumerate(shape.fargs):
+            if set(used) - {shape.wparams[index]}:
                 continue
-            if isinstance(argument, ast.Call):
-                callee = argument.func
-                callee_name = callee.id if isinstance(callee, ast.Name) else (
-                    callee.attr if isinstance(callee, ast.Attribute) else None
-                )
-                if callee_name in KNOWN_SANITIZERS:
-                    slots.add(index)
+            if is_call and tail in KNOWN_SANITIZERS:
+                slots.add(index)
         return slots
-
-    def _function_node(self, mod_name: str, qualname: str) -> Optional[ast.FunctionDef]:
-        """FunctionDef node for a module and qualified name, as indexed by GlobalSymbolIndex."""
-        tree = self.indexer._ast_cache.get(mod_name)
-        if tree is None:
-            return None
-        head, _, tail = qualname.partition(".")
-        for stmt in tree.body:
-            if not tail:
-                if isinstance(stmt, (ast.FunctionDef, ast.AsyncFunctionDef)) and stmt.name == head:
-                    return stmt
-            elif isinstance(stmt, ast.ClassDef) and stmt.name == head:
-                for item in stmt.body:
-                    if isinstance(item, (ast.FunctionDef, ast.AsyncFunctionDef)) and item.name == tail:
-                        return item
-        return None
 
     def _class_of_name(self, name: str, caller_mod: str) -> Optional[tuple[str, str]]:
         """(class name, defining module) when `name` resolves to an indexed class."""
@@ -1193,27 +1747,12 @@ class CrossFileTaintEngine:
     def _sink_descriptor(self, file_path: str, lineno: int, fallback: str) -> str:
         """Recover how the sink was written (e.g. 'cursor.execute') from its source line."""
         mod_name = self._resolve_file_module(file_path)
-        tree = self.indexer._ast_cache.get(mod_name) if mod_name else None
-        if tree is None or not hasattr(ast, "unparse"):
+        facts = self.module_facts.get(mod_name) if mod_name else None
+        entry = facts.sink_lines.get(lineno) if facts is not None else None
+        if entry is None:
             return fallback
-
-        candidates = [
-            node
-            for node in ast.walk(tree)
-            if isinstance(node, ast.Call) and getattr(node, "lineno", 0) == lineno
-        ]
-        if not candidates:
-            return fallback
-        for node in candidates:
-            if isinstance(node.func, ast.Attribute):
-                tail = node.func.attr
-            elif isinstance(node.func, ast.Name):
-                tail = node.func.id
-            else:
-                tail = None
-            if tail == fallback:
-                return ast.unparse(node.func)
-        return ast.unparse(candidates[0].func)
+        first, by_tail = entry
+        return by_tail.get(fallback, first)
 
 
 if __name__ == "__main__":

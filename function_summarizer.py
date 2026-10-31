@@ -95,22 +95,35 @@ class FunctionSummarizer:
             tree = self.indexer._ast_cache.get(mod_name)
             if not tree:
                 continue
-
-            for stmt in tree.body:
-                if isinstance(stmt, (ast.FunctionDef, ast.AsyncFunctionDef)):
-                    summary = self._summarize_function(stmt, mod_name, str(mod_idx.file_path))
-                    self.summaries[(mod_name, stmt.name)] = summary
-                elif isinstance(stmt, ast.ClassDef):
-                    for item in stmt.body:
-                        if isinstance(item, (ast.FunctionDef, ast.AsyncFunctionDef)):
-                            qual = f"{stmt.name}.{item.name}"
-                            summary = self._summarize_function(
-                                item, mod_name, str(mod_idx.file_path),
-                                qualname=qual, is_method=True,
-                            )
-                            self.summaries[(mod_name, qual)] = summary
+            self.summarize_module(mod_name, mod_idx.file_path, tree)
 
         return self.summaries
+
+    def summarize_module(self, mod_name: str, file_path, tree: ast.AST) -> list[FunctionSummary]:
+        """Summarise one module's top-level functions and methods; returns what it created.
+
+        The streaming indexer calls this as each file is parsed, so the tree can be released
+        immediately; `build_all_summaries` calls the same code over the cached trees, which
+        keeps insertion order (and therefore every downstream iteration) identical.
+        """
+        path_str = str(file_path)
+        created: list[FunctionSummary] = []
+        for stmt in tree.body:
+            if isinstance(stmt, (ast.FunctionDef, ast.AsyncFunctionDef)):
+                summary = self._summarize_function(stmt, mod_name, path_str)
+                self.summaries[(mod_name, stmt.name)] = summary
+                created.append(summary)
+            elif isinstance(stmt, ast.ClassDef):
+                for item in stmt.body:
+                    if isinstance(item, (ast.FunctionDef, ast.AsyncFunctionDef)):
+                        qual = f"{stmt.name}.{item.name}"
+                        summary = self._summarize_function(
+                            item, mod_name, path_str,
+                            qualname=qual, is_method=True,
+                        )
+                        self.summaries[(mod_name, qual)] = summary
+                        created.append(summary)
+        return created
 
     def _summarize_function(
         self,
