@@ -1,0 +1,9 @@
+exclude_paths:
+  - "tests/**"
+  - "docs/**"
+  - "scratch/**"
+rules:
+  CWE-338:
+    exclude:
+      - "**/populate/**"
+      - "**/demo/**"
