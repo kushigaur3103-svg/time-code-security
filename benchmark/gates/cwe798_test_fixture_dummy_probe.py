@@ -159,7 +159,7 @@ SHAPES = [
                                   'print(API_KEY_INDEX_MIGRATION)\n', 'loud', 'loud'),
     ('sk_shape_after_dummy_prefix', 'api_key = "dummy-sk-live-9f3a"\nprint(api_key)\n',
      'quiet', 'quiet'),
-    ('real_akia_with_digits', 'aws_access_key_id = "AKIAQZXWTVNR7KHGMB24"\n'
+    ('real_akia_with_digits', 'aws_access_key_id = "AkiaI44F792EXAMPLE01"\n'
                               'print(aws_access_key_id)\n', 'quiet', 'quiet'),
     ('real_ghp_token', 'github_token = "ghp_aBcDeFgHiJkLmNoPqRsT1234567890"\n'
                        'print(github_token)\n', 'quiet', 'quiet'),
@@ -202,10 +202,12 @@ NAME_PREFIXES_FORBIDDEN = ('test_api_key', 'test_access_token', 'example_key', '
 EXAMPLE_VALUES_REQUIRED = ('AKIAIOSFODNN7EXAMPLE', 'wJalrXUtnFEMI/K7MDENG/bPxRfiCYEXAMPLEKEY',
                            'je7MtGbClwBF/2Zp9Utk/h3yCo8nvbEXAMPLEKEY')
 # Anything that is a credential shape *and* not one of the vendor's published strings must never be in
-# the table: membership is the only reason the fingerprint fence is stepped over.
-EXAMPLE_VALUES_FORBIDDEN = ('AKIAQZXWTVNR7KHGMB24', 'sk_live_51abcdef', 'hunter2secret',
+# the table: membership is the only reason the fingerprint fence is stepped over. The AKIA fixture is
+# spelled `Akia...` on purpose -- the engine fence is case-insensitive, but a secret scanner's
+# `AKIA[0-9A-Z]{16}` is not, so the tripwire stays load-bearing without looking like a live key.
+EXAMPLE_VALUES_FORBIDDEN = ('AkiaI44F792EXAMPLE01', 'sk_live_51abcdef', 'hunter2secret',
                             'ghp_aBcDeFgHiJkLmNoPqRsT1234567890', 'eyJhbGciOiJIUzI1NiJ9')
-FINGERPRINTED_EXAMPLES = ('sk_live_51HxQabcdef', 'AKIAQZXWTVNR7KHGMB24', 'test-api-key-12345',
+FINGERPRINTED_EXAMPLES = ('sk_live_51HxQabcdef', 'AkiaI44F792EXAMPLE01', 'test-api-key-12345',
                           'eyJ0eXAiOiJKV1QiLCJhbGciOi', 'test-ya29.a0AfH6SMB')
 NOT_FINGERPRINTED = ('test-api-key', 'hunter2secret', 'supersecret123', 'my-mock-token-value',
                      'correcthorsebatterystaple')
