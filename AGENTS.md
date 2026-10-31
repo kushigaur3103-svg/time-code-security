@@ -408,7 +408,8 @@ is an anchor, or — inside a chain, never at the top — a proven-safe literal:
 `os.path.dirname(__file__)`, `Path(__file__)`, an `importlib.resources` lookup, or a name bound **exactly
 once** in the enclosing scope to one of those, resolved through `_assignment_records` so a twice-written
 name fails closed, with a `depth > 12` cap, `_C22_ESCAPE_SEGMENT == '..'` rejection and int-only `Subscript`.
-It is wired as the *third* disjunct of the `is_cwe22` prune (`ast_scanner.py:25764`), **ahead of**
+It is wired as the *third* disjunct of the `is_cwe22` prune (`ast_scanner.py:25777`, the `is_cwe22` test
+itself opens at `ast_scanner.py:25771`), **ahead of**
 `self.resolve_path_provenance(`, and TIER 6 fails if that call ever moves or is duplicated. The gate caught
 a real FN in the first draft: `resource_filename("pkg", "app.json")` — every argument a bare literal, with no
 anchor anywhere in the expression — was accepted. Both branches now require a positive anchor: the
