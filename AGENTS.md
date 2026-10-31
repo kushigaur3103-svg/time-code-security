@@ -62,7 +62,7 @@ The sign-off also carries seven standing instructions:
   own truth table (`cwe704_type_cast_probe.py`, `cwe328_hash_context_probe.py`,
   `cwe116_template_autoescape_probe.py`, each `VERDICT: PASS`), so narrowing one of them means
   shipping that file first, not after.
-  All twenty-two runnable gate scripts (`aa_parity.py`, `big8_ab.py`, `cwe338_ml_math_probe.py`,
+  All twenty-six runnable gate scripts (`aa_parity.py`, `big8_ab.py`, `cwe338_ml_math_probe.py`,
   `cwe338_prng_context_probe.py`, `cwe117_cwe22_unknown_source_probe.py`,
   `cwe117_builtin_seal_probe.py`, `cwe117_numeric_provenance_probe.py`,
   `cwe22_dirent_closure_probe.py`, `cwe22_sink_argument_probe.py`,
@@ -72,7 +72,8 @@ The sign-off also carries seven standing instructions:
   `cwe601_relative_redirect_probe.py`, `cwe704_type_cast_probe.py`,
   `cwe328_hash_context_probe.py`, `cwe89_path_interpolation_probe.py`,
   `cwe208_llm_token_timing_probe.py`, `cwe78_argv_execve_probe.py`,
-  `cwe208_llm_domain_compare_probe.py`), their frozen baseline key
+  `cwe208_llm_domain_compare_probe.py`, `cross_symbol_table_probe.py`, `workflow_controls_probe.py`,
+  `cwe798_test_fixture_dummy_probe.py`, `cwe22_repo_anchor_path_probe.py`), their frozen baseline key
   files and `gate_meta.json` are
   tracked under `benchmark/gates/`, so a fresh clone or CI can run them; `scratch/` is git-ignored,
   so a gate kept there is not runnable by anyone else and its baseline is not reviewable. The gates
@@ -371,6 +372,77 @@ Parity briefly read `425 → 429 NEW=4` because the two new harnesses tripped th
 at an `open()` whose `basename` filter was hidden inside a closure, and three CWE-209 from `str(exc)` carried into
 a returned failure list; both were fixed in the harness (join inline, `type(exc).__name__`), never excused, and
 `NEW=0` came back on the same command.
+
+The CWE-798 dummy-literal and CWE-22 internal-repo-anchor exemptions ship as one atomic step, and both
+were measured before either was written, because each mandate figure describes a population the engine does
+not have. CWE-798: the prompt's "~5,351 across CWE-798 & CWE-78" is, in the audited LiteLLM tree, **593
+CWE-798 rows and 25 CWE-78 rows**, and the CWE-78 population already belongs to the argv guard shipped on
+top of `2a253a5`, so this step ships one collector-side rule and leaves CWE-78 alone (measured as a control
+arm: `25 → 25 RETIRED=0 ADDED=0`). CWE-22: of the prompt's 967 local-path rows, only **28** carry a path
+expression an internal-anchor proof can reach at all, and the shipped rule retires **24** of those with
+**ADDED=0** — the 4 that stay loud are refused because the chain grammar cannot prove an anchor, not because
+a table excluded them.
+
+`_is_cwe798_dummy_string(value, target_name)` (`ast_scanner.py`) is module-level and ordered: a ten-entry
+exact vendor-example table (`CWE798_EXAMPLE_SECRET_VALUES`), the legacy placeholder pass, then
+`TaintTracker._c798_fingerprinted` plus a four-character floor, then the value prefix
+(`CWE798_DUMMY_VALUE_PREFIX_RE`) and the assignment-target prefix (`CWE798_DUMMY_NAME_PREFIX_RE`). It is
+wired at **both** emit sites — the `sink_records` registry and the phase-9 gatekeeper — and the gatekeeper
+call passes the target name, which TIER 6 of `cwe798_test_fixture_dummy_probe.py` reads out of
+`inspect.getsource` (`asks inside TaintTracker=2`, `gatekeeper passes the target name=True`). Every value
+pass sits *behind* the fingerprint veto, so a `sk-`/`AKIA`/`eyJ`/`-----BEGIN`/`ya29.`/`AIza` shape or a digit
+run ≥ 4 can never be silenced by a prefix. The shield claim is counted, not asserted: of the 92 silenced
+values exactly **1** carries a fingerprint and it is byte-identical to `AKIAIOSFODNN7EXAMPLE`, a member of
+the ten-entry table; the census by reason is `{'value prefix': 64, 'vendor example table': 13, 'target-name
+prefix': 15}` = 92, and the engine-level A/B confirms the same 92 by a second, independent route.
+
+The `tests/` half of the mandate was **refused**, and the refusal is arithmetic rather than judgement: 6 of
+the 6 blessed parity CWE-798 keys and 8 parity + 16 Big-8 blessed CWE-22 keys live under a test path, while
+591 of 593 CWE-798 rows and 798 of 967 CWE-22 rows are already there — a directory-name skip would delete
+blessed true positives in one line, which is the single decision the Zero-FN Shield forbids. What ships is a
+*value*-shaped and an *expression*-shaped proof instead, so a genuine high-entropy string in `tests/` stays
+loud and is pinned loud (`must_report=16` CWE-798, `must_report=19` CWE-22 in the shipped probes).
+
+CWE-22. `_c22_path_is_internal_repo_anchor` (`ast_scanner.py:6930`) accepts a chain only when **every** part
+is an anchor, or — inside a chain, never at the top — a proven-safe literal: `__file__`,
+`os.path.dirname(__file__)`, `Path(__file__)`, an `importlib.resources` lookup, or a name bound **exactly
+once** in the enclosing scope to one of those, resolved through `_assignment_records` so a twice-written
+name fails closed, with a `depth > 12` cap, `_C22_ESCAPE_SEGMENT == '..'` rejection and int-only `Subscript`.
+It is wired as the *third* disjunct of the `is_cwe22` prune (`ast_scanner.py:25764`), **ahead of**
+`self.resolve_path_provenance(`, and TIER 6 fails if that call ever moves or is duplicated. The gate caught
+a real FN in the first draft: `resource_filename("pkg", "app.json")` — every argument a bare literal, with no
+anchor anywhere in the expression — was accepted. Both branches now require a positive anchor: the
+constructor branch tests `all(anchored or literal)` and then `any(anchored) or any(literal)` with the literal
+slot restricted to resource lookups, and the path-function branch returns only on
+`receiver_anchored or any(anchor(part))` unless it is itself inside a chain (`allow_literal`). That second
+widening moves **no engine row** — `drop_final_anchor_requirement` was MISSED at finding level, which is the
+honest statement that the defect is reachable only at the predicate — so it is pinned twice over: two
+literal predicate probes (`os.path.join("templates", "app.json")` must stay False,
+`Path(__file__).joinpath("app.json")` must stay True) and the third body fragment in the drift table, which
+is what fails loudly if a later refactor drops the `receiver_anchored or` term.
+
+Measured on the shipped code: `cwe798_test_fixture_dummy_probe.py` `seal=shipped shapes=34 fp_rows=11
+must_report=16 already_quiet=7 pairs=5 locked_cwe798=6 failures=0` → PASS, and
+`cwe22_repo_anchor_path_probe.py` `seal=shipped shapes=32 fp_rows=6 must_report=19 already_quiet=7 pairs=5
+locked_cwe22=24 failures=0` → PASS. TIER 2 exact-set is `frozen=6 live=6 MISSING=0 NEW=0` and `frozen=8
+live=8 MISSING=0 NEW=0`; TIER 5 proves un-reachability before any baseline can move — CWE-798 `parity
+blessed_lines=6 predicate_asks=6 answers_dummy=0 literals_fingerprinted=2` and CWE-22 `parity asks=8
+answers_anchor=0`, `big8 asks=16 answers_anchor=0`, with working controls at `11/11` and `3/3`. LiteLLM A/B
+against `697a58e` over 403 files in 59 byte-capped chunks: **CWE-798 593 → 501 RETIRED=92 ADDED=0**,
+**CWE-22 534 → 510 RETIRED=24 ADDED=0**, control CWE-78 `25 → 25 RETIRED=0 ADDED=0`, process-tree peak
+**169.6 MB**. All **16** falsifications across the two probes exit 1 (CAUGHT). Speed: paired,
+order-alternating CPU head→new medians **1.0000 / 1.0625 / 1.0294 / 0.9699** read against a **same-engine
+control** of **1.0000 / 1.0500 / 0.9873 / 1.0143** — the two legs above 1.0 reproduce in the control, so they
+are the 15.6 ms Windows quantum and not the predicate; the resolvable added work is 212 × 5.343 µs (1.133 ms)
+plus 16 × 10.254 µs (0.164 ms) per scan of 161,957 bytes on a 1,054.7 ms leg, **+0.12%**. Gate process-tree
+peaks: `aa_parity.py` **160.6 MB**, `big8_ab.py` **141.0 MB**, `cross_runner.py` **33.2 MB**, all under the
+400 MB budget, with parity `425/425 MISSING=0 NEW=0`, Big-8 `sha256 verified → 119/119 MISSING=0 NEW=0`,
+cross-file `F1=1.0000 FP=0 FN=0 exact-set YES`, placeholder lock `59/59`, `cwe338_ml_math_probe.py`
+`cases=62 failures=0` and all 24 previously tracked probes exit 0. The defect this step fixed in the
+*harness* is recorded: parity briefly read `425 → 428 NEW=3` (CWE-79, CWE-89 and CWE-95 at the CWE-22 probe's
+own `exec(compile(...))` mutation installer), so `exec`, `compile` and `textwrap` were deleted and the
+mutations rewritten as hand-written wrappers over the pristine method, with the drift lock moved into TIER 6
+source fragments — the harness was corrected, never excused, and `NEW=0` came back on the same command.
 
 ### Permanent Fix Mandate (Root-Cause Immunity & Anti-Band-Aid Rule)
 

@@ -1558,6 +1558,22 @@ CWE798_SECRET_FINGERPRINT_RE = re.compile(
     r"(?i)(sk-[a-z0-9]|sk_live|sk_test|pk_live|pk_test|akia|gh[pousr]_|xox[baprs]-|eyJ|-----begin"
     r"|ya29\.|AIza[0-9A-Za-z\-]{4,}|xapi[a-z0-9]{8,})")
 CWE798_LONG_DIGIT_RUN_RE = re.compile(r"\d{4,}")
+# Secrets the vendors themselves publish as examples. Equality, not a prefix, is the proof, which is
+# why this table is consulted before the fingerprint fence: `AKIAIOSFODNN7EXAMPLE` carries the `akia`
+# shape and is still, by AWS's own documentation, not a key.
+CWE798_EXAMPLE_SECRET_VALUES = frozenset({
+    "AKIAIOSFODNN7EXAMPLE", "AKIAI44QH8DHBEXAMPLE", "AKIA1234567890EXAMPLE",
+    "wJalrXUtnFEMI/K7MDENG/bPxRfiCYEXAMPLEKEY", "wJalrXUtnFEMI/K7MDENG/bPxRfiCYEXAMPLESECRET",
+    "je7MtGbClwBF/2Zp9Utk/h3yCo8nvbEXAMPLEKEY", "EXAMPLEKEYID",
+    "sk-dummy", "sk-test-dummy", "sk-example-key",
+})
+# A value that declares itself a fixture from its first characters. Anchored, because `mock` inside
+# `asmock-token` is not a declaration.
+CWE798_DUMMY_VALUE_PREFIX_RE = re.compile(
+    r"(?i)^(?:dummy|mock|fake|example|test)[-_]"
+    r"|^(?:sk|pk|api|key|token|secret)[-_](?:dummy|mock|fake|example|test)[-_]?")
+# The same declaration read from the assignment target, for `dummy_api_key = "abc123def456"`.
+CWE798_DUMMY_NAME_PREFIX_RE = re.compile(r"(?i)^(?:dummy|mock|fake|test_sample)[_-]")
 
 # The `if`/`elif` that grants `authenticated = True` is a bypass only when nothing was checked. A
 # callee that says what it does - `validate`, `verify`, `authenticate`, `authorize`, with Home
@@ -1842,9 +1858,24 @@ CWE798_DUMMY_STRINGS = frozenset({
     "<your-password-here>", "<your-api-key-here>", "<your-secret-here>",
 })
 
-def _is_cwe798_dummy_string(value: str) -> bool:
-    """Check if a string value matches known test/dummy patterns for CWE-798 suppression."""
+def _is_cwe798_dummy_string(value: str, target_name: str = "") -> bool:
+    """Check if a string value matches known test/dummy patterns for CWE-798 suppression.
+
+    Three passes, in this order, and the order is the safety property:
+
+    1. an *exact* vendor-published example, where equality is the proof and the `AKIA`/`sk-` shape of
+       the string cannot make it a real key;
+    2. the shapes this module has always recognised -- the blessed placeholder table and a value whose
+       own characters repeat;
+    3. a fixture *declaration*: the value starts with `dummy-`/`mock_`/`fake-`/`example-`/`test-` (or
+       the target is named `dummy_*`/`mock_*`/`fake_*`/`test_sample_*`) and the literal carries no
+       credential bytes and no 4-digit run that `_c798_fingerprinted` can see. A real OpenAI, AWS,
+       GitHub, Google, Slack or JWT secret is stopped by that fence whatever its prefix claims, and so
+       is `test-api-key-12345`, which is kept loud on purpose.
+    """
     if value in CWE798_DUMMY_STRINGS:
+        return True
+    if value.strip() in CWE798_EXAMPLE_SECRET_VALUES:
         return True
     # Check for repeated character patterns (e.g., "xxxx...", "XXXX...", "0000...")
     if len(value) >= 8:
@@ -1858,7 +1889,11 @@ def _is_cwe798_dummy_string(value: str) -> bool:
     # Check for <your-...-here> pattern
     if value.startswith("<your-") and value.endswith(">"):
         return True
-    return False
+    if TaintTracker._c798_fingerprinted(value) or len(value) < 4:
+        return False
+    if CWE798_DUMMY_VALUE_PREFIX_RE.match(value):
+        return True
+    return bool(target_name) and bool(CWE798_DUMMY_NAME_PREFIX_RE.match(target_name))
 
 CWE326_SINK_NAMES = {"RSA.generate", "Crypto.PublicKey.RSA.generate",
                      "rsa.generate_private_key",
@@ -6707,6 +6742,27 @@ class TaintTracker:
         "vars", "dir", "iter", "next", "slice", "memoryview",
     })
     _SELF_DESCRIBED_NAMES = frozenset({"__file__", "__cached__", "__name__", "__doc__"})
+    # The repository-relative anchor grammar that `_is_self_described` does not cover, because it only
+    # accepts the `os.path` spelling: `Path(__file__)`, `Path(pkg.__file__).parent / "x.json"`,
+    # `Path(__file__).with_name("x.json")`, `importlib.resources.files(__package__).joinpath("x.json")`
+    # and the `os.path`/`str` spellings of the same chain. A path built this way is chosen by the
+    # source file, not by a caller, so it can be no attacker's traversal target.
+    _C22_ANCHOR_NAMES = frozenset({"__file__", "__cached__", "__package__"})
+    _C22_ANCHOR_ATTRS = frozenset({"__file__", "__cached__", "__package__", "__path__"})
+    _C22_PATH_CONSTRUCTORS = frozenset({
+        "Path", "PurePath", "PosixPath", "WindowsPath", "PurePosixPath", "PureWindowsPath",
+        "files", "resource_filename", "resource_string", "resource_path", "module_path",
+    })
+    _C22_PATH_FUNCS = frozenset({
+        "dirname", "abspath", "realpath", "normpath", "fspath", "join", "split", "splitext",
+        "expanduser", "expandvars", "as_posix", "resolve", "absolute", "with_name",
+        "with_suffix", "with_stem", "joinpath", "str",
+    })
+    # `parents[1]` and `.parent` walk *up* from an anchor; `.name` walks down to one segment.
+    _C22_PATH_CHAIN_ATTRS = frozenset({"parent", "parents", "name", "stem", "suffix"})
+    # A traversal payload: `..` as a whole segment of a literal segment list is the one thing an
+    # anchored chain may never carry, whatever its anchor says.
+    _C22_ESCAPE_SEGMENT = ".."
     _SELF_DESCRIBED_ATTRS = frozenset({
         "sys.executable", "sys.prefix", "sys.base_prefix", "sys.exec_prefix",
         "sys.baseline_prefix", "sys.platform", "sys.version_info", "sys.byteorder",
@@ -6856,6 +6912,143 @@ class TaintTracker:
             elif not isinstance(func, ast.Name) or func.id not in self._INERT_CALLEES:
                 return False
             return all(self._is_self_described(p, scope_id, lineno, depth + 1) for p in parts)
+        return False
+
+    def _c22_anchor_literal_ok(self, expr, allow_literal: bool) -> bool:
+        """A literal segment of an anchored path, rejected if it escapes the directory."""
+        if not allow_literal or not isinstance(expr, ast.Constant):
+            return False
+        if isinstance(expr.value, bool):
+            return False
+        if isinstance(expr.value, int):
+            return True
+        if not isinstance(expr.value, str):
+            return False
+        text = expr.value.replace('\\', '/').lower()
+        return self._C22_ESCAPE_SEGMENT not in [segment for segment in text.split('/') if segment]
+
+    def _c22_path_is_internal_repo_anchor(self, expr: ast.AST, scope_id: str = "",
+                                          lineno: int = 0, depth: int = 0,
+                                          allow_literal: bool = False) -> bool:
+        """Was this path chosen by the source file that reads it, and by nobody else?
+
+        The proof is a chain that *starts* at one of `__file__`, `__cached__`, `__package__` or
+        `<imported module>.__file__` and continues only through literal segments and path algebra
+        (`os.path.join`, `Path(...) / "x.json"`, `.with_name("x.json")`, `importlib.resources
+        .files(__package__).joinpath("x.json")`, `f"{root}/x.json"`). Every name on the way is
+        resolved through all of its writes, so a twice-assigned name fails closed. Anything else --
+        a parameter, a `request`/`kwargs` value, an unexplained name, a `..` segment, a subscript --
+        answers False and the finding stays reported. `allow_literal` is False at the top of the
+        chain and True inside it: a bare literal path is *not* an internal anchor, because the whole
+        question is whether the file named it or the caller did.
+        """
+        if expr is None or depth > 12:
+            return False
+        if self._c22_anchor_literal_ok(expr, allow_literal):
+            return True
+        if isinstance(expr, ast.Name):
+            if expr.id in self._C22_ANCHOR_NAMES:
+                return True
+            if allow_literal:
+                return False
+            records = _assignment_records(self.assignments_by_scope, expr.id, scope_id, lineno)
+            if not records:
+                return False
+            return all(self._c22_path_is_internal_repo_anchor(
+                r.value_node, r.scope_id, r.lineno, depth + 1) for r in records)
+        if isinstance(expr, ast.Attribute):
+            if expr.attr in self._C22_PATH_CHAIN_ATTRS:
+                return self._c22_path_is_internal_repo_anchor(
+                    expr.value, scope_id, lineno, depth + 1)
+            if expr.attr in self._C22_ANCHOR_ATTRS:
+                # `<module>.__file__` is the package's own address. The receiver only has to be
+                # spelled as a module path; nothing is looked up, so an unimported name cannot
+                # talk its way into silence.
+                return isinstance(expr.value, (ast.Name, ast.Attribute))
+            if allow_literal:
+                return False
+            records = _assignment_records(self.assignments_by_scope, dotted_name(expr) or "",
+                                          scope_id, lineno)
+            if records:
+                return all(self._c22_path_is_internal_repo_anchor(
+                    r.value_node, r.scope_id, r.lineno, depth + 1) for r in records)
+            return self._c22_path_is_internal_repo_anchor(
+                expr.value, scope_id, lineno, depth + 1)
+        if isinstance(expr, ast.Subscript):
+            # Only `Path(__file__).parents[1]`: an integer index into an anchor chain, never a value
+            # read out of a dictionary a caller filled in.
+            return (isinstance(expr.slice, ast.Constant) and isinstance(expr.slice.value, int)
+                    and not isinstance(expr.slice.value, bool)
+                    and self._c22_path_is_internal_repo_anchor(
+                        expr.value, scope_id, lineno, depth + 1))
+        if isinstance(expr, ast.BinOp) and isinstance(expr.op, (ast.Div, ast.Add, ast.Mod)):
+            return (self._c22_path_is_internal_repo_anchor(expr.left, scope_id, lineno, depth + 1)
+                    and self._c22_path_is_internal_repo_anchor(
+                        expr.right, scope_id, lineno, depth + 1, allow_literal=True))
+        if isinstance(expr, ast.JoinedStr):
+            # An f-string keeps its anchor role only by carrying one. `f"{root}/x.json"` with a
+            # literal tail is the repository's own file; `f"{root}/{name}"` is refused because the
+            # interpolated value is not anchored, and a `..` in any literal part is refused outright.
+            anchored = False
+            for part in expr.values:
+                if isinstance(part, ast.Constant):
+                    if not self._c22_anchor_literal_ok(part, True):
+                        return False
+                    continue
+                inner = part.value if isinstance(part, ast.FormattedValue) else part
+                if not self._c22_path_is_internal_repo_anchor(inner, scope_id, lineno, depth + 1):
+                    return False
+                anchored = True
+            return anchored
+        if isinstance(expr, ast.FormattedValue):
+            return self._c22_path_is_internal_repo_anchor(expr.value, scope_id, lineno, depth + 1)
+        if isinstance(expr, ast.Call):
+            func = expr.func
+            seg = func.attr if isinstance(func, ast.Attribute) else (
+                func.id if isinstance(func, ast.Name) else "")
+            if not seg:
+                return False
+            parts = list(expr.args) + [kw.value for kw in expr.keywords]
+            if not parts:
+                return False
+            if seg in self._C22_PATH_CONSTRUCTORS and seg not in self._C22_PATH_FUNCS:
+                # `files(__package__)` / `resource_filename("pkg", "x.json")` name a package the
+                # source itself picked; `Path("x.json")` alone is relative to whatever the process
+                # was started in, so it is not an anchor and stays reported. A resource function also
+                # takes a *second* argument -- the member name -- so one package-name literal is not
+                # enough: every slot must be anchored or a safe literal, or the call is refused. The
+                # fixture that proves the difference is `resource_filename('pkg', request.args['f'])`,
+                # which is a caller-chosen file inside a package the source named.
+                is_resource_func = seg in ("files", "resource_filename", "resource_string",
+                                           "resource_path", "module_path")
+                literal_slots = [is_resource_func and self._c22_anchor_literal_ok(p, True)
+                                 and isinstance(p.value, str) for p in parts]
+                anchored_slots = [self._c22_path_is_internal_repo_anchor(
+                    p, scope_id, lineno, depth + 1) for p in parts]
+                if not all(a or l for a, l in zip(anchored_slots, literal_slots)):
+                    return False
+                return any(anchored_slots) or any(literal_slots)
+            if seg not in self._C22_PATH_FUNCS:
+                return False
+            receiver_anchored = False
+            if isinstance(func, ast.Attribute):
+                receiver = func.value
+                receiver_anchored = self._c22_path_is_internal_repo_anchor(
+                    receiver, scope_id, lineno, depth + 1)
+                if not (self._is_module_qualified(receiver) or receiver_anchored):
+                    # `mypath_obj.join(x)` is a method on somebody else's value, not `os.path.join`.
+                    return False
+            if not all(self._c22_path_is_internal_repo_anchor(
+                    p, scope_id, lineno, depth + 1,
+                    allow_literal=(seg != "resolve")) for p in parts):
+                return False
+            if allow_literal:
+                return True
+            # `Path(__file__).with_name("x.json")` carries its anchor in the receiver and its segment
+            # in the argument; `os.path.join("config", "app.json")` carries neither, so it is not this
+            # proof and the shipped `_is_self_described` is what answers for it.
+            return receiver_anchored or any(self._c22_path_is_internal_repo_anchor(
+                p, scope_id, lineno, depth + 1) for p in parts)
         return False
 
     def _compares_two_secrets(self, node: ast.Compare) -> bool:
@@ -11612,11 +11805,23 @@ class TaintTracker:
                     # CWE-798: hardcoded credential literal assigned to a sensitive target
                     value_node = node.value
                     if isinstance(value_node, ast.Constant) and isinstance(value_node.value, str) and len(value_node.value) >= 8:
+                        targets = node.targets if isinstance(node, ast.Assign) else [node.target]
+                        # A fixture can declare itself in the name (`dummy_api_key = "..."`) as well as
+                        # in the value, so the first spelled-out target is read before the dummy test.
+                        registry_target_name = ""
+                        for _target in targets:
+                            if isinstance(_target, ast.Name):
+                                registry_target_name = _target.id
+                            elif isinstance(_target, ast.Attribute):
+                                registry_target_name = dotted_name(_target) or _target.attr
+                            elif isinstance(_target, ast.Subscript) and isinstance(_target.value, ast.Name):
+                                registry_target_name = _target.value.id
+                            if registry_target_name:
+                                break
                         # Suppress known test/dummy strings
-                        if _is_cwe798_dummy_string(value_node.value):
+                        if _is_cwe798_dummy_string(value_node.value, registry_target_name):
                             pass  # Skip this assignment - it's a test placeholder
                         else:
-                            targets = node.targets if isinstance(node, ast.Assign) else [node.target]
                             for target in targets:
                                 t_str = ""
                                 if isinstance(target, ast.Name):
@@ -24072,14 +24277,14 @@ class TaintTracker:
                 )
             )
 
-        def _credential_is_concrete(value: str) -> bool:
+        def _credential_is_concrete(value: str, target_name: str = "") -> bool:
             normalized = value.strip()
             if not normalized or len(normalized) < 8:
                 return False
             lowered = normalized.lower()
-            
+
             # Phase 8.5: Suppress known test/dummy strings
-            if _is_cwe798_dummy_string(normalized):
+            if _is_cwe798_dummy_string(normalized, target_name):
                 return False
             
             if lowered in credential_placeholders or any(
@@ -24212,7 +24417,7 @@ class TaintTracker:
                     if isinstance(value_node, ast.Constant) and isinstance(value_node.value, str):
                         cred_literal = value_node.value
                         cred_name = _target_name(sensitive[0])
-                        if (_credential_is_concrete(cred_literal)
+                        if (_credential_is_concrete(cred_literal, cred_name)
                                 and not self._c798_value_is_storage_key(
                                     cred_literal, cred_name, key_used, loaded)
                                 and not self._c798_value_is_identifier_nameplate(cred_literal, cred_name)
@@ -25569,6 +25774,8 @@ class TaintTracker:
                 # and an in-memory upload object is a stream, not a path being resolved.
                 self._is_self_described(target_expr, record.scope_id, record.lineno)
                 or self._is_upload_handle(target_expr, record.scope_id, record.lineno)
+                or self._c22_path_is_internal_repo_anchor(
+                    target_expr, record.scope_id, record.lineno)
             ):
                 if sink in self.sinks:
                     self.sinks.remove(sink)
