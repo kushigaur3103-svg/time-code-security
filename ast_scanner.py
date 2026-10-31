@@ -1070,6 +1070,149 @@ CWE338_DEMO_PATH_SEGMENTS = frozenset({"populate", "populators"})
 CWE338_DEMO_PATH_VETO_SEGMENTS = frozenset({"tests", "test", "testing", "conftest", "fixtures"})
 CWE338_DEMO_PATH_VETO_PREFIXES = ("test_", "tests_")
 
+# ─── CWE-89: endpoint-path exemption, inside the no-SQL-shape builder branch only ────────────
+# `_collect_cwe89_querybuilder_findings` runs a call whose attribute is in `builder_attrs`
+# ({"distinct","having","group_by","order_by","filter","where","join"}) with
+# `require_shape_or_db=False`, because an ORM builder method name is taken as enough evidence that
+# a string is a query. A plain *string* `.join()` therefore gets judged as SQL without ever showing
+# a SQL shape. Measured over the 53 LiteLLM files that carry CWE-89 rows (scratch/_c89_pilot.py):
+# 18 records come out of that no-shape branch, and 3 of them are unambiguously URL/endpoint paths --
+# `URL(base).join(f"guards/{name}/validate")` twice and `"/" + "/".join(final_segments)`.
+# The same branch also holds a genuine injection: `f" WHERE {' AND '.join(where_parts)}"`
+# (spend_logs.py:137), whose ONLY string literal is `' AND '`. So the exemption reads the whole
+# template, never the separator, and every literal in it has to be path-shaped.
+CWE89_SQL_VERB_RE = re.compile(
+    r"\b(?:SELECT|INSERT|UPDATE|DELETE|DROP|ALTER|CREATE|REPLACE|TRUNCATE|MERGE|WHERE|FROM|UNION"
+    r"|ORDER\s+BY|GROUP\s+BY|HAVING|SET|VALUES|INTO|TABLE)\b", re.IGNORECASE)
+# A DB-flavoured identifier anywhere in the statement is evidence that the string is a query and not
+# a route. This veto is load-bearing rather than tidy: 5 of the 25 blessed parity CWE-89 keys have NO
+# SQL verb anywhere near the sink -- `cursor.execute(query)` with the verb assembled in another
+# function -- so an exemption that looked only at literals could reach them. Whole-word matching on
+# `str.casefold()` segments is what keeps `modified_path` readable and `sql` / `cursor` loud.
+CWE89_DB_STATEMENT_WORDS = frozenset({
+    "cursor", "execute", "executemany", "executescript", "connection", "conn", "engine", "session",
+    "database", "db", "sqlite3", "psycopg", "psycopg2", "sqlalchemy", "query", "rawsql", "sql",
+    "statement", "table", "tablename", "column", "schema", "union", "insert", "select", "update",
+    "delete", "where", "filter", "orm", "objects"})
+_CWE89_SEGMENT_SPLIT = re.compile(r"[^0-9a-z]+")
+# The scope sweep is a bounded single pass, not a graph walk: a function body larger than this is
+# one we cannot read for the price of one finding, so it fails closed and stays reported.
+_CWE89_SCOPE_NODE_LIMIT = 1500
+
+
+def _c89_enclosing_scope(node: ast.AST):
+    """Nearest enclosing function, else the module, else None when parent links are missing.
+
+    The veto has to read the whole body, not the statement: a query can be assembled *around* the
+    route. `text = "SELECT name FROM people WHERE id = "` followed by
+    `return url_join(...) + text` keeps every verb one statement away from the `.join` that earned
+    the finding, and a statement-scoped sweep exempts it. Measured in scratch/_c89_fix2.py.
+    """
+    current = getattr(node, "parent", None)
+    while current is not None:
+        if isinstance(current, (ast.FunctionDef, ast.AsyncFunctionDef, ast.Module)):
+            return current
+        current = getattr(current, "parent", None)
+    return None
+
+
+def _c89_identifier_is_db_flavoured(identifier: str) -> bool:
+    folded = identifier.casefold()
+    if folded in CWE89_DB_STATEMENT_WORDS:
+        return True
+    return any(segment in CWE89_DB_STATEMENT_WORDS
+               for segment in _CWE89_SEGMENT_SPLIT.split(folded) if segment)
+
+
+def _c89_template_is_endpoint_path_only(call: ast.Call, resolved: ast.AST) -> bool:
+    """Prove the interpolated string is a URL/endpoint path and cannot be a query.
+
+    Two scopes, deliberately. The *positive* proof (this text is a route) is read only from the
+    construction itself, because a request statement carries header and body strings that say
+    nothing about the template -- `"Content-Type": "application/json"` sits in the same call as
+    `URL(base).join(f"guards/{name}/validate")` and is not a path. The *negative* veto (this text
+    belongs to a query) is read from the whole enclosing function, because that is where the verbs
+    of a multi-line assembly live. Every branch errs toward reporting:
+
+    * at least one string of the construction must carry a path separator, and EVERY non-empty
+      string of it must be path-shaped or a scheme. A template that also holds plain text (`"id="`,
+      `' AND '`, a sentence) is not a route, so it stays reported -- that single rule is what keeps
+      the real `f" WHERE {' AND '.join(where_parts)}"` row loud in spend_logs.py:137;
+    * no SQL verb may appear in any string of the construction, its resolved value or the enclosing
+      function, matched on word boundaries;
+    * no DB-flavoured identifier segment (`cursor`, `execute`, `connection`, `objects`, `sql`, `db`,
+      `query`, `session`, `table`, ...) may appear anywhere in that scope, because 5 of the 25
+      blessed parity CWE-89 keys carry no verb near the sink at all and are kept loud by their
+      receiver rather than by their text;
+    * a scope with no parent links, or one too large to read (over `_CWE89_SCOPE_NODE_LIMIT`
+      nodes), or a construction with no literals proves nothing, and nothing is not silence.
+
+    The veto loop short-circuits on the first verb or DB word, so the loud case costs one node;
+    only a genuinely path-only template pays the full body walk.
+    """
+    scope = _c89_enclosing_scope(call)
+    if scope is None:
+        return False
+    template_literals: List[str] = []
+    for root in (call, resolved):
+        for child in ast.walk(root):
+            if isinstance(child, ast.Constant) and isinstance(child.value, str):
+                template_literals.append(child.value)
+    if not template_literals:
+        return False
+    if not any("/" in text or "\\" in text for text in template_literals):
+        return False
+    for text in template_literals:
+        if not text.strip():
+            continue
+        if "/" in text or "\\" in text or text[:5].lower() in ("http:", "https"):
+            continue
+        return False
+    visited = 0
+    for child in ast.walk(scope):
+        visited += 1
+        if visited > _CWE89_SCOPE_NODE_LIMIT:
+            return False
+        if isinstance(child, ast.Constant):
+            if isinstance(child.value, str) and CWE89_SQL_VERB_RE.search(child.value):
+                return False
+        elif isinstance(child, ast.Name):
+            if _c89_identifier_is_db_flavoured(child.id):
+                return False
+        elif isinstance(child, ast.Attribute):
+            if _c89_identifier_is_db_flavoured(child.attr):
+                return False
+    return True
+
+# ─── CWE-208: LLM token-metric partition, credentials always win ─────────────────────────────
+# The batch-4 timing collector fires on any `ast.Compare` with `==`/`!=` whose operand *names*
+# contain the substring "token" (plus secret/signature/hmac/api_key/auth_token) and hold no literal.
+# "token" is the substring of every LLM usage counter, which is what makes CWE-208 the largest FP
+# family on LiteLLM: 2,780 rows over 762 files in scratch/_litellm_scan.json. Classified the same way
+# the shipped predicate reads (scratch/_p208size.py): 1,381 rows name a credential somewhere in the
+# comparison and stay loud, 848 name a token that is NOT a metric (`generated_tokens`,
+# `token_state`, `valid_token.user_role`, `grant_type`) and stay loud, and 351 are pure usage counters.
+# A metric is recognised by STRUCTURE, not by substring: the name must END with `token`/`tokens`
+# preceded by one of exactly these six role words. That is what keeps 30 of 30 blessed Big-8 keys and
+# 6 of 6 blessed parity keys loud -- `generated_tokens`, `pad_token_id`, `special_tokens_mask`,
+# `old_num_tokens`, `request_token`, `stored_token` all fail the tail-or-role test, and 0 of the 30
+# Big-8 comparison lines contain any of the six words (measured, not assumed). `seed`-style
+# over-widening is refused the same way `input`/`output` are: an Anthropic-shaped `input_tokens` is
+# a metric in this corpus but a generated/auth-issued token is called `output_token` elsewhere, so
+# the six stay exactly six and the residual rows are reported as a named follow-up, not silently
+# swallowed.
+CWE208_LLM_METRIC_PREFIXES = frozenset({"prompt", "completion", "total", "max", "chunk", "usage"})
+CWE208_LLM_METRIC_TAILS = frozenset({"token", "tokens"})
+# Whole-name spellings of the same idea: a counter, not a credential.
+CWE208_LLM_METRIC_COUNT_WORDS = frozenset({"token_count", "token_usage", "tokens_used", "token_sum"})
+# Credential words veto the exemption even when the triggering names all read as metrics, because a
+# comparison can straddle both: `total_tokens == api_key.quota`. Checked over names AND attribute
+# tails, which is strictly the loud direction.
+CWE208_CREDENTIAL_NAME_WORDS = ("auth", "access", "session", "csrf", "bearer", "api", "signature",
+                                "secret", "hash", "salt", "hmac", "password", "credential",
+                                "private", "digest", "verify", "jwt", "oauth")
+_CWE208_SEGMENT_SPLIT = re.compile(r"[^0-9a-z]+")
+
 # ─── O(1) sink fast-path candidate index ───────────────────────────────────
 # is_sink_call() can return True through paths that never consult SINK_REGISTRY:
 # the rule engine's own matchers, the attribute branches at the tail of the
@@ -18437,6 +18580,44 @@ class TaintTracker:
                     ))
 
 
+    @staticmethod
+    def _c208_name_is_llm_token_metric(name: str) -> bool:
+        """Is this operand name a usage counter rather than a credential?
+
+        Structural, not substring: `<...>_<role>_<token|tokens>` with `<role>` one of the six metric
+        words, or one of the whole-name counter spellings. Trailing digits are dropped so
+        `prompt_tokens_1` still reads. A name that merely holds a token word somewhere else
+        (`generated_tokens`, `token_state`, `special_tokens_mask`, `pad_token_id`, `request_token`) is
+        not a metric, and that is exactly how all 30 blessed Big-8 tensor comparisons and all 6 blessed
+        parity secret comparisons keep their finding.
+        """
+        folded = name.casefold()
+        if folded in CWE208_LLM_METRIC_COUNT_WORDS:
+            return True
+        segments = [part for part in _CWE208_SEGMENT_SPLIT.split(folded) if part]
+        while segments and segments[-1].isdigit():
+            segments.pop()
+        if len(segments) < 2 or segments[-1] not in CWE208_LLM_METRIC_TAILS:
+            return False
+        return segments[-2] in CWE208_LLM_METRIC_PREFIXES
+
+    def _c208_timing_is_llm_token_metric(self, operand_names: List[str], evidence_names: List[str],
+                                         sensitive_markers: Tuple[str, ...]) -> bool:
+        """True only when every name that made this comparison fire is an LLM usage counter.
+
+        Fail-closed in both directions: no triggering name means no exemption, one non-metric token
+        name means no exemption, and a credential word on ANY name or attribute tail of the
+        comparison vetoes it outright, so a token-named secret can never be muted by its neighbours.
+        """
+        if any(any(word in name for word in CWE208_CREDENTIAL_NAME_WORDS)
+               for name in evidence_names):
+            return False
+        triggering = [name for name in operand_names
+                      if any(marker in name for marker in sensitive_markers)]
+        if not triggering:
+            return False
+        return all(self._c208_name_is_llm_token_metric(name) for name in triggering)
+
     def _collect_batch4_structural_findings(self) -> None:
         """
         Batch 4 PURE_STRUCTURAL visitors (data/cwe_blueprint_batch4.json):
@@ -18491,38 +18672,53 @@ class TaintTracker:
                 # CWE-208: Timing attack on secret comparison
                 elif isinstance(node, ast.Compare):
                     if any(isinstance(op, (ast.Eq, ast.NotEq)) for op in node.ops):
-                        has_digest = any(
-                            isinstance(c, ast.Call) and any(d in (dotted_name(c.func) or "") for d in ("compare_digest",))
-                            for c in ast.walk(node)
-                        )
-                        if not has_digest:
-                            all_names = [n.id.lower() for n in ast.walk(node) if isinstance(n, ast.Name)]
-                            sensitive_markers = ("token", "secret", "signature", "hmac", "api_key", "auth_token")
-                            if (any(any(m in name for m in sensitive_markers) for name in all_names)
-                                    and self._compares_two_secrets(node)):
-                                key = ("CWE-208", getattr(node, "lineno", 1), getattr(node, "col_offset", 0))
-                                if key not in seen:
-                                    seen.add(key)
-                                    sink_id = self.next_sink_id()
-                                    sink_node = SecurityNode(
-                                        id=sink_id,
-                                        node_type=NodeType.SINK,
-                                        symbol="compare",
-                                        operation="TIMING_ATTACK",
-                                        location=location(node, file_path),
-                                        metadata={
-                                            "sink_type": "TIMING_ATTACK",
-                                            "category": "TIMING_ATTACK",
-                                            "cwe": "CWE-208"
-                                        },
-                                    )
-                                    self.sinks.append(sink_node)
-                                    self.sink_records.append(SinkRecord(
-                                        node=node,
-                                        security_node=sink_node,
-                                        lineno=getattr(node, "lineno", 1),
-                                        scope_id=scope_id,
-                                    ))
+                        # One walk answers every question this emitter asks. The old shape walked the
+                        # node twice (digest probe, then operand names); folding the two keeps the new
+                        # credential veto free, because the attribute tails it reads -- `bearer_token`
+                        # in `token != cfg.bearer_token` is an Attribute, never a Name -- come off the
+                        # same walk that already produced `all_names`.
+                        has_digest = False
+                        all_names: List[str] = []
+                        evidence_names: List[str] = []
+                        for child in ast.walk(node):
+                            if isinstance(child, ast.Call):
+                                if "compare_digest" in (dotted_name(child.func) or ""):
+                                    has_digest = True
+                                    break
+                            if isinstance(child, ast.Name):
+                                all_names.append(child.id.lower())
+                                evidence_names.append(child.id.lower())
+                            elif isinstance(child, ast.Attribute):
+                                evidence_names.append(child.attr.lower())
+                        sensitive_markers = ("token", "secret", "signature", "hmac", "api_key", "auth_token")
+                        if (not has_digest
+                                and any(any(m in name for m in sensitive_markers) for name in all_names)
+                                and self._compares_two_secrets(node)
+                                and not self._c208_timing_is_llm_token_metric(
+                                    all_names, evidence_names, sensitive_markers)):
+                            key = ("CWE-208", getattr(node, "lineno", 1), getattr(node, "col_offset", 0))
+                            if key not in seen:
+                                seen.add(key)
+                                sink_id = self.next_sink_id()
+                                sink_node = SecurityNode(
+                                    id=sink_id,
+                                    node_type=NodeType.SINK,
+                                    symbol="compare",
+                                    operation="TIMING_ATTACK",
+                                    location=location(node, file_path),
+                                    metadata={
+                                        "sink_type": "TIMING_ATTACK",
+                                        "category": "TIMING_ATTACK",
+                                        "cwe": "CWE-208"
+                                    },
+                                )
+                                self.sinks.append(sink_node)
+                                self.sink_records.append(SinkRecord(
+                                    node=node,
+                                    security_node=sink_node,
+                                    lineno=getattr(node, "lineno", 1),
+                                    scope_id=scope_id,
+                                ))
 
     def _collect_phase3_structural_findings(self) -> None:
         """Activate the Phase 3 crypto-mode, protocol, and SVG sink registries."""
@@ -20487,6 +20683,7 @@ class TaintTracker:
                 return call.args[0]
             return None
 
+
         def _vulnerable_call(call: ast.Call, scope_id: str, mod_name: str,
                              require_shape_or_db: bool, bare_extra_ok: bool = False) -> bool:
             """Shared guard chain for P1/P2/P3. Returns True only when the query argument
@@ -20515,6 +20712,10 @@ class TaintTracker:
                 if not (_has_sql_shape(resolved) or _db_like_receiver(call, scope_id,
                                                                       getattr(call, "lineno", 1))):
                     return False
+            elif _c89_template_is_endpoint_path_only(call, resolved):
+                # Only the no-SQL-shape branch can be talked out of a finding by its template: the
+                # shape-required branch has already seen a verb.
+                return False
             return True
 
         def _emit89(call: ast.Call, mod_name: str, scope_id: str) -> None:

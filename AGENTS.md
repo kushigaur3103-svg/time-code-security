@@ -218,6 +218,84 @@ against `fc4c5dc` on 96 modules, 4 pairs: **CPU ratio median 0.9473** (mean 0.94
 1.1472, new ≤ head in 6/8 legs; ratio-of-CPU-medians 0.9028 with head 17.516 s vs new 15.812 s) and wall
 ratio median 0.9401 — under the 1.0x floor, with peak RSS 167.8 MB.
 
+The CWE-89 endpoint-path retirement and the CWE-208 LLM-counter retirement ship as one atomic change, and
+each is the same shield applied to a rule whose blessed population gives it no protection at all: 25 CWE-89
+and 6 CWE-208 keys in parity, 0 CWE-89 and 30 CWE-208 in Big-8, so `MISSING=0` alone would not notice the
+rule being deleted. Their locks are `benchmark/gates/cwe89_path_interpolation_probe.py` and
+`benchmark/gates/cwe208_llm_token_timing_probe.py`, both with a `SEAL` variable and an alternative-engine
+env hook, so the un-narrowed engine fails them rather than passing by accident.
+
+CWE-89. `_collect_cwe89_driver_querybuilder_findings` forks on `require_shape_or_db` inside `_vulnerable_call`
+(`ast_scanner.py:20688`): the shape-required branch has already seen a SQL verb or a DB-typed receiver, so
+only the `False` branch can be argued out of a finding, and the guard is wired as the `elif` of exactly that
+branch (`ast_scanner.py:20711-20715`) — TIER 5 of the probe reads `inspect.getsource` and fails if the guard
+call appears more than once or anywhere other than as that `elif`. `_c89_template_is_endpoint_path_only`
+(`ast_scanner.py:1127`) requires a positive proof and refuses on a negative one. Positive: the template at
+the call site plus the literal it resolves back to carry at least one path separator and every non-empty
+literal segment is path-shaped or `http`/`https`. Negative: the **enclosing scope** — function body, or the
+module — is vetoed by any `CWE89_SQL_VERB_RE` verb or by any of the 31 `CWE89_DB_STATEMENT_WORDS` appearing
+as whole `_`/`-`/case segments of an identifier, with early exit and a `_CWE89_SCOPE_NODE_LIMIT = 1500` cap
+so a big function fails closed instead of being exempted. Statement scope was a false negative the fixtures
+caught (`veto_reads_statement_only`, CAUGHT on 5 rows): a `"SELECT name FROM people WHERE id = "` three
+statements above a `.join` route proves the route is not the only string in play. The cap is not decorative
+(`no_scope_node_limit`, CAUGHT on `giant_function_cap`). Hyphenated verb routes stay reported because the verb
+regex really does match them — `update-policy`, `select-box`, `insert-order`, `set-value` are asserted
+over-blocks in TIER 5 and pinned behaviourally by `hyphen_verb_route`, so widening them later has to be a
+decision, never a typo. Measured: none of the 25 blessed parity keys is reachable (all 20 reproduced blessed
+records come off an `execute` receiver, not a `.join` route — which is why the guard stays in the `False`
+branch and keeps the identifier veto); probe `shapes=13 fp_rows=6 must_report=7 pairs=3 locked_cwe89=25
+failures=0` → PASS with TIER 2 `frozen=25 live=25 MISSING=0 NEW=0`; LiteLLM `207 → 204 RETIRED=3 ADDED=0` —
+the prompt's "4 FPs" is 3 at finding level: `guardrails_ai.py:78` and `:116`, both
+`str(URL(self.guardrails_ai_api_base).join(f"guards/{self.guardrails_ai_guard_name}/validate"))`, and
+`utils.py:11416` `"/" + "/".join(final_segments)`; all 6 falsifications exit 1 (`delete_path_guard` 9 rows,
+`path_guard_always_true` 9, `blank_verb_regex` 30, `blank_db_words` 18, `veto_reads_statement_only` 5,
+`no_scope_node_limit` 1); touched-collector paired CPU ratio median **0.9184** (7 pairs × 8 calls, one
+process, the same parsed trees).
+
+CWE-208. `_collect_batch4_structural_findings` is the only CWE-208 emitter, and it fires on an `ast.Compare`
+with Eq/NotEq, no `compare_digest` in the subtree, at least one **`ast.Name` id** (a bare attribute never
+triggers) holding a marker of `token`/`secret`/`signature`/`hmac`/`api_key`/`auth_token`, and
+`_compares_two_secrets`. `_c208_timing_is_llm_token_metric` (`ast_scanner.py:18604`) refuses the exemption
+unless **every** triggering name is a usage counter and **no** name or attribute tail carries a credential
+word from the 18-word `CWE208_CREDENTIAL_NAME_WORDS` — the 11 the mandate lists plus
+password/credential/private/digest/verify/jwt/oauth, which is strictly the loud direction.
+`_c208_name_is_llm_token_metric` is structural: `<one of six prefixes>_<role>_<token|tokens>`, or one of the
+four whole-name counters in `CWE208_LLM_METRIC_COUNT_WORDS`, trailing digits dropped so `prompt_tokens_1`
+still reads. The regex the mandate specified, `re.search(r'(prompt|completion|total|max|chunk|usage)_tokens?',
+name, re.I)`, was measured before it was shipped and **refused**: as a substring test it reaches 17 of the 30
+blessed Big-8 timing lines (`generated_tokens`, `special_tokens_mask`, `pad_token_id`, `old_num_tokens`,
+`next_tokens.shape[1]`), exactly the FN the shield forbids, so the segment form shipped and
+`metric_rule_to_substring` stays as a falsification that is CAUGHT on 19 rows including those blessed lines.
+The emitter's two `ast.walk` passes were folded into one so the veto reads the attribute tails
+(`bearer_token` in `token != cfg.bearer_token` is an Attribute, never a Name) off the walk the digest probe
+was already doing — measured cheaper, not merely equal: 177.73 → 146.48 ms per collector call, CPU ratio
+median **0.8197**, new ≤ head in 6/7 legs. Measured: probe `shapes=20 fp_rows=6 must_report=14 pairs=2
+name_rows=36 locked_cwe208=36 failures=0` → PASS, TIER 2 parity `frozen=6 live=6 MISSING=0 NEW=0`, TIER 3
+reads all 30 blessed Big-8 lines back and reports `reachable_by_metric_rule=0`; LiteLLM
+`2783 → 2592 RETIRED=191 ADDED=0` — the prompt's "361" was the line-level pilot count (351 lines whose
+comparison holds a token word and no credential, of which only 191 are emittable CWE-208 findings); all 5
+falsifications exit 1 (`delete_metric_guard` 8, `metric_guard_always_true` 16, `metric_rule_to_substring` 19,
+`drop_credential_veto` 2, `one_operand_is_enough` 5). Kept loud on purpose, and named rather than hidden:
+`input_tokens`, `output_tokens` and `reasoning_tokens` are not counters (an Anthropic-shaped `input_tokens`
+is a metric here, but a generated or auth-issued token is called `output_token` elsewhere), the 848
+non-metric token rows stay loud, and the 9 adjacent `"\n".join` / `", ".join` / `os.pathsep.join` formatting
+rows and the `text()` / `run()` builder rows were not retired by this step.
+
+Memory and speed of this step, measured on the shipped path: gate process-tree peak RSS `aa_parity.py`
+**168.7 MB**, `big8_ab.py` **159.3 MB**, `cross_runner.py` **52.0 MB**, all under the 400 MB local budget,
+with parity `425/425 MISSING=0 NEW=0`, Big-8 `sha256 verified → 119/119 MISSING=0 NEW=0`, cross-file
+`F1=1.0000, TP=12, FP=0, FN=0, exact-set YES`, placeholder lock `59/59` and `cwe338_ml_math_probe.py`
+`cases=62 failures=0`. A whole-scan clock was **not** used for the speed verdict: three alternating
+single-chunk legs over the identical 4.1 MB returned 37.5/41.8, 39.0/23.8 and 22.2/21.4 CPU seconds with
+self peaks flipping between 203 and 440 MB arm-independently, so on this laptop a 40-second leg measures the
+machine, not a 7-millisecond predicate — the collector numbers above are block-averaged (8 calls per
+`os.times()` window) specifically to get under the 15.6 ms Windows CPU quantum. The added work itself is
+bounded and small: 139.7 µs per `_c89_template_is_endpoint_path_only` call × 1 call and 19.8 µs per
+`_c208_timing_is_llm_token_metric` call × 337 calls = 0.140 ms + 6.686 ms per scan of a 96-file sample,
+against a batch4 collector that got ~31 ms/call cheaper on the same corpus. Scanning one chunk of the 15
+largest LiteLLM files costs 525.5 MB with this engine and 525.8 MB with HEAD's — the >400 MB figure is the
+size of the ingest batch, not of either arm, and `tests/` is never read locally.
+
 ### Permanent Fix Mandate (Root-Cause Immunity & Anti-Band-Aid Rule)
 
 All engine modifications, precision improvements, and bug fixes must be architecturally permanent:
