@@ -1212,6 +1212,56 @@ CWE208_CREDENTIAL_NAME_WORDS = ("auth", "access", "session", "csrf", "bearer", "
                                 "secret", "hash", "salt", "hmac", "password", "credential",
                                 "private", "digest", "verify", "jwt", "oauth")
 _CWE208_SEGMENT_SPLIT = re.compile(r"[^0-9a-z]+")
+# The emitter needs an identifier that *reads* like a secret, so a comparison against the literal
+# `"gpt-4"` never fires at all (`_compares_two_secrets` refuses any `ast.Constant` operand). What
+# does fire in an LLM gateway is the codec object and the module constant holding a model name, and
+# both are non-secrets for a structural reason, not a naming one:
+#   * `tokenizer`, `tokenize`, `detokenize`, `tokenization` -- the object that encodes text. `token`
+#     only appears inside the codec word, and the rule below refuses the row again if any *other*
+#     name on the comparison still spells a token once the codec words are removed, which is what
+#     keeps `out != tokenizer.pad_token_id` reported;
+#   * a name bound, uniquely and at module level, to one plain string that is a model, provider or
+#     wire-format name. A value carrying credential bytes is refused by the fingerprint veto, so a
+#     `MODEL = "sk-..."` typo cannot be muted by its own neighbour.
+CWE208_CODEC_WORDS = ("untokenize", "detokenize", "tokenization", "tokenisation", "tokenizers",
+                      "tokenizer", "tokeniser", "tokenize", "tokenise", "tokenized", "tokenised")
+CWE208_DOMAIN_VALUE_RE = re.compile(
+    r"^(?:gpt[\w.\-]*|o[134][\w.\-]*|claude[\w.\-]*|text-embedding[\w.\-]*|text-davinci[\w.\-]*|"
+    r"anthropic|azure|azure_openai|openai|gemini[\w.\-]*|mistral[\w.\-]*|cohere|vertex_ai|bedrock|"
+    r"ollama|huggingface|replicate|json|sse|base64|utf-8|utf_8|chat|completion|embedding|rerank)$",
+    re.IGNORECASE)
+
+# ─── CWE-78: argv execution without a shell cannot inject a command ───────────────────────────
+# `subprocess.run([...])` hands every element of the sequence to `execve` as its own argv slot.
+# Nothing is re-parsed, so an element whose bytes the request chose can name a file, a flag or a
+# value -- it cannot become an *extra command*, which is the only weakness CWE-78 describes. The
+# exemption keys on the call shape, and every shape where a second parser does exist is refused
+# before any element is examined:
+#   * a call outside the five argv-taking subprocess entry points -- `os.system`, `os.popen`, the
+#     `os.exec*`/`os.spawn*` family and `asyncio.*_shell` all keep their finding;
+#   * a `shell=` keyword that is not statically `False`, because an unresolved `shell=flag` may be
+#     True and then the whole line is re-parsed by a shell;
+#   * an argv that does not resolve to one List/Tuple the source itself wrote;
+#   * a program slot (`argv[0]`) or `executable=` the request can pick -- that is an arbitrary
+#     binary, not an injected argument;
+#   * a splat inside the sequence, because `[*cmd, arg]` lets `cmd` carry the program name too;
+#   * an interpreter as the program, or a switch whose following element is *script text*
+#     (`-c`, `-m`, `/c`, `-Command`) unless that text is a literal the source wrote.
+CWE78_ARGV_EXEC_CALLS = frozenset({
+    "subprocess.run", "subprocess.call", "subprocess.check_call",
+    "subprocess.check_output", "subprocess.Popen",
+})
+CWE78_ARGV_SEQUENCE_KEYWORDS = frozenset({"args"})
+CWE78_SHELL_PARSING_FLAGS = frozenset({"-c", "-m", "/c", "/C", "/cmd", "-command", "--command",
+                                       "-Command", "--Command"})
+_CWE78_INTERPRETER_NAME_RE = re.compile(
+    r"^(?:sh|bash|dash|ash|ksh|zsh|csh|tcsh|fish|cmd|command|powershell|pwsh|python|pypy|node|"
+    r"nodejs|deno|ruby|perl|php|lua|awk|gawk|mawk|expect|tclsh|wish)\w*(?:\.\w+)?$", re.IGNORECASE)
+# `sys.executable` *is* the running interpreter, spelled as an attribute rather than a literal, so
+# the basename test above never sees it and `[sys.executable, "-m", pkg]` would read as an ordinary
+# program name.
+CWE78_INTERPRETER_PROGRAM_EXPRS = frozenset({"sys.executable", "sys._base_executable"})
+_CWE78_PATH_SPLIT_RE = re.compile(r"[\\/]+")
 
 # ─── O(1) sink fast-path candidate index ───────────────────────────────────
 # is_sink_call() can return True through paths that never consult SINK_REGISTRY:
@@ -7081,6 +7131,116 @@ class TaintTracker:
                                                           record.lineno, depth + 1)
                        for record in records)
         return True
+
+    @staticmethod
+    def _cwe78_expr_text(expr: ast.AST) -> str:
+        """The bytes one argv slot carries, lowered, or '' when unparse cannot render it.
+
+        `ast.unparse` renders a literal with its quotes, and `"python3"` is the commonest way to spell
+        an interpreter, so a string constant is read as its own value here rather than as source text.
+        """
+        if isinstance(expr, ast.Constant) and isinstance(expr.value, str):
+            return expr.value.strip().casefold()
+        try:
+            return (ast.unparse(expr) or "").strip().casefold()
+        except (RecursionError, ValueError, SyntaxError):
+            return ""
+
+    def _cwe78_resolve_argv_sequence(self, expr: Optional[ast.AST], scope_id: str, lineno: int,
+                                     depth: int = 0) -> Optional[ast.AST]:
+        """One List/Tuple the scanned source itself wrote, following a single unambiguous binding.
+
+        Two writes to the same name (`cmd = [...]; cmd = other`) resolve to nothing: the second value
+        may not be a sequence at all, and guessing would be a silent exemption. `shlex.split(...)`
+        and an attribute slot resolve to nothing for the same reason -- their elements are never
+        visible in the tree, so their shape cannot be asserted.
+        """
+        if isinstance(expr, (ast.List, ast.Tuple)):
+            return expr
+        if depth >= 3 or not isinstance(expr, ast.Name):
+            return None
+        records = _assignment_records(self.assignments_by_scope, expr.id, scope_id, lineno)
+        if len(records) != 1:
+            return None
+        record = records[0]
+        return self._cwe78_resolve_argv_sequence(record.value_node, record.scope_id, record.lineno,
+                                                 depth + 1)
+
+    def _cwe78_shell_is_off(self, node: ast.Call, scope_id: str, lineno: int) -> bool:
+        """No `shell=` at all, or one that reads statically as False. `shell=flag` is unknown, and
+        unknown means a shell may be there, so the finding stays."""
+        shell_kw = next((kw.value for kw in node.keywords if kw.arg == "shell"), None)
+        return shell_kw is None or _eval_static_constant(
+            shell_kw, self.assignments_by_scope, scope_id, lineno) is False
+
+    def _cwe78_argv_program_is_internal(self, elements: list, scope_id: str, lineno: int) -> bool:
+        """Can the request choose *which program runs*? If it can, this is not an argument.
+
+        Three ways that happens, and `executable=` is the fourth: the first slot is an interpreter
+        (`sh`, `python3.11`, `cmd.exe`), the first slot is `sys.executable` spelled as an attribute,
+        or the first slot carries bytes the request wrote. A leading splat makes the whole command
+        line, program included, whatever the rest of the list spells.
+        """
+        program = elements[0]
+        if isinstance(program, ast.Starred):
+            return False
+        program_text = self._cwe78_expr_text(program)
+        if program_text in CWE78_INTERPRETER_PROGRAM_EXPRS:
+            return False
+        if _CWE78_INTERPRETER_NAME_RE.match(_CWE78_PATH_SPLIT_RE.split(program_text)[-1]):
+            return False
+        return not self._has_untrusted_command_lineage(program, scope_id, lineno)
+
+    @staticmethod
+    def _cwe78_argv_has_script_payload(elements: list) -> bool:
+        """Is an element positioned as *script text* that the source did not write?
+
+        `-c`, `-m`, `/c` and `-Command` hand the next element to a parser, and a parsed string is how
+        a second command appears. A literal payload is a fixed script the scanned file itself chose,
+        so it does not count -- that is the difference between `[sys.executable, "-c", "print(1)"]`
+        and `[sys.executable, "-c", request_code]`.
+        """
+        for index, element in enumerate(elements):
+            if isinstance(element, ast.Starred):
+                return True
+            if (isinstance(element, ast.Constant) and isinstance(element.value, str)
+                    and element.value in CWE78_SHELL_PARSING_FLAGS):
+                payload = elements[index + 1] if index + 1 < len(elements) else None
+                if not (isinstance(payload, ast.Constant) and isinstance(payload.value, str)):
+                    return True
+        return False
+
+    def _cwe78_argv_execve_inert(self, node: ast.AST, scope_id: str, lineno: int) -> bool:
+        """True only when no parser exists between these argv bytes and `execve`.
+
+        Single deciding question, asked once for every CWE-78 sink in the graph-evaluation cascade,
+        so a future emitter cannot register a subprocess finding that escapes it. Answers False --
+        the finding stays -- for anything the shape test cannot prove: an unknown call spelling, a
+        `shell=` that is not statically False, a request-chosen program, an interpreter payload.
+        """
+        if not isinstance(node, ast.Call):
+            return False
+        spelled = (dotted_name(node.func) or "").strip()
+        resolved = ""
+        if scope_id and hasattr(self, "resolve_canonical_name"):
+            resolved = self.resolve_canonical_name(node.func, scope_id) or ""
+        if spelled not in CWE78_ARGV_EXEC_CALLS and resolved not in CWE78_ARGV_EXEC_CALLS:
+            return False
+        command = node.args[0] if node.args else next(
+            (kw.value for kw in node.keywords if kw.arg in CWE78_ARGV_SEQUENCE_KEYWORDS), None)
+        sequence = self._cwe78_resolve_argv_sequence(command, scope_id, lineno)
+        if sequence is None or not sequence.elts:
+            return False
+        if not self._cwe78_shell_is_off(node, scope_id, lineno):
+            return False
+        executable_kw = next((kw.value for kw in node.keywords if kw.arg == "executable"), None)
+        if executable_kw is not None and self._has_untrusted_command_lineage(
+                executable_kw, scope_id, lineno):
+            return False
+        elements = list(sequence.elts)
+        if not self._cwe78_argv_program_is_internal(elements, scope_id, lineno):
+            return False
+        return not self._cwe78_argv_has_script_payload(elements)
 
     def _is_dummy_validator_func(self, func_node: ast.FunctionDef) -> bool:
         """Check if a validator function is a dummy (e.g. merely returns True without checks)."""
@@ -18618,6 +18778,105 @@ class TaintTracker:
             return False
         return all(self._c208_name_is_llm_token_metric(name) for name in triggering)
 
+    @staticmethod
+    def _c208_name_has_bare_token(name: str) -> bool:
+        """True when `token` survives cutting every codec word out -- the name really names a token.
+
+        `tokenizer`, `detokenize`, `tokenization` come out clean, because their `token` appears only
+        inside the codec word. `pad_token_id`, `special_tokens_mask`, `generated_tokens` and
+        `next_tokens` do not: they name a token, and every blessed Big-8 timing line names one.
+        """
+        rest = name.casefold()
+        for word in CWE208_CODEC_WORDS:
+            rest = rest.replace(word, "#")
+        return "token" in rest
+
+    @staticmethod
+    def _c208_codec_is_invoked(node: ast.Compare) -> bool:
+        """Is a codec object *called* anywhere in the comparison? Its result is a token sequence.
+
+        `[t[0]] == tokenizer.encode(...)` compares tokens, not the codec, so naming the codec buys
+        nothing there. Checked over the dotted call text, which covers `self.tokenizer.encode` and
+        `tok.tokenize` without resolving anything.
+        """
+        for child in ast.walk(node):
+            if isinstance(child, ast.Call):
+                text = (dotted_name(child.func) or "").casefold()
+                if any(word in text for word in CWE208_CODEC_WORDS):
+                    return True
+        return False
+
+    def _c208_domain_constants(self, mod_name: str) -> dict:
+        """Names bound, once, at module level to a plain string -- the alphabet of config constants.
+
+        Built on demand and memoised per module, so only a comparison that already fired and already
+        passed the credential veto pays for the pass. A name written twice, or written to anything but
+        a bare string, is dropped: its value is no longer a fact about the source text.
+        """
+        cache = self.__dict__.setdefault("_c208_domain_constant_cache", {})
+        if mod_name in cache:
+            return cache[mod_name]
+        out: dict = {}
+        ambiguous: set = set()
+        tree = self.modules.get(mod_name)
+        for stmt in getattr(tree, "body", []):
+            targets, value = [], None
+            if isinstance(stmt, ast.Assign):
+                targets = [t.id for t in stmt.targets if isinstance(t, ast.Name)]
+                value = stmt.value
+            elif isinstance(stmt, ast.AnnAssign) and isinstance(stmt.target, ast.Name):
+                targets, value = [stmt.target.id], stmt.value
+            for name in targets:
+                if isinstance(value, ast.Constant) and isinstance(value.value, str) \
+                        and name not in ambiguous:
+                    out[name] = value.value
+                else:
+                    out.pop(name, None)
+                    ambiguous.add(name)
+        cache[mod_name] = out
+        return out
+
+    def _c208_timing_is_llm_domain_compare(self, node: ast.Compare, mod_name: str,
+                                           all_names: List[str], evidence_names: List[str],
+                                           sensitive_markers: Tuple[str, ...]) -> bool:
+        """Is this comparison about a codec object or a model/provider config string?
+
+        Two vetoes run before anything is exempted and both read names AND attribute tails, so the
+        row can only be muted when nothing on it looks like a secret at all: a word from
+        `CWE208_CREDENTIAL_NAME_WORDS` (the table the metric rule already uses), or a sensitive
+        marker other than `token` -- `secret`, `signature`, `hmac`, `api_key`, `auth_token`. Then
+        two disjoint structural answers, each of which answers False when it cannot be proved:
+
+        codec  -- no name on the comparison names a bare token and no codec is invoked, so the only
+                  reason the rule fired is that one codec object is being compared to another;
+        domain -- one operand is a literal, or a name bound once at module level to a plain string,
+                  whose value is a model, provider or wire-format name carrying no credential
+                  fingerprint.
+        """
+        if any(any(word in name for word in CWE208_CREDENTIAL_NAME_WORDS)
+               for name in evidence_names):
+            return False
+        if any(marker != "token" and any(marker in name for name in evidence_names)
+               for marker in sensitive_markers):
+            return False
+        if not any("token" in name for name in evidence_names):
+            return False
+        if not any(self._c208_name_has_bare_token(name) for name in evidence_names) \
+                and not self._c208_codec_is_invoked(node):
+            return True
+        constants = self._c208_domain_constants(mod_name)
+        for operand in [node.left] + list(node.comparators):
+            for child in ast.walk(operand):
+                value = None
+                if isinstance(child, ast.Constant) and isinstance(child.value, str):
+                    value = child.value
+                elif isinstance(child, ast.Name) and child.id in constants:
+                    value = constants[child.id]
+                if value and CWE208_DOMAIN_VALUE_RE.match(value.strip()) \
+                        and not self._c798_fingerprinted(value):
+                    return True
+        return False
+
     def _collect_batch4_structural_findings(self) -> None:
         """
         Batch 4 PURE_STRUCTURAL visitors (data/cwe_blueprint_batch4.json):
@@ -18695,7 +18954,9 @@ class TaintTracker:
                                 and any(any(m in name for m in sensitive_markers) for name in all_names)
                                 and self._compares_two_secrets(node)
                                 and not self._c208_timing_is_llm_token_metric(
-                                    all_names, evidence_names, sensitive_markers)):
+                                    all_names, evidence_names, sensitive_markers)
+                                and not self._c208_timing_is_llm_domain_compare(
+                                    node, mod_name, all_names, evidence_names, sensitive_markers)):
                             key = ("CWE-208", getattr(node, "lineno", 1), getattr(node, "col_offset", 0))
                             if key not in seen:
                                 seen.add(key)
@@ -25118,6 +25379,18 @@ class TaintTracker:
 
             stype = sink.metadata.get("sink_type")
             op = sink.metadata.get("operation")
+
+            if (cwe == "CWE-78" or stype in ("COMMAND_INJECTION", "OS_COMMAND_EXECUTION")
+                    or op in ("OS_COMMAND_EXECUTION", "COMMAND_EXECUTION")) \
+                    and self._cwe78_argv_execve_inert(record.node, record.scope_id, record.lineno):
+                # The single place the execve-inertness question is asked, before any collector's own
+                # synthetic source can attach an edge: a phase-4 `p4_source_id`, a blindspot sink and
+                # the registry path all reach this loop, so a future emitter cannot register a
+                # subprocess finding that escapes the answer. The `shell=True` and `os.system` rows
+                # the frozen baselines bless never enter here -- the shape test refuses them.
+                if sink in self.sinks:
+                    self.sinks.remove(sink)
+                continue
 
             p11_source_id = sink.metadata.get("p11_source_id")
             if p11_source_id:

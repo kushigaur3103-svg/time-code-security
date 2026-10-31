@@ -62,7 +62,7 @@ The sign-off also carries seven standing instructions:
   own truth table (`cwe704_type_cast_probe.py`, `cwe328_hash_context_probe.py`,
   `cwe116_template_autoescape_probe.py`, each `VERDICT: PASS`), so narrowing one of them means
   shipping that file first, not after.
-  All eighteen runnable gate scripts (`aa_parity.py`, `big8_ab.py`, `cwe338_ml_math_probe.py`,
+  All twenty-two runnable gate scripts (`aa_parity.py`, `big8_ab.py`, `cwe338_ml_math_probe.py`,
   `cwe338_prng_context_probe.py`, `cwe117_cwe22_unknown_source_probe.py`,
   `cwe117_builtin_seal_probe.py`, `cwe117_numeric_provenance_probe.py`,
   `cwe22_dirent_closure_probe.py`, `cwe22_sink_argument_probe.py`,
@@ -70,7 +70,9 @@ The sign-off also carries seven standing instructions:
   `cwe79_safe_response_probe.py`, `cwe798_credential_concreteness_probe.py`,
   `cwe116_template_autoescape_probe.py`, `cwe770_unbounded_read_probe.py`,
   `cwe601_relative_redirect_probe.py`, `cwe704_type_cast_probe.py`,
-  `cwe328_hash_context_probe.py`), their frozen baseline key
+  `cwe328_hash_context_probe.py`, `cwe89_path_interpolation_probe.py`,
+  `cwe208_llm_token_timing_probe.py`, `cwe78_argv_execve_probe.py`,
+  `cwe208_llm_domain_compare_probe.py`), their frozen baseline key
   files and `gate_meta.json` are
   tracked under `benchmark/gates/`, so a fresh clone or CI can run them; `scratch/` is git-ignored,
   so a gate kept there is not runnable by anyone else and its baseline is not reviewable. The gates
@@ -295,6 +297,80 @@ bounded and small: 139.7 µs per `_c89_template_is_endpoint_path_only` call × 1
 against a batch4 collector that got ~31 ms/call cheaper on the same corpus. Scanning one chunk of the 15
 largest LiteLLM files costs 525.5 MB with this engine and 525.8 MB with HEAD's — the >400 MB figure is the
 size of the ingest batch, not of either arm, and `tests/` is never read locally.
+
+The CWE-78 argv-inertness guard and the CWE-208 codec/config guard ship as one atomic step, and both were
+measured before either was written, because each mandate figure describes a population the engine does not
+have. CWE-78: the mandate's own rule — suppress when argv is an `ast.List`/`ast.Tuple` literal and no
+`shell=True` keyword is set — matches **0 reportable rows**, because `rule_engine._cwe78_safety_filter`
+(`rule_engine.py:416`) already exempts every all-constant list and invariant 5 forbids editing that file; the
+rows that actually fire are (a) sequences reached through a name and (b) rows whose sink carries a phase-4
+synthetic source, whose `p4_source_id: 'OS_COMMAND_EXECUTION'` makes the cascade `continue` **past** the
+lineage prune at `ast_scanner.py:25576`, so no filter ever speaks. The guard therefore ships once, in the
+cascade ahead of every synthetic-source shortcut (`ast_scanner.py:25385`), and asks five conjunctive
+questions — the argv is a literal list/tuple or a name bound exactly once to one (`_cwe78_resolve_argv_sequence`),
+no `shell` keyword or one that is statically false (`_cwe78_shell_is_off`), the program slot is a literal the
+engine can name, that program has no untrusted lineage (`_has_untrusted_command_lineage`), and no slot is a
+`-c`/`-m`/script payload (`_cwe78_argv_has_script_payload`). `os.system`, `popen`, `shell=True` and
+f-string/`%`/`.format()` commands are refused by shape, never by name. The gate caught an **FN-unsafe silence in
+the first draft**: `ast.unparse` renders a string literal *with its quotes*, so the program slot arrived as
+`'"python3.11"'` and the interpreter table matched nothing — an interpreter running attacker bytes was about to
+be called inert. `_cwe78_expr_text` (`ast_scanner.py:7136`) now reads an `ast.Constant` str as its own value, two
+tripwire rows moved back to loud, and the defect is pinned twice over: TIER 6 asserts
+`'"Python3.11"' -> 'python3.11'` plus 17 must-match and 12 must-not-match interpreter spellings, and the mutation
+`read_program_slot_as_source_text` re-introduces the quoting and is CAUGHT on 5 rows. Kept loud and named rather
+than hidden: a data-controlled slot in a fixed-program argv (`("git", "merge-tree", f"--merge-base={x}", ...)`,
+`("docker", "inspect", "--format", ...)`, `["prisma", "migrate", "diff", "--from-url", db_url]`) is inert for
+*shell* injection but is argument/option injection, which is a different rule and is not what these rows were
+ever reported for; the 19 silenced rows in the audited LiteLLM files all carry a literal program slot (`git`,
+`docker`, `prisma`, `uv`) and no `shell` keyword.
+CWE-208: the mandate's shape — a comparison against a hardcoded model/provider constant — was **never emittable**,
+because `_compares_two_secrets` (`ast_scanner.py:6861`) rejects any `ast.Compare` with a `Constant` operand, so
+0 of the 2,780 LiteLLM timing rows had that form and the pilot found 1,336 of them carry a credential word the
+mandate itself requires loud. What is emittable is a name-vs-name compare whose identifiers hold `token`, and
+`_c208_timing_is_llm_domain_compare` (`ast_scanner.py:18839`) mutes only the ones that are about a codec object
+(11-word whole-segment table) or a module-level config alphabet (names bound exactly once at module level to a
+plain string, memoised per module, `domain_constants_accept_reassigned` proves a twice-written name fails
+closed) — after two vetoes that run **first** and read names *and* attribute tails: the 18-word credential table
+and the secret-fingerprint shapes. `tokenize`/`tokenizer` alone is not enough: `t.type == tokenize.COMMENT` and
+`selected == tokenizer` are the two audited silences, and a token *value* (`tok_a == tokenizer.encode(text)`)
+stays loud, pinned by the mutation `allow_codec_invoked` (CAUGHT). The metric guard of the previous step still
+runs ahead of this one — TIER 6 of the new probe asserts `after_metric_guard=True` and exactly one emitter call —
+and the shipped `cwe208_llm_token_timing_probe.py` still reports `locked_cwe208=36 failures=0`, so the two
+exemptions do not overlap or erase each other.
+
+Measured on the shipped code: `cwe78_argv_execve_probe.py` `seal=shipped shapes=26 fp_rows=5 must_report=17
+already_quiet=4 pairs=5 locked_cwe78=15 failures=0` → PASS, with TIER 5 asking the 15 blessed keys directly
+(11 on `sink_records`, 4 on the cross-file source lines they ride) and the guard answering inert **0** times;
+`cwe208_llm_domain_compare_probe.py` `seal=shipped shapes=22 fp_rows=6 must_report=14 already_quiet=2 pairs=5
+locked_cwe208=36 failures=0` → PASS, with TIER 5 running all 36 blessed lines through the real emitter
+(`parity blessed=6 emitter_reports=6 predicate_calls=6 answered_domain=0`,
+`big8 blessed=30 emitter_reports=30 predicate_calls=30 answered_domain=0`) — reachability proved before any
+baseline can move. All **18** falsifications exit 1: CWE-78 `delete_argv_guard` 11, `argv_guard_always_true` 23,
+`blank_interpreter_regex` 27, `ignore_program_provenance` 6, `ignore_script_payload_flag` 1, `ignore_shell_keyword` 2,
+`no_sequence_resolution` 2, `sequence_resolution_accepts_anything` 7, `read_program_slot_as_source_text` 5; CWE-208
+`delete_domain_guard` 12, `domain_guard_always_true` 22, `blank_codec_words` 11, `allow_codec_invoked` 2,
+`domain_constants_accept_reassigned` 1, `drop_credential_veto` 17, `drop_fingerprint_veto` 2,
+`drop_credential_word_password` 1 and `drop_all_three_vetoes` 8 — the last one being the honest statement that
+the credential and fingerprint vetoes are individually redundant with each other on some rows and jointly
+load-bearing on none-but-secret, so they are kept as defense-in-depth and the joint mutation is what proves it.
+LiteLLM (879 files, 36 chunks of 25, HEAD arm read from `2a253a5`): **CWE-78 445 → 413 RETIRED=32 ADDED=0**,
+**CWE-208 2592 → 2540 RETIRED=52 ADDED=0**, total 3037 → 2953 RETIRED=84 ADDED=0, process-tree peak **280.6 MB**.
+The mandate's "~208" and "~2,780" are therefore not met, and cannot be: the reachable populations were 445 and
+2,592 at HEAD, and only the parts of them that pass a proved-narrow shape are silent.
+Parity `425/425 MISSING=0 NEW=0` at **173.9 MB**, Big-8 `sha256 verified → 119/119 MISSING=0 NEW=0` at
+**159.6 MB**, cross-file `exact-set YES`, `suppression contract YES`, 1293.80 ms at **53.9 MB**,
+`cwe338_ml_math_probe.py` `cases=62 failures=0`, placeholder lock `locked_keys=59 failures=0`,
+`cwe89_path_interpolation_probe.py` `locked_cwe89=25 failures=0`. Speed: paired order-alternating CPU of the
+only CWE-208 emitter over the 3 largest hash-verified Big-8 modules (928,617 bytes, block=4 calls per
+`os.times()` window, 6 pairs) gives head median **132.812 ms/call** vs new **130.859 ms/call**, **CPU ratio
+median 0.9343** (min 0.8462, max 1.2143, new ≤ head in 5/6 legs — the one over-budget leg is the 15.6 ms
+quantum, not the predicate), process-tree peak **95.6 MB**. The added work measured on the exact tuples a real
+scan hands it: the domain predicate is asked 9 times per scan of that corpus at 36.960 µs/call = **0.393 ms**,
+the CWE-78 guard 12 times per scan of the 14 modules behind the blessed keys at 11.958 µs/call = **0.151 ms**.
+Parity briefly read `425 → 429 NEW=4` because the two new harnesses tripped the product on themselves — a CWE-22
+at an `open()` whose `basename` filter was hidden inside a closure, and three CWE-209 from `str(exc)` carried into
+a returned failure list; both were fixed in the harness (join inline, `type(exc).__name__`), never excused, and
+`NEW=0` came back on the same command.
 
 ### Permanent Fix Mandate (Root-Cause Immunity & Anti-Band-Aid Rule)
 
