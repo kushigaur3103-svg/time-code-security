@@ -56,13 +56,42 @@ Measured evidence behind the numbers
                                parity fixtures are `request_token == stored_token`-shaped secret
                                comparisons, which fail the shape test and are covered by the credential
                                veto a second time.
-  fixtures                   : 23 shapes, each pair verified against HEAD's bytes before this file
+  fixtures                   : 30 shapes, each pair verified against HEAD's bytes before this file
                                claimed them (scratch/_abstained_check.py -- all 20 of the first batch
                                are LOUD on HEAD, and the 3 dimension shapes are LOUD on the shipped
-                               engine): 6 counter shapes go LOUD->QUIET and 17 stay LOUD, which
+                               engine): 6 counter shapes go LOUD->QUIET and 23 stay LOUD, which
                                includes the 6 blessed parity spellings, the 5 Big-8 name shapes TIER 3
                                re-reads from the corpus, the honest `input_tokens == output_tokens`
-                               residual, and the 3 refused dimension/`len()`/integer shapes.
+                               residual, the 3 refused dimension/`len()`/integer shapes and the 7
+                               refused sentinel shapes of TIER 3b. One shape
+                               (`sentinel_literal_zero`) is quiet under both seals because the emitter
+                               itself rejects a bare-Constant operand, which is a fact about the rule
+                               and not about any exemption.
+
+A third pitch, refused the same way
+----------------------------------
+  The mandate after that asked for a narrower-sounding rule: "in the CWE-208 compare collector, silence
+  a comparison ONLY when one operand is a known constant/special-token sentinel (e.g. 0, -1, -100,
+  None) and neither operand traces to cryptographic secrets", with an explicit local verification
+  request that whisper:314 (`dim_shape_compare`) must not go quiet. TIER 3b scores four readings of
+  "is a sentinel" on the *emitting* compare of all 36 blessed CWE-208 lines and freezes the counts:
+  `literal=0, bound=0, named=12, contains=9` on Big-8 and all four at 0 on parity. The two readings the
+  mandate names first are empty for a structural reason the engine itself explains -- a compare with a
+  bare `ast.Constant` operand is rejected by `_compares_two_secrets` before any exemption is asked, and
+  no blessed module binds a sentinel name -- and a census of the same two readings over every .py file
+  on this machine (670 files: both corpora, the gates, pygoat, the demo project) also returns 0 rows.
+  So the pitch has no false-positive population to retire here at all; its only reach is the 12 blessed
+  lines the `named` reading takes (`input_ids == bos_token_id`, `batch_ids == pad_token_id`,
+  `out != tokenizer.pad_token_id`, `special_tokens_mask == not_padded_special_tokens_mask`, the four
+  markuplm padding rows, `sep_token_id == self.config.pad_token_id`), plus 9 more under a looser
+  "operand merely contains one" reading (`selected_tokens[:, :-1]`, `decoder_start_token_id.shape[0]`).
+  The rescue clause does work -- `auth_token == INVALID_TOKEN` stays loud under the installed pitch,
+  which is why `sentinel_vs_credential` is a keeps-loud row and not a failure -- and it does not help:
+  none of the 12 blessed names carries a credential word. The mandate's own verification request is
+  answered twice: TIER 3b prints `whisper:314 reached_by=[]`, and the `sentinel_pitch_shipped`
+  mutation re-scans `dim_shape_compare` with the pitch installed and must find it loud.
+  Measured on the shipped engine: `seal=shipped shapes=30 fp_rows=6 must_report=23 already_quiet=1
+  pairs=2 name_rows=36 sentinel_rows=7 locked_cwe208=36 failures=0`, and 7 falsifications exit 1.
 
 A second pitch, refused the same way
 ------------------------------------
@@ -79,16 +108,19 @@ A second pitch, refused the same way
 
 Seal semantics - `CWE208_SEAL`
 ------------------------------
-  'shipped'   : the 5 counter shapes MUST be silent and every tripwire MUST stay loud.
-  'abstained' : the engine before the metric test landed -- all 23 shapes MUST be loud. A counter shape
-                that goes quiet while the seal says abstained means a narrowing landed without a
-                contract.
+  'shipped'   : the 6 counter shapes MUST be silent, `sentinel_literal_zero` MUST be silent under both
+                seals (the emitter rejects it), and every other row MUST stay loud.
+  'abstained' : the engine before the metric test landed -- the 6 counter shapes are loud again and
+                every tripwire stays loud. A counter shape that goes quiet while the seal says
+                abstained means a narrowing landed without a contract.
 Either way a mismatch is exit 1.
 """
 from __future__ import annotations
 
 import ast
+import collections
 import contextlib
+import inspect
 import io as _io
 import os
 import re
@@ -235,11 +267,56 @@ def check(batch_ids, pad_token_id):
 def check(decoder_start_token_id, batch_size):
     return decoder_start_token_id.shape[0] != batch_size
 ''', 'loud', 'loud'),      # blessed src__transformers__generation__utils.py:1077, wide reading only
+    # ---- the sentinel pitch of the mandate after that one, refused by TIER 3b and frozen here ----
+    # `pad_token_id == -100` looks like the pitch's own example, yet the shipped engine reports it: a
+    # negative literal parses as UnaryOp(USub, Constant(100)), so `_compares_two_secrets` does not see a
+    # Constant and the row reaches the guards. It stays loud whatever the sentinel reading says.
+    ('sentinel_literal_negative', '''
+def check(pad_token_id):
+    return pad_token_id == -100
+''', 'loud', 'loud'),
+    # ... while the *positive* spelling is already silent, and always was: a bare Constant operand is
+    # rejected by the emitter itself, which is why the `literal` reading measures 0 blessed lines.
+    ('sentinel_literal_zero', '''
+def check(total_tokens):
+    return total_tokens == 0
+''', 'quiet', 'quiet'),
+    ('sentinel_bound_pad', '''
+PAD_TOKEN_ID = -100
+
+def check(input_ids):
+    return input_ids == PAD_TOKEN_ID
+''', 'loud', 'loud'),
+    # the blessed parity spelling with a `None` initialiser: the pitch's own sentinel, on a real secret
+    # comparison. This is the row that makes the refusal a false-negative argument, not a taste one.
+    ('sentinel_bound_none', '''
+stored_token = None
+
+def check(request_token):
+    return request_token == stored_token
+''', 'loud', 'loud'),
+    ('sentinel_batch_vs_pad', '''
+def check(batch_ids, pad_token_id):
+    return batch_ids == pad_token_id
+''', 'loud', 'loud'),      # blessed src__transformers__generation__utils.py:3074 verbatim
+    ('sentinel_slice_contains', '''
+def check(selected_tokens, candidate_new_tokens):
+    return candidate_new_tokens == selected_tokens[:, :-1]
+''', 'loud', 'loud'),      # blessed :4120 - reached only by the looser "operand contains one" reading
+    # the pitch's rescue clause, shown working: a credential word on the line holds this loud even
+    # under the pitch, so the refusal is "the veto does not cover the blessed names", not "no veto".
+    ('sentinel_vs_credential', '''
+INVALID_TOKEN = -1
+
+def check(auth_token):
+    return auth_token == INVALID_TOKEN
+''', 'loud', 'loud'),
 ]
 
 FP_ROWS = [row for row in SHAPES if row[2] == 'loud' and row[3] == 'quiet']
 MUST_REPORT_ROWS = [row for row in SHAPES if row[3] == 'loud']
 ALREADY_QUIET_ROWS = [row for row in SHAPES if row[2] == 'quiet']
+SENTINEL_SHAPES = [row for row in SHAPES if row[0].startswith('sentinel_')]
 
 # The same counter with and without a credential in the comparison. A narrowing keyed on the shape of
 # one operand alone would answer both arms alike.
@@ -346,6 +423,40 @@ PITCH_RESCUE_WORDS = ('secret', 'key', 'auth', 'nonce', 'hash', 'password', 'sig
 PITCH_DIM_RE = re.compile(r'\.shape\b|\blen\(|\.size\b|\bdims\b')
 PITCH_REACH = {'dimension': 2, 'nonstring': 28}
 
+# ---- the third pitch, from the mandate after it: the pad/constant sentinel shape ----
+# "In the CWE-208 compare collector, silence a comparison ONLY when one operand is a known
+# constant/special-token sentinel (e.g. 0, -1, -100, None) and neither operand traces to a
+# cryptographic secret." "Is a sentinel" has four defensible readings, and TIER 3b scores all four on
+# the *emitting* compare of every blessed CWE-208 line. The frozen counts say the pitch has no
+# population except the true positives it would delete:
+#
+#   literal  an operand really is `0` / `-1` / `-100` / `None`   -> 0 blessed lines
+#   bound    an operand is a name written exactly once, at module level, to one of those -> 0
+#   named    an operand's own name reads like a special-token id (pad/eos/bos/sep/...) -> 12
+#   contains an operand merely *holds* one of them (`[:, :-1]`, `[0]`, `[1] * padding`) -> 9
+#
+# `literal` and `bound` measure 0 because a bare-`Constant` compare never reaches the guards at all
+# (`_compares_two_secrets` rejects it) and no blessed line binds a module-level sentinel name -- a
+# census of the same two readings over all 670 .py files on this machine (both baselines, the gates,
+# pygoat, the demo project) also returns 0. So the only reading with a population is `named`, and all
+# 12 of its rows are blessed Big-8 keys: `input_ids == bos_token_id`, `batch_ids == pad_token_id`,
+# `out != tokenizer.pad_token_id`, `special_tokens_mask == not_padded_special_tokens_mask`, the four
+# markuplm padding rows. Refused, and frozen here so the next attempt has to move these numbers
+# deliberately rather than by accident.
+SENTINEL_VALUES = (0, -1, -100, None)
+SENTINEL_NAME_WORDS = ('pad', 'eos', 'bos', 'sep', 'cls', 'ignore', 'unknown', 'sentinel')
+SENTINEL_READINGS = ('literal', 'bound', 'named', 'contains')
+SENTINEL_REACH = {'parity': {'literal': 0, 'bound': 0, 'named': 0, 'contains': 0},
+                  'big8': {'literal': 0, 'bound': 0, 'named': 12, 'contains': 9}}
+SENTINEL_PITCH_REACH = {'parity': 0, 'big8': 12}
+# The mandate's own verification request, spelled as an assertion: the whisper dimension compare must
+# not be reachable by any sentinel reading (it is reachable by the *dimension* pitch above, which is
+# why that one was refused first).
+WHISPER_LEAF = 'tests__models__whisper__test_modeling_whisper.py'
+WHISPER_LINE = 314
+# The emitter's own trigger tuple, mirrored so TIER 3b scores the compare the emitter would score.
+CWE208_EMIT_MARKERS = ("token", "secret", "signature", "hmac", "api_key", "auth_token")
+
 
 def _pitch_operand_dim(node) -> bool:
     """The strict reading: a numeric constant, arithmetic over those, or a shape/dimension read."""
@@ -382,6 +493,237 @@ def _compares_at(tree, line: int) -> list:
     return [node for node in ast.walk(tree) if isinstance(node, ast.Compare)
             and any(getattr(part, 'lineno', None) == line
                     for part in (node.left, *node.comparators, node))]
+
+
+def _const_of(node):
+    """The literal value of an expression, reading `-100` as the sentinel it spells.
+
+    `ast.parse` gives a negative literal as `UnaryOp(USub, Constant(100))`, so a test that only looks
+    at `ast.Constant` misses the two spellings the mandate names by name (-1 and -100) -- and those two
+    are exactly the ones that *do* reach the guards, because `_compares_two_secrets` also only looks at
+    `ast.Constant`. Measured: `pad_token_id == -100` is reported CWE-208 by the shipped engine today.
+    """
+    if isinstance(node, ast.Constant):
+        return node.value, True
+    if isinstance(node, ast.UnaryOp) and isinstance(node.op, ast.USub) \
+            and isinstance(node.operand, ast.Constant):
+        return -node.operand.value, True
+    return None, False
+
+
+def _is_sentinel_value(value) -> bool:
+    if value is None:
+        return True
+    return (isinstance(value, (int, float)) and not isinstance(value, bool)
+            and value in SENTINEL_VALUES)
+
+
+def _operand_sentinels(node, bindings) -> set:
+    """Which of the four readings call this operand a sentinel."""
+    found = set()
+    value, is_literal = _const_of(node)
+    if is_literal and _is_sentinel_value(value):
+        found.update(('literal', 'contains'))
+    text = ''
+    if isinstance(node, ast.Name):
+        text = node.id.lower()
+        if node.id in bindings:
+            found.add('bound')
+    elif isinstance(node, ast.Attribute):
+        text = node.attr.lower()
+    if text and any(word in text for word in SENTINEL_NAME_WORDS):
+        found.add('named')
+    for child in ast.walk(node):
+        child_value, child_literal = _const_of(child)
+        if child_literal and _is_sentinel_value(child_value):
+            found.add('contains')
+    return found
+
+
+def _sentinel_bindings(tree) -> frozenset:
+    """Names a module writes exactly once, at module level, to one of the mandate's sentinels.
+
+    The census counts every store of the name anywhere in the tree, so a parameter, a `global`
+    rebinding or a second assignment drops it -- a name that can be written twice does not have a
+    value that is a fact about the source text.
+    """
+    if tree is None:
+        return frozenset()
+    writes: dict = {}
+    counts: dict = {}
+
+    def _bump(name):
+        counts[name] = counts.get(name, 0) + 1
+
+    for node in ast.walk(tree):
+        if isinstance(node, ast.Name) and isinstance(node.ctx, (ast.Store, ast.Del)):
+            _bump(node.id)
+        elif isinstance(node, ast.arg):
+            _bump(node.arg)
+        elif isinstance(node, (ast.FunctionDef, ast.AsyncFunctionDef, ast.ClassDef)):
+            _bump(node.name)
+        elif isinstance(node, ast.alias):
+            _bump(node.asname or node.name.split('.')[0])
+        elif isinstance(node, (ast.Global, ast.Nonlocal)):
+            for name in node.names:
+                _bump(name)
+        elif isinstance(node, ast.ExceptHandler) and node.name:
+            _bump(node.name)
+    for stmt in getattr(tree, 'body', ()):
+        if isinstance(stmt, ast.Assign) and len(stmt.targets) == 1 \
+                and isinstance(stmt.targets[0], ast.Name):
+            writes.setdefault(stmt.targets[0].id, []).append(stmt.value)
+        elif isinstance(stmt, ast.AnnAssign) and isinstance(stmt.target, ast.Name) \
+                and stmt.value is not None:
+            writes.setdefault(stmt.target.id, []).append(stmt.value)
+    out = set()
+    for name, values in writes.items():
+        if counts.get(name) != 1 or len(values) != 1:
+            continue
+        value, is_literal = _const_of(values[0])
+        if is_literal and _is_sentinel_value(value):
+            out.add(name)
+    return frozenset(out)
+
+
+def _compare_names(compare) -> list:
+    """Names and attribute tails on a comparison -- the evidence the credential veto reads."""
+    out = []
+    for child in ast.walk(compare):
+        if isinstance(child, ast.Name):
+            out.append(child.id.lower())
+        elif isinstance(child, ast.Attribute):
+            out.append(child.attr.lower())
+    return out
+
+
+def _sentinel_pitch(compare, bindings) -> bool:
+    """The pitch as written: *any* operand is a sentinel, and no credential word is in sight."""
+    names = _compare_names(compare)
+    if any(any(word in name for word in ast_scanner.CWE208_CREDENTIAL_NAME_WORDS)
+           for name in names):
+        return False
+    return any({'literal', 'bound', 'named'} & _operand_sentinels(part, bindings)
+               for part in (compare.left, *compare.comparators))
+
+
+def _emitting_compare(compare) -> bool:
+    """Would the shipped emitter reach its two guards on this compare, guards aside?
+
+    Mirrors `ast_scanner.py:19282-19309`: `Eq`/`NotEq`, no `compare_digest` in the subtree, a trigger
+    marker among the `ast.Name` ids, and no bare `ast.Constant` operand. TIER 3b asserts the marker
+    tuple still reads exactly as the copy kept here, so this cannot drift into scoring a shape the
+    emitter no longer emits.
+    """
+    if not any(isinstance(op, (ast.Eq, ast.NotEq)) for op in compare.ops):
+        return False
+    names = []
+    for child in ast.walk(compare):
+        if isinstance(child, ast.Call) and 'compare_digest' in (ast.unparse(child.func) or ''):
+            return False
+        if isinstance(child, ast.Name):
+            names.append(child.id.lower())
+        elif isinstance(child, ast.Attribute):
+            names.append(child.attr.lower())
+    if not any(any(marker in name for marker in CWE208_EMIT_MARKERS) for name in names):
+        return False
+    return not any(isinstance(o, ast.Constant) for o in (compare.left, *compare.comparators))
+
+
+def check_sentinels():
+    """TIER 3b: the four sentinel readings, scored on the emitting compare of every blessed line.
+
+    A predicate count is not a finding count, so the tier also reports how many blessed lines have an
+    emitting compare at all (`emitting`) and proves the mandate's own verification request: the whisper
+    dimension line is reached by no reading, so it survives this pitch -- and the refusal still stands,
+    because 12 other blessed lines do not.
+    """
+    failures = []
+    module_source = ''
+    try:
+        module_source = inspect.getsource(ast_scanner)
+    except (OSError, TypeError):
+        failures.append(('emitter source', 'readable', 'unreadable',
+                         'the marker tuple cannot be checked against the emitter'))
+    lock = 'sensitive_markers = ("token", "secret", "signature", "hmac", "api_key", "auth_token")'
+    if module_source and lock not in module_source:
+        failures.append(('emitter marker tuple', lock, 'absent from ast_scanner.py',
+                         'the shape TIER 3b scores is no longer the shape the emitter gates on'))
+    corpus = corpus_dir('big8')
+    verify_corpus('big8', corpus)
+    for kind in ('parity', 'big8'):
+        keys = sorted((row for row in load_keys(
+            os.path.join(GATES_DIR, META[kind]['keys_file']), kind) if row[2] == 'CWE-208'),
+            key=lambda r: (r[0], r[1]))
+        trees: dict = {}
+        counts = dict.fromkeys(SENTINEL_READINGS, 0)
+        pitch, emitting, touched = 0, 0, collections.defaultdict(list)
+        for row in keys:
+            leaf = row[0].replace('\\', '/').rsplit('/', 1)[-1]
+            if row[0] not in trees:
+                # The join is spelled at the `open()` site on purpose: the CWE-22 prune answers from the
+                # expression it can anchor, so a path handed over by a helper call reads as unvalidated
+                # and this harness would contribute a CWE-22 key of its own to the parity baseline.
+                if kind == 'big8':
+                    path = os.path.abspath(os.path.join(corpus, os.path.basename(row[0])))
+                else:
+                    path = os.path.abspath(os.path.join(ROOT, row[0]))
+                try:
+                    with open(path, encoding='utf-8', errors='replace') as handle:
+                        trees[row[0]] = ast.parse(handle.read())
+                except (OSError, SyntaxError, ValueError):
+                    trees[row[0]] = None
+            tree = trees[row[0]]
+            if tree is None:
+                failures.append((kind, leaf, 'parses', 'unreadable', 'blessed line cannot be scored'))
+                continue
+            bindings = _sentinel_bindings(tree)
+            found = set()
+            line_emits = False
+            for compare in _compares_at(tree, row[1]):
+                if not _emitting_compare(compare):
+                    continue
+                line_emits = True
+                for part in (compare.left, *compare.comparators):
+                    found |= _operand_sentinels(part, bindings)
+                if _sentinel_pitch(compare, bindings):
+                    pitch += 1
+                break
+            emitting += int(line_emits)
+            for reading in sorted(found):
+                counts[reading] += 1
+                touched[reading].append((leaf, row[1]))
+        print(f'  {kind:7s} blessed={len(keys)} emitting={emitting} '
+              + ' '.join(f'{name}={counts[name]}' for name in SENTINEL_READINGS)
+              + f' pitch={pitch}')
+        for reading, rows in sorted(touched.items()):
+            for leaf, line in rows:
+                print(f'    SENTINEL-REACHES {reading:8s} {leaf[-38:]}:{line}')
+        if emitting != len(keys):
+            failures.append((kind, 'emitting compares', len(keys), emitting,
+                             'a blessed CWE-208 line no longer has the shape this tier scores - '
+                             're-measure before quoting these reach numbers'))
+        for reading in SENTINEL_READINGS:
+            want = SENTINEL_REACH[kind][reading]
+            if counts[reading] != want:
+                failures.append((kind, reading, want, counts[reading],
+                                 'the frozen reachability of the sentinel pitch moved - re-measure '
+                                 'before anyone ships or retires this reading'))
+        want_pitch = SENTINEL_PITCH_REACH[kind]
+        if pitch != want_pitch:
+            failures.append((kind, 'pitch', want_pitch, pitch,
+                             'the sentinel pitch as written reaches a different number of blessed '
+                             'lines than the refusal records'))
+        if kind == 'big8':
+            whisper_rows = [(reading, line) for reading, rows in touched.items()
+                            for (leaf, line) in rows if leaf == WHISPER_LEAF]
+            print(f'  {WHISPER_LEAF[-28:]}:{WHISPER_LINE} reached_by={whisper_rows} '
+                  f'(mandate asks for [])')
+            if whisper_rows:
+                failures.append(('whisper:314', 'reached by no sentinel reading', whisper_rows,
+                                 'the one line the mandate asked to protect is now in reach'))
+        trees.clear()
+    return failures
 
 
 def check_big8_lines():
@@ -540,6 +882,8 @@ def main() -> int:
     failures += check_corpus()
     print('TIER 3 - the 30 blessed Big-8 timing lines, read from the hash-verified corpus:')
     failures += check_big8_lines()
+    print('TIER 3b - the sentinel pitch, scored on the emitting compare of every blessed line:')
+    failures += check_sentinels()
     print(f'TIER 4 - truth table under seal={CWE208_SEAL!r}:')
     failures += check_shapes()
     print('TIER 4b - same counter, with and without a credential:')
@@ -549,6 +893,7 @@ def main() -> int:
     print(f'\nseal={CWE208_SEAL} shapes={len(SHAPES)} fp_rows={len(FP_ROWS)} '
           f'must_report={len(MUST_REPORT_ROWS)} already_quiet={len(ALREADY_QUIET_ROWS)} '
           f'pairs={len(PAIRS)} name_rows={len(NAME_SHAPE_ROWS)} '
+          f'sentinel_rows={len(SENTINEL_SHAPES)} sentinel_reach={SENTINEL_REACH["big8"]} '
           f'locked_cwe208={sum(CWE208_LOCKED.values())} failures={len(failures)}')
     for item in failures[:12]:
         print(f'  !! {item}')
@@ -587,6 +932,24 @@ def _apply_dimension_pitch():
     ast_scanner.TaintTracker._compares_two_secrets = muted
 
 
+def _apply_sentinel_pitch():
+    """Ship the sentinel pitch inside the engine, in memory, on the last veto the emitter consults.
+
+    The mandate's own words, not a caricature: mute when *any* operand is a sentinel under the literal,
+    bound or named reading, with its credential veto honoured. The domain guard is the hook because it
+    is the only shipped exemption that already receives the comparison, the module and the names, so the
+    bound reading can resolve a module-level sentinel exactly as a shipped guard would.
+    """
+    original = ast_scanner.TaintTracker._c208_timing_is_llm_domain_compare
+
+    def pitched(self, node, mod_name, all_names, evidence_names, sensitive_markers):
+        if original(self, node, mod_name, all_names, evidence_names, sensitive_markers):
+            return True
+        return _sentinel_pitch(node, _sentinel_bindings(self.modules.get(mod_name)))
+
+    ast_scanner.TaintTracker._c208_timing_is_llm_domain_compare = pitched
+
+
 def _any_operand_metric(self, operand_names, evidence_names, sensitive_markers):
     """The `all(...)` requirement replaced by `any(...)` -- one clean operand silences the whole
     comparison, secrets included."""
@@ -612,6 +975,18 @@ MUTATIONS = {
         'rows': ['dim_shape_compare', 'len_over_mask_compare_int', 'shape_zero_vs_batch_size'],
         'requires': '_compares_two_secrets',
         'apply': _apply_dimension_pitch,
+    },
+    'sentinel_pitch_shipped': {
+        'what': 'ship the sentinel pitch: mute a compare when any operand is 0/-1/-100/None, a name '
+                'bound once to one of those, or a pad/eos/bos/sep-style special-token id, with no '
+                'credential word on the line -- measured to reach 12 of the 30 blessed Big-8 timing '
+                'lines and 0 false positives anywhere on this machine',
+        'rows': ['sentinel_literal_negative', 'sentinel_bound_pad', 'sentinel_bound_none',
+                 'sentinel_batch_vs_pad'],
+        'keeps_loud': ['dim_shape_compare', 'sentinel_slice_contains', 'sentinel_vs_credential',
+                       'blessed_request_token', 'blessed_secret'],
+        'requires': '_c208_timing_is_llm_domain_compare',
+        'apply': _apply_sentinel_pitch,
     },
     'metric_guard_always_true': {
         'what': 'make the metric test answer "counter" for everything -- the widest version of the '
@@ -672,6 +1047,13 @@ def run_mutation(name: str) -> int:
     failures = check_big8_lines()
     print(f'TIER 4 - truth table under seal={CWE208_SEAL!r}:')
     failures += check_shapes()
+    sources = {row[0]: row[1] for row in SHAPES}
+    for label in spec.get('keeps_loud', ()):
+        loud = bool(scan_source(sources[label]))
+        print(f'  {"ok         " if loud else "SILENCED ! "} keeps-loud {label:26s} loud={loud}')
+        if not loud:
+            failures.append((label, 'loud while this pitch is installed', 'loud', 'quiet',
+                             'the pitch silenced a row the mandate named as protected'))
     print('TIER 4b - same counter, with and without a credential:')
     failures += check_pairs()
     print('TIER 5 - prefix, tail, count-word and credential tables:')

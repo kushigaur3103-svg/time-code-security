@@ -720,6 +720,108 @@ suppression-contract YES`, placeholder lock `locked_keys=59 cases=8 failures=0`,
 `tests/test_workflow_controls.py` 20 passed. Process-tree peaks 176.7 MB (parity), 152.2 MB (Big-8),
 79.7 MB (cross-file) — under the ~400 MB budget. AGENTS.md line 8 verified at 899 bytes after the edits.
 
+### The mandate-D local-falsification step: one guard measured and withdrawn, one shape refused, engine byte-identical to HEAD
+
+The mandate asked for two AST items in `ast_scanner.py` (a CWE-117 numeric/ML-state f-string silencer and
+a CWE-208 pad/sentinel comparison mute), four local invariants, and forbade a cloud scan. Both items were
+measured before any engine code was trusted, and both ended with **no engine change**: one guard was
+written, costed, and withdrawn; the other was refused outright.
+
+- **CWE-117: the unique-binding census was built, measured, and withdrawn the same session.** It muted a
+  logged f-string hole when the module wrote that name exactly once to a numeric-safe value, refused the
+  whole map for any module with a dynamic door (`exec`/`eval`/`compile`/`__import__`,
+  `setattr`/`delattr`, `builtins.X = ...`, `globals()[...] = ...`/`.update(...)`, `from x import *`) and
+  capped the value walk at 2 hops. Cost, measured paired and order-alternating on the three Big-8 modules
+  that hold all 43 blessed CWE-117 keys (751,485 bytes, one in-process scan = CPU 1.72 s): **one cold
+  census walk = 8.59 / 9.38 / 11.72 ms**, 29.7 ms for the three together = **1.73 % of that scan**, plus
+  +0.119 µs per hole-bearing ask (predicate CPU ratio median **1.0153**, min 1.0000, max 1.0421, new ≤
+  head in 1/6 legs). Yield, on the same corpus: **0 of 119 real asks change answer**, the census finds
+  **0 numeric bindings** in all three modules, and TIER 7 answers `sealed_by_shipped_binding_seal=0` on
+  **49/49** blessed keys. A whole-tree population census of **25,005** local files found **55** logged
+  f-string holes the rule could reach -- **0 of them inside either frozen baseline**, the rest in this
+  repository's own harnesses (`benchmark/gates` 4, `scratch` the remainder). A change whose cost is
+  measured real and whose benefit is measured zero fails Rule 15.3 on its own numbers, so the engine was
+  reverted: `git hash-object ast_scanner.py` = `b01c626ecf6761e3` = the HEAD blob, and the work is kept as
+  `scratch/mandate_d_cwe117_binding_seal.patch` (git-ignored) so a future re-ship starts from measured
+  code instead of from a blank file. What *does* ship is the lock that makes the withdrawal unforgivable to
+  undo quietly: TIER 5 of `cwe117_numeric_provenance_probe.py` now asserts **the state it finds**
+  (`binding_seal_shipped()` reads the module, not a comment) -- with the census absent it checks
+  `no census in the engine`, `a bare name is asked for nothing` and `no per-module walk in the numeric
+  pass`, and `both sites agree on the arity` replaces `both sites thread the tree` (arity 2 now, 3 if the
+  census returns, and a call site that answers differently from its partner still fails). TIER 6 expects
+  the five census-owned holes as **reported** rows -- the false-positive price of the withdrawal, kept on
+  the table rather than tidied away, and FP-up is the allowed direction. Measured: `seal=refused
+  binding_seal=withdrawn shapes=25 must_report=17 already_quiet=8 clause_sensitive=7 binding_rows=23
+  binding_quiet=0 binding_loud=23 locked_cwe117=49 failures=0` → PASS, six falsifications exit 2 with the
+  honest reason (`binding_map_neutralised`, `census_accepts_any_name`, `rebinding_accepted`,
+  `bindings_membership_decides`, `dynamic_doors_blanked`, `depth_cap_raised` -- no guard, nothing to
+  delete) and `state_name_rule_shipped` still exits 1 CAUGHT. The mandate's *literal* reading (a hole whose
+  name says loss / lr / epoch / step / shape is a number) stays refused and stays proved:
+  `reachable_by_state_name_rule=5` -- the blessed `src__transformers__trainer.py` keys at `:1603 :1604
+  :1610 :1614 :1618`, whose holes are named `num_train_epochs`, `num_update_steps_per_epoch`, `max_steps`,
+  `epochs_trained`, `steps_trained_in_current_epoch` and whose values are not numbers.
+- **CWE-208: the pad/sentinel shape is not a narrowing, it is the rule.** "Silence a comparison when one
+  operand is a known constant/special-token sentinel (0, -1, -100, None) and neither operand traces to a
+  cryptographic secret" was scored against the *emitting* `ast.Compare` of all 36 blessed CWE-208 lines in
+  four readings -- literal operand, name bound once to a sentinel, name *named* like a sentinel
+  (`pad_token_id`, `eos_token_id`, `attention_mask`), and sentinel *inside* the compare: parity
+  `{'literal': 0, 'bound': 0, 'named': 0, 'contains': 0}`, Big-8 `{'literal': 0, 'bound': 0, 'named': 12,
+  'contains': 9}`, and a census of the same predicate over every local file returns the same twelve hits,
+  all of them blessed `corpus_big8` lines. So the reachable population *is* the true-positive population.
+  Two AST facts make the empty readings structural rather than lucky: `_compares_two_secrets`
+  (`ast_scanner.py:7198`) rejects any compare with a bare `ast.Constant` operand, so a literal sentinel is
+  never emittable, and `-1` / `-100` parse as `UnaryOp(USub, Constant)` -- **not** as `Constant` -- so
+  `pad_token_id == -100` reports CWE-208 today (the same quoting/precedence trap that once bit the CWE-78
+  program-slot guard, and it is now a fixture row: `sentinel_literal_negative`). Frozen as TIER 3b plus
+  seven `sentinel_*` shapes and one falsification in `cwe208_llm_token_timing_probe.py`; the mandate's own
+  verification line is answered by the engine-level keeps-loud half of `--mutate=sentinel_pitch_shipped`,
+  which exits 1 CAUGHT on 7 rows while `dim_shape_compare` (whisper:314), `sentinel_slice_contains`,
+  `sentinel_vs_credential`, `blessed_request_token` and `blessed_secret` all stay loud. Measured:
+  `seal=shipped shapes=30 fp_rows=6 must_report=23 already_quiet=1 pairs=2 name_rows=36 sentinel_rows=7
+  sentinel_reach={'literal': 0, 'bound': 0, 'named': 12, 'contains': 9} locked_cwe208=36 failures=0` → PASS.
+- **The harness tripped the product again, and the harness was fixed.** TIER 3b first resolved each blessed
+  path through a helper call, and parity read `425 → 426 NEW=1` -- a CWE-22 at the probe's own `open()`,
+  because `_c22_path_is_internal_repo_anchor` reads the path *expression at the call site* and a path
+  handed over by a call has no anchor to read. Fixed by inlining
+  `os.path.abspath(os.path.join(corpus, os.path.basename(row[0])))` / `os.path.join(ROOT, row[0])` at the
+  `open()` itself, the idiom `cwe208_llm_domain_compare_probe.py:368-382` already uses; `NEW=0` came back
+  on the same command. This is the second time this repository has paid for that one lesson, so the rule is
+  stated: **a gate harness resolves its corpus path with a join written at the `open()` site, never through
+  a helper.**
+- **Two measurement defects were found in the clock harness itself** (both live in git-ignored `scratch/`,
+  so the discipline is recorded here instead of as a gate): timing one census call with two `os.times()`
+  reads can only resolve the 15.6 ms Windows quantum, and the first version reported a cold walk as
+  exactly `15625.0 µs` -- the tick, not the work; the fix is block-averaging (6 blocks × 40 cache-popped
+  reps). And because the engine scans through a spawn pool, an unguarded top-level workload is re-imported
+  and replayed by every child, which produced a `multiprocessing/spawn.py` traceback plus a
+  `ZeroDivisionError` on a quantum-collapsed leg; the fix is `if __name__ == '__main__': sys.exit(main())`.
+- **Six mandatory outputs on the exact code shipped.** Parity `425/425 MISSING=0 NEW=0`; Big-8
+  `sha256 verified → 119/119 MISSING=0 NEW=0`, exact-set match (so whisper:314 is reported); cross-file
+  `F1 1.0000`, `Precision 100.00%`, `Recall 100.00%`, `Exact-set match YES`, `Suppression contract YES`,
+  304.72 ms; all **25** tracked `*_probe.py` gates exit 0 (27 runnable scripts counting `aa_parity.py` and
+  `big8_ab.py`), each re-run in one sweep on this exact tree, including the two that were edited here:
+  `cwe117_numeric_provenance` (`seal=refused binding_seal=withdrawn shapes=25 must_report=17 already_quiet=8
+  clause_sensitive=7 binding_rows=23 binding_quiet=0 binding_loud=23 locked_cwe117=49 failures=0`) and
+  `cwe208_llm_token_timing` (`seal=shipped shapes=30 fp_rows=6 must_report=23 already_quiet=1 pairs=2
+  name_rows=36 sentinel_rows=7 locked_cwe208=36 failures=0`); the other truth tables
+  `cwe117_builtin_seal` (49), `cwe117_cwe22_unknown_source` (59/59), `cwe208_llm_domain_compare` (36),
+  `cwe22_repo_anchor_path` (24), `cwe338_prng_context` (16), `cwe338_ml_math`, `cwe798_test_fixture_dummy`
+  (6), `cwe798_credential_concreteness` (6), `cwe434_local_serialization` (7), `cwe312_vocab_dump` (7),
+  `cwe89_path_interpolation` (25), `cwe78_argv_execve` (15) -- all `failures=0`; `workflow_controls_probe`
+  PASS; `tests/test_workflow_controls.py` 20 passed in 0.51 s. Falsifications re-ran too: all **7** of the
+  CWE-208 ones exit 1 CAUGHT (`delete_metric_guard` 8 rows, `metric_guard_always_true` 25,
+  `metric_rule_to_substring` 21, `drop_credential_veto` 2, `one_operand_is_enough` 5,
+  `dimension_pitch_shipped` 1, `sentinel_pitch_shipped` 7 -- and `sentinel_pitch_shipped` prints
+  `ok keeps-loud dim_shape_compare loud=True`, so the mandate's own verification line holds), and the **7**
+  CWE-117 ones give six exit-2 honest skips plus `state_name_rule_shipped` exit 1 CAUGHT. TP moved
+  **0** (both baselines exact-set), FN **0**, FP **unchanged versus HEAD**, speed **identical to HEAD**
+  (the bytes are HEAD's), ability identical.
+- **Arena.** Nothing in this step changes what an arena scan reports, because the engine is byte-identical
+  to HEAD. The two mandate populations -- ML-state f-string logging and pad-token compares -- can only be
+  counted in the Transformers arena by a human-pressed `workflow_dispatch`, and the CWE-208 half is already
+  proved to reach nothing but blessed true positives, so a re-ship of the CWE-117 census needs **both** a
+  measured arena yield and a scan CPU ratio ≤ 1.0.
+
 ### Permanent Fix Mandate (Root-Cause Immunity & Anti-Band-Aid Rule)
 
 All engine modifications, precision improvements, and bug fixes must be architecturally permanent:
