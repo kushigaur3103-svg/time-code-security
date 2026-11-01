@@ -733,3 +733,8 @@ would move a true positive), stop and ask before acting instead of quietly picki
    - All filter checks must be O(1) or single-pass AST lookups. No multi-hop recursive graph walks or expensive inter-procedural traces that degrade scan throughput.
 4. **Zero-FN & Zero-TP Loss:**
    - Parity and Big-8 MISSING=0 is an unbreachable floor. Blessed keys must remain 100% reported.
+
+### AST Node-Shape & Provenance Rule for FP Suppression
+- Never apply broad folder-level exclusions or disable entire CWE rules to silence noise if true positives (TPs) reside in those trees.
+- False positive elimination MUST be implemented at the AST parser level via exact node-shape verification (e.g., distinguishing pure `ast.Constant` literals from dynamic variables, or isolating non-security integer/shape comparisons from cryptographic secrets).
+- Refusing an FP elimination task due to potential TP loss without attempting granular AST provenance and shape gating is strictly prohibited.
