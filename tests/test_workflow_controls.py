@@ -17,7 +17,7 @@ from suppression_resolver import (
     find_matching_directive,
     resolve_line_suppressions,
 )
-from tcs_config import load_config, path_matches
+from tcs_config import TcsConfig, load_config, path_matches, without_root_prefix
 
 
 # ─── Feature 1: `# tcs: ignore[CWE-XXX]` ───
@@ -174,6 +174,40 @@ def test_config_applies_path_and_rule_excludes(tmp_path):
         ("src/app.py", 6, "CWE-78"), ("src/util.py", 3, "CWE-328")}
 
 
+def test_root_prefix_strip_table():
+    assert [(key, root) for key, root, expected in [
+        ("arena/tests/x.py", "arena", "tests/x.py"),
+        ("arena/src/app.py", ".", "arena/src/app.py"),
+        ("arena/src/app.py", "arena", "src/app.py"),
+        ("other/x.py", "arena", "other/x.py"),
+        ("arena", "arena", ""),
+        ("/abs/x/docs/y.py", "/abs/x", "docs/y.py"),
+    ] if without_root_prefix(key, root) != expected] == []
+
+
+def test_config_excludes_apply_below_a_named_subdirectory(tmp_path):
+    """`docs/**` must mean the same thing for `scan .` and for `scan arena`."""
+    (tmp_path / ".tcs.yaml").write_text(
+        'exclude_paths: ["tests/**"]\nrules:\n  CWE-328:\n'
+        '    exclude: ["**/demo/**"]\n', encoding="utf-8")
+    arena = tmp_path / "arena"
+    (arena / "src" / "demo").mkdir(parents=True)
+    (arena / "tests").mkdir(parents=True)
+    (arena / "src" / "app.py").write_text(_COMMAND_SINK, encoding="utf-8")
+    (arena / "tests" / "test_app.py").write_text(_COMMAND_SINK, encoding="utf-8")
+    (arena / "src" / "demo" / "util.py").write_text(_MD5, encoding="utf-8")
+    (arena / "src" / "util.py").write_text(_MD5, encoding="utf-8")
+    nested = _scan(tmp_path, "arena")
+    assert {(item["file"], item["line"], item["cwe"]) for item in nested["findings"]} == {
+        ("arena/src/app.py", 6, "CWE-78"), ("arena/src/util.py", 3, "CWE-328")}
+
+    # A pattern that names the root itself still matches: the raw key is tried too.
+    scoped = TcsConfig(exclude_paths=("arena/docs/**",), rule_excludes={"CWE-22": ("tests/**",)})
+    assert scoped.excludes_path("arena/docs/a.md", "arena") is True
+    assert scoped.rule_excluded("CWE-22", "arena/tests/t.py", "arena") is True
+    assert scoped.rule_excluded("CWE-22", "arena/src/t.py", "arena") is False
+
+
 # ─── helpers ───
 
 _COMMAND_SINK = (
@@ -193,9 +227,9 @@ def _chdir(path):
         os.chdir(previous)
 
 
-def _scan(root):
+def _scan(root, target="."):
     out = io.StringIO()
     with _chdir(root), contextlib.redirect_stdout(out), contextlib.redirect_stderr(io.StringIO()):
-        cli.main(["scan", ".", "--format", "json", "--workers", "1"])
+        cli.main(["scan", target, "--format", "json", "--workers", "1"])
     text = out.getvalue()
     return json.loads(text[text.find("{"):])

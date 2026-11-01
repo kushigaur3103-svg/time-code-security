@@ -624,21 +624,25 @@ def _filter_by_confidence(findings, minimum):
     ]
 
 
-def _apply_config_filters(findings, config, path_excludes):
+def _apply_config_filters(findings, config, path_excludes, scan_root=None):
     """Apply root `.tcs.yaml` to findings: path exclusions and per-rule path overrides.
 
     `path_excludes` is False when the user named a single file on the command line --
     then only the rule-level overrides apply, because an explicitly named file is
     always analysed (same contract as `--exclude`).
+
+    `scan_root` is the path the user named, as seen from the working directory: collected
+    keys carry it as a prefix, and `TcsConfig` needs it to honour an anchored pattern such
+    as `docs/**` when the scan is aimed at a subdirectory instead of the repository root.
     """
     if config is None:
         return findings
     kept = []
     for finding in findings:
         path_key = str(finding.get("file", ""))
-        if path_excludes and config.excludes_path(path_key):
+        if path_excludes and config.excludes_path(path_key, scan_root):
             continue
-        if config.rule_excluded(str(finding.get("cwe", "")), path_key):
+        if config.rule_excluded(str(finding.get("cwe", "")), path_key, scan_root):
             continue
         kept.append(finding)
     return kept
@@ -1404,7 +1408,13 @@ def _scan(args):
         # Root configuration is optional and read from the working directory only, so a
         # checkout without `.tcs.yaml` keeps the byte-identical default scan.
         config = load_config()
-        config_excludes = config.excludes_path if config is not None else None
+        # Collected keys are spelled relative to the working directory, so the root is
+        # resolved once here and reused by every `.tcs.yaml` match below.
+        _config_root = _file_key(args.path, Path.cwd().resolve())
+        config_excludes = (
+            (lambda key: config.excludes_path(key, _config_root))
+            if config is not None else None
+        )
         tree_scan = args.path.is_dir()
         templates, iac = _collect_auxiliary_files(args.path, exclude_patterns, config_excludes)
         if scope not in ("all", "html"):
@@ -1529,7 +1539,8 @@ def _scan(args):
 
         # Root `.tcs.yaml`: path exclusions and per-rule path overrides from the working
         # directory. Applied after every producer so cross-file and JS rows obey it too.
-        findings = _apply_config_filters(findings, config, path_excludes=tree_scan)
+        findings = _apply_config_filters(findings, config, path_excludes=tree_scan,
+                                         scan_root=_config_root)
         findings = _apply_inline_suppressions(findings, {**files, **templates, **iac})
 
         # --diff narrows *reporting* to added/modified lines. The analysis above already

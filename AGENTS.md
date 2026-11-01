@@ -445,6 +445,104 @@ own `exec(compile(...))` mutation installer), so `exec`, `compile` and `textwrap
 mutations rewritten as hand-written wrappers over the pristine method, with the drift lock moved into TIER 6
 source fragments — the harness was corrected, never excused, and `NEW=0` came back on the same command.
 
+### The arena-noise mandate: three engine suppressions refused, one real path defect fixed
+
+The request was "eliminate ~3,800 Transformers noise alerts" with four engine items. All three engine
+items were refused before any edit, because each one reaches a blessed key, and the fourth (path
+normalisation) turned out to describe a bug that does not exist while hiding its mirror image.
+
+- **CWE-117 "suppress unless the logged arguments carry external tainted flow" — refused.**
+  `benchmark/gates/cwe117_cwe22_unknown_source_probe.py` prints, for every locked key, the source the
+  engine actually saw: `args_from_parser`, `param_attribute` and `attribute_product` each report
+  `reported=True placeholder=['UNKNOWN'] real_sources=0`, and the tracked baseline is
+  `total=119 CWE-117=43 CWE-22=16` with `locked_keys=59 failures=0`. So "no real source node" is the
+  normal state of 43 of the 43 blessed Big-8 CWE-117 keys: the gate the mandate asks for would answer
+  "untainted" on all of them and parity/Big-8 would read `MISSING=49` in one line. The half of the
+  request that is safe is already shipped and measured quiet in the same probe:
+  `pure_literal_log`, `int_literal_log` and `len_call_log` are `reported=False`.
+- **CWE-22 "suppress `open`/`PIL.Image.open`/`save_json` on paths without external inputs" — refused.**
+  That rule already exists, is already narrow and is already locked: `_c22_path_is_internal_repo_anchor`
+  (`ast_scanner.py:6930`, wired as the third disjunct of the prune at `ast_scanner.py:25777`) with
+  `cwe22_repo_anchor_path_probe.py` → `locked_cwe22=24 failures=0` and `literal_path_open L1
+  reported=False`. Widening "no external input" from *anchors* to *any statically-looking path* hits the
+  blessed population directly — `modeling_utils.py:336 open(checkpoint_path, "rb")`, `:3564
+  open(save_index_file, "w")`, `trainer.py:4301 open(model_card_filepath, "w")` and
+  `tests__generation__test_utils.py:5537/5539/5565 open(custom_generate_dir / "generate.py", "w")` carry
+  no user input in their own scope, so all of them are "static" to that test. `PIL.Image.open(user_img)`
+  was measured on a live fixture and is **already quiet** (0 findings on that line; the stream-vs-name
+  reasoning is at `ast_scanner.py:7145` and `:22193`), and `open(path, "w")` inside
+  `def save_json(data, path)` **does** report CWE-22 precisely because `path` is a parameter — the
+  mandate's own exemption condition already refuses it.
+- **CWE-338 "suppress `sample`/`shuffle`/`randint` in ML preprocessing/eval batching/array indexing" —
+  refused.** Three of the seven blessed Big-8 CWE-338 keys *are* that shape, verbatim:
+  `tests__generation__test_utils.py:3367` and `tests__test_modeling_common.py:6698` are both
+  `values.append(rng.randint(0, vocab_size - 1))`, and
+  `tests__models__whisper__test_modeling_whisper.py:97` is
+  `self.let_pass[k].append(random.randint(1, 10) <= 3)`. A *context* rule ("eval batching") does not stop
+  there — `:3352`/`:6606` are `global_rng = random.Random()` and `:3384`/`:6722` are
+  `values.append(rng.random() * scale)`, so the whole Big-8 CWE-338 population (7 of 7, all in test
+  modules) is in reach. The two shapes the mandate names that the engine already handles are the
+  display-value markers and the `populate/` path axis, both locked by `cwe338_prng_context_probe.py`
+  (`16 blessed CWE-338 keys held (9 parity + 7 Big-8)`, `22 display-value rows exempted`, `6 demo-data
+  paths exempted and 9 demo-path tripwires still loud`).
+- **Path normalisation: the stated bug does not exist; the opposite one did and is fixed.**
+  A depth-free pattern already spans the root — `python cli.py scan target_arena` produced keys spelled
+  `target_arena/tests/test_a.py` and `**/tests/**` / `**/examples/**` matched them unchanged. The real
+  defect was the anchored form the repository itself ships: `docs/**` and `tests/**` match only the first
+  segment, so pointing the scan at any subdirectory made every anchored exclusion **silently do nothing**
+  — measured on a fixture tree, a scan of `target_arena` under the shipped config returned all 8 findings
+  while a scan of `.` returned the 2 that the config says should survive. `load_config`'s own docstring
+  calls an ignored exclusion "the same harm as a missed finding", so this is a coverage lie, not a
+  cosmetic gap. The fix is `without_root_prefix(path_key, root)` plus `TcsConfig._selects`, which tries
+  the collected key and then the key seen from inside the scan root; `cli.py` resolves the root once per
+  scan (`_config_root = _file_key(args.path, Path.cwd().resolve())`) and hands it to both the
+  collection-time callback and `_apply_config_filters`.
+  `anchored_patterns` restricts the second pass to the globs whose answer can actually differ — a pattern
+  with no `/` hits any segment, a pattern opening with `**/` already tries every start position, so only
+  an anchored pattern like `tests/**` needs re-testing. That split is not an assumption: the probe's
+  matching-law tier brute-forces 4 pattern sets × 11 paths × 5 roots (220 equivalences) against the
+  all-patterns reference and fails if the shortcut ever disagrees. Selection stays monotone (a path
+  selected before is still selected), so the change can only ever exclude what the file says.
+- **`.tcs.yaml`: rule-scoped, never global.** The requested `exclude_paths` list (`**/examples/**`,
+  `**/scripts/**`, `**/.github/**`, `**/docker/**`, `**/.circleci/**`) would stop *reading* the three
+  places hardcoded secrets are actually committed, and CWE-798 has no path exemption anywhere in this
+  file — the same decision the previous step made in its commit message ("preserving CWE-798 secret
+  audits"). Measured reachability of each directory glob against both baselines: `docs`, `examples`,
+  `scripts`, `.github`, `.circleci`, `docker` select **0 of 425 parity and 0 of 119 Big-8 rows**, so those
+  trees are excluded per rule (CWE-338, CWE-78, CWE-22, CWE-117) instead of globally, and the global list
+  stays `docs/**` + `scratch/**` exactly as blessed. `tests/**` is kept in its anchored form; widening it
+  to `**/tests/**` would reach the arena's real `tests/` tree, where 11 of 16 blessed Big-8 CWE-22 keys and
+  7 of 7 CWE-338 keys live (they read `tests__*` only because the corpus is flattened).
+
+Locks and numbers for this step: `workflow_controls_probe.py` now runs 6 checks and **8** mutations —
+`config_root_prefix_strip_removed` and `anchored_split_only_depth_free` join the six, and a nested-root
+e2e tier asserts `scan arena` returns exactly `arena/src/app.py:6 CWE-78` + `arena/src/util.py:3 CWE-328`;
+`shipped controls: failures=0`, all 8 CAUGHT → PASS. `tests/test_workflow_controls.py` 16 → **18 passing**.
+`ast_scanner.py` is byte-identical to HEAD (line-ending-normalised sha256 `55b7148532106e20` on both
+sides; `git diff --stat` lists only `.tcs.yaml`, `tcs_config.py`, `cli.py`, the probe and the tests), so no
+collector was touched and the six mandatory outputs are a no-op check rather than a repair: parity
+`425/425 MISSING=0 NEW=0`, Big-8 `sha256 verified → 119/119 MISSING=0 NEW=0`, cross-file
+`TP=12 FP=0 FN=0 F1=1.0000 exact-set YES suppression-contract YES`, placeholder lock
+`locked_keys=59 failures=0`, and `cwe22_repo_anchor_path` (`locked_cwe22=24`),
+`cwe22_dirent_closure` (16 keys), `cwe338_prng_context` (16 keys), `cwe338_ml_math`,
+`cwe117_builtin_seal` (49 keys) and `cwe117_numeric_provenance` (49 keys) all VERDICT: PASS.
+Product effect measured on the fixture tree: 9 findings → 2, and both survivors are the CWE-798 secrets
+in `examples/` and `tests/`; `scan .` and `scan target_arena` return the same two rows.
+Speed: the predicate costs one extra glob match per finding, never per file — head **33.166 µs/call** vs
+new **40.392 µs/call** when the key starts with the root (**+7.226 µs**, ratio 1.2179 on the bare
+predicate) and **+4.937 µs** when it does not; the collection-time `excludes_path` moved 10.251 → 10.486
+µs/call. Without `anchored_patterns` the same clock read **+20.876 µs** (ratio 1.6810), which is why the
+split ships. End to end, six independent paired order-alternating A/B legs over one `benchmark/corpus`
+scan (396 findings in both arms, every leg) give CPU ratio-of-medians **1.0072 / 0.9928 / 1.0108 /
+1.0035 / 0.9963 / 1.0108** — median **1.0035**, two of six legs under 1.0 — against an analytically
+bounded addition of 396 × 7.226 µs = **2.9 ms** on a 4.3 s leg whose paired spread is −218…+234 ms; the
+clock on this laptop cannot resolve 3 ms, so the honest claim is "the added work is one glob match per
+finding and the scan-level legs are indistinguishable", not "it is faster". Process peak RSS **52.3–52.8
+MB**. The ~3,800 Transformers figure was not measured and cannot be: no Transformers tree exists on this
+machine (only `litellm-target` and git-ignored `scratch/` harnesses), so any arena delta for this step has
+to come from a human-pressed `workflow_dispatch`, and nothing in this step changes what an arena scan
+reports — the engine is byte-identical.
+
 ### Permanent Fix Mandate (Root-Cause Immunity & Anti-Band-Aid Rule)
 
 All engine modifications, precision improvements, and bug fixes must be architecturally permanent:

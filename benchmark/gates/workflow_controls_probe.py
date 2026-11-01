@@ -11,7 +11,7 @@ The controls are developer-facing filters that sit *outside* the AST rules:
 
 Every tier runs the shipped code and then re-runs the same check under a mutation that
 models the obvious regression, so a rolled-back guard fails this probe instead of passing
-silently. Exit 0 only when the shipped checks pass and all six mutations are caught.
+silently. Exit 0 only when the shipped checks pass and all eight mutations are caught.
 
 The fixture trees are written into a TemporaryDirectory at run time. Nothing is added under
 `benchmark/`, which matters because the parity gate scans this tree and a planted sink here
@@ -36,7 +36,7 @@ import cli  # noqa: E402
 import diff_scan  # noqa: E402
 import suppression_resolver  # noqa: E402
 import tcs_config  # noqa: E402
-from tcs_config import load_config, path_matches  # noqa: E402
+from tcs_config import load_config, path_matches, without_root_prefix  # noqa: E402
 
 SUPPRESSION_SRC = (
     "import os\n"
@@ -297,6 +297,49 @@ def check_config() -> list:
                 if path_matches(path_key, pattern) is not expected:
                     failures.append(f"path_matches({path_key!r}, {pattern!r}) != {expected}")
 
+            strip_rows = [
+                ("arena/tests/x.py", "arena", "tests/x.py"),
+                ("arena/src/app.py", ".", "arena/src/app.py"),
+                ("other/x.py", "arena", "other/x.py"),
+                ("arena", "arena", ""),
+                ("arena/", "arena", ""),
+                ("/abs/x/docs/y.py", "/abs/x", "docs/y.py"),
+                ("arena/tests/x.py", "arena/tests", "x.py"),
+            ]
+            for path_key, root_key, expected in strip_rows:
+                if tcs_config.without_root_prefix(path_key, root_key) != expected:
+                    failures.append(
+                        f"without_root_prefix({path_key!r}, {root_key!r}) != {expected!r}")
+
+            # Both spellings must match: the stripped form is what makes an anchored pattern
+            # work below the root, the raw form is what keeps a pattern that *names* the root
+            # working. Dropping either half silently changes which trees are excluded.
+            scoped = tcs_config.TcsConfig(exclude_paths=("arena/docs/**",),
+                                         rule_excludes={"CWE-22": ("tests/**",)})
+            if not scoped.excludes_path("arena/docs/a.md", "arena"):
+                failures.append("a pattern naming the scan root stopped matching")
+            if not scoped.rule_excluded("CWE-22", "arena/tests/t.py", "arena"):
+                failures.append("an anchored rule pattern stopped matching below the root")
+            if scoped.rule_excluded("CWE-22", "arena/src/t.py", "arena"):
+                failures.append("an anchored rule pattern matched outside its tree")
+
+        # The defect this tier locks: aiming the scan at a subdirectory used to spell every
+        # collected key with that directory as a prefix, so `tests/**` matched nothing and the
+        # exclusion the user wrote was ignored -- silently, in the direction of coverage.
+        nested = root / "arena"
+        (nested / "src" / "demo").mkdir(parents=True)
+        (nested / "tests").mkdir(parents=True)
+        (nested / "src" / "app.py").write_text(CONFIG_APP, encoding="utf-8")
+        (nested / "tests" / "test_app.py").write_text(CONFIG_APP, encoding="utf-8")
+        (nested / "src" / "demo" / "util.py").write_text(CONFIG_MD5, encoding="utf-8")
+        (nested / "src" / "util.py").write_text(CONFIG_MD5, encoding="utf-8")
+        nested_keys = _keys(_run_cli(["scan", "arena", "--format", "json", "--workers", "1"],
+                                     root))
+        want_nested = {("arena/src/app.py", 6, "CWE-78"), ("arena/src/util.py", 3, "CWE-328")}
+        if nested_keys != want_nested:
+            failures.append(f"nested-root config e2e {sorted(nested_keys)} != "
+                            f"{sorted(want_nested)}")
+
         (root / ".tcs.yaml").write_text("exclude_paths: 3\n", encoding="utf-8")
         try:
             load_config(root)
@@ -304,6 +347,34 @@ def check_config() -> list:
             pass
         else:
             failures.append("a malformed .tcs.yaml was accepted")
+    return failures
+
+
+def check_matching_law() -> list:
+    """`_selects` tests the anchored subset only, so prove that equals testing everything.
+
+    The shortcut is what keeps the root-relative pass from costing a second full pattern
+    loop per finding; if the split ever stops being equivalent, this tier says so instead of
+    quietly excluding fewer paths than `.tcs.yaml` declares.
+    """
+    failures = []
+    patterns = ["tests/**", "**/tests/**", "docs", "a/b/**", "**/demo/**", "src/*.py",
+                "arena/**", "*.py", "examples/pytorch/**", "**/.github/**"]
+    paths = ["tests/x.py", "arena/tests/x.py", "a/b/c.py", "src/demo/u.py", "docs.md",
+             "arena/src/app.py", "examples/pytorch/y.py", ".github/workflows/ci.py",
+             "x/tests/y/z.py", "arena", "arena/docs/a.md"]
+    roots = ["arena", ".", "arena/src", "", "/abs/x"]
+    for pattern_set in [tuple(patterns), tuple(patterns[:4]), ("tests/**",), ("**/demo/**",)]:
+        for path in paths:
+            for root in roots:
+                selected = tcs_config.TcsConfig(exclude_paths=pattern_set).excludes_path(path,
+                                                                                         root)
+                reference = (any(path_matches(path, pat) for pat in pattern_set)
+                             or any(path_matches(without_root_prefix(path, root), pat)
+                                    for pat in pattern_set))
+                if selected != reference:
+                    failures.append(f"anchored split disagrees for {pattern_set} "
+                                    f"{path!r} root={root!r}: {selected} != {reference}")
     return failures
 
 
@@ -338,8 +409,23 @@ def _mutation(name: str):
         return lambda: setattr(cli, "LOW_CONFIDENCE_SINK_TYPES", original)
     if name == "config_rule_excludes_ignored":
         original = tcs_config.TcsConfig.rule_excluded
-        tcs_config.TcsConfig.rule_excluded = lambda self, cwe, path_key: False
+        tcs_config.TcsConfig.rule_excluded = lambda self, cwe, path_key, root=None: False
         return lambda: setattr(tcs_config.TcsConfig, "rule_excluded", original)
+    if name == "config_root_prefix_strip_removed":
+        original = staticmethod(tcs_config.TcsConfig._selects)
+
+        def raw_only(patterns, path_key, root):
+            if not patterns:
+                return False
+            return any(tcs_config.path_matches(str(path_key), pattern) for pattern in patterns)
+
+        tcs_config.TcsConfig._selects = staticmethod(raw_only)
+        return lambda: setattr(tcs_config.TcsConfig, "_selects", original)
+    if name == "anchored_split_only_depth_free":
+        original = tcs_config.anchored_patterns
+        tcs_config.anchored_patterns = lambda patterns: tuple(
+            pattern for pattern in patterns if str(pattern).startswith("**/"))
+        return lambda: setattr(tcs_config, "anchored_patterns", original)
     raise ValueError(name)
 
 
@@ -349,6 +435,7 @@ CHECKS = {
     "diff": check_diff,
     "confidence": check_confidence,
     "config": check_config,
+    "matching law": check_matching_law,
 }
 MUTATIONS = (
     ("suppression_call_removed", "suppression e2e"),
@@ -357,6 +444,8 @@ MUTATIONS = (
     ("confidence_filter_noop", "confidence"),
     ("timing_rows_promoted", "confidence"),
     ("config_rule_excludes_ignored", "config"),
+    ("config_root_prefix_strip_removed", "config"),
+    ("anchored_split_only_depth_free", "config"),
 )
 
 

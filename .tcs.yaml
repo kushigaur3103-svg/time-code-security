@@ -1,16 +1,63 @@
+# Repository-wide TCS noise policy.
+#
+# Two shapes, and the difference matters:
+#   exclude_paths  -> the file is never read at all, for EVERY rule, including CWE-798.
+#   rules.<cwe>.exclude -> that rule goes quiet in those trees; every other rule still runs.
+#
+# So the global list stays tiny (prose and scratch harnesses) and the noise directories of a
+# vendored project are excluded per rule. Secrets are never excluded anywhere: a token
+# committed in `examples/`, `scripts/`, `.github/` or `docker/` is the classic true positive.
+#
+# Patterns are matched against the collected path AND against that path seen from inside the
+# directory named on the command line, so `docs/**` means the same thing for `scan .` and for
+# `scan target_arena`.
+
 exclude_paths:
   - "docs/**"
   - "scratch/**"
 
 rules:
+  # Weak randomness: benchmark/demo/example draws are noise, a `secrets`/token draw is not.
+  # The engine already mutes display-value and `populate/` draws by AST shape; these trees
+  # are the ones whose *path* is proof enough.
   CWE-338:
     exclude:
       - "tests/**"
       - "**/populate/**"
       - "**/demo/**"
+      - "**/examples/**"
+      - "**/scripts/**"
+      - "**/.github/**"
+      - "**/.circleci/**"
+      - "**/docker/**"
+
+  # Command construction in CI and example scripts is shell-by-design, not injection.
   CWE-78:
     exclude:
       - "tests/**"
+      - "**/examples/**"
+      - "**/scripts/**"
+      - "**/.github/**"
+      - "**/.circleci/**"
+      - "**/docker/**"
+
+  # Path building under a fixture/example tree has no attacker-controlled prefix.
   CWE-22:
     exclude:
       - "tests/**"
+      - "**/examples/**"
+      - "**/scripts/**"
+      - "**/docker/**"
+
+  # Log forging needs a request; the CLI, CI and example scripts that print counters do not.
+  # Measured against the frozen baselines this reaches nothing: 0 of 425 parity rows and 0 of
+  # 119 Big-8 rows sit under a `tests/` *segment* for CWE-117 -- the 43 blessed Big-8 rows are
+  # all in `src/transformers/**`, where this rule stays loud.
+  CWE-117:
+    exclude:
+      - "tests/**"
+      - "**/examples/**"
+      - "**/scripts/**"
+      - "**/.github/**"
+      - "**/.circleci/**"
+      - "**/docker/**"
