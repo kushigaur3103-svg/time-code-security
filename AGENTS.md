@@ -520,7 +520,8 @@ Locks and numbers for this step: `workflow_controls_probe.py` now runs 6 checks 
 e2e tier asserts `scan arena` returns exactly `arena/src/app.py:6 CWE-78` + `arena/src/util.py:3 CWE-328`;
 `shipped controls: failures=0`, all 8 CAUGHT → PASS. `tests/test_workflow_controls.py` 16 → **18 passing**.
 (Those are that step's counts; the confidence-filter step further down takes the same file to 7 checks
-and 10 mutations and the tests to 20 passing.)
+and 10 mutations and the tests to 20 passing, and the CWE-611 tests-exclusion step at the end of this file
+is the live one: **8 checks, 13 mutations**, tests still 20 passing.)
 `ast_scanner.py` is byte-identical to HEAD (line-ending-normalised sha256 `55b7148532106e20` on both
 sides; `git diff --stat` lists only `.tcs.yaml`, `tcs_config.py`, `cli.py`, the probe and the tests), so no
 collector was touched and the six mandatory outputs are a no-op check rather than a repair: parity
@@ -821,6 +822,70 @@ written, costed, and withdrawn; the other was refused outright.
   counted in the Transformers arena by a human-pressed `workflow_dispatch`, and the CWE-208 half is already
   proved to reach nothing but blessed true positives, so a re-ship of the CWE-117 census needs **both** a
   measured arena yield and a scan CPU ratio ≤ 1.0.
+
+### The CWE-611 tests exclusion: zero blessed reach proved twice, alive-where-it-claims proved three times
+
+The mandate was "add `rules: CWE-611: exclude: ["**/tests/**"]` to `.tcs.yaml`, do not touch any engine
+file, and silence the ~366 arena FPs". It shipped as asked, and it is the fifth rule-scoped path exclusion
+under one doctrine: a directory glob is allowed only after it is measured to reach **0** blessed rows in
+every spelling, and only where an AST-shape proof still decides everything outside that tree.
+
+- **Zero-FN, measured twice by different routes.** `workflow_controls_probe.py`'s `blessed reach` tier PASSes
+  on the shipped file, and the same pair was recomputed by hand: CWE-611 carries **16** blessed parity keys
+  and **0** Big-8 keys, and `**/tests/**` matches **0 of 16** in every spelling the gate tries (the stored
+  key and the bare leaf; no leaf holds `__`, so no arena reconstruction exists for this rule). The keys are
+  `benchmark/corpus/cwe_611_xxe/bad.py` and `test_v0{1..5}_bad.py`, `cwe_652_xquery/test_v02_{bad,good}.py`
+  and `cwe_776_xml_bomb/test_v0{1..6}_bad.py`.
+- **A directory glob, never a filename glob -- and that distinction is the whole safety margin.** Those
+  frozen file names *do* begin with `test_v`, so `**/test_*.py` would have reached blessed keys; `**/tests/**`
+  demands a `tests` **segment**, which is why it cannot. The margin is structural, not lucky: `benchmark/`
+  (638 `.py`), the cross-file fixtures (53 `.py`) and the vendored Big-8 corpus (8 `.py`) contain **zero**
+  directories named `tests` or `test`.
+- **The new eighth tier proves the exclusion is alive, bounded and rule-scoped.** Dead reach alone is not
+  enough -- an exclusion that silently does nothing overstates coverage exactly like a missed finding -- so
+  `check_shipped_c611_exclude()` copies the *shipped* `.tcs.yaml` text into a temporary tree and scans it
+  with `cli.main`. The carrier is `CONFIG_XXE`, which is `dotted_param` of `cwe611_xml_entity_probe.py`
+  (a resolved dotted parser name fed by a function parameter, LOUD at both seals there), so nothing but the
+  path policy can move its answer. Measured on the shipped code the scan returns exactly
+  `[('src/parse_xxe.py', 5, 'CWE-611'), ('tests/util.py', 3, 'CWE-328')]`: production XXE **loud**, the
+  identical parse under `tests/` **gone**, and a second rule in that same excluded tree still **loud**.
+- **Three falsifications, one per assertion, each CAUGHT on exactly its own row.** `c611_exclude_widened_past_the_tests_tree`
+  (CWE-611 exempt everywhere) fails only `CWE-611 went silent on src/parse_xxe.py:5 ... (false negative)`;
+  `c611_rule_exclude_becomes_file_skip` (the matcher ignores the CWE argument, so any rule's glob skips the
+  whole file) fails only `CWE-328 went silent on tests/util.py:3 ... (false negative)`; and the shared
+  `config_rule_excludes_ignored` now runs against this tier too, which is the only proof of the middle
+  assertion (an applied exclusion). The probe is therefore **8 checks and 13 mutations**, `shipped controls:
+  failures=0`, all 13 CAUGHT, `VERDICT: PASS`, wall **1.57 s → 1.68 s**. `tests/test_workflow_controls.py`
+  pins the shape from the other side -- `set(config.rule_excludes["CWE-611"]) == {"**/tests/**"}` -- so an
+  `examples/`-style widening or a `tests/**` drift is a test failure, not a review comment. 20 passed.
+- **Arena effect, measured off the shipped artifact** (`benchmark_results/tcs.sarif`, 2,128 rows, 41 CWEs):
+  **366 CWE-611 rows silenced = 74.54 % of that rule's 491 rows and 17.20 % of the whole report**, spread
+  over **62 files** inside **37 distinct `tests/` directories** (an earlier "34 modules" note was not
+  reproducible and is corrected by these counts). Total policy coverage moves **280 → 646 rows = 30.36 %**
+  of the arena (`CWE-611 366 + CWE-338 230 + CWE-434 50`; the two global patterns still select **0** rows
+  because this arena spells its docs tree `doc/`, not `docs/`). The 125 CWE-611 rows that stay loud are
+  production files -- `addons/account/models/ir_attachment.py`, `addons/mail/models/mail_link_preview.py`
+  and the like -- and are still decided by `_xml_sink_recognised` and `_xml_input_is_internal_repo_file`.
+  "FP" is the mandate's label; what was measured is *rows silenced*, and each survivor of a `tests/` tree
+  parse would need a human read to be called a true positive.
+- **Speed: only the rule that gained a pattern pays.** The predicate was clocked per CWE on four real arena
+  spellings × 2,000 asks, best of 7: `CWE-338` **25.173 → 25.173 µs** (+0.000), `CWE-22`
+  **11.066 → 11.073 µs** (+0.007, i.e. timer noise), `CWE-611` **0.157 → 3.933 µs** (+3.776) because HEAD's
+  empty tuple returned at the `if not patterns` early exit while the shipped one walks one glob plus the
+  root-relative pass. Bounded cost: 491 × 3.776 µs = **1.854 ms** on an arena scan, 16 × 3.776 µs =
+  **0.060 ms** on parity. No engine file was touched: `ast_scanner.py` `b01c626ecf6761e3`, `cli.py`
+  `34588435d8c8e15e`, `tcs_config.py` `5c9a1815ca836abb`, `rule_engine.py` `86147fdb11063475` are each
+  `git hash-object`-equal to `git rev-parse HEAD:<file>`.
+- **Gates on the exact code shipped.** Parity `425/425 MISSING=0 NEW=0` (so the new tier and its fixtures
+  tripped nothing on `benchmark/` themselves -- `NEW=0` was re-read after the probe edit, not before),
+  Big-8 `sha256 verified → 119/119 MISSING=0 NEW=0`, cross-file `F1 1.0000`, `FP 0`, `FN 0`, Precision and
+  Recall `100.00%`, `Exact-set match YES`, `Suppression contract YES`, `workflow_controls_probe` PASS with
+  13/13 CAUGHT, `tests/test_workflow_controls.py` 20 passed in 0.58 s. TP moved **0**, FN **0**.
+- **Deviation from the mandate's two-file staging list, stated rather than hidden.** The mandate said
+  `git add .tcs.yaml AGENTS.md`. Two more files are in the commit because the Permanent Fix Mandate requires
+  a fail-loud lock with every shipped change: `benchmark/gates/workflow_controls_probe.py` (the eighth tier
+  and its three mutations) and `tests/test_workflow_controls.py` (the pin on the exclusion's exact shape).
+  Neither is an engine file, so constraint 1 holds.
 
 ### Permanent Fix Mandate (Root-Cause Immunity & Anti-Band-Aid Rule)
 

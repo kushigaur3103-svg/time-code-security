@@ -242,6 +242,9 @@ def test_shipped_policy_noise_rules_are_measured_zero_reach():
     for cwe in ("CWE-117", "CWE-502", "CWE-319", "CWE-434"):
         assert "**/examples/**" in set(config.rule_excludes[cwe]), f"{cwe} lost its examples exclude"
         assert "**/tests/**" in set(config.rule_excludes[cwe]), f"{cwe} lost its tests exclude"
+    # CWE-611 is tests-only and must stay that way: its 16 blessed parity keys are XML parses in
+    # `benchmark/corpus/cwe_*`, so an examples/scripts glob has never been measured for it.
+    assert set(config.rule_excludes["CWE-611"]) == {"**/tests/**"}, "CWE-611 exclude drifted"
 
 
 # ─── helpers ───

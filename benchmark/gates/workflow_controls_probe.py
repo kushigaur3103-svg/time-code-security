@@ -11,12 +11,16 @@ The controls are developer-facing filters that sit *outside* the AST rules:
 
 Every tier runs the shipped code and then re-runs the same check under a mutation that
 models the obvious regression, so a rolled-back guard fails this probe instead of passing
-silently. Exit 0 only when the shipped checks pass and all ten mutations are caught.
+silently. Exit 0 only when the shipped checks pass and all thirteen mutations are caught.
 
 A seventh tier reads the shipped root `.tcs.yaml` and the two frozen baselines together: no
 glob in the noise policy -- global or per rule -- may quiet a blessed finding under any
 spelling of its path, and each exclusion this repository *refuses* to ship stays refused only
 while a blessed key still sits in its reach.
+
+An eighth tier scans that same shipped policy over a fresh tree and demands the exclusion do
+its job where it says it does, and nowhere else: production XXE stays loud, a tests-tree XXE
+goes quiet, and a second rule inside the same tests tree stays loud.
 
 The fixture trees are written into a TemporaryDirectory at run time. Nothing is added under
 `benchmark/`, which matters because the parity gate scans this tree and a planted sink here
@@ -102,6 +106,16 @@ CONFIG_APP = (
     "    os.system(cmd)\n"
 )
 CONFIG_MD5 = "import hashlib\n\ndigest = hashlib.md5(b'x')\n"
+# `dotted_param` of `cwe611_xml_entity_probe.py`: a resolved dotted parser name fed by a
+# function parameter, which that gate proves LOUD at both seals. Nothing but a path policy can
+# change its answer, so it is the right carrier for an exclusion tier.
+CONFIG_XXE = (
+    "import lxml.etree\n"
+    "\n"
+    "\n"
+    "def parse_xml(payload):\n"
+    "    return lxml.etree.fromstring(payload)\n"
+)
 
 
 @contextlib.contextmanager
@@ -500,6 +514,41 @@ def check_blessed_reach() -> list:
     return failures
 
 
+def check_shipped_c611_exclude() -> list:
+    """The shipped CWE-611 exclude applies, stops at the tests tree, and stays rule-scoped.
+
+    `blessed reach` proves this glob cannot quiet a *frozen* key. This tier proves the other
+    three things a row count cannot see: that the exclusion is applied at all (a policy that
+    silently does nothing overstates coverage exactly like a missed finding), that it does not
+    reach outside a `tests/` directory -- the false-negative direction, since production XXE is
+    the finding this rule exists to catch -- and that it silences CWE-611 alone rather than the
+    whole file, which would drop every other rule's finding inside a test tree.
+    """
+    failures = []
+    shipped = (Path(REPO_ROOT) / ".tcs.yaml").read_text(encoding="utf-8")
+    with tempfile.TemporaryDirectory() as tmp:
+        root = Path(tmp)
+        (root / ".tcs.yaml").write_text(shipped, encoding="utf-8")
+        (root / "src").mkdir()
+        (root / "tests").mkdir()
+        (root / "src" / "parse_xxe.py").write_text(CONFIG_XXE, encoding="utf-8")
+        (root / "tests" / "parse_xxe.py").write_text(CONFIG_XXE, encoding="utf-8")
+        # A second rule in the excluded tree: an exclusion that behaved like a file skip quietens
+        # this too, and that is a missed finding rather than noise reduction.
+        (root / "tests" / "util.py").write_text(CONFIG_MD5, encoding="utf-8")
+        got = _keys(_run_cli(["scan", ".", "--format", "json", "--workers", "1"], root))
+    if ("src/parse_xxe.py", 5, "CWE-611") not in got:
+        failures.append("CWE-611 went silent on src/parse_xxe.py:5, so the shipped exclusion "
+                        "reached outside a tests tree (false negative)")
+    if any(cwe == "CWE-611" for path, _line, cwe in got if path.startswith("tests/")):
+        failures.append("CWE-611 still reports inside tests/, so the shipped .tcs.yaml "
+                        "exclusion is not being applied (a silently ignored policy)")
+    if ("tests/util.py", 3, "CWE-328") not in got:
+        failures.append("CWE-328 went silent on tests/util.py:3, so the CWE-611 exclusion acted "
+                        "as a whole-file skip (false negative)")
+    return failures
+
+
 def _mutation(name: str):
     """Apply one regression, returning a restore callable."""
     if name == "suppression_call_removed":
@@ -560,6 +609,24 @@ def _mutation(name: str):
         original = _arena_spellings
         globals()["_arena_spellings"] = lambda file_key: iter([file_key])
         return lambda: globals().__setitem__("_arena_spellings", original)
+    if name == "c611_exclude_widened_past_the_tests_tree":
+        original = tcs_config.TcsConfig.rule_excluded
+
+        def everywhere(self, cwe, path_key, root=None):
+            return str(cwe).upper() == "CWE-611" or original(self, cwe, path_key, root)
+
+        tcs_config.TcsConfig.rule_excluded = everywhere
+        return lambda: setattr(tcs_config.TcsConfig, "rule_excluded", original)
+    if name == "c611_rule_exclude_becomes_file_skip":
+        original = tcs_config.TcsConfig.rule_excluded
+
+        def rule_blind(self, cwe, path_key, root=None):
+            merged = tuple(pattern for group in self.rule_excludes.values()
+                           for pattern in group)
+            return tcs_config.TcsConfig._selects(merged, path_key, root)
+
+        tcs_config.TcsConfig.rule_excluded = rule_blind
+        return lambda: setattr(tcs_config.TcsConfig, "rule_excluded", original)
     raise ValueError(name)
 
 
@@ -571,6 +638,7 @@ CHECKS = {
     "config": check_config,
     "matching law": check_matching_law,
     "blessed reach": check_blessed_reach,
+    "shipped CWE-611 exclude": check_shipped_c611_exclude,
 }
 MUTATIONS = (
     ("suppression_call_removed", "suppression e2e"),
@@ -583,6 +651,9 @@ MUTATIONS = (
     ("anchored_split_only_depth_free", "config"),
     ("shipped_config_widened_to_a_blessed_tree", "blessed reach"),
     ("blessed_reach_reads_the_flattened_leaf_only", "blessed reach"),
+    ("c611_exclude_widened_past_the_tests_tree", "shipped CWE-611 exclude"),
+    ("c611_rule_exclude_becomes_file_skip", "shipped CWE-611 exclude"),
+    ("config_rule_excludes_ignored", "shipped CWE-611 exclude"),
 )
 
 

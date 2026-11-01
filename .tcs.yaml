@@ -107,3 +107,21 @@ rules:
     exclude:
       - "**/examples/**"
       - "**/tests/**"
+
+  # An XML parse inside a test tree is a fixture feeding itself, not a server reading an attacker's
+  # document. Measured before shipping, over all 16 blessed CWE-611 keys (16 parity, 0 Big-8) in
+  # every spelling the gate tries (stored, leaf, arena-reconstructed): reach = 0. It is structural,
+  # not luck -- the blessed keys are benchmark/corpus/cwe_611_xxe/bad.py, cwe_652_xquery/test_v02_*
+  # and cwe_776_xml_bomb/test_v01..v06_bad.py, and benchmark/ (638 .py), the cross-file fixtures
+  # (53 .py) and the Big-8 corpus (8 .py) contain ZERO directories named tests or test, so this glob
+  # has no matching path in either frozen population at all. The frozen file names do start with
+  # `test_vNN_bad.py`, which is why the pattern is `**/tests/**` (a `tests/` *directory* segment)
+  # and never `**/test_*.py`, which would reach those keys. Product effect measured on the arena
+  # artifact: 366 of its 491 CWE-611 rows (17.20% of all 2,128 findings), over 62 files inside 37
+  # distinct tests/ directories.
+  # AST-shape narrowings stay in force everywhere: `_xml_sink_recognised` and
+  # `_xml_input_is_internal_repo_file` still decide production, and a `defusedxml` or internal-repo
+  # read outside a tests tree is still reported.
+  CWE-611:
+    exclude:
+      - "**/tests/**"
