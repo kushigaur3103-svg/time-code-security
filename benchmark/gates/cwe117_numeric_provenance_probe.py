@@ -5,7 +5,21 @@
 The pitch this file exists to test, in its own words: "a hole whose f-string carries a numeric format
 specifier (`{x:.4f}`, `{n:d}`) or a `range()` loop counter cannot carry CR/LF, so stop reporting
 CWE-117 on it." Measured against the exact code this gate ships with, the pitch has **zero yield and
-a real cost**, and the three tiers below assert both halves of that sentence rather than arguing it.
+a real cost**, and the tiers below assert both halves of that sentence rather than arguing it.
+
+TIER 5 guards the shape of the rule that *is* shipped -- the pure-literal and numeric seal. It exists
+because that seal is consulted from two record paths (the registry sink test and the blindspot
+collector) and a message quieted on one and reported on the other is a precision bug nobody can see in
+a row count. Both paths now reach it through `_cwe117_message_is_sealed` alone, and the tier proves the
+sharing rather than trusting it: widen the shared helper to `True` and all seven string-bearing shapes
+must go silent, while rebinding the registry to its own copy of the two predicates -- the form the code
+had before the delegation -- must fail. Verified by falsification against a patched copy of the engine
+through `TCS_NUMERIC_PROV_ENGINE`, measured on the shipped code: `registry re-inlines the predicates`
+CAUGHT with `failures=8` (3 source-shape mismatches -- `registry delegates`, `registry restates
+nothing`, `two call sites` -- plus the 5 shapes whose CWE-117 row rides the registry path:
+`dot_format`, `bare_hole`, `mixed_hole`, `dict_subscript`, `helper_return`; the other 2 shapes are
+collector-only, so they do go silent and are not evidence of sharing), `shared helper stops consulting
+the literal seal` CAUGHT with `failures=1` (`shared answer intact`), shipped engine `failures=0`.
 
 What was measured, and where it came from:
 
@@ -45,6 +59,7 @@ from __future__ import annotations
 import collections
 import contextlib
 import importlib.util
+import inspect
 import io
 import os
 import re
@@ -226,6 +241,74 @@ def check_shapes():
     return failures
 
 
+def _frag(obj):
+    """Source text of *obj*, or '' when it carries none.
+
+    A falsification run rebinds `_sink_context_exempt` to a function with no file behind it, and an
+    OSError there would abort the gate instead of failing it. The fragment checks read as MISMATCH on
+    an empty source, so the lock still goes loud, and the behavioural half never needs the source.
+    """
+    try:
+        return inspect.getsource(obj)
+    except (OSError, TypeError):
+        return ''
+
+
+def check_one_answer():
+    """TIER 5: one exemption answer for both CWE-117 record paths, proved behaviorally.
+
+    The registry path reaches the literal/numeric seal only through `_cwe117_message_is_sealed`, and so
+    does the blindspot collector. That sharing is the whole defence against a narrowing that quiets a
+    message on one path and keeps reporting it on the other, and it is not visible in a row count: an
+    inlined copy of the two predicates gives the same answers *today*. So this tier does not compare
+    answers, it compares **dependencies** -- widen the shared helper to `True` and every CWE-117 row of
+    a string-bearing message must disappear. If any path still carries its own copy, that path keeps
+    speaking and the tier fails on the named shape.
+    """
+    failures = []
+    tracker_src = _frag(ast_scanner.TaintTracker._sink_context_exempt)
+    shared_src = _frag(ast_scanner.TaintTracker._cwe117_message_is_sealed)
+    module_src = _frag(ast_scanner)
+    calls = module_src.count('self._cwe117_message_is_sealed(')
+    for label, ok, note in (
+            ('registry delegates', '_cwe117_message_is_sealed(' in tracker_src,
+             'the registry path restates the predicates instead of sharing them'),
+            ('registry restates nothing', '_log_message_is_pure_literal(' not in tracker_src
+             and '_log_message_is_numeric_only(' not in tracker_src,
+             'an inlined copy is back, so a future narrowing half-applies'),
+            ('shared answer intact', '_log_message_is_pure_literal(node)' in shared_src
+             and '_log_message_is_numeric_only(node, shadowed)' in shared_src,
+             'the shared helper stopped consulting one of the two seals'),
+            ('two call sites', calls == 2,
+             f'_cwe117_message_is_sealed is called {calls} time(s), expected 2 (registry + collector)')):
+        print(f'  {"ok" if ok else "MISMATCH":8s} {label}')
+        if not ok:
+            failures.append((label, 'shared', 'restated', note))
+    shared = ast_scanner.TaintTracker._cwe117_message_is_sealed
+    try:
+        ast_scanner.TaintTracker._cwe117_message_is_sealed = lambda self, node, shadowed: True
+        for label in ('lazy_percent_args', 'percent_format', 'dot_format', 'bare_hole',
+                      'mixed_hole', 'dict_subscript', 'helper_return'):
+            src = next(s[1] for s in SHAPES if s[0] == label)
+            rows = scan(f'widened_{label}', src)
+            ok = not rows
+            print(f'  {"ok" if ok else "MISMATCH":8s} widened helper silences {label} on both paths'
+                  f' (rows={len(rows)})')
+            if not ok:
+                failures.append((label, 'silent when widened', 'still reports',
+                                 'that path has its own copy of the CWE-117 seal'))
+    finally:
+        ast_scanner.TaintTracker._cwe117_message_is_sealed = shared
+    still = scan('restored_lazy_percent', next(s[1] for s in SHAPES
+                                               if s[0] == 'lazy_percent_args'))
+    ok = bool(still)
+    print(f'  {"ok" if ok else "MISMATCH":8s} patch restored: lazy % args report again'
+          f' (rows={len(still)})')
+    if not ok:
+        failures.append(('restore', 'report', 'silent', 'the monkeypatch leaked into the next tier'))
+    return failures
+
+
 def check_vocabulary():
     """TIER 4: the parts of the rule that must never be widened by a well-meant cleanup."""
     failures = []
@@ -268,6 +351,8 @@ def main() -> int:
     failures += check_shapes()
     print('TIER 4 - the vocabulary and all-or-nothing edges:')
     failures += check_vocabulary()
+    print('TIER 5 - one shared answer for both CWE-117 record paths:')
+    failures += check_one_answer()
     must_report = sum(1 for s in SHAPES if s[2] == 'report')
     silent = sum(1 for s in SHAPES if s[2] == 'silent')
     print(f'\nseal={SEAL} shapes={len(SHAPES)} must_report={must_report} already_quiet={silent} '

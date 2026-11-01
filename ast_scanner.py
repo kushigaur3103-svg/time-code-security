@@ -6471,8 +6471,7 @@ class TaintTracker:
         if cwe_id == "CWE-918":
             return self._is_http_transport_module(mod_name)
         if cwe_id == "CWE-117":
-            return (self._log_message_is_numeric_only(node, self._module_shadowed_names(mod_name))
-                    or self._log_message_is_pure_literal(node))
+            return self._cwe117_message_is_sealed(node, self._module_shadowed_names(mod_name))
         return False
 
     def _is_packaging_metadata_read(self, node: ast.Call, stream_name: str, scope_id: str) -> bool:

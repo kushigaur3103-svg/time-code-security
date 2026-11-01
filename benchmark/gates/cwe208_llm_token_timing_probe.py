@@ -56,16 +56,31 @@ Measured evidence behind the numbers
                                parity fixtures are `request_token == stored_token`-shaped secret
                                comparisons, which fail the shape test and are covered by the credential
                                veto a second time.
-  fixtures                   : 20 shapes, each pair verified against HEAD's bytes before this file
-                               claimed them (scratch/_abstained_check.py -- all 20 are LOUD on HEAD):
-                               6 counter shapes go LOUD->QUIET and 14 stay LOUD, which includes the 6
-                               blessed parity spellings, the 5 Big-8 name shapes TIER 3 re-reads from
-                               the corpus, and the honest `input_tokens == output_tokens` residual.
+  fixtures                   : 23 shapes, each pair verified against HEAD's bytes before this file
+                               claimed them (scratch/_abstained_check.py -- all 20 of the first batch
+                               are LOUD on HEAD, and the 3 dimension shapes are LOUD on the shipped
+                               engine): 6 counter shapes go LOUD->QUIET and 17 stay LOUD, which
+                               includes the 6 blessed parity spellings, the 5 Big-8 name shapes TIER 3
+                               re-reads from the corpus, the honest `input_tokens == output_tokens`
+                               residual, and the 3 refused dimension/`len()`/integer shapes.
+
+A second pitch, refused the same way
+------------------------------------
+  The next mandate asked for a different rule: "suppress a comparison of array dimensions, tensor
+  attributes (`.shape`) or integer constants, unless a variable name holds one of secret/key/auth/
+  nonce/hash/password/signature/mac". TIER 3 now measures that predicate against the 30 frozen Big-8
+  lines themselves (`reachable_by_dimension_rule=2`, `reachable_by_nonstring_rule=28`, and one more of
+  the 6 parity lines), and the `dimension_pitch_shipped` mutation proves the reach is not a paper
+  claim: installing the rule in the engine silences `dim_shape_compare`, which is
+  `tests__models__whisper__test_modeling_whisper.py:314` spelled verbatim. The rescue clause does not
+  save it -- no name on that line (`next_tokens`, `output_from_past_slice`, `shape`) holds any of the
+  eight words. A rule whose blessed-key reach is nonzero is refused, so this file freezes both numbers
+  and the third mutation count.
 
 Seal semantics - `CWE208_SEAL`
 ------------------------------
   'shipped'   : the 5 counter shapes MUST be silent and every tripwire MUST stay loud.
-  'abstained' : the engine before the metric test landed -- all 16 shapes MUST be loud. A counter shape
+  'abstained' : the engine before the metric test landed -- all 23 shapes MUST be loud. A counter shape
                 that goes quiet while the seal says abstained means a narrowing landed without a
                 contract.
 Either way a mismatch is exit 1.
@@ -197,6 +212,29 @@ def check(sep_token_id):
 def check(input_tokens, output_tokens):
     return input_tokens == output_tokens
 ''', 'loud', 'loud'),
+    # ---- the shape pitch of the next mandate, refused on measurement and frozen here ----
+    # "suppress a compare of array dimensions / tensor attributes / integer constants unless a name
+    # holds one of secret,key,auth,nonce,hash,password,signature,mac". TIER 3 measures the predicate
+    # against the blessed corpus lines: 2 of 30 Big-8 lines are dimension-shaped with no rescue word,
+    # and 28 of 30 (29 of all 36) are "no string operand". Engine level, the `dimension_pitch_shipped`
+    # mutation proves `dim_shape_compare` (blessed whisper:314) is emittable *and* dimension-shaped, so
+    # the pitch deletes a real finding. It also bounds the other row honestly: on
+    # `len_over_mask_compare_int` the emitter is asked twice and answers False on the outer compare, so
+    # that finding rides the inner `batch_ids != pad_token_id`, which no dimension reading of the pitch
+    # reaches. One proven death is still a false negative, and the refusal does not need the second.
+    # All three rows stay 'loud' under BOTH seals, so shipping the pitch moves TIER 4.
+    ('dim_shape_compare', '''
+def check(next_tokens, output_from_past_slice):
+    return output_from_past_slice.shape[1] == next_tokens.shape[1]
+''', 'loud', 'loud'),      # blessed tests__models__whisper__test_modeling_whisper.py:314
+    ('len_over_mask_compare_int', '''
+def check(batch_ids, pad_token_id):
+    return len(batch_ids[batch_ids != pad_token_id]) == 1
+''', 'loud', 'loud'),      # blessed src__transformers__generation__utils.py:3103
+    ('shape_zero_vs_batch_size', '''
+def check(decoder_start_token_id, batch_size):
+    return decoder_start_token_id.shape[0] != batch_size
+''', 'loud', 'loud'),      # blessed src__transformers__generation__utils.py:1077, wide reading only
 ]
 
 FP_ROWS = [row for row in SHAPES if row[2] == 'loud' and row[3] == 'quiet']
@@ -296,6 +334,56 @@ def check_corpus():
     return failures
 
 
+# ---- the refused shape pitch, evaluated as a *predicate over the corpus*, not as engine code ----
+# Reaching a blessed key is what makes a pitch a false negative, and a baseline can only show that
+# after the fact. So the two readings of the pitch are re-evaluated here on the blessed lines
+# themselves, from their AST, and the counts are frozen: `2` rows for the strict ".shape / len() /
+# integer constant" reading, `28` of 30 for the wide "non-string operand" reading. The same predicate
+# over the six blessed parity lines adds one more wide hit (`request_token == stored_token`), i.e. 29
+# of all 36 blessed timing lines. Any change to either number is a change to the argument, and has to
+# be made deliberately.
+PITCH_RESCUE_WORDS = ('secret', 'key', 'auth', 'nonce', 'hash', 'password', 'signature', 'mac')
+PITCH_DIM_RE = re.compile(r'\.shape\b|\blen\(|\.size\b|\bdims\b')
+PITCH_REACH = {'dimension': 2, 'nonstring': 28}
+
+
+def _pitch_operand_dim(node) -> bool:
+    """The strict reading: a numeric constant, arithmetic over those, or a shape/dimension read."""
+    if isinstance(node, ast.Constant):
+        return not isinstance(node.value, str) and isinstance(node.value, (int, float, complex, bool))
+    if isinstance(node, ast.UnaryOp) and isinstance(node.op, (ast.USub, ast.UAdd)):
+        return _pitch_operand_dim(node.operand)
+    if isinstance(node, ast.BinOp):
+        return _pitch_operand_dim(node.left) and _pitch_operand_dim(node.right)
+    try:
+        return bool(PITCH_DIM_RE.search(ast.unparse(node)))
+    except Exception:
+        return False
+
+
+def _pitch_operand_nonstring(node) -> bool:
+    """The wide reading from the earlier mandate: any operand that is not a string literal."""
+    if isinstance(node, ast.Constant) and isinstance(node.value, str):
+        return False
+    return not isinstance(node, ast.JoinedStr)
+
+
+def _pitch_reaches(compare) -> tuple:
+    """(dimension_quiet, nonstring_quiet) for one `ast.Compare`, with the rescue clause applied."""
+    parts = [compare.left, *compare.comparators]
+    rescued = any(any(word in name.lower() for word in PITCH_RESCUE_WORDS)
+                  for name in (n.id for n in ast.walk(compare) if isinstance(n, ast.Name)))
+    narrow = all(_pitch_operand_dim(part) for part in parts)
+    wide = all(_pitch_operand_nonstring(part) for part in parts)
+    return (narrow and not rescued, wide and not rescued)
+
+
+def _compares_at(tree, line: int) -> list:
+    return [node for node in ast.walk(tree) if isinstance(node, ast.Compare)
+            and any(getattr(part, 'lineno', None) == line
+                    for part in (node.left, *node.comparators, node))]
+
+
 def check_big8_lines():
     """TIER 3: every blessed Big-8 timing line, read back from the hash-verified corpus.
 
@@ -335,6 +423,41 @@ def check_big8_lines():
         print(f'  REACHES  {leaf[-42:]}:{line} {hits} :: {text}')
     if reached:
         failures.append((len(reached), 'the metric rule reaches blessed Big-8 timing lines'))
+    # the refused pitch, re-evaluated on those same 30 lines from their AST
+    trees: dict = {}
+    dims, nonstrings, named = 0, 0, []
+    for row in keys:
+        leaf = row[0].rsplit('/', 1)[-1]
+        if leaf not in trees:
+            path = os.path.abspath(os.path.join(corpus, os.path.basename(leaf)))
+            try:
+                with open(path, encoding='utf-8', errors='replace') as handle:
+                    trees[leaf] = ast.parse(handle.read())
+            except (OSError, SyntaxError):
+                trees[leaf] = None
+        if trees[leaf] is None:
+            continue
+        for compare in _compares_at(trees[leaf], row[1]):
+            quiet_dim, quiet_wide = _pitch_reaches(compare)
+            dims += int(quiet_dim)
+            nonstrings += int(quiet_wide)
+            if quiet_dim:
+                named.append((leaf, row[1]))
+            break
+    print(f'  refused pitch on the same lines: reachable_by_dimension_rule={dims} '
+          f'reachable_by_nonstring_rule={nonstrings}')
+    for leaf, line in named:
+        print(f'  DIm-REACHES  {leaf[-46:]}:{line}')
+    for label, got in (('dimension', dims), ('nonstring', nonstrings)):
+        want = PITCH_REACH[label]
+        ok = got == want
+        print(f'  {"ok" if ok else "MISMATCH":8s} {label} reading reaches {got} blessed lines '
+              f'(frozen at {want})')
+        if not ok:
+            failures.append((label, want, got,
+                             'the frozen reachability of a refused pitch moved - re-measure before '
+                             'anyone ships or retires this tier'))
+    trees.clear()
     return failures
 
 
@@ -448,6 +571,22 @@ def _substring_metric(name: str) -> bool:
                           r'special|new|next|valid|selected)_tokens?', name, re.IGNORECASE))
 
 
+def _apply_dimension_pitch():
+    """Ship the refused pitch inside the engine, in memory: mute dimension/integer compares.
+
+    Wired on the emitter's own secret-vs-secret gate, which is the only place a CWE-208 finding can be
+    lost, so the mutation cannot be dodged by a second emitter.
+    """
+    original = ast_scanner.TaintTracker._compares_two_secrets
+
+    def muted(self, node):
+        if isinstance(node, ast.Compare) and _pitch_reaches(node)[0]:
+            return False
+        return original(self, node)
+
+    ast_scanner.TaintTracker._compares_two_secrets = muted
+
+
 def _any_operand_metric(self, operand_names, evidence_names, sensitive_markers):
     """The `all(...)` requirement replaced by `any(...)` -- one clean operand silences the whole
     comparison, secrets included."""
@@ -465,6 +604,14 @@ MUTATIONS = {
         'requires': '_c208_timing_is_llm_token_metric',
         'apply': lambda: setattr(ast_scanner.TaintTracker, '_c208_timing_is_llm_token_metric',
                                  lambda self, *args: False),
+    },
+    'dimension_pitch_shipped': {
+        'what': 'ship the refused shape pitch: mute a compare whose operands are all `.shape` / '
+                '`len()` / integer constants and whose names hold none of the eight rescue words -- '
+                'this is the mandate, not a caricature of it',
+        'rows': ['dim_shape_compare', 'len_over_mask_compare_int', 'shape_zero_vs_batch_size'],
+        'requires': '_compares_two_secrets',
+        'apply': _apply_dimension_pitch,
     },
     'metric_guard_always_true': {
         'what': 'make the metric test answer "counter" for everything -- the widest version of the '

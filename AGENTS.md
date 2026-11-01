@@ -62,7 +62,7 @@ The sign-off also carries seven standing instructions:
   own truth table (`cwe704_type_cast_probe.py`, `cwe328_hash_context_probe.py`,
   `cwe116_template_autoescape_probe.py`, each `VERDICT: PASS`), so narrowing one of them means
   shipping that file first, not after.
-  All twenty-six runnable gate scripts (`aa_parity.py`, `big8_ab.py`, `cwe338_ml_math_probe.py`,
+  All twenty-seven runnable gate scripts (`aa_parity.py`, `big8_ab.py`, `cwe338_ml_math_probe.py`,
   `cwe338_prng_context_probe.py`, `cwe117_cwe22_unknown_source_probe.py`,
   `cwe117_builtin_seal_probe.py`, `cwe117_numeric_provenance_probe.py`,
   `cwe22_dirent_closure_probe.py`, `cwe22_sink_argument_probe.py`,
@@ -73,7 +73,8 @@ The sign-off also carries seven standing instructions:
   `cwe328_hash_context_probe.py`, `cwe89_path_interpolation_probe.py`,
   `cwe208_llm_token_timing_probe.py`, `cwe78_argv_execve_probe.py`,
   `cwe208_llm_domain_compare_probe.py`, `cross_symbol_table_probe.py`, `workflow_controls_probe.py`,
-  `cwe798_test_fixture_dummy_probe.py`, `cwe22_repo_anchor_path_probe.py`), their frozen baseline key
+  `cwe798_test_fixture_dummy_probe.py`, `cwe22_repo_anchor_path_probe.py`,
+  `cwe312_vocab_dump_probe.py`), their frozen baseline key
   files and `gate_meta.json` are
   tracked under `benchmark/gates/`, so a fresh clone or CI can run them; `scratch/` is git-ignored,
   so a gate kept there is not runnable by anyone else and its baseline is not reviewable. The gates
@@ -632,6 +633,92 @@ its arena spelling with `"/".join(dirs + parts)`, and the product reported **CWE
 (`NEW=1` at parity) — the join was replaced by concatenation, the harness corrected rather than excused,
 and parity returned `NEW=0` on the same command. The "~2,400 arena FPs" figure was not measured and
 cannot be here: no Transformers tree exists on this machine.
+
+### The shape-guard mandate: one guard already shipped, two refused, one wiring defect closed
+
+The request was three "exact AST node-shape guards" in `ast_scanner.py` to kill 2,000+ FPs across
+CWE-117, CWE-208 and CWE-312 while keeping 100% of the blessed TPs. Measured on the shipped engine
+before any edit, the three items are one no-op, one TP-killing refusal and one rule with no population
+at all, and the single line of engine code that changed makes an existing answer impossible to fork.
+
+- **CWE-117 "silence a logged argument that is strictly an `ast.Constant` string with no `%`,
+  `.format()` or JoinedStr" — already shipped, refused as a re-edit, and it exposed a real defect.**
+  `_log_message_is_pure_literal` (reached only through `_cwe117_message_is_sealed`) *is* that rule; the
+  truth table's `pure_literal` row is `silent` at both seals; and the reach harness asked all 49 blessed
+  CWE-117 keys and got `muted=0 loud=49`. So the pitch's population is empty and any delta it produced
+  would have been a regression, not a retirement. What it did surface: `_sink_context_exempt` (the
+  registry record path) inlined its own copy of the two predicates instead of calling the shared
+  helper, so the registry path and the blindspot collector could disagree about the same log statement —
+  an inlined copy gives the same answers *today* and a different answer after the next narrowing, which
+  is invisible in a row count. Fixed by the delegation at `ast_scanner.py:6474`, which makes "one
+  answer" true by construction: `self._cwe117_message_is_sealed(` now appears exactly twice in the
+  module — `:6474` (registry) and `:13983` (collector). Permanent lock: TIER 5 of
+  `cwe117_numeric_provenance_probe.py` — four source-shape assertions (`registry delegates`, `registry
+  restates nothing`, `shared answer intact`, `two call sites`) plus a behavioural half that rebinds the
+  shared helper to `True` and requires the seven string-bearing shapes `lazy_percent_args`,
+  `percent_format`, `dot_format`, `bare_hole`, `mixed_hole`, `dict_subscript`, `helper_return` to yield
+  0 CWE-117 rows on both paths, plus a restore check that the rebind is not leaky. Falsified against a
+  patched engine through `TCS_NUMERIC_PROV_ENGINE`, measured on the shipped code: re-inlining the
+  predicates → `failures=8` (the 3 source-shape mismatches plus the 5 shapes whose row rides the
+  registry path — the other 2 are collector-only, so they do go silent and are not evidence of
+  sharing); dropping the literal half from the shared helper → `failures=1` (`shared answer intact`);
+  shipped engine `failures=0`. Measured: `seal=refused shapes=25 must_report=17 already_quiet=8
+  clause_sensitive=7 locked_cwe117=49 failures=0` → PASS. Engine hash `55b7148532106e20` →
+  `50131d317bb6eb38`, a 3-line diff. Speed: paired order-alternating CPU ratio median **1.0000**, 1.809
+  → 1.933 µs per sink ask (**+0.123 µs**) — one Python call where an inlined boolean used to sit.
+- **CWE-208 "suppress compares of array dimensions / `.shape` attributes / integer constants unless a
+  name carries `('secret','key','auth','nonce','hash','password','signature','mac')`" — refused.** It
+  kills a blessed true positive, twice proved. Predicate reach, measured against the 30 blessed Big-8
+  timing lines with the pitch's own rescue clause applied: `reachable_by_dimension_rule=2` and
+  `reachable_by_nonstring_rule=28` — i.e. the strict reading reaches blessed lines and the wide reading
+  reaches 28 of 30 plus one of the 6 parity lines, **29 of all 36 blessed CWE-208 keys**. Engine-level
+  bound, because a predicate count is not a finding count: the new fixture `dim_shape_compare` is the
+  verbatim spelling of `tests__models__whisper__test_modeling_whisper.py:314` and the mutation
+  `dimension_pitch_shipped` (the pitch shipped in memory inside `_compares_two_secrets`) is **CAUGHT on
+  exactly that row** — so that finding is emittable *and* dimension-shaped, and the pitch would delete
+  it. The rescue list is not a safety net: of its eight words, `key`, `nonce` and `mac` are not in the
+  shipped 18-word `CWE208_CREDENTIAL_NAME_WORDS` at all (the table spells that idea `api` and `hmac`),
+  and in any case the damage is on the exemption side, which fires before any name is asked.
+  On the second fixture (`len_over_mask_compare_int`) `_compares_two_secrets` answers False for the outer
+  compare, so that row is *not* reachable — the honest claim is one proven death, not two. Frozen into
+  `cwe208_llm_token_timing_probe.py`: 3 new always-LOUD shapes, TIER 3 per-leaf reach counters with
+  assertions, and the 6th mutation. Measured: `seal=shipped shapes=23 fp_rows=6 must_report=17
+  already_quiet=0 pairs=2 name_rows=36 locked_cwe208=36 failures=0` → PASS, and all 6 falsifications
+  exit 1 CAUGHT — `delete_metric_guard` 8, `metric_guard_always_true` 19, `metric_rule_to_substring` 20,
+  `drop_credential_veto` 2, `one_operand_is_enough` 5, `dimension_pitch_shipped` 1.
+- **CWE-312 "do not classify as cleartext storage when the destination is `vocab.json` / `vocab.txt` /
+  `merges.txt`" — refused: the rule has no population to quiet, and its only reachable row is a real
+  secret.** All five CWE-312 emit sites need a sensitive *value* (a `CWE3A_SENSITIVE_VALUE_RE` name at
+  `:17886`, a credential inside a formatted write at `:17960`, a sensitive `json.dump` key at `:17971`,
+  an SQL password column at `:17981`) or a config-stream source at `:14359`; a vocabulary blob is none
+  of those. Measured on 7 tokenizer-serialization fixtures covering every spelling that writes those
+  three filenames — `os.path.join` + `open(...,"w")` + `f.write`, `merges.txt` direct, `json.dump` into
+  `vocab.json`, `Path(...).open`, the `/` operator + `write_text`, the class-attribute `vocab_file` form
+  and a `tokenizer_config.json` write — **0 CWE-312 rows on every one of them**. The only row of exactly
+  the pitch's shape is a credential written into a file *named* one of the three, and the basename test
+  deletes it: `would_quiet_under_pitch=3` (`credential_into_vocab_txt`, `credential_into_merges_txt`,
+  `credential_into_vocab_json`), and `blessed write-windows naming a vocab/merges literal=0` — no blessed
+  CWE-312 key has a literal destination the rule could even match. This rule also gets no protection from
+  the two baselines: `LOCKED={'parity': 6, 'big8': 1}` = 7 keys, so `MISSING=0` on a re-bless would not
+  notice the rule being deleted. The permanent lock is the 27th tracked gate,
+  `benchmark/gates/cwe312_vocab_dump_probe.py`: `seal=refused shapes=12 must_report=5 already_quiet=7
+  would_quiet_under_pitch=3 locked_cwe312=7 failures=0` → PASS on the shipped engine, and pointed through
+  `TCS_C312_ENGINE` at an engine that implements the exemption it **FAILS with `failures=2`**, naming
+  `credential_into_vocab_txt` and `credential_into_merges_txt` (the third tripwires the `json.dump` path,
+  which the pitch as worded does not reach, and is still asserted).
+- **"2,000+ FPs" was not met and cannot be met by these three items** — item 1's population is already
+  quiet, item 2's costs 1 proven blessed TP and reaches 29 of 36, item 3's measured 0 on every reachable
+  shape. No Transformers tree exists on this machine, so any arena delta for this step has to come from a
+  human-pressed `workflow_dispatch`; nothing here changes what an arena scan reports except by *not*
+  shipping the two refusals.
+
+Memory and gates on the exact code shipped for this step: parity `425/425 MISSING=0 NEW=0`, Big-8
+`sha256 verified → 119/119 MISSING=0 NEW=0`, cross-file `Precision 100.00% Recall 100.00% F1 1.0000
+suppression-contract YES`, placeholder lock `locked_keys=59 cases=8 failures=0`,
+`cwe117_numeric_provenance` (49) / `cwe117_builtin_seal` (49) / `cwe208_llm_token_timing` (36) /
+`cwe312_vocab_dump` (7) all `failures=0`, `workflow_controls_probe` PASS with all 10 mutations CAUGHT,
+`tests/test_workflow_controls.py` 20 passed. Process-tree peaks 176.7 MB (parity), 152.2 MB (Big-8),
+79.7 MB (cross-file) — under the ~400 MB budget. AGENTS.md line 8 verified at 899 bytes after the edits.
 
 ### Permanent Fix Mandate (Root-Cause Immunity & Anti-Band-Aid Rule)
 
