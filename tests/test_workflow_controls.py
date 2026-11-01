@@ -8,6 +8,7 @@ from __future__ import annotations
 import contextlib
 import io
 import json
+import pathlib
 
 import cli
 import diff_scan
@@ -206,6 +207,41 @@ def test_config_excludes_apply_below_a_named_subdirectory(tmp_path):
     assert scoped.excludes_path("arena/docs/a.md", "arena") is True
     assert scoped.rule_excluded("CWE-22", "arena/tests/t.py", "arena") is True
     assert scoped.rule_excluded("CWE-22", "arena/src/t.py", "arena") is False
+
+
+# ─── shipped noise policy ───
+
+def test_shipped_policy_excludes_nothing_the_baselines_could_lose():
+    """The `.tcs.yaml` in the repository root must never quiet a blessed finding's tree.
+
+    Each of these patterns was asked for and refused: the blessed Big-8 keys live inside the
+    directory it names, or the rule has no frozen population at all to measure the loss against.
+    """
+    repo_root = pathlib.Path(__file__).resolve().parents[1]
+    config = load_config(repo_root)
+    assert config is not None, "the repository root must ship .tcs.yaml"
+    assert tuple(config.exclude_paths) == ("docs/**", "scratch/**")
+    assert "CWE-798" not in config.rule_excludes, "a committed secret is never path-excluded"
+    forbidden = {
+        "CWE-22": ("tests/**", "**/tests/**"),
+        "CWE-338": ("tests/**", "**/tests/**"),
+        "CWE-208": ("**/tests/**", "tests/**"),
+        "CWE-1357": ("**/.github/**", "**/.circleci/**", "tests/**"),
+        "CWE-250": ("**/docker/**",),
+        "CWE-269": ("**/docker/**",),
+    }
+    shipped = {cwe: tuple(patterns) for cwe, patterns in config.rule_excludes.items()}
+    for cwe, patterns in forbidden.items():
+        assert not set(patterns) & set(shipped.get(cwe, ())), f"{cwe} excludes {patterns}"
+
+
+def test_shipped_policy_noise_rules_are_measured_zero_reach():
+    """The rules that *do* exclude tests/examples are the ones with nothing blessed there."""
+    repo_root = pathlib.Path(__file__).resolve().parents[1]
+    config = load_config(repo_root)
+    for cwe in ("CWE-117", "CWE-502", "CWE-319", "CWE-434"):
+        assert "**/examples/**" in set(config.rule_excludes[cwe]), f"{cwe} lost its examples exclude"
+        assert "**/tests/**" in set(config.rule_excludes[cwe]), f"{cwe} lost its tests exclude"
 
 
 # ─── helpers ───

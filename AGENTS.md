@@ -518,6 +518,8 @@ Locks and numbers for this step: `workflow_controls_probe.py` now runs 6 checks 
 `config_root_prefix_strip_removed` and `anchored_split_only_depth_free` join the six, and a nested-root
 e2e tier asserts `scan arena` returns exactly `arena/src/app.py:6 CWE-78` + `arena/src/util.py:3 CWE-328`;
 `shipped controls: failures=0`, all 8 CAUGHT → PASS. `tests/test_workflow_controls.py` 16 → **18 passing**.
+(Those are that step's counts; the confidence-filter step further down takes the same file to 7 checks
+and 10 mutations and the tests to 20 passing.)
 `ast_scanner.py` is byte-identical to HEAD (line-ending-normalised sha256 `55b7148532106e20` on both
 sides; `git diff --stat` lists only `.tcs.yaml`, `tcs_config.py`, `cli.py`, the probe and the tests), so no
 collector was touched and the six mandatory outputs are a no-op check rather than a repair: parity
@@ -542,6 +544,94 @@ MB**. The ~3,800 Transformers figure was not measured and cannot be: no Transfor
 machine (only `litellm-target` and git-ignored `scratch/` harnesses), so any arena delta for this step has
 to come from a human-pressed `workflow_dispatch`, and nothing in this step changes what an arena scan
 reports — the engine is byte-identical.
+
+### The confidence-filter mandate: one live false negative withdrawn, four exclusions shipped, two engine guards refused
+
+The request was "drop the remaining ~2,400 arena FPs" with three items. Item 1 was refused outright,
+item 3 was refused outright, and item 2 shipped in narrowed form — while the new lock for it found a
+false negative that the *previous* commit had already shipped.
+
+- **`--min-confidence high` in the arena workflow — refused.** Measured on the frozen baselines before
+  any edit: the floor hides **101 of the 119 blessed Big-8 keys** (CWE-117 43, CWE-208 30, CWE-400 9,
+  CWE-338 7, CWE-22 5, CWE-502 3, CWE-1333 2, CWE-95 2) and 21 matched parity keys. The Big-8 blessed
+  distribution is HIGH 18 / MEDIUM 71 / LOW 30 and parity's is HIGH 376 / MEDIUM 15 / LOW 6, because
+  `cli.py:79` makes *every* `TIMING_ATTACK` row LOW by construction — the label was never a precision
+  claim, so a floor on it is a rule-level delete. `benchmark_boss_arenas.yml:286` is the only real scan
+  in that job and its `tcs.sarif` is byte-copied to `arena_result.sarif` (:338), re-expanded into
+  `arena_result.json` (:368-379) and compared in the showdown table (:559), so the floor would understate
+  coverage in every downstream artifact at once. A display-only *second* artifact is the safe version,
+  and it is not free: `_sarif_document` writes `result.properties` only for `tags` and `xml_input`
+  (`cli.py:920-930`), so the SARIF carries no confidence at all and the preview would have to come from
+  the JSON payload beside it. Not shipped here because it changes CI output nobody has asked to review.
+- **`tests/**` was already hiding blessed keys, and this step removed it.** `CWE-22` and `CWE-338` both
+  carried `tests/**` in the shipped `.tcs.yaml`. Measured against the *arena* spelling of the frozen
+  corpus (`tests__generation__test_utils.py` is `tests/generation/test_utils.py` on disk), that glob
+  reaches **11 of the 16 blessed Big-8 CWE-22 keys** (markuplm `:73/:75/:77/:138`, generation
+  `:5537/:5539/:5565`, modeling_common `:1279`, mistral_common `:263/:274/:280`) and **7 of 7 blessed
+  Big-8 CWE-338 keys** (generation `:3352/:3367/:3384`, modeling_common `:6606/:6698/:6722`, whisper
+  `:97`), plus 6 parity CWE-22 rows. The gates stayed green the whole time because `load_config()` reads
+  `Path.cwd()/".tcs.yaml"` and every gate harness runs with a different cwd — the loss was only ever
+  visible in the invocation the config exists for: `scan target_arena` from the repo root, where the
+  root-prefix fix in `614f467` made the anchored pattern match. That is the exact failure mode
+  `tcs_config.py`'s own docstring calls "the same harm as a missed finding", and it was activated by
+  widening the matcher two commits ago without re-testing the exclusions it made live. Both `tests/**`
+  entries are deleted; the noise they bought is replaced by the AST-shape exemptions that were proved
+  key-by-key (`_c22_path_is_internal_repo_anchor`, the CWE-338 display-value and `populate/` tables).
+  This raises the report count in a tests tree, which is the allowed direction: FP may go up, TP may not.
+- **Shipped, each measured at 0 of 425 parity and 0 of 119 Big-8 rows in every spelling:** CWE-117
+  `**/tests/**`; CWE-208 `**/examples/**`; CWE-502, CWE-319 and CWE-434 `**/examples/**` +
+  `**/tests/**`. CWE-798 still has no path exclusion anywhere.
+- **Refused with the number that proves it:** CWE-208 `**/tests/**` (19 of 30 blessed Big-8 keys);
+  CWE-1357 `**/.github/**` and `**/.circleci/**`, CWE-250 `**/docker/**` and CWE-269 `**/docker/**` —
+  those three rules have **0 blessed rows in both baselines**, so `MISSING=0` would read perfectly while
+  the rule went away, and for CWE-1357 the glob is not a narrowing but a deletion: `is_workflow_path`
+  (`iac_auditor.py:46-56`) returns True only for a path containing a `.github` segment followed by
+  `workflows`, and CWE-1357 is emitted nowhere else (`iac_auditor.py:206`). A rule with no frozen
+  population gets no path exclusion — that doctrine is now machine-checked, not written down.
+- **Both requested engine guards refused, measured line by line against the corpus.** The CWE-208
+  "suppress comparisons between integers, token IDs or non-string constants" rule was applied to each
+  of the 30 blessed Big-8 timing keys by re-parsing the real `ast.Compare` the engine reported: **29 of
+  30 have no string operand at all**, because the blessed population *is* `input_ids == bos_token_id`,
+  `old_num_tokens == new_num_tokens`, `special_tokens_mask == not_padded_special_tokens_mask`,
+  `decoder_start_token_id.shape[0] != batch_size`, `expectation == len(generated_tokens[0])`. The rule
+  as specified is a rule delete. The CWE-312 "suppress when the destination matches vocab / merges.txt
+  / config.json / tokenizer" rule reaches the rule's only Big-8 key: `markuplm:74
+  fp.write(json.dumps(vocab_tokens) + "\n")` sits under `with open(cls.vocab_file, "w", …)` and carries
+  all three word groups in scope, so it is FN=1 on a blessed key before any arena file is considered.
+  Neither guard was written.
+
+Locks and numbers for this step. `workflow_controls_probe.py` gains a seventh check, **blessed reach**,
+which recomputes the whole policy from the two frozen baselines on every run: it fails if a global
+exclude or a rule exclude ever matches a blessed key in the stored, leaf, arena or corpus-relative
+spelling (the flattened-leaf reconstruction is why `scratch/_p3_big/` is remapped to
+`benchmark_gates_data/corpus_big8` — that prefix is where the keys were blessed, not where the files
+live now), it fails if the shipped config grows a `CWE-798` exclusion or a `tests/**` entry for a rule
+with blessed keys in it, it fails if a rule with **0** blessed rows gets *any* exclusion, and it fails
+if a refusal note loses its evidence (so a narrowing that became safe is as loud as one that never was).
+**10** mutations now run and all are CAUGHT, including the two that model the dishonest versions of this
+lock: `shipped_config_widened_to_a_blessed_tree` (a poisoned policy with CWE-208 `**/tests/**` and a
+CWE-798 test exclusion) and `blessed_reach_reads_the_flattened_leaf_only` (matching only the stored
+spelling, which is what would make the check pass by accident). `tests/test_workflow_controls.py`
+18 → **20 passing**, pinning the withdrawn and refused patterns from the real file. Measured on the
+shipped tree: parity `425/425 MISSING=0 NEW=0`, Big-8 `sha256 verified → 119/119 MISSING=0 NEW=0`,
+cross-file `F1=1.0000 exact-set YES suppression-contract YES`, and twelve truth tables PASS with
+`failures=0`: `cwe22_repo_anchor_path` (24), `cwe22_dirent_closure` (16), `cwe338_prng_context` (16),
+`cwe338_ml_math` (62 cases), `cwe117_builtin_seal` (49), `cwe117_numeric_provenance` (49),
+`cwe117_cwe22_unknown_source` (59), `cwe798_test_fixture_dummy` (6), `cwe798_credential_concreteness`
+(6), `cwe434_local_serialization` (7), `cwe208_llm_token_timing` (36), `cwe208_llm_domain_compare` (36).
+`ast_scanner.py` (`55b7148532106e20`), `cli.py` (`f255fef1b95a36c2`) and `tcs_config.py`
+(`ef9aa3477152ea60`) are byte-identical to HEAD after line-ending normalisation, so the only cost is the
+pattern list: **30 rule patterns vs 24**, predicate median 12.417 → 17.346 µs/call on 592 real
+(rule, path) pairs, i.e. **0.821 µs per pattern ask**, which bounds the added work at 396 × 6 × 0.821 =
+**2.0 ms** on a corpus scan whose three alternating legs read head 4.38/3.05/1.31 s vs shipped
+4.12/1.70/1.30 s (shipped ≤ head in 3/3, peak RSS 60.0 MB). End to end the same 396 findings come back
+in both arms with an identical key set, because no tree in this repository matches the new globs: the
+arena delta of the four shipped exclusions is real only in the arena and must come from a
+human-pressed `workflow_dispatch`. The harness defect this step also fixed: the new helper first built
+its arena spelling with `"/".join(dirs + parts)`, and the product reported **CWE-89 on the probe itself**
+(`NEW=1` at parity) — the join was replaced by concatenation, the harness corrected rather than excused,
+and parity returned `NEW=0` on the same command. The "~2,400 arena FPs" figure was not measured and
+cannot be here: no Transformers tree exists on this machine.
 
 ### Permanent Fix Mandate (Root-Cause Immunity & Anti-Band-Aid Rule)
 

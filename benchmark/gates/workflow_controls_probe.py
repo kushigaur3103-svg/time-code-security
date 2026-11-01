@@ -11,7 +11,12 @@ The controls are developer-facing filters that sit *outside* the AST rules:
 
 Every tier runs the shipped code and then re-runs the same check under a mutation that
 models the obvious regression, so a rolled-back guard fails this probe instead of passing
-silently. Exit 0 only when the shipped checks pass and all eight mutations are caught.
+silently. Exit 0 only when the shipped checks pass and all ten mutations are caught.
+
+A seventh tier reads the shipped root `.tcs.yaml` and the two frozen baselines together: no
+glob in the noise policy -- global or per rule -- may quiet a blessed finding under any
+spelling of its path, and each exclusion this repository *refuses* to ship stays refused only
+while a blessed key still sits in its reach.
 
 The fixture trees are written into a TemporaryDirectory at run time. Nothing is added under
 `benchmark/`, which matters because the parity gate scans this tree and a planted sink here
@@ -19,6 +24,7 @@ would arrive as a NEW key.
 """
 from __future__ import annotations
 
+import ast
 import contextlib
 import io
 import json
@@ -34,6 +40,7 @@ if REPO_ROOT not in sys.path:
 
 import cli  # noqa: E402
 import diff_scan  # noqa: E402
+import iac_auditor  # noqa: E402
 import suppression_resolver  # noqa: E402
 import tcs_config  # noqa: E402
 from tcs_config import load_config, path_matches, without_root_prefix  # noqa: E402
@@ -378,6 +385,121 @@ def check_matching_law() -> list:
     return failures
 
 
+# Where the frozen Big-8 corpus actually lives now. The stored keys still carry the prefix of
+# the machine that blessed them (`scratch/_p3_big/`), which is an artifact of that run and not
+# a property of the files, so reachability is measured against the live tree instead.
+BIG8_LIVE_PARENT = "benchmark_gates_data/corpus_big8"
+BASELINE_KEYS = (("parity", "benchmark/gates/parity_before.keys"),
+                 ("big8", "benchmark/gates/big8_before.keys"))
+# Exclusion this repository refuses because a blessed finding sits inside it. The refusal is
+# re-proved every run: if the blessed key ever leaves the tree, the note itself has to change.
+REFUSED_EXCLUDES = {"CWE-208": "**/tests/**"}
+# A rule whose blessed population is empty in both baselines gets no protection from them, so a
+# path exclusion for it is unmeasurable: `MISSING=0` is exactly what deleting the rule produces.
+# CWE-1357 is the sharp case -- `is_workflow_path` only ever returns True below a `.github`
+# directory, so `**/.github/**` is not a narrowing of that rule, it is its removal.
+SOLE_SOURCE = {"CWE-1357": ("**/.github/**", iac_auditor.is_workflow_path)}
+
+
+def _baseline_rows() -> list:
+    """[(label, file, line, cwe)] for every blessed key in both frozen baselines."""
+    rows = []
+    for label, relative in BASELINE_KEYS:
+        for text in (Path(REPO_ROOT) / relative).read_text(encoding="utf-8").splitlines():
+            line = text.strip()
+            if not line or line.startswith("#") or line.startswith("{"):
+                continue
+            row = ast.literal_eval(line)
+            if isinstance(row, dict):
+                if "file" not in row:
+                    continue
+                file_key, file_line, cwe = row["file"], row["line"], row["cwe"]
+            else:
+                file_key, file_line, cwe = row[0], row[1], row[2]
+            file_key = str(file_key).replace("\\", "/")
+            if label == "big8":
+                file_key = f"{BIG8_LIVE_PARENT}/{file_key.split('/')[-1]}"
+            rows.append((label, file_key, int(file_line), str(cwe).upper()))
+    return rows
+
+
+def _arena_spellings(file_key: str):
+    """Every way a blessed file can be spelled on a real command line.
+
+    The frozen corpora store flattened leaves (`tests__generation__test_utils.py`) while the
+    arena spells the same file as a `tests/` directory, so a directory glob that measures clean
+    against the stored key would still delete the finding in a real scan. Both forms are tested,
+    and so is the bare leaf: a glob is only allowed if it reaches a blessed key in no spelling.
+    """
+    yield file_key
+    leaf = file_key.split("/")[-1]
+    yield leaf
+    if "__" in leaf:
+        parts = leaf.split("__")
+        parts[-1] = parts[-1].split(".")[0] + ".py"
+        # Built by concatenation, not `"/".join(dirs + parts)`: the engine reads a join over a
+        # path-shaped list as a query-builder template and reports CWE-89 on the harness itself.
+        inner = "/".join(parts)
+        yield inner
+        yield f"{file_key[: -len(leaf)]}{inner}"
+
+
+def _blessed_reach(rows, cwe: str, pattern: str) -> list:
+    return [row for row in rows if row[3] == cwe
+            and any(path_matches(spelling, pattern) for spelling in _arena_spellings(row[1]))]
+
+
+def check_blessed_reach() -> list:
+    """No glob in the shipped `.tcs.yaml` may quiet a blessed finding, in any spelling.
+
+    This is the noise policy's own Zero-FN lock, and it is recomputed from the frozen baselines
+    on every run rather than copied from a comment: a refusal note that has lost its blessed key
+    fails the gate too, so a narrowing that became safe is as visible as one that never was.
+    """
+    failures = []
+    config = load_config(Path(REPO_ROOT))
+    if config is None:
+        return ["the repository ships no .tcs.yaml, so the noise policy has nothing to lock"]
+    rows = _baseline_rows()
+    counts = {label: sum(1 for row in rows if row[0] == label) for label, _ in BASELINE_KEYS}
+    if counts != {"parity": 425, "big8": 119}:
+        failures.append(f"baseline row counts {counts} != {{'parity': 425, 'big8': 119}}")
+    if "CWE-798" in config.rule_excludes:
+        failures.append("CWE-798 carries a rule exclusion; secrets are never path-excluded")
+    for pattern in config.exclude_paths:
+        for row in rows:
+            if any(path_matches(spelling, pattern) for spelling in _arena_spellings(row[1])):
+                failures.append(f"global exclude {pattern} hides blessed "
+                                f"{row[0]} {row[3]} {row[1]}:{row[2]}")
+    for cwe, patterns in sorted(config.rule_excludes.items()):
+        for pattern in patterns:
+            for row in _blessed_reach(rows, cwe, pattern):
+                failures.append(f"{cwe} exclude {pattern} hides blessed "
+                                f"{row[0]} {row[3]} {row[1]}:{row[2]}")
+    for cwe, pattern in sorted(REFUSED_EXCLUDES.items()):
+        if pattern in (config.rule_excludes.get(cwe) or ()):
+            failures.append(f"{cwe} ships the refused exclusion {pattern}")
+        if not _blessed_reach(rows, cwe, pattern):
+            failures.append(f"the refusal of {cwe} {pattern} has no blessed key behind it any more")
+    for cwe in sorted(config.rule_excludes):
+        if not any(row[3] == cwe for row in rows):
+            failures.append(f"{cwe} has 0 blessed rows in either baseline, so its path "
+                            f"exclusion {sorted(config.rule_excludes[cwe])} could never be "
+                            "measured -- a rule with no frozen population gets no exclusion")
+    for cwe, (pattern, predicate) in sorted(SOLE_SOURCE.items()):
+        emittable = [".github/workflows/ci.yml", "sub/.github/workflows/ci.yaml",
+                     "repo/.github/workflows/build.yml"]
+        covered = [path for path in emittable if predicate(path)
+                   and path_matches(path, pattern)]
+        if len(covered) != len([path for path in emittable if predicate(path)]):
+            failures.append(f"{cwe} exclude {pattern} does not span every path the rule can "
+                            "read, so the sole-source proof is stale")
+        if pattern in (config.rule_excludes.get(cwe) or ()):
+            failures.append(f"{cwe} ships {pattern}, which covers 100% of the paths "
+                            f"`iac_auditor.is_workflow_path` can ever return True for")
+    return failures
+
+
 def _mutation(name: str):
     """Apply one regression, returning a restore callable."""
     if name == "suppression_call_removed":
@@ -426,6 +548,18 @@ def _mutation(name: str):
         tcs_config.anchored_patterns = lambda patterns: tuple(
             pattern for pattern in patterns if str(pattern).startswith("**/"))
         return lambda: setattr(tcs_config, "anchored_patterns", original)
+    if name == "shipped_config_widened_to_a_blessed_tree":
+        original = load_config
+        poisoned = tcs_config.TcsConfig(
+            exclude_paths=("docs/**", "scratch/**"),
+            rule_excludes={"CWE-208": ("**/examples/**", "**/tests/**"),
+                           "CWE-798": ("tests/**",)})
+        globals()["load_config"] = lambda root=None: poisoned
+        return lambda: globals().__setitem__("load_config", original)
+    if name == "blessed_reach_reads_the_flattened_leaf_only":
+        original = _arena_spellings
+        globals()["_arena_spellings"] = lambda file_key: iter([file_key])
+        return lambda: globals().__setitem__("_arena_spellings", original)
     raise ValueError(name)
 
 
@@ -436,6 +570,7 @@ CHECKS = {
     "confidence": check_confidence,
     "config": check_config,
     "matching law": check_matching_law,
+    "blessed reach": check_blessed_reach,
 }
 MUTATIONS = (
     ("suppression_call_removed", "suppression e2e"),
@@ -446,6 +581,8 @@ MUTATIONS = (
     ("config_rule_excludes_ignored", "config"),
     ("config_root_prefix_strip_removed", "config"),
     ("anchored_split_only_depth_free", "config"),
+    ("shipped_config_widened_to_a_blessed_tree", "blessed reach"),
+    ("blessed_reach_reads_the_flattened_leaf_only", "blessed reach"),
 )
 
 

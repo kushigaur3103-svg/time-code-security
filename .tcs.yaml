@@ -11,6 +11,12 @@
 # Patterns are matched against the collected path AND against that path seen from inside the
 # directory named on the command line, so `docs/**` means the same thing for `scan .` and for
 # `scan target_arena`.
+#
+# Three requested exclusions were refused, and `benchmark/gates/workflow_controls_probe.py`
+# re-proves the reason on every run: CWE-1357 can only ever fire under a `.github/` segment
+# (`iac_auditor.is_workflow_path`), so excluding `.github/**` would delete the whole rule;
+# CWE-250 exists only as a Dockerfile finding and has 0 blessed rows in either baseline, so no
+# measurement could catch its loss; and CWE-208 under `**/tests/**` reaches 19 blessed keys.
 
 exclude_paths:
   - "docs/**"
@@ -19,10 +25,13 @@ exclude_paths:
 rules:
   # Weak randomness: benchmark/demo/example draws are noise, a `secrets`/token draw is not.
   # The engine already mutes display-value and `populate/` draws by AST shape; these trees
-  # are the ones whose *path* is proof enough.
+  # are the ones whose *path* is proof enough. `tests/**` is NOT here: 7 of the 7 blessed
+  # Big-8 CWE-338 keys live in a `tests/` tree (tests/generation/test_utils.py:3352/3367/3384,
+  # tests/test_modeling_common.py:6606/6698/6722, tests/models/whisper/…:97), so excluding it
+  # would delete that rule's whole frozen population the moment the scan is aimed at a
+  # subdirectory. It was shipped that way until `workflow_controls_probe.py` measured it.
   CWE-338:
     exclude:
-      - "tests/**"
       - "**/populate/**"
       - "**/demo/**"
       - "**/examples/**"
@@ -41,10 +50,15 @@ rules:
       - "**/.circleci/**"
       - "**/docker/**"
 
-  # Path building under a fixture/example tree has no attacker-controlled prefix.
+  # Path building under a fixture/example tree has no attacker-controlled prefix. `tests/**` is
+  # NOT here either: 11 of the 16 blessed Big-8 CWE-22 keys and 6 of the 8 parity ones live in a
+  # `tests/` tree (tests/models/markuplm/test_tokenization_markuplm.py:73/75/77/138,
+  # tests/generation/test_utils.py:5537/5539/5565, tests/test_modeling_common.py:1279,
+  # tests/test_tokenization_mistral_common.py:263/274/280). The engine already mutes the quiet
+  # shape by AST proof -- `_c22_path_is_internal_repo_anchor` -- so the path axis adds nothing
+  # that does not cost a true positive.
   CWE-22:
     exclude:
-      - "tests/**"
       - "**/examples/**"
       - "**/scripts/**"
       - "**/docker/**"
@@ -52,12 +66,44 @@ rules:
   # Log forging needs a request; the CLI, CI and example scripts that print counters do not.
   # Measured against the frozen baselines this reaches nothing: 0 of 425 parity rows and 0 of
   # 119 Big-8 rows sit under a `tests/` *segment* for CWE-117 -- the 43 blessed Big-8 rows are
-  # all in `src/transformers/**`, where this rule stays loud.
+  # all in `src/transformers/**`, where this rule stays loud. `**/tests/**` adds the *nested*
+  # test trees (`src/transformers/tests/`), and is measured the same way: 0 of 425, 0 of 119.
   CWE-117:
     exclude:
       - "tests/**"
+      - "**/tests/**"
       - "**/examples/**"
       - "**/scripts/**"
       - "**/.github/**"
       - "**/.circleci/**"
       - "**/docker/**"
+
+  # Timing compares are a heuristic over in-process values, so an example script that checks
+  # two token strings is noise. `**/tests/**` is NOT excluded here and never will be without a
+  # new measurement: 19 of the 30 blessed Big-8 CWE-208 keys live in a `tests/` tree
+  # (tests/generation/test_utils.py, tests/models/markuplm/test_tokenization_markuplm.py), so
+  # that glob would delete two thirds of the rule's hard-won true positives.
+  CWE-208:
+    exclude:
+      - "**/examples/**"
+
+  # Deserialization in a test fixture or a sample is the fixture talking to itself; the
+  # production loader stays loud. Measured 0 of 425 parity and 0 of 119 Big-8 rows reached.
+  CWE-502:
+    exclude:
+      - "**/examples/**"
+      - "**/tests/**"
+
+  # Cleartext URLs in tests and samples point at localhost or a mock server. Measured 0 of 425
+  # parity (35 blessed CWE-319 rows, none in these trees) and 0 of 119 Big-8 rows reached.
+  CWE-319:
+    exclude:
+      - "**/examples/**"
+      - "**/tests/**"
+
+  # Upload handlers written into a temp tree by a test are not a deployed file sink. Measured
+  # 0 of 425 parity (7 blessed rows) and 0 of 119 Big-8 rows reached.
+  CWE-434:
+    exclude:
+      - "**/examples/**"
+      - "**/tests/**"
