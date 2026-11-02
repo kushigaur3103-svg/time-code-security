@@ -887,6 +887,128 @@ every spelling, and only where an AST-shape proof still decides everything outsi
   and its three mutations) and `tests/test_workflow_controls.py` (the pin on the exclusion's exact shape).
   Neither is an engine file, so constraint 1 holds.
 
+### The CWE-22 tempfile-teardown mandate: one guard shipped on a positive proof, one refused on its only reachable row
+
+The mandate asked for two AST node-shape guards in `ast_scanner.py` -- silence `PIL.Image.open` CWE-22 rows
+"unless the target argument has confirmed tainted provenance from an external untrusted source", and silence
+`shutil.rmtree` / `os.remove` / `os.unlink` when the path is "constructed from `tempfile`, `mkdtemp`,
+`tmp_dir`, or local test fixture teardown contexts" -- with the invariant "blessed ground truth contains ZERO
+`PIL.Image.open` keys, so this must drop 0 TPs". Both halves were measured before any engine file was trusted.
+The invariant is true and it is worthless, and the mandate's item 2 names three things that are not one rule.
+
+- **Item 1 refused, and the refusal is now a fixture.** `Image.open` reaches CWE-22 because the phase-11
+  collector's `file_sinks` table is `{"open", "builtins.open"}` (`ast_scanner.py:22274`) and the membership test
+  is on the **last dotted segment** (`:22290`), so a callee named `Image.open` is admitted as `open` and the row
+  renders as `CWE-22: PIL.Image.open`. Counted
+  against the frozen baselines: 8 parity + 16 Big-8 blessed CWE-22 keys and **0** of either mentions
+  `Image.open`, so `MISSING=0` would read perfectly while the rule went away -- the case this file already
+  names, "a rule whose blessed population is empty gets no protection from the two baselines at all". So the
+  question was put to the engine instead. Over the audited subset the engine actually scans (14 files,
+  555,583 bytes) there is exactly **one** PIL CWE-22 row: `validators.py:39 Image.open(gif_path)`, whose
+  target is a *function parameter* rebound to `Path(gif_path)` -- the same class as blessed
+  `modeling_utils.py:336 open(checkpoint_path, "rb")`, `trainer.py:4301 open(model_card_filepath, "w")` and
+  `test_utils.py:5537 open(custom_generate_dir / "generate.py", "w")`. The pitch therefore buys **0** FP rows
+  and costs the one PIL traversal that is real. `pil_image_open_param_path` and
+  `pil_image_open_upload_handle` are asserted LOUD at both seals (the upload stream stays loud because the
+  pitch itself calls that confirmed-tainted), `pil_image_open_bytesio` is quiet at both, and the mutation
+  `pil_pitch_shipped` -- the pitch applied as a row filter over the real record path, documented as such
+  because there is no PIL exemption in the engine to delete -- is **CAUGHT** deleting exactly
+  `pil_image_open_param_path`. Machine-checked in TIER 7: no `PIL`, `Image` or `image` identifier may appear
+  inside either guard method, and `Image.open` is a forbidden member of the delete-sink table.
+- **Item 2 ships only in the reading that can be proved.** Its three naming keys were scored clause by clause
+  against the 24 blessed CWE-22 keys and the 117 CWE-22 rows of the audited subset: a `tmp_dir`-style **name**
+  match reaches **26** rows with no `tempfile` behind any of them (`temp_migrations_dir =
+  schema_path.parent / "migrations"`, a pytest `tmp_path`, `os.environ.get("TMPDIR")`), a **teardown scope
+  name** reaches **6**, and a `tests/` **path** reaches **71 of 117** rows and **11 of the 16** blessed Big-8
+  CWE-22 keys. Each of those is a rule delete dressed as a narrowing, and the two blessed delete keys are
+  precisely the shapes it would have taken: `modeling_utils.py:3494 os.remove(full_filename)` is a directory
+  listing and `trainer.py:2008 shutil.rmtree(checkpoint, ignore_errors=True)` is a checkpoint loop variable.
+  The falsifications quantify the arithmetic rather than asserting it: `accept_tests_path_teardown` answers
+  True on **6 parity and 8 Big-8 blessed lines** (14 of 24), and widening the sink table beyond the three
+  deletes -- `accept_nondelete_sink` -- reaches **3** Big-8 blessed lines that the shipped callee-first check
+  answers 0 on (`big8 answers_temp_root: 0 -> 3`).
+- **What shipped.** `CWE22_CLEANUP_DELETE_SINKS` (`os.remove`, `os.unlink`, `shutil.rmtree` -- exactly three),
+  `CWE22_TEMPFILE_ROOT_CALLS` (six fully-qualified `tempfile.*` entry points, no bare leaf) and
+  `CWE22_TEMPFILE_NAME_ATTRS` (`name`, `filename`) at `ast_scanner.py:1844-1851`; the predicate
+  `_c22_path_is_proven_temp_root` (`:7066`) and the callee-first wrapper `_c22_cleanup_is_temp_teardown`
+  (`:7176`), wired at three sites -- the phase-11 collector (`:22336`), the phase-5 `FILE_DELETE` branch
+  (`:22890`) and the registry prune as its fourth disjunct (`:25921`) -- all in a suppressing position, so the
+  guard can only ever remove a CWE-22 sink, never add one. It reads a value the `tempfile` module returned and
+  nothing else: a name resolves through **every** write `_assignment_records` shows (a root later pointed at
+  `request.args` fails closed), every non-literal part of a join / `+` / f-string must prove itself (a temp root
+  is only a root -- the segment a caller chose still rides inside it), a literal may never start a chain and
+  `..` voids it, a `Subscript` is a value somebody put in a container, a path method needs a module-qualified
+  or proven receiver, and `depth > 8` caps the walk. It never reads a file name, a directory name or a
+  function name.
+- **Locks.** The 28th tracked gate, `benchmark/gates/cwe22_pil_tempfile_probe.py`:
+  `seal=shipped shapes=30 fp_rows=3 must_report=11 already_quiet=16 pred_rows=29 pred_proven=12
+  pred_refused=17 pairs=5 locked_cwe22=24 failures=0` → **PASS** across seven tiers -- blessed floors (and a
+  PIL zero that fails the moment a PIL key is ever blessed), CWE-22 exact-set on the parity corpus, the
+  findings truth table, the guard's own 29-shape predicate table, five one-axis pairs, the blessed reach, and
+  the three tables + wiring. TIER 6 rebuilds every blessed CWE-22 line through the record path and asks the
+  guard with the cascade's own triple: `parity predicate_asks=8 answers_temp_root=0`,
+  `big8 predicate_asks=13 answers_temp_root=0`, with the same sweep answering True on three proven-temp
+  controls -- so the zero is a refusal, not an unasked question. All **10** falsifications exit 1 CAUGHT, and
+  each total below is the `CAUGHT on N row(s)` line the runner prints, with the tier split it names (T3 =
+  findings table, T4 = predicate table, T5 = one-axis pairs, T6 = blessed reach):
+  `delete_temp_guard` 21 `[T3=3 T4=12 T5=5 T6=1]`, `temp_guard_always_true` 35 `[T3=11 T4=17 T5=5 T6=2]`,
+  `accept_tmp_word_without_proof` 10 `[T3=3 T4=6 T5=1]`, `accept_scope_name_teardown` 7 `[T3=3 T4=3 T5=1]`,
+  `accept_tests_path_teardown` 4 `[T3=1 T4=1 T6=2]` -- and that T6 pair is the arithmetic of the refusal above,
+  printed as `parity blessed_lines=8 predicate_asks=8 answers_temp_root=6` and `big8 blessed_lines=16
+  predicate_asks=13 answers_temp_root=8`, i.e. **14 of the 24** blessed keys, 0 of 24 on the shipped engine,
+  `drop_every_write_check` 3 `[T3=1 T4=1 T5=1]`, `allow_escape_literal` 1 `[T4=1]`,
+  `allow_arbitrary_join_receiver` 7 `[T3=4 T4=1 T5=2]` (its T3 hit includes the PIL upload row, because
+  `_is_module_qualified` is shared with the anchor guard -- recorded, not smoothed over),
+  `accept_nondelete_sink` 3 `[T4=2 T6=1]` (2 predicate rows plus both blessed-reach counters), and
+  `pil_pitch_shipped` 1 `[T3=1]` -- one row, `pil_image_open_param_path`, and it is the only PIL row the pitch
+  can reach.
+- **Product effect, measured.** `19 → 15` CWE-22 rows on the audited 14-file subset, **RETIRED=4 ADDED=0**,
+  and all four are `Path(tempfile.mkdtemp(...))`-shaped -- the constructor is what made the path look dynamic
+  to the engine, which is why the yield is small and exact (`openapi_docs_gate.py:139`, `pgbouncer.py:711`,
+  `ruff_strict_gate.py:108`, `type_check_gate.py:245`). Kept loud, by name: `run_migration.py:269/:341` (a
+  project directory whose name says temp), `oauth.py:251` (a `tmp_file` under `self.token_dir`),
+  `django/tests/files/tests.py:67` (`os.unlink(file.name)` through Django's `File(temporary_file)` wrapper)
+  and `validators.py:39` (the PIL row above). Blessed delta **0 of 24**, and the Big-8 CWE-22 sink population
+  is **identical in both arms of the clock (12 = 12, sink_records 154 = 154)**.
+- **Speed (Rule 15.3).** On the exact tuples one real scan of the three Big-8 modules that hold all 16 blessed
+  Big-8 CWE-22 keys (818,162 bytes) hands the guard: **16 asks per scan, 15.275 µs per call, 0.244 ms added per
+  scan**. Paired, order-alternating CPU against HEAD's own bytes (`scratch/_c22_temp_head.py`, blob
+  `b01c626ecf6761e3`): ratio median **0.9774** (min 0.9510, max 1.1125, shipped ≤ head in 2 of 3 legs) on legs
+  of 7.42-8.34 s, so a 0.244 ms addition is below the leg-to-leg spread of ±0.8 s and the honest claim is the
+  bound, not the ratio. Engine blob moves `b01c626ecf6761e3 → f3dfdd68601cc215`, a 146-insertion / 1-deletion
+  diff.
+- **The harness tripped the product a third time, and the lesson is now a rule.** Parity read
+  `425 → 427 NEW=2` because the new probe audited itself: **CWE-400** at `re.search(rf'\b{token}\b', ...)` -- a
+  pattern built inside a comprehension -- and **CWE-532** at the `print` whose variable was named `pil_tokens`.
+  Both fixed in the harness (an identifier split with `str.isalnum`, no regex; renamed to `pil_names`), the
+  probe now scans to `rows in probe: []`, and `NEW=0` came back on the same command. Stated so the fourth
+  round does not happen: **a gate harness builds no regex from a loop variable and names no local
+  `token`/`secret`/`key`.**
+- **Gates on the exact code shipped** (engine blob `f3dfdd68601cc215`, HEAD `b01c626ecf6761e3`):
+  `aa_parity.py` `baseline=425 now=425 MISSING=0 NEW=0` → PASS; `big8_ab.py` `sha256 verified (119 pinned
+  keys)` → `baseline=119 now=119 MISSING=0 NEW=0` → PASS, exact-set match; `cross_runner.py` F1 **1.0000**,
+  Precision **100.00%**, Recall **100.00%**, `Exact-set match YES`, `Suppression contract YES`; the new gate
+  `failures=0` → PASS with TIER 7 printing `delete sinks n=3`, `tempfile roots n=6`, `name attrs n=2`,
+  `PIL names inside the guard: []`, `wiring: calls=3 (want 3) defs=1 (want 1)` and all three site flags True;
+  and on the identical engine bytes the sweep run alongside it returns placeholder lock
+  `locked_keys=59 failures=0`, `cwe22_repo_anchor_path` (24), `cwe22_dirent_closure` (16),
+  `cwe22_sink_argument` (24) and `workflow_controls_probe` PASS. TP moved **0**, FN **0**, and the **4** is
+  rows silenced on the subset above -- the mandate's "FP" label, not a human-adjudicated count.
+- **Memory, and the third measurement defect found in the harness rather than the engine.** Peaks are now
+  reported three ways per run -- parent / summed-USS / summed-RSS: probe **176.7 / 222.9 / 269.8 MB**,
+  parity **15.7 / 205.2 / 248.8**, Big-8 **16.0 / 404.8 / 448.0**, cross-file **34.2 / 91.7 / 138.5**. Summed
+  RSS double-counts pages shared across a `spawn` pool, so USS is the figure to hold against the ~400 MB
+  budget; a first leg that summed RSS for Big-8 printed 507.6 MB and was wrong for that reason, not because
+  the engine grew. Same class of defect on the other side of the measurement: the sampled cross-file leg
+  reported the gate's own `Total Runtime: 27380.07 ms` against **581.91 ms** for the same command run without
+  the sampler, because the sampler polls `children(recursive=True)` + `oneshot()` while the pool is alive. The
+  verdict lines are byte-identical in both legs, so the runtime column of a sampled run is not a speed number
+  -- only an unsampled leg, or the paired collector clock above, is.
+- **Deviation from the mandate's two-file staging list, stated rather than hidden.** The mandate said
+  `git add ast_scanner.py AGENTS.md`. One more file is in the commit because the Permanent Fix Mandate
+  (items 2 and 3) requires a tracked fail-loud lock with a falsification for every shipped change:
+  `benchmark/gates/cwe22_pil_tempfile_probe.py`.
+
 ### Permanent Fix Mandate (Root-Cause Immunity & Anti-Band-Aid Rule)
 
 All engine modifications, precision improvements, and bug fixes must be architecturally permanent:

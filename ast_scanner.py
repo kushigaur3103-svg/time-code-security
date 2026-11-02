@@ -1836,6 +1836,19 @@ TAINT_TRAVERSAL_MAX_HOPS = 8
 # Filesystem reads that open a path string. Only the builtin spellings: `Path.open()` and
 # `csv.open()` are receivers we cannot resolve to a path, so they stay out.
 FILE_OPEN_FUNCS = frozenset({"open", "io.open", "builtins.open"})
+
+# CWE-22 temp-root proof: the three deletes that tear a tree down, and the `tempfile` entry points
+# whose return value IS a path the running program just created. Only the fully-qualified stdlib
+# spelling is listed on purpose -- `from tempfile import mkdtemp` followed by `mkdtemp()` answers
+# False, because a bare name could be anybody's function and the proof must not rest on a leaf.
+CWE22_CLEANUP_DELETE_SINKS = frozenset({"os.remove", "os.unlink", "shutil.rmtree"})
+CWE22_TEMPFILE_ROOT_CALLS = frozenset({
+    "tempfile.mkdtemp", "tempfile.mkstemp", "tempfile.NamedTemporaryFile",
+    "tempfile.TemporaryDirectory", "tempfile.SpooledTemporaryFile", "tempfile.gettempdir",
+})
+# The object a `tempfile` call hands back is not always the path: a context manager or an open file
+# object exposes it under `.name`, so one attribute hop is part of the proof.
+CWE22_TEMPFILE_NAME_ATTRS = frozenset({"name", "filename"})
 # Calls that make a path component safe to join, or pin it under a known root. `normpath` is
 # included because every corpus case that uses it pairs it with a `startswith` root check.
 PATH_SANITIZER_SEGMENTS = frozenset({
@@ -7049,6 +7062,130 @@ class TaintTracker:
             return receiver_anchored or any(self._c22_path_is_internal_repo_anchor(
                 p, scope_id, lineno, depth + 1) for p in parts)
         return False
+
+    def _c22_path_is_proven_temp_root(self, expr: ast.AST, scope_id: str = "",
+                                      lineno: int = 0, depth: int = 0,
+                                      allow_literal: bool = False) -> bool:
+        """Did the program itself create this directory or file in a temp root?
+
+        Teardown is the whole life of the path: `shutil.rmtree(tempfile.mkdtemp())`, and every
+        spelling that resolves to one -- `runtime_dir: Final = Path(tempfile.mkdtemp(prefix="x-"))`
+        then `shutil.rmtree(runtime_dir, ignore_errors=True)`, `fd, tmp_file = tempfile.mkstemp()`
+        then `os.unlink(tmp_file)`, `with tempfile.TemporaryDirectory() as d:` then `os.remove(d)`,
+        and `fh.name` of a `NamedTemporaryFile`. Like the internal-anchor proof, names are resolved
+        through *every* write the scope can show, so a name that is later pointed at something else
+        fails closed instead of being exempted, and a `..` in any literal segment voids the proof.
+
+        What is refused, and why it matters more than what is accepted:
+          * `temp_migrations_dir = schema_path.parent / "migrations"` -- a directory that sits beside
+            a real project file and happens to have `temp` in its name. A name is not a proof.
+          * `os.path.join(temp_dir, request.args["f"])` -- a temp root is only a root; the segment a
+            caller chose still rides inside it, so every non-literal part must prove itself.
+          * a `for checkpoint in checkpoints_sorted:` loop variable, a function parameter, or an
+            unresolved name -- none of them was created here, so any of them can name anything.
+          * a pytest `tmp_path`, or any path whose write the tracker cannot see -- not proven, loud.
+        The rule never asks what a file is called, what directory it lives in, or what the enclosing
+        function does; the only way to be silenced is to read back a value the `tempfile` module
+        returned. `depth > 8` caps the walk.
+        """
+        if expr is None or depth > 8:
+            return False
+        if self._c22_anchor_literal_ok(expr, allow_literal):
+            return True
+        if isinstance(expr, ast.Name):
+            records = _assignment_records(self.assignments_by_scope, expr.id, scope_id, lineno)
+            if not records:
+                return False
+            return all(self._c22_path_is_proven_temp_root(
+                r.value_node, r.scope_id, r.lineno, depth + 1) for r in records)
+        if isinstance(expr, ast.Attribute):
+            if expr.attr in CWE22_TEMPFILE_NAME_ATTRS:
+                # `fh.name` / `td.name`: the handle or the context manager has to be the tempfile's.
+                return self._c22_path_is_proven_temp_root(
+                    expr.value, scope_id, lineno, depth + 1)
+            records = _assignment_records(self.assignments_by_scope, dotted_name(expr) or "",
+                                          scope_id, lineno)
+            if records:
+                return all(self._c22_path_is_proven_temp_root(
+                    r.value_node, r.scope_id, r.lineno, depth + 1) for r in records)
+            if expr.attr in self._C22_PATH_CHAIN_ATTRS:
+                return self._c22_path_is_proven_temp_root(
+                    expr.value, scope_id, lineno, depth + 1)
+            return False
+        if isinstance(expr, ast.Subscript):
+            # `paths[0]` is a value somebody put in a container, not a root this program made.
+            return False
+        if isinstance(expr, ast.BinOp) and isinstance(expr.op, (ast.Div, ast.Add, ast.Mod)):
+            return (self._c22_path_is_proven_temp_root(expr.left, scope_id, lineno, depth + 1)
+                    and self._c22_path_is_proven_temp_root(
+                        expr.right, scope_id, lineno, depth + 1, allow_literal=True))
+        if isinstance(expr, ast.JoinedStr):
+            proven = False
+            for part in expr.values:
+                if isinstance(part, ast.Constant):
+                    if not self._c22_anchor_literal_ok(part, True):
+                        return False
+                    continue
+                inner = part.value if isinstance(part, ast.FormattedValue) else part
+                if not self._c22_path_is_proven_temp_root(inner, scope_id, lineno, depth + 1):
+                    return False
+                proven = True
+            return proven
+        if isinstance(expr, ast.FormattedValue):
+            return self._c22_path_is_proven_temp_root(expr.value, scope_id, lineno, depth + 1)
+        if isinstance(expr, ast.Call):
+            func = expr.func
+            seg = func.attr if isinstance(func, ast.Attribute) else (
+                func.id if isinstance(func, ast.Name) else "")
+            if not seg:
+                return False
+            if (dotted_name(func) or "") in CWE22_TEMPFILE_ROOT_CALLS:
+                return True
+            parts = list(expr.args) + [kw.value for kw in expr.keywords]
+            if not parts:
+                return False
+            if seg in self._C22_PATH_CONSTRUCTORS and seg not in self._C22_PATH_FUNCS:
+                # `Path(tempfile.mkdtemp())` / `str(tempfile.mkstemp()[1])` keep their proof from the
+                # slot they wrap; a constructor over literals alone is a relative path, which is not
+                # a temp root.
+                slots = [self._c22_path_is_proven_temp_root(
+                    p, scope_id, lineno, depth + 1) for p in parts]
+                return all(slots) or (any(slots) and all(
+                    slot or self._c22_anchor_literal_ok(p, True)
+                    for slot, p in zip(slots, parts)))
+            if seg not in self._C22_PATH_FUNCS:
+                return False
+            receiver_proven = False
+            if isinstance(func, ast.Attribute):
+                receiver = func.value
+                receiver_proven = self._c22_path_is_proven_temp_root(
+                    receiver, scope_id, lineno, depth + 1)
+                if not (self._is_module_qualified(receiver) or receiver_proven):
+                    # `my_paths.join(x)` is a method on somebody else's value, not `os.path.join`.
+                    return False
+            if not all(self._c22_path_is_proven_temp_root(
+                    p, scope_id, lineno, depth + 1,
+                    allow_literal=(seg != "resolve")) for p in parts):
+                return False
+            if allow_literal:
+                return True
+            return receiver_proven or any(self._c22_path_is_proven_temp_root(
+                p, scope_id, lineno, depth + 1) for p in parts)
+        return False
+
+    def _c22_cleanup_is_temp_teardown(self, call_node: ast.AST, path_expr: ast.AST,
+                                      scope_id: str = "", lineno: int = 0) -> bool:
+        """Is this CWE-22 sink a `tempfile`-created root being deleted by the code that made it?
+
+        Asks the callee first, because that is the cheap test and it bounds the rule to the three
+        deletes the proof is about: a path handed to `open` or `send_file` can still be read or sent,
+        which is a different question from the directory teardown retiring.
+        """
+        if not isinstance(call_node, ast.Call) or path_expr is None:
+            return False
+        if (dotted_name(call_node.func) or "") not in CWE22_CLEANUP_DELETE_SINKS:
+            return False
+        return self._c22_path_is_proven_temp_root(path_expr, scope_id, lineno)
 
     def _compares_two_secrets(self, node: ast.Compare) -> bool:
         """Is this a secret-vs-secret comparison, the only kind that leaks timing?
@@ -22194,6 +22331,11 @@ class TaintTracker:
                 if self._is_in_memory_buffer_sink(node, mod_name, scope_id, lineno):
                     continue
 
+                # A tree the program created in a temp root and is now deleting: the path was chosen
+                # by this file, its lifetime ended here, and no caller ever held it.
+                if self._c22_cleanup_is_temp_teardown(node, path_arg, scope_id, lineno):
+                    continue
+
                 # Check for dynamic path construction from request data
                 if _has_dynamic_path(path_arg, scope_id, lineno):
                     op_name = callee_seg.upper() if callee_seg else "FILE_OPERATION"
@@ -22744,7 +22886,8 @@ class TaintTracker:
                     path_expr = next((kw.value for kw in node.keywords if kw.arg in {"path", "pathname"}), None)
                     if path_expr is None and node.args:
                         path_expr = node.args[0]
-                    if path_expr is not None and not _is_safe_path(path_expr, scope_id, lineno):
+                    if path_expr is not None and not _is_safe_path(path_expr, scope_id, lineno) \
+                            and not self._c22_cleanup_is_temp_teardown(node, path_expr, scope_id, lineno):
                         _add_finding(node, mod_name, scope_id, "FILE_DELETE", "PATH_TRAVERSAL", "CWE-22", "CWE-22")
 
                 if isinstance(node.func, ast.Attribute) and node.func.attr == "extractall":
@@ -25775,6 +25918,8 @@ class TaintTracker:
                 or self._is_upload_handle(target_expr, record.scope_id, record.lineno)
                 or self._c22_path_is_internal_repo_anchor(
                     target_expr, record.scope_id, record.lineno)
+                or self._c22_cleanup_is_temp_teardown(
+                    record.node, target_expr, record.scope_id, record.lineno)
             ):
                 if sink in self.sinks:
                     self.sinks.remove(sink)
