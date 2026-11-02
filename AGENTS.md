@@ -1320,4 +1320,47 @@ would move a true positive), stop and ask before acting instead of quietly picki
 ### AST Node-Shape & Provenance Rule for FP Suppression
 - Never apply broad folder-level exclusions or disable entire CWE rules to silence noise if true positives (TPs) reside in those trees.
 - False positive elimination MUST be implemented at the AST parser level via exact node-shape verification (e.g., distinguishing pure `ast.Constant` literals from dynamic variables, or isolating non-security integer/shape comparisons from cryptographic secrets).
-- Refusing an FP elimination task due to potential TP loss without attempting granular AST provenance and shape gating is strictly prohibited.
+- Refusing an FP elimination task due to potential TP loss without attempting granular AST provenance and
+  shape gating is strictly prohibited — Rule 15.5 is the ladder that must be walked, and measured, before
+  any "no" is allowed.
+
+### Rule 15.5: The Both-And Ladder (TP na mare, FP permanent mar — lathi bhi na toote, saap bhi mar jaye)
+
+A refusal is never the final answer to an FP-elimination task. The Zero-FN Shield forbids **one specific
+form** of a change — the form that reaches a blessed TP — and it never excuses the task itself. So the
+answer to "this FP suppression would kill a TP" is not "no", it is "not that form; this one instead", and
+that one is found by walking the ladder below **in order** and measuring every rung before skipping it.
+Two invariants hold all the way down: **a blessed TP never moves**, and **the FP goes permanently** — not
+by a row filter a later refactor can undo. TP is not a currency that can be paid for quiet; FP going *up*
+is the allowed fallback, FP going down at the price of a TP is not.
+
+1. **Ask a positive proof, never an absence.** The exemption must be something the FP row *proves*, not
+   something the scan failed to find. `_c22_path_is_proven_temp_root` reads only a value the `tempfile`
+   module returned, and `_c798_value_is_identifier_nameplate` fires only behind `_c798_fingerprinted`, so a
+   `sk-`/`AKIA`/`eyJ` shape can never be called a nameplate. "No taint was found" is an absence — it fails
+   closed.
+2. **Move the deciding axis off a name.** A file, directory, function or variable name buys nothing and
+   every refusal in `.tcs.yaml` exists because a name-based glob reached blessed keys (`tests/**` hit 11 of
+   16 Big-8 CWE-22 and 7 of 7 CWE-338). Replace the name with a *value-shape* or *expression-shape* proof
+   and name the replacement: `_c22_path_is_internal_repo_anchor`, `CWE338_DISPLAY_VALUE_MARKERS`.
+3. **Partition the cluster and ship the provable slice.** Never choose between the whole rule and nothing:
+   isolate the exact AST sub-shape that carries the TP, keep that loud, and silence the deterministic
+   remainder. CWE-338 shipped display-value words, then the `populate/` segment; CWE-208 shipped metric
+   counters, then codec/config constants; CWE-22 shipped the repo anchor, then the temp teardown. Each
+   retired a measured population — 221 arena rows, 191 LiteLLM rows, 24 and 4 — at **0 blessed reach**.
+4. **Widen the question before widening the table.** If two code paths can answer one expression
+   differently, fix the source of the answer first — the 3-line delegation at `ast_scanner.py:6474` made the
+   registry and the collector share one verdict instead of adding a third exemption to it.
+5. **A predicate-only defect is pinned twice.** When a rung moves no engine row (`allow_escape_literal` was
+   CAUGHT only at the predicate, `drop_final_anchor_requirement` only MISSED there), pin the predicate
+   fixture **and** the mutation, because a row count cannot defend that rung later.
+6. **Only now, and only with a number, is "no" allowed.** If no rung yields a measured proof, ship no engine
+   change, keep the FP, and hand back the reach count that proves why plus the falsification of the pitch's
+   own row — `pil_pitch_shipped` CAUGHT on `pil_image_open_param_path`, `dimension_pitch_shipped` CAUGHT on
+   the whisper:314 spelling. A refusal must be re-provable by a stranger, not remembered by an agent.
+
+A rung is not passed on a promise. Each slice that ships needs its truth-table gate and its rollback
+mutation (Permanent Fix Mandate items 2 and 3), and needs **both** a measured yield and a scan CPU ratio
+≤ 1.0x. The CWE-117 binding census is the standing counter-example to shipping anyway: the guard worked,
+moved 0 of 119 real asks and cost 29.7 ms (1.73 % of a scan), so it was withdrawn — an FP suppression that
+buys nothing is not a victory for the snake, it is the stick breaking for nothing.
