@@ -436,6 +436,24 @@ REFUSED_EXCLUDES = {"CWE-208": ("**/tests/**",),      # 19 of 36 blessed keys
                     # prefix is the safety margin, and this line keeps the refusal evidenced: if those
                     # keys ever move, the refusal has to be re-measured rather than kept by habit.
                     }
+# A *sub*directory of a refused tree, refused with it. `**/tests/trainer/**` is the shape this law
+# exists for: measured against the frozen artifact it silences 3 CWE-338 arena rows and its own
+# blessed reach is 0 -- not because a trainer test holds no randomness, but because this corpus
+# happens to bless its CWE-338 draws in `generation/`, `models/` and `test_modeling_common.py`.
+# Reach over two frozen corpora is a property of those corpora, so a slice that measures clean
+# today is a slice a re-bless makes lethal tomorrow. The parent tree carries the true positives,
+# so no subdirectory of it buys silence: the refusal is inherited, and re-proved here by the
+# parent's own reach rather than by the slice's.
+REFUSED_SLICES = {
+    ("CWE-338", "**/tests/trainer/**"): {
+        "parent": ("CWE-338", "**/tests/**"),
+        # Paths the slice selects. They must also be selected by the parent -- if they are not,
+        # the "slice" is an unrelated glob wearing a subdirectory's clothes and this law does
+        # not cover it, so the note has to be re-measured instead of trusted.
+        "inside": ("src/transformers/tests/trainer/x.py", "tests/trainer/x.py"),
+    },
+}
+
 # The four trees a hardcoded secret is classically committed in. A *global* exclusion is a file skip
 # for every rule, so it must never select one of these -- CWE-798 carries no path exclusion anywhere
 # in this repository, and a global is the one spelling that could have quietly changed that.
@@ -531,6 +549,24 @@ def check_blessed_reach() -> list:
                 failures.append(f"{cwe} ships the refused exclusion {pattern}")
             if not _blessed_reach(rows, cwe, pattern):
                 failures.append(f"the refusal of {cwe} {pattern} has no blessed key behind it any more")
+    for (cwe, pattern), note in sorted(REFUSED_SLICES.items()):
+        parent_cwe, parent_pattern = note["parent"]
+        if pattern in (config.rule_excludes.get(cwe) or ()):
+            failures.append(f"{cwe} ships the refused slice {pattern} of the tree {parent_pattern}")
+        if not _blessed_reach(rows, parent_cwe, parent_pattern):
+            failures.append(f"the slice refusal of {cwe} {pattern} has lost the blessed key in "
+                            f"{parent_cwe} {parent_pattern} that made the tree refused")
+        if _blessed_reach(rows, cwe, pattern):
+            failures.append(f"{cwe} slice {pattern} reaches a blessed key itself, so it belongs in "
+                            "REFUSED_EXCLUDES with its own count, not in the inherited-refusal table")
+        for path in note["inside"]:
+            if not path_matches(path, pattern):
+                failures.append(f"{cwe} slice {pattern} no longer selects {path}, so the note "
+                                "describes a glob it does not mean")
+            if parent_cwe == cwe and not path_matches(path, parent_pattern):
+                failures.append(f"{path} is inside the slice {pattern} but outside the refused "
+                                f"parent {parent_pattern}, so the inherited refusal is stale")
+
     for cwe in sorted(config.rule_excludes):
         if not any(row[3] == cwe for row in rows):
             failures.append(f"{cwe} has 0 blessed rows in either baseline, so its path "
@@ -843,6 +879,12 @@ def _mutation(name: str):
         base = load_config(Path(REPO_ROOT))
         return _poisoned_config(rule_excludes={
             "CWE-312": (*base.rule_excludes["CWE-312"], "**/tests/**")})
+    if name == "refused_tree_slice_shipped":
+        # The narrow slice a row count would bless: 3 arena rows, 0 blessed reach of its own, and
+        # still inside the tree whose CWE-338 keys are the reason the whole tree is refused.
+        base = load_config(Path(REPO_ROOT))
+        return _poisoned_config(rule_excludes={
+            "CWE-338": (*base.rule_excludes["CWE-338"], "**/tests/trainer/**")})
     if name == "nonprod_exclude_becomes_file_skip":
         return _rule_blind_exclude()
     raise ValueError(name)
@@ -925,6 +967,7 @@ MUTATIONS = (
     ("deep_utils_glob_shipped_for_a_rule", "nonprod exclude doctrine"),
     ("utils_glob_widened_to_deep", "shipped nonprod exclude"),
     ("tests_glob_shipped_for_a_refused_rule", "blessed reach"),
+    ("refused_tree_slice_shipped", "blessed reach"),
     ("nonprod_exclude_becomes_file_skip", "shipped nonprod exclude"),
     ("config_rule_excludes_ignored", "shipped nonprod exclude"),
 )

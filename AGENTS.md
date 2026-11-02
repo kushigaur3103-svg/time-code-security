@@ -1317,6 +1317,134 @@ What ships is the provable remainder: **193 rows, 6.95 % of the report, over 70 
   in either direction.
 
 
+### The CWE-338 ML-randomness mandate: config half measured dead, AST half shipped on 39 arena rows
+
+The widening would have been a **1.78x speed regression** if the matcher had stayed the loop HEAD shipped
+with; the derived pair that replaces it is what makes 39 rows of noise affordable to remove.
+The mandate asked for ~194 arena CWE-338 rows silenced either by rule-scoped `.tcs.yaml` exclusions on
+"verified non-crypto ML training/data directories" or by an `ast_scanner.py` gate on the PRNG sinks. Item 1's
+premise is false as written, the config half of item 2 selects zero rows, and the AST half ships on 39 with
+blessed reach 0 measured by root. `ast_scanner.py` moves `f3dfdd68601cc215` → `944ba8ca94c142f4`
+(61 insertions / 13 deletions); `cli.py` `34588435d8c8e15e`, `tcs_config.py` `5c9a1815ca836abb`,
+`rule_engine.py` `86147fdb11063475` and `iac_auditor.py` `2a8cf3f2f1d5561b` are each
+`git hash-object`-equal to `git rev-parse HEAD:<file>`.
+
+- **"Confirm zero blessed reach in ML training and evaluation data sampling utilities" cannot be confirmed,
+  because those utilities *are* the blessed population.** Measured by asking both frozen baselines directly:
+  CWE-338 is 9 of the 425 parity keys and 7 of the 119 Big-8 keys, and the seven Big-8 keys are
+  `tests__generation__test_utils.py:3352/:3367/:3384`, `tests__test_modeling_common.py:6606/:6698/:6722`
+  and `tests__models__whisper__test_modeling_whisper.py:97` — batch sampling in training/eval test
+  utilities, exactly the category the mandate wanted silenced. What is true, and what makes this step safe,
+  is that every one of the 16 reaches CWE-338 through stdlib `random` / `random.Random` and no other root,
+  so the numeric-library table has **blessed reach 0 by root, not by luck**: `random.randint`,
+  `random.choice`, `random.random` and `random.Random` on all 16 lines match no entry in
+  `ML_MATH_RANDOM_PREFIXES` in either spelling and under either reading of the dot boundary.
+- **The config half is a dead letter, and the number says so.** The seven globs already shipped under
+  CWE-338 (`**/.circleci/**`, `**/.github/**`, `**/demo/**`, `**/docker/**`, `**/examples/**`,
+  `**/populate/**`, `**/scripts/**`) select **0 rows of the frozen artifact's 194** — re-measured through
+  `TcsConfig._selects`, not by eye — so a new directory glob for "ML training/data directories" has no
+  reachable population: the arena spells those trees `src/transformers/models/…` and `tests/…`, the first of
+  which is production code and the second holds 7 of 7 blessed keys. `**/tests/**` under CWE-338 stays
+  refused (reach 7 of 7), and `**/tests/trainer/**` — the narrowest possible ML-training directory — is now
+  refused *as a slice of a refused tree*: its own blessed reach is 0 and its reach in the artifact is 3, and
+  it is banned because its parent carries the keys, which is inherited, not incidental.
+- **What ships: four canonical roots, 39 rows.** `ML_MATH_RANDOM_PREFIXES` goes from
+  `("torch", "numpy.random")` to `("torch", "numpy.random", "tensorflow", "jax", "ray.tune",
+  "nn.initializers")`. Over the frozen 2,777-row artifact that moves **39 of 194 CWE-338 rows = 20.10 % of
+  the rule across 22 files** (`tensorflow` 29, `ray` 5, `jax` 3, `nn` 2) and leaves **147 loud**. Live
+  through the real record path on a 15-file fixture: `head 12 rows → shipped 7, RETIRED=5 ADDED=0`, with 7
+  tripwires loud in both arms — `session_key = tf.random.uniform`, `otp` assembled from
+  `jax.random.randint`, `numpy.random_state.randint`, `torchvision.randint`, unresolved `tf.randint`,
+  `random.randint` and `random.Random()`.
+- **Canonical roots, never aliases, for two reasons that are each pinned.** (1) The predicate is asked with
+  `receiver_canonical = resolve_canonical_name(...) or as-written`, so `tf.random.uniform` and
+  `tensorflow.random.uniform` fold to the same string, and a table that spelled the convention aliases
+  (`tf`, `np`, `nn`, `ray`) would exempt an *unresolved* receiver — `nn.randint(0, 9)` in a file that never
+  imported `nn` is the FN, which is why `FORBIDDEN_ROOTS` forbids those four names plus `random`, `secrets`,
+  `os` and `SystemRandom` on the table itself. (2) The match is a **dot boundary** (`root == prefix or
+  root.startswith(prefix + '.')`), which is what keeps `torchvision` from inheriting `torch` and
+  `numpy.random_state` from inheriting `numpy.random`; both are asserted as sibling rows and as the
+  `prefix_matches_without_a_dot_boundary` mutation. The object-name family the arena shows for the same
+  shape (`distributions.*`, `self.*`, `model.*`, `prior.*` = 24 rows) stays reported because a receiver
+  named `self` is a method call on some object whose library nobody proved.
+- **The rewrite that made the widening affordable, and the clock that proves it was needed.** Adding four
+  entries to a per-entry Python loop is a speed regression on the rows that must stay loud: measured, the
+  same loop over the 6-entry table costs **1.7826x** (all asks) and **2.4211x** (non-matching only) versus
+  HEAD's 2-entry loop, under `1.0x` in **0/7** legs each. The shipped form derives the test from the table
+  once — a `frozenset` of the lower-cased entries and a tuple of the `prefix + '.'` spellings — and answers
+  each receiver with two C-level operations, which measures **0.7391x / 0.6316x** against HEAD's own bytes,
+  `<= head` in 6/7 and 7/7 legs. `str.startswith` accepts a tuple, so one call replaces six, and the loop
+  HEAD ran built a fresh `prefix + "."` string for every miss. Equivalence to the reference law is asserted
+  over all 22 `MATCHER_ROOTS` spellings on every clean probe run, and over 34 spellings in the clock file
+  that made this decision, because a rewrite of a matcher is invisible to a row count.
+- **The predicate clock, split by the branch an ask takes rather than blended.** The 1.7x/2.4x comparison
+  above is the matcher alone; a whole predicate ask also walks assignment targets. Paired,
+  order-alternating, block-averaged at 40,000 reps over the fixture's real parent-wired `ast.Call` nodes,
+  HEAD's body re-installed as a `classmethod` (a `staticmethod` arm bills the shipped side the descriptor's
+  `cls` binding — that mistake alone read 1.2182 where the truth is 0.6250):
+  `matcher-only-REPORT` (both arms reject at the matcher — the stdlib population) **median 0.6250**,
+  min 0.5556, max 0.8571, `<= head` in **7/7** legs; `both-qualified` (torch / `np.random`, which already
+  ran the credential test at HEAD) **median 0.9310**, 6/7 legs; `moved-to-exempt` (the 39-row population)
+  **head 1.641 µs → shipped 5.156 µs, +3.516 µs per ask**; `moved-then-vetoed` (a credential destination)
+  **head 1.562 → shipped 8.203, +6.641 µs**. The two positive numbers are the guard refusing, not the
+  matcher being slow: a row the new table qualifies must ask the destination-name question before it can be
+  exempted, and that question is what keeps `session_key = tf.random.uniform` a finding. Priced against the
+  population it applies to, 39 moved rows × 3.516 µs = **137 µs** per arena scan.
+- **Ask census, so the added work is `asks x µs` and not a feeling.** Wrapping the guard with a counting
+  pass that cannot change an answer and scanning `benchmark/corpus` once: **9 asks per scan, 9 of 9 (100 %)
+  on the `both_reject` branch**, all nine on the `random` root, `both_qualify`/`moved_exempt`/`moved_vetoed`
+  all 0, with the same 9 CWE-338 rows reported. On the parity corpus the widening is therefore a net
+  **−2.1 µs per scan** (9 × 0.234 µs saved). The arena's `both_reject` population cannot be counted here —
+  no Transformers tree exists on this machine — so the honest arena statement is the bound above, not a
+  measured speed-up.
+- **A 15-file scan-level clock was run and is rejected as evidence.** `reps = 8` scans per `os.times()`
+  window, 6 alternating pairs: ratio median 1.0444 with min 0.6196 and max 2.0323 for legs whose work is
+  byte-identical within an arm. That spread is the machine and the 15.6 ms Windows quantum, exactly the
+  defect this file already records for whole-scan clocks, so Rule 15.3 is decided by the paired collector
+  clock and the census, and the scan legs are reported and discarded rather than quoted selectively.
+- **Locks.** `benchmark/gates/cwe338_ml_math_probe.py` grows from a 2-root truth table to
+  `cases=117 failures=0` → **PASS** with, in one run: a per-prefix EXEMPT proof for each of the six roots,
+  the sibling dot-boundary rows, `FORBIDDEN_ROOTS` (8 names that may never join the table), a 22-spelling
+  equivalence loop against the reference law, the cache-rebuild trio (rebind the table in memory → the new
+  root exempts, the pair rebuilds, the restore reports again), and a four-row **wiring** tier asserting that
+  the predicate reads `_ML_MATH_MATCHER_CACHE`, that its expression keeps the dotted slot, that the cache
+  has **exactly one writer** (`_rebuild_ml_math_matcher`) and that the superseded helper does not survive
+  beside it — so a later refactor cannot leave two matchers that disagree about one receiver. All **5**
+  falsifications exit 1 CAUGHT: `prefix_matches_without_a_dot_boundary` 7, `bare_alias_prefix_shipped` 5,
+  `drop_the_new_library_prefixes` 8, `credential_veto_blanked` 23, `derived_matcher_drops_the_dot` 6 — the
+  last one patching the cache itself with the live table object in slot 0, because a patch the engine's own
+  identity test can heal would prove nothing about the code that runs.
+  `workflow_controls_probe.py` gains `REFUSED_SLICES` (the inherited-tree law) inside `check_blessed_reach`:
+  five assertions — the slice must not ship, its parent must *still* have blessed reach, the slice's own
+  reach must stay 0 (or it belongs in `REFUSED_EXCLUDES` with its count), and both the slice and its parent
+  must still select its `inside` paths. So a ML-training directory is refused the day the tree around it is
+  refused, and the refusal becomes stale-and-loud if the parent's keys ever move. `tests/test_workflow_controls.py`
+  gains `test_a_slice_of_a_refused_tree_is_refused_with_it`, which also refuses any rule glob that names a
+  subdirectory of a `tests` tree; **23 passed**.
+- **Gates on the exact code shipped.** `aa_parity.py` → `baseline=425 now=425 MISSING=0 NEW=0`
+  `VERDICT: PASS - parity 425/425, exact-set match`; `big8_ab.py` → `sha256 verified (119 pinned keys,
+  engine 94c5ee2)` → `baseline=119 now=119 MISSING=0 NEW=0`, exact-set; `benchmark/cross_runner.py` →
+  `Precision 100.00%`, `Recall 100.00%`, **F1 1.0000**, `Exact-set match YES`, `Suppression contract YES`
+  (its own runtime column read 432.27 ms and 8715.01 ms on two legs of the identical bytes, which is why no
+  speed claim here rests on it); `workflow_controls_probe.py` → `shipped controls: failures=0`, all 25 mutation mappings CAUGHT
+  including `refused_tree_slice_shipped`, `VERDICT: PASS`; `cwe338_ml_math_probe.py` `cases=117 failures=0`;
+  `cwe338_prng_context_probe.py` `seal=shipped shapes=45 fp_rows=22 must_report=20 already_quiet=3
+  path_rows=15 demo_quiet=6 demo_tripwires=9 locked_cwe338=16 failures=0` (the display-value and `populate/`
+  locks still hold with all 16 blessed CWE-338 keys); `cwe117_cwe22_unknown_source_probe.py`
+  `locked_keys=59 cases=8 failures=0`; `tests/test_workflow_controls.py` 23 passed. TP moved **0** (both
+  baselines exact-set), FN **0**, FP **−39 arena rows and 0 baseline rows**. Peak RSS was not re-sampled
+  this step: the change adds one module-level `frozenset` and one tuple, no per-file walk and no new
+  collector pass, so the gate memory profile is the previously measured one — stated as un-re-measured
+  rather than assumed.
+- **Deviation from the mandate's staging list, stated rather than hidden.** The mandate named
+  `.tcs.yaml` *or* `ast_scanner.py`; the `.tcs.yaml` edit here is **comment-only** (19 added lines, 0 lines
+  of policy changed, recorded
+  the zero-select and the two refusals) because the config half cannot move a row, and the finding count
+  comes from `ast_scanner.py`. Two gate files and one test file ship beside them because the Permanent Fix
+  Mandate (items 2-3) requires the fail-loud lock and the falsification of the pitch with every shipped
+  change; nothing else is staged, and no untracked file in this working tree is.
+
+
 ### Permanent Fix Mandate (Root-Cause Immunity & Anti-Band-Aid Rule)
 
 All engine modifications, precision improvements, and bug fixes must be architecturally permanent:

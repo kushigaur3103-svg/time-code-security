@@ -1000,7 +1000,52 @@ RANDOMNESS_NAME_TOKENS = (
 # canonicalisation, so `np.random` counts and an unresolved alias does not), the call must not
 # land in a security-named receiver, and `random.*`, `secrets.*`, `os.urandom` and a bare
 # `randint(...)` are outside this rule's vocabulary entirely.
-ML_MATH_RANDOM_PREFIXES = ("torch", "numpy.random")
+# The table carries CANONICAL module roots only, never a two-letter convention alias: `tf.random`
+# qualifies because `resolve_canonical_name` folds `import tensorflow as tf` to `tensorflow.random`,
+# so a local variable that merely happens to be called `tf` cannot qualify. `ray.tune` and
+# `nn.initializers` are two-segment forms, matched like `numpy.random` is: the first segment alone is
+# an alias, so it is not on the list.
+# Measured on the frozen Transformers artifact (`benchmark_results/tcs.sarif`, 194 CWE-338 rows):
+# `tensorflow.*` 29 rows, `ray.tune.*` 5, `jax.random.*` 3, `nn.initializers.*` 2 = 39 rows, and
+# blessed reach 0 -- all 16 blessed CWE-338 keys are stdlib `random` / `random.Random`, which the
+# drift lock in `benchmark/gates/cwe338_ml_math_probe.py` keeps off this table by root.
+ML_MATH_RANDOM_PREFIXES = ("torch", "numpy.random", "tensorflow", "jax", "ray.tune",
+                           "nn.initializers")
+
+
+_ML_MATH_MATCHER_CACHE: tuple = (None, frozenset(), ())
+
+
+def _rebuild_ml_math_matcher() -> tuple:
+    """Derive the matcher pair for the live `ML_MATH_RANDOM_PREFIXES` and publish it in the cache.
+
+    The cache is a three-slot tuple -- the table it was built from, a `frozenset` of the
+    lower-cased entries, and those entries with a trailing dot -- so a reader can prove freshness by
+    one identity test and needs no call frame on the hot path. Keyed on the table's identity, so a
+    test that rebinds `ML_MATH_RANDOM_PREFIXES` in memory rebuilds the pair rather than being
+    answered by a stale cache.
+    """
+    global _ML_MATH_MATCHER_CACHE
+    lowered = [str(prefix).lower() for prefix in ML_MATH_RANDOM_PREFIXES]
+    _ML_MATH_MATCHER_CACHE = (ML_MATH_RANDOM_PREFIXES, frozenset(lowered),
+                              tuple(item + '.' for item in lowered))
+    return _ML_MATH_MATCHER_CACHE
+
+
+def _ml_math_matcher() -> tuple:
+    """The derived `(exact, dotted)` pair, rebuilt if the table moved. The seam the probe tests.
+
+    `root in exact or root.startswith(dotted)` is exactly the reference test
+    `any(root == prefix or root.startswith(prefix + ".") ...)` in two C-level operations instead of
+    one Python iteration per table entry, so the cost of a CWE-338 candidate does not grow with the
+    table. `_is_ml_math_random_draw` reads `_ML_MATH_MATCHER_CACHE` inline for the same answer
+    without the call frame; this function is the same law for callers that ask it once.
+    """
+    if _ML_MATH_MATCHER_CACHE[0] is not ML_MATH_RANDOM_PREFIXES:
+        _rebuild_ml_math_matcher()
+    return _ML_MATH_MATCHER_CACHE[1], _ML_MATH_MATCHER_CACHE[2]
+
+
 CWE338_SECURITY_NAME_WORDS = frozenset({
     "token", "tokens", "password", "passwd", "pass", "key", "keys", "secret", "secrets",
     "session", "sessions", "salt", "salts", "auth", "nonce", "nonces", "otp", "csrf", "jwt",
@@ -6314,30 +6359,33 @@ class TaintTracker:
     @classmethod
     def _is_ml_math_random_draw(cls, node: ast.Call, receiver_name: str,
                                 receiver_canon: str) -> bool:
-        """True only for a proven `torch`/`numpy.random` numeric draw with no crypto name.
+        """True only for a proven numeric-library draw with no crypto name in its destination.
 
         Every branch of this decision errs toward reporting:
 
-        * The receiver must start with `torch` or `numpy.random` at a dot boundary -- as
-          written, or after canonicalisation (so `np.random.uniform` qualifies and a bare
-          `randint(0, 9)`, an unresolved alias, or `secrets.*` never does). An empty receiver
-          name means the callee could not be folded, and unknown is never treated as safe.
+        * The receiver must be one of `ML_MATH_RANDOM_PREFIXES` or sit below one at a dot boundary
+          -- as written, or after canonicalisation (so `tf.random.uniform` and `np.random.uniform`
+          qualify, while a bare `randint(0, 9)`, an unresolved alias, `secrets.*`, `torchvision.*`
+          and `numpy.random_state.*` never do). An empty receiver name means the callee could not be
+          folded, and unknown is never treated as safe.
         * Any security-named destination re-enables the finding even when the library is torch,
           because `session_key = torch.randint(0, 256, (32,))` is an insecure token generator no
           matter which numeric library it reaches for.
         * stdlib `random.*` is outside the prefix list entirely, so the parity corpus and every
           hand-written finding keep their behaviour.
+        * The table is consulted through the derived `(exact, dotted)` pair, not one Python loop per
+          entry, so a widened table costs a candidate nothing; the cache's identity test is what lets a
+          test that rebinds the table in memory be answered by the new table.
         """
+        matcher = _ML_MATH_MATCHER_CACHE
+        if matcher[0] is not ML_MATH_RANDOM_PREFIXES:
+            matcher = _rebuild_ml_math_matcher()
+        exact, dotted = matcher[1], matcher[2]
         qualified = False
         for candidate in (receiver_name, receiver_canon):
             lowered = (candidate or "").lower()
-            if not lowered:
-                continue
-            for prefix in ML_MATH_RANDOM_PREFIXES:
-                if lowered == prefix or lowered.startswith(prefix + "."):
-                    qualified = True
-                    break
-            if qualified:
+            if lowered and (lowered in exact or lowered.startswith(dotted)):
+                qualified = True
                 break
         if not qualified:
             return False

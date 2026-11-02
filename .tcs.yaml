@@ -43,6 +43,25 @@ rules:
   # tests/test_modeling_common.py:6606/6698/6722, tests/models/whisper/…:97), so excluding it
   # would delete that rule's whole frozen population the moment the scan is aimed at a
   # subdirectory. It was shipped that way until `workflow_controls_probe.py` measured it.
+  #
+  # Counted again on the frozen Transformers artifact (`benchmark_results/tcs.sarif`: 2,777 rows,
+  # CWE-338 = 194 rows over 86 files, `src/` 113 + `tests/` 81), through the real matcher
+  # (`TcsConfig._selects`): all SEVEN patterns below select **0 rows** -- no `populate/`, `demo/`,
+  # `examples/`, `scripts/`, `.github/`, `.circleci/` or `docker/` directory in that arena emits
+  # CWE-338 at all. They stay because each one was measured to 0 blessed reach before it shipped
+  # and a different arena may hold those trees; they are not what moved this rule's noise.
+  # What this rule's noise actually is, moved in the engine instead: `ML_MATH_RANDOM_PREFIXES`
+  # gained `tensorflow` / `jax` / `ray.tune` / `nn.initializers`, which are 29 + 3 + 5 + 2 = 39 rows
+  # in 22 files whose callee root is a proven numeric library (8 more were already exempt at HEAD on
+  # `torch` / `numpy.random`). The 147 that stay loud are 122 on the stdlib `random` root and 25 on
+  # object names (`distributions`, `self`, `model`, `prior`), and every credential-named draw stays
+  # reported whatever the library (`cwe338_ml_math_probe.py`, 117 cases, 5 falsifications).
+  # Refused with its number: `**/tests/trainer/**` -- 3 arena rows, own blessed reach 0, parent
+  # `**/tests/**` reach 7 (all seven Big-8 CWE-338 keys, of the 16 blessed in total). A slice of a
+  # refused tree inherits the refusal; the 0 is a property of these two corpora, not of the
+  # directory. Locked by `REFUSED_SLICES` in `workflow_controls_probe.py` (mutation
+  # `refused_tree_slice_shipped`) and by
+  # `tests/test_workflow_controls.py::test_a_slice_of_a_refused_tree_is_refused_with_it`.
   CWE-338:
     exclude:
       - "**/populate/**"

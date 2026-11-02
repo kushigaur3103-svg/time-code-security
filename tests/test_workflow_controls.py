@@ -300,6 +300,28 @@ def test_shipped_nonprod_excludes_are_root_anchored_and_rule_scoped():
         assert set(config.rule_excludes[cwe]) == {"**/examples/**"}, f"{cwe} drifted"
 
 
+def test_a_slice_of_a_refused_tree_is_refused_with_it():
+    """`**/tests/trainer/**` measures 0 blessed reach and is still not allowed to ship.
+
+    Its own reach is 0 for CWE-338 (3 arena rows) while its parent `**/tests/**` reaches 7 of the
+    16 blessed CWE-338 keys. Reach is a property of the two frozen corpora, not of the tree, so a
+    clean slice number is not a permission slip -- the refusal is inherited from the parent and
+    re-proved by `workflow_controls_probe.py` (`refused_tree_slice_shipped` is CAUGHT on exactly
+    that assertion). Here the same law is pinned from the config side.
+    """
+    repo_root = pathlib.Path(__file__).resolve().parents[1]
+    config = load_config(repo_root)
+    assert "**/tests/trainer/**" not in set(config.rule_excludes.get("CWE-338") or ())
+    slices = [pattern for patterns in config.rule_excludes.values() for pattern in patterns
+              if "/tests/" in str(pattern) and not str(pattern).endswith("tests/**")]
+    assert not slices, f"a subdirectory of a refused tests tree shipped: {sorted(slices)}"
+    assert path_matches("src/transformers/tests/trainer/x.py", "**/tests/trainer/**")
+    assert path_matches("src/transformers/tests/trainer/x.py", "**/tests/**"), (
+        "the slice is no longer inside the refused parent, so the inherited refusal is stale")
+    assert path_matches("src/transformers/tests/trainer/x.py", "**/tests/**"), (
+        "the slice is no longer inside the refused parent, so the inherited refusal is stale")
+
+
 # ─── helpers ───
 
 _COMMAND_SINK = (
