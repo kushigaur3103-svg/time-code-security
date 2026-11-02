@@ -7,7 +7,7 @@ On the recorded LiteLLM baseline 967 CWE-22 rows exist, and the prompt asked for
 "when the file path is constructed strictly from internal module anchors" -- `ast.Name(__file__)`,
 `os.path.dirname(__file__)`, `Path(__file__)`, static package-resource lookups -- with zero tainted
 parameters in the expression. Measured against the engine, that axis reaches 28 of the 967 rows (2.9%),
-not 967: `_is_self_described` (ast_scanner.py:6872) already accepts `__file__` through
+not 967: `_is_self_described` (ast_scanner.py:6848, `__file__` accepted at :6881) already accepts `__file__` through
 `_SELF_DESCRIBED_NAMES` and every `os.path` spelling, and the other 939 rows have a name, a parameter,
 a subscript or a call in them. The 28 are one grammar gap: the pathlib / importlib-resources spellings
 of the same idea -- `Path(__file__).with_name("x.json")`, `Path(litellm.__file__).parent / "x.json"`,
@@ -18,7 +18,7 @@ never reach this prune at all, so they stay reported and are left alone delibera
 
 What the guard proves, and only that
 -----------------------------------
-`_c22_path_is_internal_repo_anchor` (ast_scanner.py:6930) answers True for a chain that *starts* at a
+`_c22_path_is_internal_repo_anchor` (ast_scanner.py:6942) answers True for a chain that *starts* at a
 module anchor (`__file__`, `__cached__`, `__package__`, `<imported module>.__file__`) and continues
 only through literal segments and path algebra. Every branch fails closed:
 
@@ -38,7 +38,7 @@ only through literal segments and path algebra. Every branch fails closed:
     then at the top level one of those parts (or the receiver) to actually carry the anchor -- so
     `obj.joinpath("x.json")` on an unexplained object stays reported.
 
-Wiring is one disjunct of one prune (`is_cwe22 and (...)`, ast_scanner.py:25771), next to the two
+Wiring is one disjunct of one prune (`is_cwe22 and (...)`, ast_scanner.py:25913), next to the two
 checks the engine already ran there, ahead of taint resolution. It can only ever remove a CWE-22 sink,
 never add one: measured ADDED=0 on every fixture row and on the whole parity corpus.
 
@@ -48,12 +48,28 @@ Measured evidence behind the numbers
                       line through the real record path and asks the guard: it answers anchored on 0
                       of the 24, and the same sweep answers True on the anchored control rows, so the
                       zero is a refusal and not an unasked question.
-  fixtures          : 32 shapes -- 6 loud->quiet rows the guard itself earns, 19 must-report rows,
-                      and 7 quiet at both seals (`pathlib_parent_div_literal`,
+  fixtures          : 42 shapes -- 6 loud->quiet rows the guard itself earns, 24 must-report rows,
+                      and 12 quiet at both seals (`pathlib_parent_div_literal`,
                       `str_anchor_plus_literal`, `abs_escape_literal`, `subscript_index_from_request`,
-                      `bare_literal_relative`, `parent_chain_literal`, `ospath_dirname_literal` --
-                      those are already silent on 697a58e's bytes and are listed as ALREADY_QUIET,
-                      never as wins). ADDED (quiet->loud) is 0 and is asserted as 0.
+                      `bare_literal_relative`, `parent_chain_literal`, `ospath_dirname_literal` plus
+                      the five all-literal rows `lit_join_two_literals`, `lit_path_two_slot_literals`,
+                      `lit_dir_constant_join`, `lit_fstring_no_hole`, `lit_concat_literals` -- those
+                      are already silent on HEAD's bytes and are listed as ALREADY_QUIET, never as
+                      wins). ADDED (quiet->loud) is 0 and is asserted as 0.
+  root-operand pitch: TIER 5b scores the second reading of this mandate -- "suppress when the ROOT
+                      operand is `__file__`-derived or a hardcoded relative directory literal,
+                      whatever the leaf holds" -- against every shape here. Item (a) is the shipped
+                      guard verbatim; item (b) is disjunct 1 of the same prune (`_is_self_described`,
+                      ast_scanner.py:6848), so all 12 all-literal shapes are already quiet and the
+                      pitch buys them nothing. What it costs: 8 of the 11 pitch-reachable reported
+                      rows go silent under `--mutate=root_operand_pitch_shipped` and the run is
+                      `CAUGHT on 33 row(s) [T3=8 T4=1 T5b=16 T6=8]` with exit 1; the other 3 stay loud,
+                      so the pitch does not even silence its own whole shape set. Applied to the 24
+                      blessed lines the same mutation answers `pitch_reach=0` on parity and
+                      `pitch_reach=0` on Big-8 -- so it silences 0 real findings and its only measured
+                      effect is a false negative. A traversal lives in the leaf: `os.path.join('models', name)`
+                      where `name` comes from the caller is exactly the bug CWE-22 names, and a
+                      root-only test cannot see it.
   LiteLLM census    : 967 CWE-22 rows, 798 of them under a tests/-fixture-looking path -- which is
                       why the guard reads the *expression* and never the directory: a directory rule
                       would have deleted 798 rows of which the engine cannot prove a single one, and
@@ -189,6 +205,30 @@ SHAPES = [
                                 'open(Path(request.args.get("f")).resolve())\n', 'loud', 'loud'),
     ('fstring_no_anchor', REQ + 'from pathlib import Path\nname = request.args.get("f")\n'
                                'open(f"/srv/app/{name}.json")\n', 'loud', 'loud'),
+    # ---- the "root operand is a hardcoded relative directory literal" pitch, spelled five ways ----
+    # Every one of these is a real traversal: the root is fixed, the LEAF is the caller's, and a
+    # fixed root does not constrain it. They are loud at both seals, so a rule that decides on the
+    # root alone cannot land without failing this table.
+    ('lit_root_join_name', REQ + 'import os\nname = request.args.get("f")\n'
+                                'open(os.path.join("models", name))\n', 'loud', 'loud'),
+    ('lit_root_dir_constant_name', REQ + 'import os\nASSET_DIR = "./models"\n'
+                                         'name = request.args.get("f")\n'
+                                         'open(os.path.join(ASSET_DIR, name))\n', 'loud', 'loud'),
+    ('lit_root_div_name', REQ + 'from pathlib import Path\nname = request.args.get("f")\n'
+                               'open(Path("./assets") / name)\n', 'loud', 'loud'),
+    ('lit_root_plus_name', REQ + 'name = request.args.get("f")\nopen("./models/" + name)\n',
+     'loud', 'loud'),
+    ('lit_root_fstring_name', REQ + 'name = request.args.get("f")\nopen(f"models/{name}")\n',
+     'loud', 'loud'),
+    # ---- and the same pitch with no dynamic part anywhere: silent today, bought by nobody ----
+    ('lit_join_two_literals', 'import os\nopen(os.path.join("models", "app.json"))\n',
+     'quiet', 'quiet'),
+    ('lit_path_two_slot_literals', 'from pathlib import Path\nopen(Path("models", "app.json"))\n',
+     'quiet', 'quiet'),
+    ('lit_dir_constant_join', 'import os\nASSET_DIR = "./models"\n'
+                              'open(os.path.join(ASSET_DIR, "a.png"))\n', 'quiet', 'quiet'),
+    ('lit_fstring_no_hole', 'open(f"models/app.json")\n', 'quiet', 'quiet'),
+    ('lit_concat_literals', 'open("./models/" "app.json")\n', 'quiet', 'quiet'),
 ]
 
 FP_ROWS = [row for row in SHAPES if row[2] == 'loud' and row[3] == 'quiet']
@@ -219,6 +259,18 @@ ANCHOR_NAMES_FORBIDDEN = ('__name__', '__doc__', 'cwd', 'getcwd', 'tmp', 'temp',
 CONSTRUCTORS_REQUIRED = ('Path', 'files', 'resource_filename', 'PurePath')
 CONSTRUCTORS_FORBIDDEN = ('open', 'normpath', 'join', 'split', 'abspath', 'relpath')
 ESCAPE_SEGMENTS = ('..', '../', '/..', '..\\')
+
+# The mandate's own vocabulary, spelled out so the tier measures the rule that was asked for and not
+# a rule of this file's invention. Clause (a) is a `__file__`-derived root; clause (b) is a relative
+# directory literal (bare, or a module-level name bound once to one).
+PITCH_DUNDER_ROOTS = ('__file__', '__cached__', '__package__')
+PITCH_REACH = ('dunder_anchor', 'module_dunder_anchor', 'relative_literal')# The six spellings the pitch names that the engine reports today -- all of them carry the caller's
+# value in the leaf, which is the part a root test cannot see.
+PITCH_REACHABLE_ROWS = ('tainted_join_arg', 'lit_root_join_name', 'lit_root_dir_constant_name',
+                        'lit_root_div_name', 'lit_root_plus_name', 'lit_root_fstring_name')
+# The same six with nothing dynamic anywhere: silent before the pitch, silent after it.
+PITCH_SILENT_ROWS = ('bare_literal_relative', 'lit_join_two_literals', 'lit_path_two_slot_literals',
+                     'lit_dir_constant_join', 'lit_fstring_no_hole', 'lit_concat_literals')
 
 
 def scan_source(source):
@@ -343,6 +395,205 @@ def check_pairs():
     return failures
 
 
+def pitch_root_operand(expr, tracker):
+    """Descend to the base operand a "root derives from..." rule reads.
+
+    Deliberately shallow and deliberately naive: this is the mandate's own wording, not the engine's
+    proof. It follows the receiver of a path *method* (`Path(x).with_name("y")` is rooted at `x`),
+    the first slot of a module-qualified function or a constructor (`os.path.join(root, leaf)` is
+    rooted at `root`), the left side of `+` / `/` / `%`, the value of a subscript, the tail of an
+    attribute chain and the opening text of an f-string, and stops at the first Name or Constant.
+    """
+    cur = expr
+    for _ in range(12):
+        if cur is None:
+            return None
+        if isinstance(cur, ast.Call):
+            func = cur.func
+            if isinstance(func, ast.Attribute) and not tracker._is_module_qualified(func.value):
+                cur = func.value
+            else:
+                cur = cur.args[0] if cur.args else None
+        elif isinstance(cur, ast.BinOp):
+            cur = cur.left
+        elif isinstance(cur, ast.Subscript):
+            cur = cur.value
+        elif isinstance(cur, ast.Attribute):
+            if cur.attr in PITCH_DUNDER_ROOTS:
+                return cur
+            cur = cur.value
+        elif isinstance(cur, ast.JoinedStr):
+            cur = cur.values[0] if cur.values else None
+        else:
+            return cur
+    return cur
+
+
+def pitch_root_kind(tracker, expr, scope_id, lineno):
+    root = pitch_root_operand(expr, tracker)
+    if root is None:
+        return 'none'
+    if isinstance(root, ast.Constant):
+        if not isinstance(root.value, str) or isinstance(root.value, bool):
+            return 'other'
+        return 'abs_literal' if root.value.replace('\\', '/').startswith('/') else 'relative_literal'
+    if isinstance(root, ast.Name):
+        if root.id in PITCH_DUNDER_ROOTS:
+            return 'dunder_anchor'
+        records = ast_scanner._assignment_records(tracker.assignments_by_scope, root.id,
+                                                 scope_id, lineno)
+        if len(records) == 1 and isinstance(records[0].value_node, ast.Constant) \
+                and isinstance(records[0].value_node.value, str):
+            return 'relative_literal'
+        return 'other'
+    return 'other'
+
+
+PRUNE_DISJUNCTS = ('_is_self_described', '_is_upload_handle', '_c22_path_is_internal_repo_anchor',
+                   '_c22_cleanup_is_temp_teardown')
+
+
+def _silent_where(source):
+    """For a pitch-reachable row that reports nothing, ask *why* it reports nothing.
+
+    Neuter all four disjuncts of the `is_cwe22` prune for one scan and restore exactly whatever was
+    installed beforehand, so a mutation run keeps its own patch afterwards. If the finding comes
+    back, this prune is what retired it; if it stays away, no collector ever emits that sink and the
+    prune never gets to speak.
+    """
+    tracker = ast_scanner.TaintTracker
+    saved = {name: getattr(tracker, name) for name in PRUNE_DISJUNCTS}
+    try:
+        for name in PRUNE_DISJUNCTS:
+            setattr(tracker, name, lambda self, *args, **kwargs: False)
+        return scan_source(source)
+    finally:
+        for name, value in saved.items():
+            setattr(tracker, name, value)
+
+
+def check_root_operand_pitch():
+    """TIER 5b: what the "root operand is `__file__` or a relative directory literal" pitch can
+    actually reach, and what reaching it would cost.
+
+    The pitch decides on the ROOT. A traversal never lives in the root -- it lives in the leaf the
+    caller chose -- so this tier separates three populations and asserts each:
+
+      * rows the pitch reaches that are reported today. Each one must be a must-report row: if a row
+        the pitch reaches is loud and is *not* on the must-report list, the refusal is wrong and a
+        real false positive is being left on the table;
+      * rows the pitch reaches that are already silent. These are the all-literal spellings, and they
+        are silent because `_is_self_described` (disjunct 1 of the same prune) answers on them today,
+        which is why the pitch buys 0 findings. If one of them ever starts reporting, the pitch has a
+        real yield and this tier is the thing that says so out loud;
+      * the shipped predicate's own refusal: a relative literal must not root an anchored chain.
+
+    The blessed half of the census is printed here and gathered by TIER 5, because rebuilding the 24
+    frozen lines through the record path is the expensive part and doing it twice would only make
+    the gate slower, not stronger.
+    """
+    failures = []
+    loud_labels = {row[0] for row in MUST_REPORT_ROWS}
+    fp_labels = {row[0] for row in FP_ROWS}
+    quiet_labels = {row[0] for row in ALREADY_QUIET_ROWS}
+    reached_loud = bought_by_self_described = bought_by_anchor = bought_by_other = 0
+    silent_prune_retired = silent_never_a_finding = 0
+    for label, source in _BY_LABEL.items():
+        with contextlib.redirect_stderr(_io.StringIO()):
+            tracker = ast_scanner.TaintTracker(files={'m.py': source}, audit_all=True)
+            _, _, edges = tracker.analyze()
+            rows = cli._findings_for(tracker, edges)
+        reported_lines = {row['line'] for row in rows if row['cwe'] == 'CWE-22'}
+        seen = set()
+        for record in tracker.sink_records:
+            if not is_cwe22_record(record.security_node.metadata):
+                continue
+            expr = target_of(record, tracker)
+            if expr is None or record.lineno in seen:
+                continue
+            seen.add(record.lineno)
+            kind = pitch_root_kind(tracker, expr, record.scope_id, record.lineno)
+            if kind not in PITCH_REACH:
+                continue
+            text = ast.unparse(expr)[:46]
+            if record.lineno in reported_lines:
+                reached_loud += 1
+                marker = 'ok (must-report)' if label in loud_labels else 'UNLISTED'
+                print(f'  REACHES A REPORTED ROW  {label:30} root={kind:15} {text:46} {marker}')
+                if label not in loud_labels:
+                    failures.append((label, 'the pitch reaches a reported row that is not a '
+                                 'must-report row -- a real false positive the refusal is hiding',
+                                 'loud', kind))
+                continue
+            self_described = tracker._is_self_described(expr, record.scope_id, record.lineno)
+            anchored = tracker._c22_path_is_internal_repo_anchor(
+                expr, record.scope_id, record.lineno)
+            upload = tracker._is_upload_handle(expr, record.scope_id, record.lineno)
+            temp = tracker._c22_cleanup_is_temp_teardown(
+                record.node, expr, record.scope_id, record.lineno)
+            if anchored:
+                bought_by_anchor += 1
+                who = 'bought by the anchor guard'
+                listed = label in fp_labels or label in quiet_labels
+            elif self_described:
+                bought_by_self_described += 1
+                who = 'bought by _is_self_described'
+                listed = label in quiet_labels or label in fp_labels
+            elif upload or temp:
+                bought_by_other += 1
+                who = 'bought by ' + ('the upload-handle test' if upload else 'the temp-teardown guard')
+                listed = True
+            else:
+                comes_back = bool(_silent_where(source))
+                if comes_back:
+                    silent_prune_retired += 1
+                    who = 'retired by this prune -- a disjunct answers on the cascade own expression'
+                else:
+                    silent_never_a_finding += 1
+                    who = 'never a CWE-22 finding -- no collector emits this sink at all'
+                listed = label in quiet_labels or label in fp_labels
+            print(f'  reaches a silent row    {label:30} root={kind:15} {text:46} {who}')
+            if not listed and label not in quiet_labels and label not in fp_labels:
+                failures.append((label, 'a pitch-reachable silent row is on neither the fp, the '
+                             'must-report nor the already-quiet list', 'quiet', kind))
+    silent_total = (bought_by_self_described + bought_by_anchor + bought_by_other
+                    + silent_prune_retired + silent_never_a_finding)
+    print(f'\n  pitch reach over the shapes: reported={reached_loud}  silent={silent_total} '
+          f'(self-described {bought_by_self_described}, anchor guard {bought_by_anchor}, '
+          f'upload/temp {bought_by_other}, retired by this prune {silent_prune_retired}, '
+          f'never emitted {silent_never_a_finding})')
+    if silent_total < len(PITCH_SILENT_ROWS):
+        failures.append(('pitch yield', 'the all-static spellings the pitch names must be shown '
+                         'silent and accounted for', len(PITCH_SILENT_ROWS), silent_total))
+    if reached_loud < len(PITCH_REACHABLE_ROWS):
+        failures.append(('pitch reach', 'the pitch must be shown to reach every row the mandate '
+                         'names', len(PITCH_REACHABLE_ROWS), reached_loud))
+    with contextlib.redirect_stderr(_io.StringIO()):
+        probe = ast_scanner.TaintTracker(files={'m.py': 'x = 1\n'}, audit_all=True)
+    for text, want in [
+            # the pitch's clause (b): a relative literal root. The shipped guard refuses every one of
+            # these whatever the leaf is, because the leaf is where a traversal lives.
+            ('os.path.join("models", name)', False),
+            ('os.path.join("./assets", request.args["f"])', False),
+            ('Path("./assets") / name', False),
+            ('"./models/" + name', False),
+            ('ASSET_DIR', False),
+            ('f"models/{name}"', False),
+            # and clause (a) -- which the shipped guard already grants when the rest of the chain is
+            # literal too, and still refuses when a caller chose a segment.
+            ('Path(__file__).parent / "cfg.json"', True),
+            ('os.path.join(os.path.dirname(__file__), "cfg.json")', True),
+            ('Path(__file__).parent / name', False),
+            ('os.path.join(os.path.dirname(__file__), name)', False)]:
+        expr = ast.parse(text, mode='eval').body
+        got = probe._c22_path_is_internal_repo_anchor(expr, 'm:global', 1)
+        marker = 'ok' if got == want else 'MISMATCH'
+        print(f'  shipped guard on the pitch shape: {text:46} want={want!s:5} got={got!s:5} {marker}')
+        if got != want:
+            failures.append(('pitch shape predicate', text, want, got))
+    return failures
+
+
 def _blessed_rows(kind):
     rows = load_keys(os.path.join(GATES_DIR, META[kind]['keys_file']), kind)
     return sorted((row for row in rows if row[2] == 'CWE-22'), key=lambda r: (str(r[0]), r[1]))
@@ -385,6 +636,7 @@ def check_blessed_lines():
             with open(path, encoding='utf-8', errors='replace') as handle:
                 sources[str(row[0])] = handle.read()
         asked = answered = 0
+        pitch_hits = 0
         covered = set()
         for name, source in sources.items():
             with contextlib.redirect_stderr(_io.StringIO()):
@@ -403,10 +655,16 @@ def check_blessed_lines():
                         expr, record.scope_id, record.lineno):
                     answered += 1
                     print(f'  REACHABLE  {name}:{record.lineno}  {ast.unparse(expr)[:70]}')
+                root_kind = pitch_root_kind(tracker, expr, record.scope_id, record.lineno)
+                if root_kind in PITCH_REACH:
+                    pitch_hits += 1
+                    print(f'  THE PITCH REACHES A BLESSED KEY  {name}:{record.lineno} '
+                          f'root={root_kind}  {ast.unparse(expr)[:60]}')
         blessed_lines = len({(name, row[1]) for name in sources for row in rows
                              if str(row[0]) == name})
         print(f'  {kind:7s} blessed_lines={blessed_lines}  predicate_asks={asked}  '
-              f'answers_anchor={answered}  lines_with_no_cwe22_record={blessed_lines - len(covered)}')
+              f'answers_anchor={answered}  pitch_reach={pitch_hits}  '
+              f'lines_with_no_cwe22_record={blessed_lines - len(covered)}')
         if answered:
             failures.append((kind, 'a blessed CWE-22 line is reachable by the anchor guard',
                              0, answered))
@@ -666,7 +924,24 @@ MUTATIONS = {
                                  frozenset(set(ast_scanner.TaintTracker._C22_ANCHOR_NAMES)
                                            | {'root', 'p', 'obj', 'stream'})),
     },
+    'root_operand_pitch_shipped': {
+        'what': 'the mandate as written: a path whose ROOT operand is `__file__`-derived or a '
+                'relative directory literal counts as internally anchored, whatever the leaf holds. '
+                'A traversal lives in the leaf, so a root test is a rule delete wearing a narrowing',
+        'rows': list(PITCH_REACHABLE_ROWS),
+        'apply': lambda: setattr(ast_scanner.TaintTracker, '_c22_path_is_internal_repo_anchor',
+                                 _anchor_accepting_literal_root),
+    },
 }
+
+
+def _anchor_accepting_literal_root(self, expr, scope_id='', lineno=0, depth=0,
+                                   allow_literal=False):
+    """The pitch installed in memory: decide on the root operand, ignore everything below it."""
+    if depth == 0 and not allow_literal and expr is not None:
+        if pitch_root_kind(self, expr, scope_id, lineno) in PITCH_REACH:
+            return True
+    return _ORIG_ANCHOR(self, expr, scope_id, lineno, depth, allow_literal)
 
 _ORIG_ANCHOR = ast_scanner.TaintTracker._c22_path_is_internal_repo_anchor
 
@@ -691,6 +966,8 @@ def run_mutation(name: str) -> int:
         tiers.append(('T4', check_pairs()))
         print('TIER 5 - the 24 blessed lines, asked about directly:')
         tiers.append(('T5', check_blessed_lines()))
+        print('TIER 5b - the root-operand pitch: what it reaches, what it buys, what it costs:')
+        tiers.append(('T5b', check_root_operand_pitch()))
         print('TIER 6 - anchor tables, escape rule, literal probes and wiring:')
         tiers.append(('T6', check_vocabulary()))
     except Exception as exc:  # a mutation that cannot even run is not a falsification
@@ -725,6 +1002,8 @@ def main() -> int:
     failures += check_pairs()
     print('TIER 5 - the 24 blessed lines, asked about directly:')
     failures += check_blessed_lines()
+    print('TIER 5b - the root-operand pitch: what it reaches, what it buys, what it costs:')
+    failures += check_root_operand_pitch()
     print('TIER 6 - anchor tables, escape rule, literal probes and wiring:')
     failures += check_vocabulary()
     print(f'\nseal={CWE22_ANCHOR_SEAL} shapes={len(SHAPES)} fp_rows={len(FP_ROWS)} '

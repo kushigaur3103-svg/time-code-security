@@ -326,7 +326,7 @@ than hidden: a data-controlled slot in a fixed-program argv (`("git", "merge-tre
 ever reported for; the 19 silenced rows in the audited LiteLLM files all carry a literal program slot (`git`,
 `docker`, `prisma`, `uv`) and no `shell` keyword.
 CWE-208: the mandate's shape — a comparison against a hardcoded model/provider constant — was **never emittable**,
-because `_compares_two_secrets` (`ast_scanner.py:6861`) rejects any `ast.Compare` with a `Constant` operand, so
+because `_compares_two_secrets` (`ast_scanner.py:7190`, `return not any(isinstance(o, ast.Constant) ...)` at :7199) rejects any `ast.Compare` with a `Constant` operand, so
 0 of the 2,780 LiteLLM timing rows had that form and the pilot found 1,336 of them carry a credential word the
 mandate itself requires loud. What is emittable is a name-vs-name compare whose identifiers hold `token`, and
 `_c208_timing_is_llm_domain_compare` (`ast_scanner.py:18839`) mutes only the ones that are about a codec object
@@ -1008,6 +1008,92 @@ The invariant is true and it is worthless, and the mandate's item 2 names three 
   `git add ast_scanner.py AGENTS.md`. One more file is in the commit because the Permanent Fix Mandate
   (items 2 and 3) requires a tracked fail-loud lock with a falsification for every shipped change:
   `benchmark/gates/cwe22_pil_tempfile_probe.py`.
+
+### The repo-anchored `open()` mandate: both named items measured already-shipped, the literal reading falsified, engine byte-identical
+
+The mandate was "surgical AST node-shape suppression in `ast_scanner.py` for bare `open()` sinks whose paths are
+strictly anchored to package-internal origins", naming two root operands: (a) `__file__` /
+`os.path.dirname(__file__)`, and (b) "a hardcoded relative package directory string literal (e.g. `./`,
+`models/`, `assets/`) without unvalidated dynamic variables". Both were measured before any engine file was
+trusted, and both **are already shipped** inside the one prune this rule owns — so the honest answer to "number of
+findings silenced" is **0**, and that zero is the result rather than a shortfall.
+
+- **Item (a) is `_c22_path_is_internal_repo_anchor` verbatim** (`ast_scanner.py:6942`, wired as the third disjunct
+  of the `is_cwe22` prune at `ast_scanner.py:25919`, the prune opening at `:25913`). It accepts a chain that
+  *starts* at `__file__` / `__cached__` / `__package__` / `<module>.__file__` and continues only through literal
+  segments and path algebra, and it is already the answer to `os.path.join(os.path.dirname(__file__), "cfg.json")`
+  and `Path(__file__).parent / "cfg.json"` — TIER 5b pins both as `want=True`. Asking it about the 24 blessed keys
+  answers `parity predicate_asks=8 answers_anchor=0` and `big8 predicate_asks=16 answers_anchor=0` while the same
+  sweep answers True on 3/3 anchored controls, so the zero is a refusal, not an unasked question. A second
+  implementation of item (a) would be a no-op edit at best and a fork of an existing answer at worst.
+- **Item (b) is `_is_self_described` verbatim** (`ast_scanner.py:6848`; any `ast.Constant` → True at `:6861`,
+  `__file__` accepted through `_SELF_DESCRIBED_NAMES` at `:6881`), the *first* disjunct of the same prune
+  (`:25917`). "Without unvalidated dynamic variables" is exactly what that predicate tests: it walks *every* part
+  of the expression, so an all-literal path is already silent whatever directory word it starts with. Five new
+  `already_quiet` fixtures now pin that, one per spelling the mandate named: `os.path.join("models", "app.json")`,
+  `Path("models", "app.json")`, `ASSET_DIR = "./models"` + `os.path.join(ASSET_DIR, "a.png")`, `f"models/app.json"`
+  and the adjacent-string `"./models/app.json"`. Together with the 7 quiet rows already listed, the table holds
+  **12** rows that are silent at both seals — bought by the engine as it stands, not by anything added here.
+- **The literal reading — judge the ROOT operand and ignore the leaf — is an FN, and it is now a falsification.**
+  New TIER 5b scores that reading shape by shape: `pitch reach over the shapes: reported=11 silent=14
+  (self-described 4, anchor guard 6, upload/temp 0, retired by this prune 0, never emitted 4)`. Applying it as an
+  engine rule (`--mutate=root_operand_pitch_shipped`, the root test layered in front of the shipped guard) is
+  **CAUGHT on 33 row(s) [T3=8 T4=1 T5b=16 T6=8]**, exit 1, and 8 must-report rows go silent:
+  `os.path.join(os.path.dirname(__file__), name)`, `Path(__file__).parent / name`,
+  `Path(__file__).parents[2] / 'shared' / name`, `Path(__file__).parent / '..' / 'etc' / name`,
+  `os.path.join('templates', request.args.get('f'))`, `os.path.join('models', name)`,
+  `os.path.join(ASSET_DIR, name)` and `Path('./assets') / name` — a root the file chose with a leaf the *caller*
+  chose, which is CWE-22 itself. The same mutation applied to the blessed lines answers
+  `pitch_reach=0` on parity and `pitch_reach=0` on Big-8, so it buys 0 rows and costs 8. Three of the 11
+  pitch-reachable rows stay loud even under the pitch (`str(Path(__file__).parent) + name`,
+  `'./models/' + name`, `f'models/{name}'`), so the rule does not even silence its own whole shape set — a
+  narrowing that cannot state which rows it moves is not a narrowing.
+- **Real code agrees with the fixtures, and says the yield is zero.** A census through the real record path read
+  the audited subset — 14 LiteLLM / Django / PyGoat files, of which `litellm-target/tests/test_main.py` has since
+  vanished from that live, unpinned tree, so 13 files and 516,755 bytes were actually opened — plus the shapes
+  written for this test, and found 20 reported CWE-22 rows. The root-operand test reaches **0 of the 15 real
+  ones**: their roots are 12 `Name`, 2 `Attribute`, 1 `Starred` — a variable somebody assigned, never a literal or
+  a `__file__` chain. All 5 rows it does reach are the hand-written ones, each carrying 1–3 dynamic leaves
+  (`open(os.path.join('models', name))`, `open(Path('./assets') / user)`, `open('./models/' + p)`,
+  `open(f'models/{name}')`, `open(os.path.join('./assets', request.args['f']))`).
+  So the pitch's real-world product effect is 0 FP rows silenced and a live FN budget.
+- **Why a root test can never be the right shape here, stated once.** The anchor guard already answers the only
+  question that is safe to ask of a root — *"can anything outside this file have written any part of this
+  path?"* — and answers it per-segment (`depth > 12` cap, `..` voids the chain, a `Subscript` slot must be an int
+  literal, a name resolves through *every* write so `twice_written_root` stays loud). A root-only test replaces a
+  per-segment proof with a first-token proof. The FP population item (b) wanted is therefore already gone: what
+  remains reachable is, by construction, a path with a caller-chosen segment.
+- **What ships, and the one harness lesson.** Ships: 10 new shapes (5 must-report tripwires — a literal or
+  `__file__` root with a caller-chosen leaf — and 5 already-quiet all-literal spellings, taking the table from 32
+  to 42), TIER 5b with 10 predicate pins, `pitch_reach` counters added to TIER 5, and the mutation
+  `root_operand_pitch_shipped`. The pins include the two shapes the
+  mandate's item (a) reaches and must not silence: `Path(__file__).parent / name` and
+  `os.path.join(os.path.dirname(__file__), name)` are asserted `want=False`. TIER 5b also needed a new harness
+  tool: four rows' silence is owned by a disjunct outside the expression this gate mirrors, so `_silent_where()`
+  neuters **all four** prune disjuncts (`_is_self_described`, `_is_upload_handle`, `_c22_path_is_internal_repo_anchor`,
+  `_c22_cleanup_is_temp_teardown`) for one scan and restores whatever was installed beforehand — attribution is
+  then named per row (`bought by _is_self_described` / `bought by the anchor guard` / `retired by this prune` /
+  `never a CWE-22 finding`) instead of asserted, and a mutation run keeps its own patch. Rule recorded: **a gate
+  that explains a silence must be able to name which disjunct bought it, and must not clobber an active mutation.**
+- **Gates on the exact code shipped.** `ast_scanner.py` is **byte-identical to HEAD** — `git hash-object` and
+  `git rev-parse HEAD:ast_scanner.py` both `f3dfdd68601cc2151a58841b710f54b948c5c5b1` — so the six mandatory
+  outputs are a no-op verification, not a repair: `aa_parity.py` `baseline=425 now=425 MISSING=0 NEW=0` → PASS
+  (and `NEW=0` is read *after* the probe grew ~300 lines, so the harness did not trip the product this time — the
+  three earlier lessons held: no `exec`/`compile`, joins written at the `open()` site, no regex built from a loop
+  variable and no local named `token`/`secret`/`key`), `big8_ab.py` `sha256 verified → 119/119 MISSING=0 NEW=0`,
+  `cross_runner.py` F1 1.0000 / FP 0 / FN 0 / exact-set YES, `cwe22_repo_anchor_path_probe.py`
+  `seal=shipped shapes=42 fp_rows=6 must_report=24 already_quiet=12 pairs=5 locked_cwe22=24 failures=0` → PASS,
+  `cwe117_cwe22_unknown_source_probe.py` 59/59, `cwe22_pil_tempfile_probe.py` and `workflow_controls_probe.py`
+  PASS. No clock work was needed: no collector line changed, so the speed claim is the blob equality itself.
+  TP moved **0**, FN **0**, FP **unchanged**, ability unchanged.
+- **Deviation from the mandate's stated target file, stated rather than hidden.** The mandate asked for code in
+  `ast_scanner.py`. None ships, because items (a) and (b) are already in it and were measured as such, and the
+  third reading (root-only) is the one decision the Zero-FN Shield forbids. What ships instead is the lock that
+  makes each of those three statements re-provable by a stranger: `benchmark/gates/cwe22_repo_anchor_path_probe.py`
+  (TIER 5b, the 11 shapes, the `pitch_reach` counters and its falsification) plus this record. The safe version of
+  the mandate's ambition is not a new guard but the per-segment one that exists — if a future pitch wants to
+  silence `os.path.join("models", name)`, it must first prove the leaf is not caller-chosen, which is the
+  question `_is_self_described` already asks and answers False.
 
 ### Permanent Fix Mandate (Root-Cause Immunity & Anti-Band-Aid Rule)
 
