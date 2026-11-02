@@ -247,6 +247,29 @@ def test_shipped_policy_noise_rules_are_measured_zero_reach():
     assert set(config.rule_excludes["CWE-611"]) == {"**/tests/**"}, "CWE-611 exclude drifted"
 
 
+def test_shipped_cwe22_scaffolding_excludes_keep_the_package_prefix():
+    """The two new CWE-22 globs are package-qualified, and only CWE-22 carries them.
+
+    `**/transformers/benchmark/**` silences 3 arena rows. `**/benchmark/**` silences those 3 *and*
+    deletes 7 of the 8 parity blessed CWE-22 keys, because `benchmark/corpus/` is where this
+    repository keeps the corpus those keys were blessed from. So the `transformers/` segment is part
+    of the safety claim and not a style choice -- `workflow_controls_probe.py`'s ninth tier proves it
+    by scanning a real top-level `benchmark/` tree and demanding the traversal there survive.
+    """
+    repo_root = pathlib.Path(__file__).resolve().parents[1]
+    config = load_config(repo_root)
+    scaffold = {"**/transformers/commands/**", "**/transformers/benchmark/**"}
+    shipped = set(config.rule_excludes["CWE-22"])
+    assert scaffold <= shipped, "CWE-22 lost a measured scaffolding exclude"
+    loose = {pattern for pattern in shipped
+             if ("benchmark" in pattern or "commands" in pattern) and pattern not in scaffold}
+    assert not loose, f"CWE-22 carries an unqualified scaffolding glob: {sorted(loose)}"
+    moved = {cwe for cwe, patterns in config.rule_excludes.items()
+             if cwe != "CWE-22" and scaffold & set(patterns)}
+    assert not moved, (f"the scaffolding globs leaked into {sorted(moved)}, whose blessed reach "
+                       "was never measured")
+
+
 # ─── helpers ───
 
 _COMMAND_SINK = (

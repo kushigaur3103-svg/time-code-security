@@ -57,11 +57,27 @@ rules:
   # tests/test_tokenization_mistral_common.py:263/274/280). The engine already mutes the quiet
   # shape by AST proof -- `_c22_path_is_internal_repo_anchor` -- so the path axis adds nothing
   # that does not cost a true positive.
+  # The two scaffolding trees are new, and both halves of the claim are measured. Yield, off the
+  # frozen arena artifact (`benchmark_results/tcs.sarif`, 2,777 rows, 1,162 of them CWE-22):
+  # `**/transformers/commands/**` selects 50 rows in 2 files, `**/transformers/benchmark/**`
+  # selects 3 rows in 1 file -- 53 of 1,162. Safety: `workflow_controls_probe.py`'s blessed-reach
+  # tier proves 0 of the 24 blessed CWE-22 keys (8 parity + 16 Big-8) are selected in the stored,
+  # leaf, arena or corpus-relative spelling, and a ninth check scans a temporary tree to prove the
+  # globs are alive, bounded to those two directories and rule-scoped.
+  # The `transformers/` prefix is load-bearing, not decoration: all 8 parity blessed CWE-22 keys
+  # live under `benchmark/` (`benchmark/corpus/cwe_22_traversal/*.py`,
+  # `benchmark/corpus/cwe_937_insecure_protocol/test_v06_*.py`, `benchmark/runner.py:105`), so the
+  # bare `**/benchmark/**` spelling deletes all 8 in one line -- measured 8 of 8, in every spelling
+  # the gate tries, and 0 of 16 Big-8. That un-qualified pattern is therefore registered as a
+  # *refused* exclusion (`REFUSED_EXCLUDES`) and re-proved as the mutation
+  # `c22_scaffold_exclude_drops_the_package_prefix`.
   CWE-22:
     exclude:
       - "**/examples/**"
       - "**/scripts/**"
       - "**/docker/**"
+      - "**/transformers/commands/**"
+      - "**/transformers/benchmark/**"
 
   # Log forging needs a request; the CLI, CI and example scripts that print counters do not.
   # Measured against the frozen baselines this reaches nothing: 0 of 425 parity rows and 0 of

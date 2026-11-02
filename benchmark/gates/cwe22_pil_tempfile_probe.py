@@ -62,6 +62,21 @@ The rule never reads a file name, a directory name or a function name. That is t
 guard and the mandate, and it is machine-checked: TIER 7 asserts no `PIL`/`Image` token appears inside
 either guard method and that the sink table holds exactly the three deletes.
 
+A second mandate came back to the same two names with a new shape -- "silence `PIL.Image.open` unless the
+argument traces to an external tainted HTTP source" (this file's item 1, verbatim) and "silence `shutil.move`
+/ `os.makedirs` when the target destination resolves within a newly created temporary or target model
+template directory". The first is already refused and re-locked here, unchanged. The second was measured
+against the shipped collector before it was trusted, and it is a rule rewrite, not a narrowing: the collector
+audits `path_arg = node.args[0]` -- the **source** of a move -- and never reads `node.args[1]`, while
+`os.makedirs` and `mkdir` do not appear in the CWE-22 collector at all (0 rows at either seal). So a
+destination test can only ever silence a caller-chosen source: the two fixtures
+`move_source_chosen_by_caller_to_temp_dest` and `move_source_param_to_template_dir` are exactly the pitch's
+own shape, both asserted LOUD at both seals, and `move_dest_pitch_shipped` -- the pitch applied as a row
+filter, since there is no destination exemption in the engine to delete -- is CAUGHT deleting those two.
+TIER 7 reads the three shape facts off the shipped collector text so a destination exemption cannot land
+without failing this gate: `shutil.move` appears exactly once (the sink table), the first-slot fragment is
+present, and `node.args[1]` is never read.
+
 Measured evidence behind the numbers
 ------------------------------------
   blessed overlap   : 24 CWE-22 keys (8 parity + 16 Big-8), of which exactly 2 are delete sinks. TIER 6
@@ -69,9 +84,11 @@ Measured evidence behind the numbers
                       triple: `parity asks=8 answers_temp_root=0`, `big8 asks=13 answers_temp_root=0`, and
                       the same sweep answers True on the three proven-temp controls, so the zero is a
                       refusal and not an unasked question.
-  findings          : 30 fixture shapes -- 3 loud->quiet rows the guard itself earns, 11 must-report rows,
-                      16 already quiet at both seals (never claimed as wins). ADDED (quiet->loud) is 0 and
-                      is asserted as 0.
+  findings          : 34 fixture shapes -- 3 loud->quiet rows the guard itself earns, 13 must-report rows
+                      (the last two are the move pitch's own shapes), 18 already quiet at both seals (never
+                      claimed as wins; two of them are the proof that a move destination is never inspected
+                      and that `os.makedirs` is not a path sink). ADDED (quiet->loud) is 0 and is asserted
+                      as 0.
   predicate         : 29 shapes -- 12 proven, 17 refused, asserted at the expression the wiring would pass.
   real tree         : 19 -> 15 CWE-22 rows on the audited 14-file subset, RETIRED=4 ADDED=0; blessed delta
                       0/24. The 4 are all `Path(tempfile.mkdtemp(...))`-shaped: the constructor is what made
@@ -81,6 +98,9 @@ Measured evidence behind the numbers
                       arithmetic behind "the rule never reads a file name, a directory name or a function
                       name". `accept_nondelete_sink` (widen the sink table past the three deletes) reaches 3
                       more blessed lines, and `pil_pitch_shipped` deletes the one PIL row that is real.
+                      `move_dest_pitch_shipped` deletes 2 must-report rows and buys 0: the destination it
+                      tests is not the argument the rule reads, and the `os.makedirs` half of that pitch
+                      has no population to quiet.
 
 Seal semantics - `CWE22_TEMP_SEAL`
 ------------------------------------
@@ -203,6 +223,26 @@ SHAPES = [
      'img = Image.open(request.files["f"].stream)\nprint(img)\n', 'loud', 'loud'),
     ('pil_image_open_bytesio', REQ + 'import io\nfrom PIL import Image\ndata = bytes(4)\n'
      'img = Image.open(io.BytesIO(data))\nprint(img)\n', 'quiet', 'quiet'),
+    # ---- the move/destination pitch (this mandate's item 2), measured before any edit ----
+    # Both loud rows are the pitch's own shape: a source a caller chose, moved *into* a directory the
+    # pitch calls safe. `move_dest_pitch_shipped` silences exactly these two.
+    ('move_source_chosen_by_caller_to_temp_dest', REQ + HEAD +
+     'shutil.move(os.path.join("exports", request.args["f"]), tempfile.mkdtemp())\n',
+     'loud', 'loud'),
+    ('move_source_param_to_template_dir', REQ + HEAD + '\n\ndef stage(name):\n'
+     '    shutil.move(os.path.join("exports", name), "models/staging")\n\n\n'
+     'stage(request.args.get("f"))\n', 'loud', 'loud'),
+    # The destination is never the audited argument, so the reverse -- a temp source moved to a caller's
+    # path -- already reads quiet at HEAD. The pitch therefore buys nothing here and costs the two rows
+    # above, which is why item 2 is a rewrite of *which argument* is inspected, not a narrowing.
+    ('move_dest_is_never_the_audited_argument', REQ + HEAD +
+     'shutil.move(os.path.join(tempfile.mkdtemp(), "x.json"), request.args.get("d"))\n',
+     'quiet', 'quiet'),
+    # `os.makedirs` is not a CWE-22 sink at all: 0 rows exist to suppress, so the only way to honour
+    # this half of the pitch is to ADD a sink -- a finding that was never reported, in a rule whose
+    # shipped wirings all sit in a suppressing position.
+    ('makedirs_is_not_a_cwe22_sink', REQ + HEAD +
+     'os.makedirs(os.path.join("models", request.args["f"]), exist_ok=True)\n', 'quiet', 'quiet'),
 ]
 
 FP_ROWS = [row for row in SHAPES if row[2] == 'loud' and row[3] == 'quiet']
@@ -300,13 +340,17 @@ TEMPFILE_FORBIDDEN = ('mkdtemp', 'gettempdir', 'NamedTemporaryFile', 'tmpdir', '
                       'tempfile.TemporaryFileWrapper', 'tempfile.mktemp')
 NAME_ATTRS_REQUIRED = ('name', 'filename')
 NAME_ATTRS_FORBIDDEN = ('path', 'parent', 'suffix', 'dir', 'file', 'decode')
+# The one line of the collector that decides what a move alert is *about*. Everything else in this
+# rule is downstream of it, so a destination exemption has to change this text -- which TIER 7 reads.
+SLOT_FRAGMENT = 'path_arg = node.args[0] if node.args else None'
 
 
 def scan_source(source, module='m.py'):
     """One in-memory module through the real record path, as both baselines were built.
 
-    The PIL pitch mutation is a row filter, applied here and nowhere else, because the pitch is a
-    row-level rule and the shipped engine has no PIL exemption to delete.
+    The PIL and move pitch mutations are row filters, applied here and nowhere else, because both
+    pitches are row-level rules and the shipped engine has neither a PIL exemption nor a destination
+    exemption to delete.
     """
     with contextlib.redirect_stderr(_io.StringIO()):
         tracker = ast_scanner.TaintTracker(files={module: source}, audit_all=True)
@@ -319,10 +363,36 @@ def scan_source(source, module='m.py'):
                  if not (row[1].endswith('PIL.Image.open')
                          and 'request' not in (lines[row[0] - 1] if row[0] - 1 < len(lines) else '')
                          and 'files[' not in (lines[row[0] - 1] if row[0] - 1 < len(lines) else ''))]
+    if _MOVE_PITCH_APPLIED:
+        found = [row for row in found
+                 if not (row[1].endswith('shutil.move') and _move_pitch_silences(source, row[0]))]
     return found
 
 
 _PIL_PITCH_APPLIED = False
+_MOVE_PITCH_APPLIED = False
+
+
+def _move_pitch_silences(source, lineno):
+    """The pitch as written, on the sink line it would be asked about.
+
+    "Suppress the traversal alert if the target destination expression resolves within a newly created
+    temporary or target model template directory" -- so the test is on `args[1]`: a fresh
+    `tempfile.mkdtemp()` root, or a literal directory the file names itself. Both are what the two loud
+    move fixtures pass.
+    """
+    for node in ast.walk(ast.parse(source)):
+        if not isinstance(node, ast.Call) or getattr(node, 'lineno', 0) != lineno:
+            continue
+        if ast_scanner.dotted_name(node.func) != 'shutil.move' or len(node.args) < 2:
+            continue
+        destination = node.args[1]
+        if isinstance(destination, ast.Constant) and isinstance(destination.value, str):
+            return True
+        if (isinstance(destination, ast.Call)
+                and ast_scanner.dotted_name(destination.func) == 'tempfile.mkdtemp'):
+            return True
+    return False
 
 
 def is_cwe22_record(meta):
@@ -611,7 +681,7 @@ def _method_source(name):
 
 
 def check_tables_and_wiring():
-    """TIER 7: the three tables, the PIL refusal, and the exactly-three wiring sites."""
+    """TIER 7: the three tables, the PIL and move refusals, and the exactly-three wiring sites."""
     failures = []
     mod = ast_scanner
     sinks = set(mod.CWE22_CLEANUP_DELETE_SINKS)
@@ -684,6 +754,33 @@ def check_tables_and_wiring():
         failures.append(('wiring', 'exactly one def and three call sites, each in a suppressing '
                          'position (the guard can only ever remove a CWE-22 sink, never add one)',
                          (3, 1, True), (calls, defs, all(tails.values()))))
+
+    # The two shape facts behind this mandate's item 2, read off the shipped collector rather than
+    # asserted: `os.makedirs` is not a path sink (so there is nothing to suppress), and the rule audits
+    # the first positional argument only (so a *destination* test is not a narrowing of this rule -- it
+    # is a rewrite of which argument is inspected, and the only thing it can silence is a source).
+    collector = inspect.getsource(mod.TaintTracker._collect_cwe22_path_traversal_findings)
+    make_dir_words = [word for word in ('makedirs', 'mkdir') if word in collector]
+    print(f'  item-2 shape census: makedirs/mkdir in the CWE-22 collector={make_dir_words} (want []), '
+          f'`shutil.move`={collector.count("shutil.move")} (want 1), '
+          f'first-slot audit={SLOT_FRAGMENT in collector} (want True), '
+          f'second-slot reads={collector.count("node.args[1]")} (want 0)')
+    if make_dir_words:
+        failures.append(('makedirs refusal', 'no makedirs or mkdir sink in the CWE-22 collector',
+                         [], make_dir_words,
+                         'the mandate named a call that is not a path traversal sink: it has 0 rows to '
+                         'suppress, and adding it would ADD findings in a rule whose every wiring sits '
+                         'in a suppressing position'))
+    if collector.count('shutil.move') != 1:
+        failures.append(('move pitch refusal', 'exactly one `shutil.move`: the sink table',
+                         1, collector.count('shutil.move'),
+                         'a second mention means a destination exemption has landed, and the only rows '
+                         'it can move are caller-chosen sources'))
+    if SLOT_FRAGMENT not in collector or collector.count('node.args[1]'):
+        failures.append(('move pitch refusal', SLOT_FRAGMENT + ' and no read of node.args[1]',
+                         'present', 'absent',
+                         'CWE-22 inspects the SOURCE of a move; silencing on the destination would hide '
+                         'an attacker-named file being carried into a directory the pitch calls safe'))
     return failures
 
 
@@ -815,12 +912,25 @@ MUTATIONS = {
         'rows': ['pil_image_open_param_path'],
         'apply': lambda: globals().update({'_PIL_PITCH_APPLIED': True}),
     },
+    'move_dest_pitch_shipped': {
+        'what': 'the mandate\'s item 2 applied as a row filter over the real record path (there is no '
+                'destination exemption in the engine to delete, which is the refusal): silence a '
+                '`CWE-22: shutil.move` row when the *destination* is a fresh `tempfile.mkdtemp()` root or '
+                'a literal template directory. The rule audits `node.args[0]`, so both rows this buys '
+                'silence for are a caller-chosen SOURCE being carried into a directory the pitch calls '
+                'safe -- `os.path.join("exports", request.args["f"])` and `os.path.join("exports", name)` '
+                'with `name` from `request.args`. Item 2\'s other name, `os.makedirs`, has 0 rows at any '
+                'seal because it is not a path sink, so that half of the pitch cannot be applied at all '
+                'without adding findings',
+        'rows': ['move_source_chosen_by_caller_to_temp_dest', 'move_source_param_to_template_dir'],
+        'apply': lambda: globals().update({'_MOVE_PITCH_APPLIED': True}),
+    },
 }
 
 
 def run_mutation(name: str) -> int:
     """Apply one in-memory mutation and run the real gate over it. Exit 1 = the mutation was caught."""
-    global _PIL_PITCH_APPLIED
+    global _PIL_PITCH_APPLIED, _MOVE_PITCH_APPLIED
     spec = MUTATIONS[name]
     print(f"MUTATION {name}: {spec['what']}")
     print(f"  rows that must move: {', '.join(spec['rows'])}")
@@ -829,6 +939,8 @@ def run_mutation(name: str) -> int:
         spec['apply']()
         if name == 'pil_pitch_shipped':
             _PIL_PITCH_APPLIED = True
+        if name == 'move_dest_pitch_shipped':
+            _MOVE_PITCH_APPLIED = True
         print(f'TIER 3 - findings truth table under seal={CWE22_TEMP_SEAL!r}:')
         tiers.append(('T3', check_shapes()))
         print('TIER 4 - the guard\'s own predicate table:')
@@ -871,7 +983,7 @@ def main() -> int:
     failures += check_pairs()
     print('TIER 6 - the 24 blessed lines, asked about directly:')
     failures += check_blessed_lines()
-    print('TIER 7 - three tables, the PIL refusal and the wiring sites:')
+    print('TIER 7 - three tables, the PIL and move refusals, and the wiring sites:')
     failures += check_tables_and_wiring()
     print(f'\nseal={CWE22_TEMP_SEAL} shapes={len(SHAPES)} fp_rows={len(FP_ROWS)} '
           f'must_report={len(MUST_REPORT_ROWS)} already_quiet={len(ALREADY_QUIET_ROWS)} '

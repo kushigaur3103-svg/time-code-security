@@ -62,10 +62,11 @@ The sign-off also carries seven standing instructions:
   own truth table (`cwe704_type_cast_probe.py`, `cwe328_hash_context_probe.py`,
   `cwe116_template_autoescape_probe.py`, each `VERDICT: PASS`), so narrowing one of them means
   shipping that file first, not after.
-  All twenty-seven runnable gate scripts (`aa_parity.py`, `big8_ab.py`, `cwe338_ml_math_probe.py`,
+  All twenty-eight runnable gate scripts (`aa_parity.py`, `big8_ab.py`, `cwe338_ml_math_probe.py`,
   `cwe338_prng_context_probe.py`, `cwe117_cwe22_unknown_source_probe.py`,
   `cwe117_builtin_seal_probe.py`, `cwe117_numeric_provenance_probe.py`,
   `cwe22_dirent_closure_probe.py`, `cwe22_sink_argument_probe.py`,
+  `cwe22_pil_tempfile_probe.py`,
   `cwe434_local_serialization_probe.py`, `cwe611_xml_entity_probe.py`,
   `cwe79_safe_response_probe.py`, `cwe798_credential_concreteness_probe.py`,
   `cwe116_template_autoescape_probe.py`, `cwe770_unbounded_read_probe.py`,
@@ -520,8 +521,8 @@ Locks and numbers for this step: `workflow_controls_probe.py` now runs 6 checks 
 e2e tier asserts `scan arena` returns exactly `arena/src/app.py:6 CWE-78` + `arena/src/util.py:3 CWE-328`;
 `shipped controls: failures=0`, all 8 CAUGHT → PASS. `tests/test_workflow_controls.py` 16 → **18 passing**.
 (Those are that step's counts; the confidence-filter step further down takes the same file to 7 checks
-and 10 mutations and the tests to 20 passing, and the CWE-611 tests-exclusion step at the end of this file
-is the live one: **8 checks, 13 mutations**, tests still 20 passing.)
+and 10 mutations and the tests to 20 passing, and the CWE-611 tests-exclusion step to **8 checks, 13
+mutations** with 20 tests. The live counts are in the newest step at the end of this file.)
 `ast_scanner.py` is byte-identical to HEAD (line-ending-normalised sha256 `55b7148532106e20` on both
 sides; `git diff --stat` lists only `.tcs.yaml`, `tcs_config.py`, `cli.py`, the probe and the tests), so no
 collector was touched and the six mandatory outputs are a no-op check rather than a repair: parity
@@ -1094,6 +1095,126 @@ findings silenced" is **0**, and that zero is the result rather than a shortfall
   the mandate's ambition is not a new guard but the per-segment one that exists — if a future pitch wants to
   silence `os.path.join("models", name)`, it must first prove the leaf is not caller-chosen, which is the
   question `_is_self_described` already asks and answers False.
+
+### The master arena mandate: one config exclusion shipped on 53 measured rows, three AST items refused, engine byte-identical
+
+The mandate asked for two layers against the Transformers arena: two CWE-22 rule-scoped globs in `.tcs.yaml`
+("measured 0 blessed reach"), and three AST node-shape guards in `ast_scanner.py` — a PIL parameter-path
+mute, a `shutil.move` / `os.makedirs` destination mute, and a numeric f-string logging mute. Layer 1 shipped.
+All three layer-2 items were measured before any engine file was trusted and all three are refused: two buy
+**0** rows, one would rewrite which argument the rule inspects. No engine line changed.
+
+- **LAYER 1 shipped, and both halves of its claim are numbers, not adjectives.** Yield, read off the frozen
+  artifact (`benchmark_results/tcs.sarif`, 2,777 rows, 1,162 of them CWE-22) through the real matcher
+  (`TcsConfig.rule_excluded`, not the global `excludes_path` — a first census called the globs dead because
+  it asked the wrong function): `**/transformers/commands/**` selects **50 rows in 2 files**,
+  `**/transformers/benchmark/**` selects **3 rows in 1 file**, union **53 rows = 4.56 % of the rule, 1.91 %
+  of the report, over 3 files**. Those two directories hold 66 rows across all rules, so the other **13 stay
+  loud** (CWE-117 4, CWE-770 3, CWE-338 2, CWE-400 2, CWE-1333 1, CWE-434 1) — the exclusion is rule-scoped,
+  never a file skip. Safety: `blessed reach` measures **0 of the 24** blessed CWE-22 keys (8 parity + 16
+  Big-8) in every spelling, and the new ninth check scans a temporary tree with the shipped `.tcs.yaml` text
+  and demands four things a reach count cannot say — alive (`src/transformers/commands/build.py` and
+  `src/transformers/benchmark/bench.py` silent), bounded (`src/transformers/models/build.py` loud — the same
+  traversal one directory up is a missed finding, not noise), prefix-qualified (`benchmark/corpus/legacy.py`
+  loud) and rule-scoped (CWE-328 on `src/transformers/commands/util.py` loud). The carrier is
+  `lit_root_join_name` of `cwe22_repo_anchor_path_probe.py` — a literal directory the file chose with a file
+  name the caller chose, LOUD at both seals there — so nothing but a path policy can move its answer.
+- **The `transformers/` prefix is the whole safety margin, and the refusal is now machine-checked.** The bare
+  `**/benchmark/**` spelling — which is what the mandate's own words "zero blessed keys reside in … benchmark
+  harnesses" would allow — was scored against both baselines in every spelling the gate tries: it reaches
+  **8 of 8 parity blessed CWE-22 keys and 0 of 16 Big-8**, because `benchmark/` is where this repository keeps
+  the corpus those keys were blessed from (`benchmark/corpus/cwe_22_traversal/bad.py:5 test_v01:5 test_v02:8
+  test_v03:5 test_v05:8`, `benchmark/corpus/cwe_937_insecure_protocol/test_v06_bad.py:6 test_v06_good.py:7`,
+  `benchmark/runner.py:105`). It is therefore added to `REFUSED_EXCLUDES`, so the gate fails if the pattern is
+  ever shipped *and* fails if the refusal loses its blessed key — a narrowing that became safe is as loud as
+  one that never was. Behaviourally it is the mutation `c22_scaffold_exclude_drops_the_package_prefix` (CAUGHT
+  on exactly the `benchmark/corpus` row), with `c22_scaffold_exclude_widened_past_the_two_trees`
+  (`**/transformers/**`) CAUGHT on exactly the `models/` row and `config_rule_excludes_ignored` CAUGHT on the
+  two scaffolding rows. Each mutation fails one named assertion, which was read out of the check rather than
+  assumed: `{drops_the_package_prefix: 1, widened_past_the_two_trees: 1, config_rule_excludes_ignored: 2}`.
+  The probe is now **9 checks / 16 mutation mappings (14 distinct names)**, `shipped controls: failures=0`, all
+  CAUGHT → PASS; `tests/test_workflow_controls.py` 20 → **21 passing**, pinning the qualified pair and refusing
+  an unqualified one from the other side.
+- **LAYER 2 item 1 (PIL parameter paths) refused — it contradicts the mandate's own invariant.** The population
+  is real: **204 `Image.open` CWE-22 rows in 119 arena files**, mostly under `tests/models/`. But the one audited
+  real row is `validators.py:39 Image.open(gif_path)`, whose target is a *function parameter* rebound to
+  `Path(gif_path)` and which traces to no HTTP source in its own scope — so "suppress a path that is a local
+  function parameter unless it carries confirmed tainted provenance" silences exactly the line the same mandate
+  orders kept intact ("Ensure `validators.py:39` parity behavior remains intact"). In a library a parameter *is*
+  the external boundary: it is the same class as blessed `modeling_utils.py:336 open(checkpoint_path, "rb")` and
+  `trainer.py:4301 open(model_card_filepath, "w")`. The existing lock was not weakened — `pil_image_open_param_path`
+  and `pil_image_open_upload_handle` are still LOUD at both seals, `pil_pitch_shipped` is still CAUGHT on
+  **1 row [T3=1]**, and TIER 7 still forbids a `PIL`/`Image` identifier inside either guard.
+- **LAYER 2 item 2 (`shutil.move` / `os.makedirs` destinations) refused — one name has no population, the other
+  has no destination.** `os.makedirs` and `mkdir` produce **0** CWE-22 rows and cannot: `makedirs` and `mkdir`
+  appear **0** times in the CWE-22 collector (and 0 times in the whole `TaintTracker`), so there is nothing to
+  suppress and the only way to honour that half of the pitch is to *add* a sink — a new finding in a rule whose
+  three wirings all sit in a suppressing position. `shutil.move` has 13 arena rows, **11 of which LAYER 1 already
+  silenced** (all in `src/transformers/commands/add_new_model.py`), leaving 2 residual. The decisive AST fact:
+  the collector audits `path_arg = node.args[0]` — the **source** — and reads `node.args[1]` **0** times, so a
+  destination test does not narrow this rule, it changes which argument is looked at, and the only thing it can
+  remove is a caller-chosen source being carried somewhere. That is now fixtures rather than words:
+  `move_source_chosen_by_caller_to_temp_dest` (`shutil.move(os.path.join("exports", request.args["f"]),
+  tempfile.mkdtemp())`) and `move_source_param_to_template_dir` (`shutil.move(os.path.join("exports", name),
+  "models/staging")` with `name` from `request.args`) are asserted LOUD at both seals, while
+  `move_dest_is_never_the_audited_argument` (the reverse: a temp root moved to `request.args.get("d")`) and
+  `makedirs_is_not_a_cwe22_sink` are quiet at both — the last row is the measurement that `os.makedirs` is not a
+  sink, and it turns loud the day anybody adds it. `move_dest_pitch_shipped` (the pitch applied as a row filter
+  over the real record path, documented as such because there is no destination exemption to delete) is **CAUGHT
+  on 2 rows [T3=2]**, and the 2 rows are exactly those two sources. TIER 7 prints the shape census that makes a
+  quiet landing impossible: `makedirs/mkdir in the CWE-22 collector=[]`, ``shutil.move`=1` (the sink table only),
+  `first-slot audit=True`, `second-slot reads=0`. The table is now `seal=shipped shapes=34 fp_rows=3
+  must_report=13 already_quiet=18 pred_rows=29 pred_proven=12 pred_refused=17 pairs=5 locked_cwe22=24
+  failures=0` → PASS, with TIER 6 unchanged (`parity asks=8 answers_temp_root=0`, `big8 asks=13
+  answers_temp_root=0`, controls 3/3). Its `TCS_CWE22_TEMP_SEAL=abstained` column FAILs on the shipped engine *by
+  design* — that seal models the pre-guard engine and is only honest against `TCS_CWE22_TEMP_ENGINE` at those
+  bytes; the failing rows are the 3 guard-earned `loud→quiet` shapes and the 5 pairs, none of them added here.
+- **LAYER 2 item 3 (numeric f-string logging) refused — it was already built, costed and withdrawn, and the
+  numbers still say no.** The unique-binding census of the mandate-D step costs **8.59 / 9.38 / 11.72 ms per cold
+  walk** (29.7 ms across the three modules that hold all 43 blessed CWE-117 keys = **1.73 % of a scan**) and returned
+  **0 of 119 real asks changing answer**, **0 numeric bindings** in those modules, and 55 reachable holes across
+  25,005 local files with **0 inside either frozen baseline**; the mandate's literal reading (a hole *named*
+  loss / lr / epoch / step / shape) reaches **5 blessed `trainer.py` keys** at `:1603 :1604 :1610 :1614 :1618`. Nothing
+  was re-implemented. `cwe117_numeric_provenance_probe.py` still answers `seal=refused binding_seal=withdrawn
+  shapes=25 … locked_cwe117=49 failures=0` → PASS, its six census falsifications still exit 2 with the honest reason
+  (no guard, nothing to delete) and `state_name_rule_shipped` still exits 1 CAUGHT. In plain words: the wide version
+  buys nothing and costs time; the version that would buy something deletes true findings.
+- **Speed (Rule 15.3), measured on the exact tuples a real arena scan hands the changed code.** No engine line
+  changed: `ast_scanner.py` `f3dfdd68601cc215`, `cli.py` `34588435d8c8e15e`, `tcs_config.py` `5c9a1815ca836abb`,
+  `rule_engine.py` `86147fdb11063475` are each `git hash-object`-equal to `git rev-parse HEAD:<file>`, so scan CPU
+  is unchanged everywhere except the pattern list. That list was clocked paired and order-alternating over the real
+  **1,162** arena CWE-22 path keys, 7 legs, block-averaged 50 passes per `os.times()` window — an unblocked first leg
+  reported `head=0.000 µs`, which is the 15.6 ms Windows tick and not the work: best-of-7 **11.564 → 19.632 µs per
+  ask (+8.068 µs for the two extra globs)**, paired ratios `[1.659, 3.605, 1.67, 1.65, 1.391, 2.427, 1.54]`
+  (median 1.659) on the bare predicate. The ask count is the finding count, so the bound on a whole scan is
+  **1,162 × 8.068 µs = +9.4 ms**, and the same run measured the yield beside the cost (`HEAD selects 0 rows, shipped
+  selects 53`): 2,777-row arena report, +9.4 ms, −53 rows. The honest claim is that bound, not a speed-up.
+- **Gates on the exact code shipped.** `aa_parity.py` `baseline=425 now=425 MISSING=0 NEW=0` → PASS — read after both
+  gate files grew, so the harness did not trip the product this time and the four recorded harness rules held (no
+  `exec`/`compile`, corpus joins written at the `open()` site, no regex built from a loop variable, no local named
+  `token`/`secret`/`key`). `big8_ab.py` `sha256 verified (119 pinned keys, engine 94c5ee2)` → `119/119 MISSING=0
+  NEW=0` exact-set. `cross_runner.py` F1 **1.0000**, Precision **100.00 %**, Recall **100.00 %**, `Exact-set match
+  YES`, `Suppression contract YES` — its own runtime column read 8,147.86 ms and then 288.60 ms for the same
+  unsampled command on this laptop, which is why no speed claim in this file rests on it. `workflow_controls_probe` PASS (9 checks, 16/16 CAUGHT),
+  `cwe22_pil_tempfile_probe` PASS as above, `cwe22_repo_anchor_path` (42 shapes, `locked_cwe22=24`),
+  `cwe22_dirent_closure` (16), `cwe22_sink_argument` (24), placeholder lock `locked_keys=59 cases=8`,
+  `cwe117_builtin_seal` (49), `cwe117_numeric_provenance` (25), `cwe338_ml_math` (62 cases), and **all 26**
+  `benchmark/gates/*_probe.py` scripts exit 0 with `failures=0` on this tree; `tests/test_workflow_controls.py`
+  21 passed. TP moved **0** (both baselines exact-set), FN **0**, FP **−53 arena rows and 0 baseline rows**, speed
+  identical to HEAD by blob equality, ability unchanged.
+- **Findings silenced, stated exactly.** **53** CWE-22 arena rows across **3** files — 4.56 % of that rule's 1,162
+  rows, 1.91 % of the 2,777-row report — and **0** rows in either frozen baseline. "FP" is the mandate's label: what
+  was measured is rows silenced, and no Transformers tree exists on this machine, so the arena figure comes from the
+  shipped artifact rather than a fresh scan; a re-run of the arena workflow would have to be human-pressed.
+- **Deviation from the mandate's staging list, stated rather than hidden.** The mandate said
+  `git add .tcs.yaml ast_scanner.py AGENTS.md`. `ast_scanner.py` carries **no** change — its three items were each
+  measured and refused, and the useful half of item 2's `shutil.move` population (11 of 13 rows) was already bought
+  by LAYER 1. Three more files ship because the Permanent Fix Mandate (items 2 and 3) requires a tracked fail-loud
+  lock with a falsification for every shipped change: `benchmark/gates/workflow_controls_probe.py` (the ninth tier,
+  the `REFUSED_EXCLUDES` entry and 3 mappings), `benchmark/gates/cwe22_pil_tempfile_probe.py` (4 move/makedirs
+  fixtures, `move_dest_pitch_shipped`, the TIER 7 shape census) and `tests/test_workflow_controls.py` (the prefix
+  pin). None of them is an engine file, so the mandate's "do not touch the engine" constraint holds in the direction
+  that matters: nothing was added to it either.
 
 ### Permanent Fix Mandate (Root-Cause Immunity & Anti-Band-Aid Rule)
 

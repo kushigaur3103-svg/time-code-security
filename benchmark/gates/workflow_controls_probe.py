@@ -11,16 +11,20 @@ The controls are developer-facing filters that sit *outside* the AST rules:
 
 Every tier runs the shipped code and then re-runs the same check under a mutation that
 models the obvious regression, so a rolled-back guard fails this probe instead of passing
-silently. Exit 0 only when the shipped checks pass and all thirteen mutations are caught.
+silently. Exit 0 only when the shipped checks pass and all sixteen mutation mappings are caught.
 
 A seventh tier reads the shipped root `.tcs.yaml` and the two frozen baselines together: no
 glob in the noise policy -- global or per rule -- may quiet a blessed finding under any
 spelling of its path, and each exclusion this repository *refuses* to ship stays refused only
 while a blessed key still sits in its reach.
 
-An eighth tier scans that same shipped policy over a fresh tree and demands the exclusion do
-its job where it says it does, and nowhere else: production XXE stays loud, a tests-tree XXE
-goes quiet, and a second rule inside the same tests tree stays loud.
+An eighth and a ninth tier scan that same shipped policy over a fresh tree and demand each
+exclusion do its job where it says it does, and nowhere else: production XXE stays loud, a
+tests-tree XXE goes quiet, and a second rule inside the same excluded tree stays loud. The
+CWE-22 tier adds the two proofs the CWE-611 one cannot make: the scaffolding glob is *bounded*
+(a traversal in `src/transformers/models/` must survive), and the `transformers/` prefix is
+*load-bearing* (the same traversal in a top-level `benchmark/` directory must survive, because
+that is where this repository's own blessed corpus lives).
 
 The fixture trees are written into a TemporaryDirectory at run time. Nothing is added under
 `benchmark/`, which matters because the parity gate scans this tree and a planted sink here
@@ -115,6 +119,16 @@ CONFIG_XXE = (
     "\n"
     "def parse_xml(payload):\n"
     "    return lxml.etree.fromstring(payload)\n"
+)
+# `lit_root_join_name` of `cwe22_repo_anchor_path_probe.py`: a literal directory chosen by the
+# file with a file name chosen by the caller, which that gate proves LOUD at both seals. Nothing
+# but a path policy can change its answer, so it is the carrier for the CWE-22 exclusion tier.
+CONFIG_TRAV = (
+    "import os\n"
+    "\n"
+    "\n"
+    "def load(name):\n"
+    "    return open(os.path.join('models', name)).read()\n"
 )
 
 
@@ -407,7 +421,13 @@ BASELINE_KEYS = (("parity", "benchmark/gates/parity_before.keys"),
                  ("big8", "benchmark/gates/big8_before.keys"))
 # Exclusion this repository refuses because a blessed finding sits inside it. The refusal is
 # re-proved every run: if the blessed key ever leaves the tree, the note itself has to change.
-REFUSED_EXCLUDES = {"CWE-208": "**/tests/**"}
+REFUSED_EXCLUDES = {"CWE-208": "**/tests/**",
+                    # The un-qualified spelling of the shipped CWE-22 scaffolding glob. It reaches
+                    # every one of the 8 parity blessed CWE-22 keys, because `benchmark/` is where this
+                    # repository keeps the corpus those keys were blessed from -- so the `transformers/`
+                    # prefix is the safety margin, and this line keeps the refusal evidenced: if those
+                    # keys ever move, the refusal has to be re-measured rather than kept by habit.
+                    "CWE-22": "**/benchmark/**"}
 # A rule whose blessed population is empty in both baselines gets no protection from them, so a
 # path exclusion for it is unmeasurable: `MISSING=0` is exactly what deleting the rule produces.
 # CWE-1357 is the sharp case -- `is_workflow_path` only ever returns True below a `.github`
@@ -549,6 +569,62 @@ def check_shipped_c611_exclude() -> list:
     return failures
 
 
+def check_shipped_c22_scaffold_exclude() -> list:
+    """The two shipped CWE-22 scaffolding globs apply, stay in their two trees, and move no other rule.
+
+    `blessed reach` proves these globs cannot quiet a *frozen* key. That proof is about the two
+    baselines, not about the rest of the world, so this tier scans a temporary tree with the shipped
+    `.tcs.yaml` text and answers four questions a reach count cannot: the exclusion is applied at all;
+    it stops at `src/transformers/commands/` and `src/transformers/benchmark/` rather than reaching any
+    `transformers` file (the false-negative direction -- the same traversal in `models/` must stay
+    loud); it silences CWE-22 alone and not the whole file; and the `transformers/` prefix is
+    load-bearing, because all 8 parity blessed CWE-22 keys live under a top-level `benchmark/`
+    directory, which is where a repository puts its own corpora.
+    """
+    failures = []
+    shipped = (Path(REPO_ROOT) / ".tcs.yaml").read_text(encoding="utf-8")
+    if "**/transformers/commands/**" not in shipped or "**/transformers/benchmark/**" not in shipped:
+        return ["the shipped .tcs.yaml no longer carries both CWE-22 scaffolding globs"]
+    with tempfile.TemporaryDirectory() as tmp:
+        root = Path(tmp)
+        (root / ".tcs.yaml").write_text(shipped, encoding="utf-8")
+        for directory in ("src/transformers/commands", "src/transformers/benchmark",
+                          "src/transformers/models", "benchmark/corpus"):
+            (root / directory).mkdir(parents=True)
+        (root / "src/transformers/commands/build.py").write_text(CONFIG_TRAV, encoding="utf-8")
+        (root / "src/transformers/benchmark/bench.py").write_text(CONFIG_TRAV, encoding="utf-8")
+        # The same carrier outside the two trees: an exclusion that leaked one directory up quietens
+        # this, and that is a missed finding rather than noise reduction.
+        (root / "src/transformers/models/build.py").write_text(CONFIG_TRAV, encoding="utf-8")
+        # A top-level `benchmark/` tree: the repository's own corpus home, and where every parity
+        # blessed CWE-22 key lives. Only the package-qualified glob may match, never the bare word.
+        (root / "benchmark/corpus/legacy.py").write_text(CONFIG_TRAV, encoding="utf-8")
+        # A second rule inside the excluded tree: a rule exclusion that behaved like a file skip
+        # quietens this too.
+        (root / "src/transformers/commands/util.py").write_text(CONFIG_MD5, encoding="utf-8")
+        got = _keys(_run_cli(["scan", ".", "--format", "json", "--workers", "1"], root))
+    scaffold = ("src/transformers/commands/build.py", "src/transformers/benchmark/bench.py")
+    for path in scaffold:
+        if any(cwe == "CWE-22" and file_key == path for file_key, _line, cwe in got):
+            failures.append(f"CWE-22 still reports on {path}, so the shipped scaffolding "
+                            "exclusion is not being applied (a silently ignored policy)")
+    if not any(cwe == "CWE-22" and file_key == "src/transformers/models/build.py"
+               for file_key, _line, cwe in got):
+        failures.append("CWE-22 went silent on src/transformers/models/build.py, so the scaffolding "
+                        "exclusion reached outside its two directories (false negative)")
+    if not any(cwe == "CWE-22" and file_key == "benchmark/corpus/legacy.py"
+               for file_key, _line, cwe in got):
+        failures.append("CWE-22 went silent on benchmark/corpus/legacy.py, so a `benchmark` *word* "
+                        "bought the exclusion instead of the package-qualified "
+                        "`transformers/benchmark` tree -- the spelling that reaches the 8 parity "
+                        "blessed keys (false negative)")
+    if not any(cwe == "CWE-328" and file_key == "src/transformers/commands/util.py"
+               for file_key, _line, cwe in got):
+        failures.append("CWE-328 went silent on src/transformers/commands/util.py, so the CWE-22 "
+                        "exclusion acted as a whole-file skip (false negative)")
+    return failures
+
+
 def _mutation(name: str):
     """Apply one regression, returning a restore callable."""
     if name == "suppression_call_removed":
@@ -627,7 +703,30 @@ def _mutation(name: str):
 
         tcs_config.TcsConfig.rule_excluded = rule_blind
         return lambda: setattr(tcs_config.TcsConfig, "rule_excluded", original)
+    if name == "c22_scaffold_exclude_drops_the_package_prefix":
+        # The dishonest version of the shipped glob: `**/benchmark/**` instead of
+        # `**/transformers/benchmark/**`. `blessed reach` would not notice, because it reads the
+        # frozen key spellings and the corpus is stored flattened, so this is caught only by the
+        # tree scan below -- which is why the tier writes a real top-level `benchmark/` directory.
+        return _widen_c22_scaffold("**/benchmark/**")
+    if name == "c22_scaffold_exclude_widened_past_the_two_trees":
+        # One directory up: every `transformers` file goes quiet instead of the two scaffolding ones.
+        return _widen_c22_scaffold("**/transformers/**")
     raise ValueError(name)
+
+
+def _widen_c22_scaffold(extra_pattern: str):
+    """Let CWE-22 also match `extra_pattern`, as a narrowed path policy would have been written."""
+    original = tcs_config.TcsConfig.rule_excluded
+
+    def widened(self, cwe, path_key, root=None):
+        if original(self, cwe, path_key, root):
+            return True
+        return str(cwe).upper() == "CWE-22" and tcs_config.TcsConfig._selects(
+            (extra_pattern,), path_key, root)
+
+    tcs_config.TcsConfig.rule_excluded = widened
+    return lambda: setattr(tcs_config.TcsConfig, "rule_excluded", original)
 
 
 CHECKS = {
@@ -639,6 +738,7 @@ CHECKS = {
     "matching law": check_matching_law,
     "blessed reach": check_blessed_reach,
     "shipped CWE-611 exclude": check_shipped_c611_exclude,
+    "shipped CWE-22 scaffolding exclude": check_shipped_c22_scaffold_exclude,
 }
 MUTATIONS = (
     ("suppression_call_removed", "suppression e2e"),
@@ -654,6 +754,9 @@ MUTATIONS = (
     ("c611_exclude_widened_past_the_tests_tree", "shipped CWE-611 exclude"),
     ("c611_rule_exclude_becomes_file_skip", "shipped CWE-611 exclude"),
     ("config_rule_excludes_ignored", "shipped CWE-611 exclude"),
+    ("c22_scaffold_exclude_drops_the_package_prefix", "shipped CWE-22 scaffolding exclude"),
+    ("c22_scaffold_exclude_widened_past_the_two_trees", "shipped CWE-22 scaffolding exclude"),
+    ("config_rule_excludes_ignored", "shipped CWE-22 scaffolding exclude"),
 )
 
 
