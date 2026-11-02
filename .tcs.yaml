@@ -17,6 +17,19 @@
 # (`iac_auditor.is_workflow_path`), so excluding `.github/**` would delete the whole rule;
 # CWE-250 exists only as a Dockerfile finding and has 0 blessed rows in either baseline, so no
 # measurement could catch its loss; and CWE-208 under `**/tests/**` reaches 19 blessed keys.
+#
+# SHAPE LAW for the global list (bulk-noise mandate, measured): a `exclude_paths` entry must name
+# a tree at the scan root (`docs/**`), never a tree that can appear anywhere (`**/utils/**`).
+# The difference is not style -- on the frozen arena artifact the deep form silences 165 rows
+# across 11 rules and **28 of them live in `src/transformers/utils/`**, i.e. library code, while
+# the anchored form silences the same 126 scaffolding rows and **0** production rows. A global is
+# a never-read, so the deep spelling is a file skip over production code, which is the one thing
+# the blessed baselines cannot see: its reach measured 0 of 425 and 0 of 119 in every spelling.
+# The gate now fails on (a) any global starting with `**/`, (b) any global that selects a path
+# where a hardcoded secret is classically committed, (c) any global that selects even one path a
+# sole-source rule can emit on (that is how `**/.github/**` would have deleted CWE-1357 -- all 115
+# of its arena rows are that rule, and it has 0 blessed rows, so MISSING=0 stays green while the
+# rule dies), and (d) any rule carrying the depth-free `**/utils/**`.
 
 exclude_paths:
   - "docs/**"
@@ -44,6 +57,7 @@ rules:
   CWE-78:
     exclude:
       - "tests/**"
+      - "utils/**"
       - "**/examples/**"
       - "**/scripts/**"
       - "**/.github/**"
@@ -73,6 +87,12 @@ rules:
   # `c22_scaffold_exclude_drops_the_package_prefix`.
   CWE-22:
     exclude:
+      # The arena's top-level `utils/` script tree: 86 rows. Anchored on purpose -- the deep
+      # `**/utils/**` spelling would also quiet the 8 traversal rows under
+      # `src/transformers/utils/`, which is library code. Reach 0 of the 24 blessed CWE-22 keys in
+      # every spelling, and `check_shipped_nonprod_exclude()` re-proves both halves by scanning a
+      # temp tree.
+      - "utils/**"
       - "**/examples/**"
       - "**/scripts/**"
       - "**/docker/**"
@@ -86,6 +106,10 @@ rules:
   # test trees (`src/transformers/tests/`), and is measured the same way: 0 of 425, 0 of 119.
   CWE-117:
     exclude:
+      # 9 rows in the top-level `utils/` scripts (log forging needs a request, a build script does
+      # not). 0 rows of this rule live under a `tests/` segment in the arena, so the tests entries
+      # below already buy that tree completely -- measured, not assumed.
+      - "utils/**"
       - "tests/**"
       - "**/tests/**"
       - "**/examples/**"
@@ -141,3 +165,85 @@ rules:
   CWE-611:
     exclude:
       - "**/tests/**"
+
+  # ---- Bulk-noise slice (measured per rule, per tree, before shipping) --------------------------
+  # Each entry below carries a number, and every number came from the gate's own machinery
+  # (`_baseline_rows` + `_arena_spellings` + `path_matches`) against the frozen artifact
+  # (`benchmark_results/tcs.sarif`, 2,777 rows). `rows` is what the arena loses, `reach` is what a
+  # frozen true positive loses, `pop` is how many blessed keys that rule has. Nothing here has a
+  # non-zero reach, and nothing here is a rule with `pop = 0` -- a rule with no frozen population
+  # gets no exclusion, because `MISSING=0` is exactly what deleting it produces.
+  # Refused, with the key that proves it: CWE-208 `**/tests/**` reach 19 of 36 (202 rows);
+  # CWE-312 `**/tests/**` reach 1 of 7 -- and that one is the rule's ONLY Big-8 key
+  # (tests/models/markuplm/test_tokenization_markuplm.py:74); CWE-770 `**/tests/**` reach 1;
+  # CWE-95 `**/tests/**` reach 2; CWE-400 `**/tests/**` reach 6; CWE-22 `**/tests/**` reach 11
+  # (410 rows); CWE-338 `**/tests/**` reach 7 (81 rows). CWE-117 `**/tests/**` was already shipped
+  # and measures 0 arena rows, so re-adding it was refused as a no-op. CWE-1188 (4 rows) and
+  # CWE-96 (1 row) get nothing: `pop = 0`.
+
+  # Query building in a build script, a sample or a fixture is not a statement a server runs.
+  # 6 + 3 + 8 = 17 rows; 0 of the 25 blessed CWE-89 keys reached.
+  CWE-89:
+    exclude:
+      - "utils/**"
+      - "**/examples/**"
+      - "**/tests/**"
+
+  # Code loaded from a scaffolding tree. 3 + 4 + 7 = 14 rows; 0 of 6 blessed.
+  CWE-94:
+    exclude:
+      - "utils/**"
+      - "**/examples/**"
+      - "**/tests/**"
+
+  # Reflected output in a CLI helper or a sample page. 1 + 2 = 3 rows; 0 of 15 blessed.
+  CWE-79:
+    exclude:
+      - "utils/**"
+      - "**/examples/**"
+
+  # A redirect target chosen by a build script. 6 + 1 = 7 rows; 0 of 14 blessed.
+  CWE-918:
+    exclude:
+      - "utils/**"
+      - "**/tests/**"
+
+  # Unbounded reads in tooling scripts and samples. 7 + 8 = 15 rows; 0 of 11 blessed.
+  # `**/tests/**` is refused here: reach 1 (a blessed CWE-770 key sits in a tests tree).
+  CWE-770:
+    exclude:
+      - "utils/**"
+      - "**/examples/**"
+
+  # ReDoS in a scaffolding regex or a sample. 4 + 1 = 5 rows; 0 of the 2 blessed keys.
+  CWE-1333:
+    exclude:
+      - "utils/**"
+      - "**/examples/**"
+
+  # Cleartext writes made by a sample or a fixture. 12 + 2 = 14 rows; 0 of 3 blessed.
+  CWE-532:
+    exclude:
+      - "**/examples/**"
+      - "**/tests/**"
+
+  # A dangerous hash in a sample is a doc snippet, not a shipped verifier. 11 rows; 0 of 12.
+  # `**/tests/**` is refused here: reach 2.
+  CWE-95:
+    exclude:
+      - "**/examples/**"
+
+  # A temp file created by a sample. 1 + 5 = 6 rows; 0 of 7 blessed.
+  CWE-377:
+    exclude:
+      - "**/examples/**"
+      - "**/tests/**"
+
+  # A credential blob copied into a sample. 2 rows; 0 of 7 blessed. This is the ONLY exclusion
+  # CWE-312 carries: its `**/tests/**` half would delete its single blessed Big-8 finding
+  # (tests/models/markuplm/test_tokenization_markuplm.py:74, `fp.write(json.dumps(vocab_tokens))`
+  # under `with open(cls.vocab_file, "w")`), which is the whole reason the refusal above exists.
+  # CWE-798 (hardcoded secrets) still has no exclusion of any kind, in any tree, anywhere.
+  CWE-312:
+    exclude:
+      - "**/examples/**"

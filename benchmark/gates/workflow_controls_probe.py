@@ -421,13 +421,28 @@ BASELINE_KEYS = (("parity", "benchmark/gates/parity_before.keys"),
                  ("big8", "benchmark/gates/big8_before.keys"))
 # Exclusion this repository refuses because a blessed finding sits inside it. The refusal is
 # re-proved every run: if the blessed key ever leaves the tree, the note itself has to change.
-REFUSED_EXCLUDES = {"CWE-208": "**/tests/**",
+# Every number here was measured with `_blessed_reach` over both frozen baselines.
+REFUSED_EXCLUDES = {"CWE-208": ("**/tests/**",),      # 19 of 36 blessed keys
+                    "CWE-312": ("**/tests/**",),      # 1 of 7 -- and it is the rule's ONLY Big-8 key
+                    "CWE-770": ("**/tests/**",),      # 1 of 11
+                    "CWE-95": ("**/tests/**",),       # 2 of 12
+                    "CWE-400": ("**/tests/**",),      # 6 of 14
+                    "CWE-338": ("**/tests/**",),      # 7 of 16
+                    "CWE-22": ("**/benchmark/**",     # all 8 parity blessed CWE-22 keys
+                               "**/tests/**"),        # 11 of 24 (410 arena rows)
                     # The un-qualified spelling of the shipped CWE-22 scaffolding glob. It reaches
                     # every one of the 8 parity blessed CWE-22 keys, because `benchmark/` is where this
                     # repository keeps the corpus those keys were blessed from -- so the `transformers/`
                     # prefix is the safety margin, and this line keeps the refusal evidenced: if those
                     # keys ever move, the refusal has to be re-measured rather than kept by habit.
-                    "CWE-22": "**/benchmark/**"}
+                    }
+# The four trees a hardcoded secret is classically committed in. A *global* exclusion is a file skip
+# for every rule, so it must never select one of these -- CWE-798 carries no path exclusion anywhere
+# in this repository, and a global is the one spelling that could have quietly changed that.
+NONPROD_SECRET_HOMES = ("examples/app.py", "scripts/deploy.py", "utils/hub.py", "tests/fixture.py")
+# Every path `iac_auditor.is_workflow_path` can return True for, in the shape the rule is emitted in.
+EMITTABLE_WORKFLOW_PATHS = (".github/workflows/ci.yml", "sub/.github/workflows/ci.yaml",
+                            "repo/.github/workflows/build.yml")
 # A rule whose blessed population is empty in both baselines gets no protection from them, so a
 # path exclusion for it is unmeasurable: `MISSING=0` is exactly what deleting the rule produces.
 # CWE-1357 is the sharp case -- `is_workflow_path` only ever returns True below a `.github`
@@ -510,19 +525,19 @@ def check_blessed_reach() -> list:
             for row in _blessed_reach(rows, cwe, pattern):
                 failures.append(f"{cwe} exclude {pattern} hides blessed "
                                 f"{row[0]} {row[3]} {row[1]}:{row[2]}")
-    for cwe, pattern in sorted(REFUSED_EXCLUDES.items()):
-        if pattern in (config.rule_excludes.get(cwe) or ()):
-            failures.append(f"{cwe} ships the refused exclusion {pattern}")
-        if not _blessed_reach(rows, cwe, pattern):
-            failures.append(f"the refusal of {cwe} {pattern} has no blessed key behind it any more")
+    for cwe, patterns in sorted(REFUSED_EXCLUDES.items()):
+        for pattern in patterns:
+            if pattern in (config.rule_excludes.get(cwe) or ()):
+                failures.append(f"{cwe} ships the refused exclusion {pattern}")
+            if not _blessed_reach(rows, cwe, pattern):
+                failures.append(f"the refusal of {cwe} {pattern} has no blessed key behind it any more")
     for cwe in sorted(config.rule_excludes):
         if not any(row[3] == cwe for row in rows):
             failures.append(f"{cwe} has 0 blessed rows in either baseline, so its path "
                             f"exclusion {sorted(config.rule_excludes[cwe])} could never be "
                             "measured -- a rule with no frozen population gets no exclusion")
     for cwe, (pattern, predicate) in sorted(SOLE_SOURCE.items()):
-        emittable = [".github/workflows/ci.yml", "sub/.github/workflows/ci.yaml",
-                     "repo/.github/workflows/build.yml"]
+        emittable = list(EMITTABLE_WORKFLOW_PATHS)
         covered = [path for path in emittable if predicate(path)
                    and path_matches(path, pattern)]
         if len(covered) != len([path for path in emittable if predicate(path)]):
@@ -625,6 +640,106 @@ def check_shipped_c22_scaffold_exclude() -> list:
     return failures
 
 
+def check_nonprod_exclude_doctrine() -> list:
+    """The global list obeys the laws a never-read can break, and `utils/**` stays anchored.
+
+    A rule exclusion narrows one rule inside one tree; a global exclusion stops the file being read
+    at all, for every rule including CWE-798. That is why the bulk-noise mandate shipped its three
+    trees per rule and refused them as globals, and the refusal is now arithmetic, not prose:
+    (a) a global may not be depth-free -- measured on the frozen arena artifact, `**/utils/**`
+    selects 165 rows across 11 rules and 28 of them live in `src/transformers/utils/`, library
+    code, while the root-anchored `utils/**` selects the same 126 scaffolding rows and 0 production
+    rows; (b) a global may not select a tree a hardcoded secret is classically committed in;
+    (c) a global may not touch a path a sole-source rule can emit on, because such a rule has 0
+    blessed rows, so `MISSING=0` stays green while the rule dies; and (d) no rule may carry the
+    depth-free `**/utils/**`, which is the same leak written one level down.
+    """
+    failures = []
+    config = load_config(Path(REPO_ROOT))
+    if config is None:
+        return ["the repository ships no .tcs.yaml, so the global exclusion shape law has "
+                "nothing to lock"]
+    for pattern in config.exclude_paths:
+        if str(pattern).startswith("**/"):
+            failures.append(f"global exclude {pattern} is depth-free: it names a tree that can "
+                            "appear anywhere, so it is a never-read over production code. A global "
+                            "must name a tree at the scan root (`docs/**`).")
+        for home in NONPROD_SECRET_HOMES:
+            if path_matches(home, pattern):
+                failures.append(f"global exclude {pattern} skips {home} for EVERY rule, including "
+                                "CWE-798, which carries no path exclusion anywhere -- a secret "
+                                "committed in that tree would become invisible (false negative)")
+        for cwe, (_pattern, predicate) in sorted(SOLE_SOURCE.items()):
+            hit = [path for path in EMITTABLE_WORKFLOW_PATHS
+                   if predicate(path) and path_matches(path, pattern)]
+            if hit:
+                failures.append(f"global exclude {pattern} hides {cwe} on {hit[0]} -- {cwe} is "
+                                "emitted only below a `.github` segment "
+                                "(`iac_auditor.is_workflow_path`) and has 0 blessed keys in either "
+                                "baseline, so no gate could notice the rule being deleted")
+    for cwe, patterns in sorted(config.rule_excludes.items()):
+        if "**/utils/**" in patterns:
+            failures.append(f"{cwe} carries the depth-free `**/utils/**`, which also quiets the "
+                            "traversal rows under `src/transformers/utils/`; the shipped spelling "
+                            "is the root-anchored `utils/**`")
+    return failures
+
+
+def check_shipped_nonprod_exclude() -> list:
+    """The bulk-noise slice applies, stops at the tree it names, and never skips a file.
+
+    `blessed reach` proves these globs cannot quiet a *frozen* key; it cannot prove they do
+    anything at all, and it cannot see the arena rows in `src/transformers/utils/` that are in no
+    baseline. This tier scans a temporary tree carrying the shipped `.tcs.yaml` text and answers
+    alive (`utils/**` and `**/examples/**` go silent for CWE-22), bounded (the identical traversal
+    under `src/transformers/utils/` stays loud, under a scan of `.` and of `src`), rule-scoped
+    (CWE-328 in that same excluded tree keeps reporting) and refused (CWE-22 under `tests/` stays
+    loud -- 11 of its 16 Big-8 blessed keys live there).
+    """
+    failures = []
+    shipped = (Path(REPO_ROOT) / ".tcs.yaml").read_text(encoding="utf-8")
+    if "\n      - \"utils/**\"" not in shipped:
+        return ["the shipped .tcs.yaml no longer carries the root-anchored `utils/**` exclusion"]
+
+    def reports(rows, path: str, cwe: str) -> bool:
+        return any(file_key == path and cwe == found for file_key, _line, found in rows)
+
+    with tempfile.TemporaryDirectory() as tmp:
+        root = Path(tmp)
+        (root / ".tcs.yaml").write_text(shipped, encoding="utf-8")
+        for directory in ("utils", "examples", "tests", "src/transformers/utils"):
+            (root / directory).mkdir(parents=True)
+        (root / "utils/build.py").write_text(CONFIG_TRAV, encoding="utf-8")
+        (root / "utils/util.py").write_text(CONFIG_MD5, encoding="utf-8")
+        (root / "examples/build.py").write_text(CONFIG_TRAV, encoding="utf-8")
+        (root / "tests/build.py").write_text(CONFIG_TRAV, encoding="utf-8")
+        # The same traversal carrier inside a *nested* `utils/` -- production library code, which
+        # the root-anchored spelling must not reach.
+        (root / "src/transformers/utils/build.py").write_text(CONFIG_TRAV, encoding="utf-8")
+        at_root = _keys(_run_cli(["scan", ".", "--format", "json", "--workers", "1"], root))
+        at_src = _keys(_run_cli(["scan", "src", "--format", "json", "--workers", "1"], root))
+    for path in ("utils/build.py", "examples/build.py"):
+        if reports(at_root, path, "CWE-22"):
+            failures.append(f"CWE-22 still reports on {path}, so the shipped exclusion is not "
+                            "being applied (a silently ignored policy)")
+    if not reports(at_root, "tests/build.py", "CWE-22"):
+        failures.append("CWE-22 went silent on tests/build.py, so a `tests/` exclusion reached a "
+                        "rule that refuses it -- 11 of the 16 blessed Big-8 CWE-22 keys live under "
+                        "a tests tree (false negative)")
+    if not reports(at_root, "src/transformers/utils/build.py", "CWE-22"):
+        failures.append("CWE-22 went silent on src/transformers/utils/build.py, so the exclusion "
+                        "is depth-free (`**/utils/**`) and reaches production library code, which "
+                        "is in neither frozen baseline (false negative)")
+    if not reports(at_src, "src/transformers/utils/build.py", "CWE-22"):
+        failures.append("CWE-22 went silent on src/transformers/utils/build.py when the scan was "
+                        "aimed at `src`, so the anchored spelling became deep one root level in "
+                        "(false negative)")
+    if not reports(at_root, "utils/util.py", "CWE-328"):
+        failures.append("CWE-328 went silent on utils/util.py, so the CWE-22/CWE-117 exclusion "
+                        "acted as a whole-file skip (false negative)")
+    return failures
+
+
 def _mutation(name: str):
     """Apply one regression, returning a restore callable."""
     if name == "suppression_call_removed":
@@ -694,35 +809,80 @@ def _mutation(name: str):
         tcs_config.TcsConfig.rule_excluded = everywhere
         return lambda: setattr(tcs_config.TcsConfig, "rule_excluded", original)
     if name == "c611_rule_exclude_becomes_file_skip":
-        original = tcs_config.TcsConfig.rule_excluded
-
-        def rule_blind(self, cwe, path_key, root=None):
-            merged = tuple(pattern for group in self.rule_excludes.values()
-                           for pattern in group)
-            return tcs_config.TcsConfig._selects(merged, path_key, root)
-
-        tcs_config.TcsConfig.rule_excluded = rule_blind
-        return lambda: setattr(tcs_config.TcsConfig, "rule_excluded", original)
+        return _rule_blind_exclude()
     if name == "c22_scaffold_exclude_drops_the_package_prefix":
         # The dishonest version of the shipped glob: `**/benchmark/**` instead of
         # `**/transformers/benchmark/**`. `blessed reach` would not notice, because it reads the
         # frozen key spellings and the corpus is stored flattened, so this is caught only by the
         # tree scan below -- which is why the tier writes a real top-level `benchmark/` directory.
-        return _widen_c22_scaffold("**/benchmark/**")
+        return _widen_rule("CWE-22", "**/benchmark/**")
     if name == "c22_scaffold_exclude_widened_past_the_two_trees":
         # One directory up: every `transformers` file goes quiet instead of the two scaffolding ones.
-        return _widen_c22_scaffold("**/transformers/**")
+        return _widen_rule("CWE-22", "**/transformers/**")
+    if name == "global_exclude_depth_free":
+        # The bulk-noise mandate's item 1 shape, on a tree that touches nothing else the law
+        # covers, so this fails assertion (a) alone.
+        return _poisoned_config(exclude_paths=("docs/**", "scratch/**", "**/docker/**"))
+    if name == "global_exclude_skips_a_secret_home":
+        # Anchored (so (a) holds) and nowhere near a workflow file (so (c) holds), but a global over
+        # a tree a secret is classically committed in -- the shape that would make CWE-798 blind.
+        return _poisoned_config(exclude_paths=("docs/**", "scratch/**", "examples/**"))
+    if name == "global_exclude_kills_a_sole_source_rule":
+        # `.github/**` at the root: anchored, secret-free, and still enough to mute CWE-1357 on the
+        # one path a scan rooted at the repo can emit it on -- a rule delete no baseline can see.
+        return _poisoned_config(exclude_paths=("docs/**", "scratch/**", ".github/**"))
+    if name == "deep_utils_glob_shipped_for_a_rule":
+        base = load_config(Path(REPO_ROOT))
+        return _poisoned_config(rule_excludes={
+            "CWE-22": (*base.rule_excludes["CWE-22"], "**/utils/**")})
+    if name == "utils_glob_widened_to_deep":
+        # The same defect one level down, and only visible by scanning: the policy file still says
+        # `utils/**`, but the matcher behaves as if it said `**/utils/**`.
+        return _widen_rule("CWE-22", "**/utils/**")
+    if name == "tests_glob_shipped_for_a_refused_rule":
+        base = load_config(Path(REPO_ROOT))
+        return _poisoned_config(rule_excludes={
+            "CWE-312": (*base.rule_excludes["CWE-312"], "**/tests/**")})
+    if name == "nonprod_exclude_becomes_file_skip":
+        return _rule_blind_exclude()
     raise ValueError(name)
 
 
-def _widen_c22_scaffold(extra_pattern: str):
-    """Let CWE-22 also match `extra_pattern`, as a narrowed path policy would have been written."""
+def _poisoned_config(exclude_paths=None, rule_excludes=None):
+    """Answer `load_config` with a dishonest variant of the policy this repository ships."""
+    original = load_config
+    base = original(Path(REPO_ROOT))
+    merged = dict(base.rule_excludes)
+    for cwe, patterns in (rule_excludes or {}).items():
+        merged[cwe] = tuple(dict.fromkeys(tuple(merged.get(cwe, ())) + tuple(patterns)))
+    poisoned = tcs_config.TcsConfig(
+        exclude_paths=tuple(exclude_paths) if exclude_paths is not None else base.exclude_paths,
+        rule_excludes=merged)
+    globals()["load_config"] = lambda root=None: poisoned
+    return lambda: globals().__setitem__("load_config", original)
+
+
+def _rule_blind_exclude():
+    """Make every rule exclusion behave like a whole-file skip, whatever the rule argument says."""
+    original = tcs_config.TcsConfig.rule_excluded
+
+    def rule_blind(self, cwe, path_key, root=None):
+        merged = tuple(pattern for group in self.rule_excludes.values()
+                       for pattern in group)
+        return tcs_config.TcsConfig._selects(merged, path_key, root)
+
+    tcs_config.TcsConfig.rule_excluded = rule_blind
+    return lambda: setattr(tcs_config.TcsConfig, "rule_excluded", original)
+
+
+def _widen_rule(rule: str, extra_pattern: str):
+    """Let `rule` also match `extra_pattern`, as a widened path policy would have been written."""
     original = tcs_config.TcsConfig.rule_excluded
 
     def widened(self, cwe, path_key, root=None):
         if original(self, cwe, path_key, root):
             return True
-        return str(cwe).upper() == "CWE-22" and tcs_config.TcsConfig._selects(
+        return str(cwe).upper() == rule.upper() and tcs_config.TcsConfig._selects(
             (extra_pattern,), path_key, root)
 
     tcs_config.TcsConfig.rule_excluded = widened
@@ -739,6 +899,8 @@ CHECKS = {
     "blessed reach": check_blessed_reach,
     "shipped CWE-611 exclude": check_shipped_c611_exclude,
     "shipped CWE-22 scaffolding exclude": check_shipped_c22_scaffold_exclude,
+    "nonprod exclude doctrine": check_nonprod_exclude_doctrine,
+    "shipped nonprod exclude": check_shipped_nonprod_exclude,
 }
 MUTATIONS = (
     ("suppression_call_removed", "suppression e2e"),
@@ -757,6 +919,14 @@ MUTATIONS = (
     ("c22_scaffold_exclude_drops_the_package_prefix", "shipped CWE-22 scaffolding exclude"),
     ("c22_scaffold_exclude_widened_past_the_two_trees", "shipped CWE-22 scaffolding exclude"),
     ("config_rule_excludes_ignored", "shipped CWE-22 scaffolding exclude"),
+    ("global_exclude_depth_free", "nonprod exclude doctrine"),
+    ("global_exclude_skips_a_secret_home", "nonprod exclude doctrine"),
+    ("global_exclude_kills_a_sole_source_rule", "nonprod exclude doctrine"),
+    ("deep_utils_glob_shipped_for_a_rule", "nonprod exclude doctrine"),
+    ("utils_glob_widened_to_deep", "shipped nonprod exclude"),
+    ("tests_glob_shipped_for_a_refused_rule", "blessed reach"),
+    ("nonprod_exclude_becomes_file_skip", "shipped nonprod exclude"),
+    ("config_rule_excludes_ignored", "shipped nonprod exclude"),
 )
 
 

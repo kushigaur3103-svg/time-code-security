@@ -1216,6 +1216,107 @@ All three layer-2 items were measured before any engine file was trusted and all
   pin). None of them is an engine file, so the mandate's "do not touch the engine" constraint holds in the direction
   that matters: nothing was added to it either.
 
+### The bulk-noise mandate: three globals refused on what a never-read can reach, one tests entry
+refused twice, 193 rows shipped on a per-rule and root-anchored spelling
+
+The mandate asked for 650-700 arena rows via three **global** `exclude_paths` trees plus
+`**/tests/**` under CWE-117/CWE-208/CWE-312, with "do not touch engine code". The literal request
+measures **607 rows of the frozen 2,777-row artifact** (21.86 %, 244 files, 17 rules) — so the
+mandate's own figure is roughly right, and roughly half of it is the one decision this file forbids.
+What ships is the provable remainder: **193 rows, 6.95 % of the report, over 70 files and 13 rules**,
+0 rows returning, blessed reach **0** recounted independently of the gate.
+
+- **Every number here is incremental, and that is the honest unit.** The artifact was produced with
+  HEAD's policy already applied, so a pattern whose tree is already muted contributes 0 (CWE-117
+  `**/tests/**` = 0 rows) and a row counted once is a row a *re-scan of the same tree* loses. The
+  yield is therefore a lower bound on a raw arena run, never a tree size, and no Transformers tree
+  exists on this machine to re-shoot it — a fresh arena scan stays a human-pressed
+  `workflow_dispatch`.
+- **Item 1 refused in full, three times, each on its own number.** As a global `**/utils/**` selects
+  **165 rows across 11 rules and 28 of them live under `src/transformers/utils/`** — library code,
+  read by `ast_scanner` as any other module. Its blessed reach measures **0 of 425 and 0 of 119**, so
+  neither baseline can see the loss: a global is a *never-read*, and this one is a file skip over
+  production code. The root-anchored spelling buys the same scaffolding per rule instead — measured
+  as a CWE-22 rule exclusion: `utils/**` **86 rows / 0 inside `src/transformers/`**, `**/utils/**`
+  **98 rows / 8 inside it**. As a global `**/.github/**` selects **115 rows in exactly 1 rule**:
+  CWE-1357 is emitted only where `iac_auditor.is_workflow_path` returns True (a `.github` segment),
+  and it has **0 blessed rows**, so `MISSING=0` stays green while the whole rule dies — the
+  sole-source doctrine, now a law rather than a comment. As a global `**/examples/**` selects **48
+  rows in 10 rules** and would stop reading those files for **CWE-798 too**, which carries no path
+  exclusion anywhere in this repository; shipped instead under 9 individual rules where every other
+  rule in the same file keeps running.
+- **Item 2: one no-op, two refusals, and the mandate's own caution was right.** CWE-117
+  `**/tests/**` is **already shipped** and measures 0 arena rows — re-adding it was refused as a
+  no-op edit. CWE-208 `**/tests/**` reaches **19 of the 36 blessed keys** (202 rows) and CWE-312
+  `**/tests/**` reaches **1 of 7 — and that one is the rule's ONLY Big-8 key**
+  (`tests/models/markuplm/test_tokenization_markuplm.py:74`), so both are refusals, not
+  narrowing-requests. CWE-22 and CWE-338 were left untouched exactly as the mandate ordered (11 of
+  24 and 7 of 16 respectively). Newly measured refusals for the same glob: CWE-770 reach 1, CWE-95
+  reach 2, CWE-400 reach 6.
+- **What shipped instead, per tree:** `utils/**` **126 rows / 29 files** (9 rules: CWE-22, CWE-78,
+  CWE-117, CWE-89, CWE-94, CWE-79, CWE-918, CWE-770, CWE-1333), `**/examples/**` **44 / 27** (9
+  rules), `**/tests/**` **23 / 14** (5 rules: CWE-89, CWE-94, CWE-918, CWE-532, CWE-377). Per rule:
+  CWE-22 86, CWE-89 17, CWE-770 15, CWE-532 14, CWE-94 14, CWE-95 11, CWE-117 9, CWE-918 7,
+  CWE-377 6, CWE-1333 5, CWE-78 4, CWE-79 3, CWE-312 2 — 193, each row attributed to exactly one new
+  pattern. 13 rules gained a pattern; a rule with **0 blessed rows** (CWE-1188 4 rows, CWE-96 1 row)
+  got none, by doctrine.
+- **Four new global-shape laws, all machine-checked** in the 10th tier of
+  `benchmark/gates/workflow_controls_probe.py` (`nonprod exclude doctrine`): (a) no `exclude_paths`
+  entry may start with `**/`; (b) no global may select a path in `NONPROD_SECRET_HOMES`
+  (`examples/app.py`, `scripts/deploy.py`, `utils/hub.py`, `tests/fixture.py`); (c) no global may
+  select even one path in `EMITTABLE_WORKFLOW_PATHS` for a sole-source rule; (d) no rule may carry
+  the depth-free `**/utils/**`. The 11th tier (`shipped nonprod exclude`) scans a temporary tree with
+  the shipped `.tcs.yaml` **text** and demands five things a reach count cannot say: `utils/build.py`
+  and `examples/build.py` CWE-22 **silent** (alive), `src/transformers/utils/build.py` CWE-22 **loud**
+  under a scan of `.` **and** of `src` (bounded, and root-stable), `tests/build.py` CWE-22 **loud**
+  (the refused tree), `utils/util.py` CWE-328 **loud** (rule-scoped, never a file skip).
+- **Locks.** `REFUSED_EXCLUDES` became a dict-of-tuples so one rule can carry several evidenced
+  refusals, and gained CWE-312/770/95/400 next to CWE-208/338/22. The probe goes **9 → 11 checks**
+  and **16 → 24 mutation mappings (21 distinct names)**, with `_widen_c22_scaffold` generalised to
+  `_widen_rule(rule, pattern)` and two new shared installers (`_poisoned_config`,
+  `_rule_blind_exclude`); no existing mutation name changed. `shipped controls: failures=0`, all 24
+  CAUGHT → PASS, and each new mutation fails the assertion it was written for — counted, not
+  assumed: `global_exclude_depth_free` 1, `global_exclude_skips_a_secret_home` 1,
+  `global_exclude_kills_a_sole_source_rule` 1, `deep_utils_glob_shipped_for_a_rule` 1 (the four
+  doctrine laws, each isolated), `utils_glob_widened_to_deep` 2 (both root legs),
+  `tests_glob_shipped_for_a_refused_rule` 2 (blessed markuplm:74 + the refusal note),
+  `nonprod_exclude_becomes_file_skip` 2, `config_rule_excludes_ignored` 2 (both alive legs). The same
+  defect is pinned at two levels — `**/utils/**` fails the policy text *and* the scan — because a row
+  count cannot defend a spelling. `tests/test_workflow_controls.py` 21 → **22 passing**, pinning the
+  anchored spelling, the absence of any depth-free global or rule glob, and the exact sets
+  `CWE-208 = CWE-312 = CWE-95 = {"**/examples/**"}`.
+- **Speed (Rule 15.3).** Five files that could execute a finding are `git hash-object`-equal to HEAD:
+  `ast_scanner.py f3dfdd68601cc215`, `cli.py 34588435d8c8e15e`, `tcs_config.py 5c9a1815ca836abb`,
+  `rule_engine.py 86147fdb11063475`, `iac_auditor.py 2a8cf3f2f1d5561b`. The only changed variable is
+  the pattern list (9 rules carrying **33** rule-scoped patterns at HEAD, 19 carrying **56** now), so
+  the predicate was clocked first: paired,
+  order-alternating over the **2,777 real (rule, path) arena pairs** × 40 reps, 7 legs — head median
+  **16.036 µs/ask → shipped 23.772 µs/ask (+7.74)**, ratio median **1.4474** (min 1.0570, max 1.7982).
+  A longer table is slower per ask; that is arithmetic, not a defect — so the claim Rule 15.3 actually
+  governs was measured at scan level: six alternating pairs, each arm a full `cli.main` scan of its
+  own copy of `benchmark/corpus` with one policy text in its own cwd and `--workers 1`, both arms
+  returning **396 findings with identical key sets** → CPU ratio **median 0.9861**, min 0.8491, max
+  1.2075, shipped ≤ head in **4/6** legs, while the analytic addition is 396 × 7.74 µs = **3.1 ms** on
+  legs of 1.4-2.9 s and the arena bound is 2,777 × 7.74 µs = **21.5 ms**. The honest statement is
+  "indistinguishable, bounded by 21.5 ms per arena scan", not "faster". The one change that would
+  make the marginal pattern cheaper — an `lru_cache` on `_segments`/`_normalize_pattern`, which
+  re-splits the same path once per pattern — was **not** shipped, because the mandate is config-only
+  and the scan CPU already needs no rescue; it is named here so it is a decision, not an oversight.
+- **Gates on the exact code shipped.** `aa_parity.py` `baseline=425 now=425 MISSING=0 NEW=0` → PASS,
+  read *after* the probe grew both tiers (the harness did not trip the product; the four recorded
+  harness rules held). `big8_ab.py` `sha256 verified (119 pinned keys, engine 94c5ee2)` →
+  `119/119 MISSING=0 NEW=0` exact-set. `cross_runner.py` Precision/Recall **100.00 %**, F1 **1.0000**,
+  `Exact-set match YES`, `Suppression contract YES`, 283.45 ms. `workflow_controls_probe.py` PASS as
+  above. `tests/test_workflow_controls.py` 22 passed in 0.65 s. Machine had 1,603 MB free at run time
+  and no engine file moved, so the gate memory profile is the previously measured one. TP moved **0**,
+  FN **0**, FP **−193 arena rows and 0 baseline rows**, speed unchanged by blob equality.
+- **Deviation from the mandate's staging list, stated rather than hidden.** The list said
+  `git add .tcs.yaml AGENTS.md benchmark/gates/workflow_controls_probe.py`;
+  `tests/test_workflow_controls.py` ships too, because the Permanent Fix Mandate (items 2-3) requires
+  the pin to be reviewable from the other side of the config loader. No engine file is in the commit,
+  in either direction.
+
+
 ### Permanent Fix Mandate (Root-Cause Immunity & Anti-Band-Aid Rule)
 
 All engine modifications, precision improvements, and bug fixes must be architecturally permanent:

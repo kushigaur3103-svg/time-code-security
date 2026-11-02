@@ -226,6 +226,10 @@ def test_shipped_policy_excludes_nothing_the_baselines_could_lose():
         "CWE-22": ("tests/**", "**/tests/**"),
         "CWE-338": ("tests/**", "**/tests/**"),
         "CWE-208": ("**/tests/**", "tests/**"),
+        "CWE-312": ("**/tests/**", "tests/**"),
+        "CWE-770": ("**/tests/**",),
+        "CWE-95": ("**/tests/**",),
+        "CWE-400": ("**/tests/**",),
         "CWE-1357": ("**/.github/**", "**/.circleci/**", "tests/**"),
         "CWE-250": ("**/docker/**",),
         "CWE-269": ("**/docker/**",),
@@ -268,6 +272,32 @@ def test_shipped_cwe22_scaffolding_excludes_keep_the_package_prefix():
              if cwe != "CWE-22" and scaffold & set(patterns)}
     assert not moved, (f"the scaffolding globs leaked into {sorted(moved)}, whose blessed reach "
                        "was never measured")
+
+
+def test_shipped_nonprod_excludes_are_root_anchored_and_rule_scoped():
+    """`utils/**` is the anchored spelling, it sits under `rules`, and no glob is a secret-home skip.
+
+    Measured on the frozen arena artifact: `**/utils/**` selects 165 rows over 11 rules and 28 of
+    them live in `src/transformers/utils/` -- library code -- while the root-anchored `utils/**`
+    selects the same 126 scaffolding rows and 0 production rows. Both measure 0 blessed reach in
+    every spelling, so neither `aa_parity.py` nor `big8_ab.py` can tell the two apart, which is why
+    the shape is pinned here and its behaviour is pinned in the gate's `shipped nonprod exclude`
+    tier. The three exact-set rows are the mandate's item 2 refused at half: CWE-208 `**/tests/**`
+    reaches 19 of 36 blessed keys and CWE-312 `**/tests/**` reaches its only Big-8 key
+    (tests/models/markuplm/test_tokenization_markuplm.py:74), so those rules keep examples only.
+    """
+    repo_root = pathlib.Path(__file__).resolve().parents[1]
+    config = load_config(repo_root)
+    assert not [pattern for pattern in config.exclude_paths
+                if str(pattern).startswith("**/")], "a global must name a root-level tree"
+    assert not [cwe for cwe, patterns in config.rule_excludes.items()
+                if "**/utils/**" in set(patterns)], "the depth-free utils glob leaked into a rule"
+    anchored = {cwe for cwe, patterns in config.rule_excludes.items()
+                if "utils/**" in set(patterns)}
+    assert {"CWE-22", "CWE-78", "CWE-117", "CWE-89", "CWE-94", "CWE-79", "CWE-918",
+            "CWE-770", "CWE-1333"} <= anchored, f"missing `utils/**` in {sorted(anchored)}"
+    for cwe in ("CWE-208", "CWE-312", "CWE-95"):
+        assert set(config.rule_excludes[cwe]) == {"**/examples/**"}, f"{cwe} drifted"
 
 
 # ─── helpers ───
