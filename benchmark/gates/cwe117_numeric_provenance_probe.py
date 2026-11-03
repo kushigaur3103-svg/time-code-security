@@ -39,11 +39,28 @@ asking the 49 blessed lines themselves: `sealed_by_shipped_binding_seal=0`,
 `reachable_by_state_name_rule=5` -- the five blessed `src__transformers__trainer.py` keys at `:1603
 :1604 :1610 :1614 :1618`, whose holes really are named `num_train_epochs`,
 `num_update_steps_per_epoch`, `max_steps`, `epochs_trained` and `steps_trained_in_current_epoch`, and
-whose values are not. Seven in-memory falsifications run through `--mutate=<name>`; the six whose
+whose values are not. Eight in-memory falsifications run through `--mutate=<name>`; the six whose
 guard symbol the withdrawal removed exit 2 with the honest reason printed (`binding_map_neutralised`,
 `census_accepts_any_name`, `rebinding_accepted`, `bindings_membership_decides`, `dynamic_doors_blanked`,
-`depth_cap_raised` -- no census, no guard to falsify), and the one that still ships its answer today,
-`state_name_rule_shipped`, is CAUGHT with exit 1 on the three name-rule rows.
+`depth_cap_raised` -- no census, no guard to falsify). The two whose reading the engine can still answer
+are both CAUGHT with exit 1, measured on this tree: `state_name_rule_shipped` on 5 failures, one of which
+is the corpus half speaking for itself -- 4 blessed Big-8 `trainer.py` keys (`:1603 :1604 :1610 :1618`)
+come back `SEELED` -- and `constant_clause_accepts_any_node` on 1, the `str_const_blocks_the_seal` row.
+The name-rule installer had to be repaired to get that result: it wrapped `_numeric_safe_expr` with the
+withdrawn census's four-argument signature, so the pristine call raised `TypeError` and the mutation was
+"caught" by crashing rather than by moving a row -- a dead mutation dressed as a proof. It now takes the
+two arguments the shipped method takes.
+
+TIER 4 also asserts the three clauses the sink-provenance mandate names as "deterministic numeric
+primitive sources" against the predicate that decides them -- 29 expressions, each with the answer the
+shipped engine gives today: the five sealed builtins `int` / `float` / `bool` / `len` / `ord` (clause 1),
+int, float, complex and negated Constants (clause 2), and BinOp over proven operands (clause 3) -- beside
+the refusals that make the list mean something: `str(rows)` and `abs(rows)` are calls too, `rows[0]` and
+`rows.n` are names too, and `'abc'` / `b'abc'` / `None` are `ast.Constant` nodes too. The clause is
+value-directed, and `constant_clause_accepts_any_node` proves reading it as a node type is not harmless:
+`f"n={len(rows)} msg={'ok'}"` -- a sealed builtin sitting next to a string literal -- reports today and
+goes silent under the node-type reading, so the finding-level tripwire and the predicate table move
+together.
 
 What was measured, and where it came from:
 
@@ -143,6 +160,43 @@ PRESENTATION = frozenset('deEfgGnboxX')          # int/float-only types; `%` and
 # lr, epoch, step, shape)". Kept here as the reading the gate refuses, so the refusal stays measured.
 STATE_NAME_RE = re.compile(r'loss|\blr\b|epoch|step|shape', re.I)
 
+# The three clauses the mandate names as "deterministic numeric primitive sources", scored against the
+# predicate that decides them. The first block is what it asks to exempt; the second is what the same
+# code must refuse, including the two spellings that look closest to a number (a str literal is an
+# `ast.Constant` too, and `str()`/`abs()` are calls like `len()`).
+NUMERIC_SAFE_ROWS = (
+    ('clause 1 builtin len', 'len(rows)', True),
+    ('clause 1 builtin int', 'int(rows)', True),
+    ('clause 1 builtin float', 'float(rows)', True),
+    ('clause 1 builtin bool', 'bool(rows)', True),
+    ('clause 1 builtin ord', 'ord(rows)', True),
+    ('clause 1 qualified builtins.len', 'builtins.len(rows)', True),
+    ('clause 2 int constant', '5', True),
+    ('clause 2 float constant', '1.5', True),
+    ('clause 2 complex constant', '2j', True),
+    ('clause 2 negated constant', '-3', True),
+    # `True` / `False` / `None` parse as `ast.Constant` since 3.8, so these two rows are the value test
+    # doing its job: `True` passes because `bool` is an `int` subclass, `None` is refused because it is
+    # none of int/float/complex. A node-type test would answer True for both -- and for `'abc'`.
+    ('clause 2 keyword constant', 'True', True),
+    ('None constant fails closed', 'None', False),
+    ('clause 3 binop over numerics', '1 + 2', True),
+    ('clause 3 binop over sealed calls', 'len(rows) - 1', True),
+    ('clause 3 binop over numeric constant', 'len(rows) + 1', True),
+    ('shadowed len call', 'len(rows)', False),
+    ('shadowed qualified call', 'builtins.len(rows)', False),
+    ('str constant is not a number', "'abc'", False),
+    ('bytes constant is not a number', "b'abc'", False),
+    ('plain name', 'rows', False),
+    ('attribute', 'rows.n', False),
+    ('subscript', 'rows[0]', False),
+    ('str call', 'str(rows)', False),
+    ('abs call', 'abs(rows)', False),
+    ('binop over a name', '1 + rows', False),
+    ('compare returns an array for numpy', 'rows == 1', False),
+    ('nested joined string', "f'{rows}'", False),
+)
+
 REQ = 'from flask import request\n'
 LOG = 'import logging\nlogger = logging.getLogger(__name__)\n'
 TAINT = '    rows = request.args.get("q")\n'
@@ -211,6 +265,14 @@ SHAPES = [
     ('arithmetic_over_sealed', REQ + LOG + 'def h():\n' + TAINT +
      '    logger.info(f"n={len(rows) + 1}")\n', 'silent', 'silent',
      'BinOp operands both proven -- the pitch\'s clause 3, already shipped'),
+    ('numeric_const_hole', REQ + LOG + 'def h():\n' + TAINT + '    logger.info(f"n={5} t={1.5}")\n',
+     'silent', 'silent', 'the pitch\'s clause 2 -- a bare numeric Constant, already shipped'),
+    ('str_const_blocks_the_seal', REQ + LOG + 'def h():\n' + TAINT +
+     '    logger.info(f"n={len(rows)} msg={\'ok\'}")\n', 'report', 'report',
+     'clause 2 read as "any Constant" would quiet this; the value test is what keeps it loud'),
+    ('all_four_mandated_sources', REQ + LOG + 'def h():\n    x = request.args.get("q")\n'
+     '    logger.info(f"{int(x)}{float(x)}{bool(x)}{len(x)}")\n', 'silent', 'silent',
+     'the pitch\'s clause 1 named whole: int, float, bool and len in one message'),
     ('pure_literal', LOG + 'def h():\n    logger.info("cache warmed")\n', 'silent', 'silent',
      'constant message cannot carry injected CR/LF'),
 ]
@@ -645,6 +707,34 @@ def check_vocabulary():
     failures = []
     tracker = ast_scanner.TaintTracker(files={'v.py': LOG})
     sealed = set(tracker.CWE117_BUILTIN_SEALED_NAMES)
+    # The mandate names four sources; the table ships those four plus `ord`, and nothing else. An
+    # exact-set test is the only assertion that notices a fifth name arriving, because the banned-name
+    # loop below answers "did the bad ones come" and stays green while some other name does.
+    mandated = {'int', 'float', 'bool', 'len'}
+    five = {'len', 'int', 'float', 'bool', 'ord'}
+    ok = mandated <= sealed and sealed == five
+    print(f'  {"ok" if ok else "MISMATCH":8s} sealed builtins == {sorted(five)}  '
+          f'mandated four present={mandated <= sealed}  actual={sorted(sealed)}')
+    if not ok:
+        failures.append(('sealed builtin set', sorted(five), sorted(sealed),
+                         'clause 1 of the pitch is a closed list -- a sixth name needs its own proof'))
+    # Clause 1, 2 and 3 of the pitch, asserted at the predicate the engine actually asks, because a
+    # findings row cannot tell "the node type was checked" from "the value type was checked". A str
+    # Constant is a Constant; only the value test keeps it unsafe.
+    for label, expr_src, want in NUMERIC_SAFE_ROWS:
+        shadowed = frozenset({'len'}) if label.startswith('shadowed') else frozenset()
+        got = tracker._numeric_safe_expr(ast.parse(expr_src, mode='eval').body, shadowed)
+        ok = got is want
+        print(f'  {"ok" if ok else "MISMATCH":8s} _numeric_safe_expr({expr_src}) = {got} (want {want})')
+        if not ok:
+            failures.append(('_numeric_safe_expr', expr_src, want, got, label))
+    body = inspect.getsource(tracker._numeric_safe_expr)
+    ok = body.count('isinstance(expr.value, (int, float, complex))') == 1
+    print(f'  {"ok" if ok else "MISMATCH":8s} the Constant clause reads the value type once')
+    if not ok:
+        failures.append(('Constant value-type test', 1,
+                        body.count('isinstance(expr.value, (int, float, complex))'),
+                        'clause 2 became a node-type test, which silences a string literal too'))
     for banned in ('str', 'abs', 'format', 'vars', 'repr'):
         ok = banned not in sealed
         print(f'  {"ok" if ok else "MISMATCH":8s} {banned!r} absent from CWE117_BUILTIN_SEALED_NAMES')
@@ -730,10 +820,22 @@ def _apply_state_name_rule():
     """Mandate D item 1 read literally: a hole whose *name* says loss/lr/epoch/step/shape is numeric."""
     pristine = ast_scanner.TaintTracker._numeric_safe_expr
 
-    def patched(self, expr, shadowed=None, bindings=None, depth=0):
+    def patched(self, expr, shadowed=None):
         if isinstance(expr, ast.Name) and STATE_NAME_RE.search(expr.id):
             return True
-        return pristine(self, expr, shadowed, bindings, depth)
+        return pristine(self, expr, shadowed)
+
+    ast_scanner.TaintTracker._numeric_safe_expr = patched
+
+
+def _apply_constant_clause_accepts_any_text():
+    """Clause 2 read as "any `ast.Constant`" instead of "a Constant whose *value* is a number"."""
+    pristine = ast_scanner.TaintTracker._numeric_safe_expr
+
+    def patched(self, expr, shadowed=None):
+        if isinstance(expr, ast.Constant):
+            return True
+        return pristine(self, expr, shadowed)
 
     ast_scanner.TaintTracker._numeric_safe_expr = patched
 
@@ -810,6 +912,13 @@ MUTATIONS = {
         'rows': _rows_for('state_name_rule_shipped'),
         'requires': '_numeric_safe_expr',
         'apply': _apply_state_name_rule,
+    },
+    'constant_clause_accepts_any_node': {
+        'what': 'read clause 2 as the node type rather than the value type -- every ast.Constant hole '
+                'becomes "numeric", so a string literal seals a tainted message quiet',
+        'rows': ['str_const_blocks_the_seal'],
+        'requires': '_numeric_safe_expr',
+        'apply': _apply_constant_clause_accepts_any_text,
     },
 }
 

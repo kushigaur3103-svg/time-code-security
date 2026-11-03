@@ -5,7 +5,7 @@
 Every report, output, or reply to the user must end with exactly this line:
 
 ```
-10x good esse hi dekha kar reports bariki se koi galti nahi dhyan se dekh le isko or assume karo ki credits ka dhyan rakhna hai kyuki vo low hai fir decision lena hai (point to point ) par abhi quodar free hai no limit  or jo bhi samjhaye 10 year old boy or cristal clear kaisa jaisa samjhana par respiratory pub hai git ki credits ki problem nahi hai  par  laptop me keval 400 mb ram hi bacchi hai .or kam ki recomandation phele keval kamki. koi galti ki gunjaish nahi  chodni . or changes se koi, fp, fn tp, accuracy,speed,ability affect nahi honi chahiye fn fp kam ho sakte hai par tp no isko likhne me bhot mehnat haoti hai please remember it khaskar ki false negative wala ek bhi decision mat lena  or dekhle fir bad me bolega sorry tera ghussa karna 100 zayas hai proven then claim  ghade samjha bhaiiiii or jo bhi fix kare permanent fix karna bar bar repeat nahi hone chahiye samjha bhaiiiiii
+10x good esse hi dekha kar reports bariki se koi galti nahi dhyan se dekh le isko or assume karo ki credits ka dhyan rakhna hai kyuki vo low hai fir decision lena hai (point to point ) par abhi quodar free hai no limit  or jo bhi samjhaye 10 year old boy or cristal clear kaisa jaisa samjhana par respiratory pub hai git ki credits ki problem nahi hai  par  laptop me keval 400 mb ram hi bacchi hai .or kam ki recomandation phele keval kamki. koi galti ki gunjaish nahi  chodni . or changes se koi, fp, fn tp, accuracy,speed,ability affect nahi honi chahiye fn fp kam ho sakte hai par tp no isko likhne me bhot mehnat haoti hai please remember it khaskar ki false negative wala ek bhi decision mat lena  or dekhle fir bad me bolega sorry tera ghussa karna 100 zayas hai proven then claim  ghade samjha bhaiiiii or jo bhi fix kare permanent fix karna bar bar repeat nahi hone chahiye samjha bhaiiiiii or ha main bat qoder ke credit bhi kahatam ho rahe hai kam prompt me jitna kam kara sakta hai dekhle . 
 ```
 
 This applies to all responses, including short answers and status updates. Nothing else in the
@@ -1979,6 +1979,127 @@ TIER 8 of `benchmark/gates/cwe22_pil_tempfile_probe.py` plus a falsification of 
   record. The scratch harnesses that produced the numbers (`_c208_census.py`, `_c208_reach.py`,
   `_c208_five.py`, `_c22_cache_census.py`, `_c22_partition.py`, `_c22_widen_measure.py`) stay git-ignored
   because they read the ignored arena tree; every claim they made is reproduced by the tracked TIER 8.
+
+### The sink-provenance mandate: target 1 found already shipped and now pinned clause by clause, target
+### 2 built, measured at 2 arena rows and 4.66x, and withdrawn on Rule 15.3
+
+The mandate asked for two def-use filters in `ast_scanner.py` — a CWE-117 numeric-primitive narrowing
+(`int()`/`float()`/`bool()`/`len()`, a numeric `ast.Constant`, a `BinOp` over numeric primitives) and a
+CWE-338 subscript/loop-counter provenance rule — under a strict zero-FN floor, 30 green gates, 400 MB and
+byte-stable sign-off. Target 1 **is already shipped, clause for clause**; Target 2 was written, measured,
+and withdrawn on its own cost. `ast_scanner.py` is byte-identical to HEAD
+(`git hash-object` = `git rev-parse HEAD:ast_scanner.py` = `8bcdbad93659170b156290abe0ba52cbe996df98`), so
+**0 baseline rows and 0 arena rows moved this step**, and what ships is two gate files.
+
+- **Target 1 is the shipped seal, not a new one.** `CWE117_BUILTIN_SEALED_NAMES = frozenset({"len", "int",
+  "float", "bool", "ord"})` (`ast_scanner.py:6077`), `_builtin_sealed_call` (`:6131`, refuses a builtin the
+  scanned module shadows), `_numeric_safe_expr` (`:6158` — int/float/complex `Constant`, `ast.Num`,
+  `True`/`False`/`None`, `UnaryOp`, `BinOp` on both sides, `BoolOp` all, `IfExp` both branches, else False)
+  and `_log_message_is_numeric_only` (`:6189`) are clauses 1, 3 and 2 of the pitch in that order, reached
+  through `_cwe117_message_is_sealed` (`:6121`) from **both** record paths. So the mandated yield is
+  **zero by construction**, and that was measured rather than argued: over the arena's **348** kept CWE-117
+  rows in **146** files, the census asked every reported log call (`asks=348`) and the shipped table
+  answered sealed **0** times — a row the seal answers is not a row that survives to be asked. The only
+  reading with a population is the *widened* one (any `ast.Constant`, plus `str`/`abs`/`format`/`vars`/`repr`
+  as "numeric primitives"), and it reaches **1** arena row: `src/transformers/safetensors_conversion.py:61`
+  `logger.warning(f"Error during conversion: {repr(e)}")` — the `repr` of a caught exception, the same class
+  as the blessed parity floor `cwe_1004_cookies/test_v01_good.py:12 str(e)`. Buying one FP with a clause that
+  silences a blessed true positive is not a trade, so no engine line moved.
+- **The mandated invariant is held and named, and its mutation now really bites.** The five blessed
+  `src__transformers__trainer.py` keys (`:1603 :1604 :1610 :1614 :1618`) stay reported and are printed by
+  TIER 7 as `reachable_by_state_name_rule=5`. TIER 4 grew from eight vocabulary lines to **29** predicate
+  rows plus an exact-set test on the five sealed builtins plus a source pin on
+  `isinstance(expr.value, (int, float, complex))` — the value test, not the node test — and three new
+  finding shapes (`numeric_const_hole`, `all_four_mandated_sources`, `str_const_blocks_the_seal`) take the
+  table to `shapes=28 must_report=18 already_quiet=10`. New falsification
+  `constant_clause_accepts_any_node` (clause 2 read as a node type) is **CAUGHT on 1 row**:
+  `f"n={len(rows)} msg={'ok'}"` — a sealed builtin beside a string literal — reports today and goes silent
+  under it, so the predicate table and the finding both move.
+- **A falsification that crashes is not a falsification.** `state_name_rule_shipped` wrapped
+  `_numeric_safe_expr` with the withdrawn census's four-argument signature, so the pristine call raised
+  `TypeError` and the mutation "passed" by dying. Repaired to the two arguments the shipped method takes;
+  it is now CAUGHT on **5** failures and TIER 7 prints `SEELED` for **4** blessed Big-8 keys
+  (`:1603 :1604 :1610 :1618`) — the corpus saying out loud what the fixture table only implied. Stated as
+  the seventh harness law: **a mutation verdict must come from `!!` rows, never from a traceback** — read
+  the failure lines, not just the exit code.
+- **Target 2 was built, greened, measured, and reverted.** The axis proved a draw is consumed only as a
+  loop bound (`range(...)` / `enumerate(...)` after the module's shadow set, all targets of an
+  `Assign`/`AnnAssign`/`AugAssign` written exactly once in the scope, behind the credential veto and behind
+  `_cwe338_name_is_security_named`), with every non-literal part of the bound walking back through
+  `_c338_operand_names`, a 64-node scope scan, and a 6-step climb. Yield, through the real record path on
+  the local arena: head **260 → 258** rows, CWE-338 **156 → 154**, `RETIRED=2 ADDED=0`, and both rows are
+  `data/datasets/language_modeling.py:280/:488` (`indices_1 = np.random.randint(len(indices_1))`, used only
+  as a `range` bound). Blessed reach **0** in both arms — `blessed_lines=16 draw_calls_located=16
+  predicate_asks=16 silenced_by_bound_axis=0` — and all 16 keys still report.
+- **Its subscript/slice half is refused by the mandate's own invariant, and the refusal is a count.** The
+  pitch names `dataset[idx]` and `tokens[:idx]`; applied, that reading is **CAUGHT on 11 rows**, and two of
+  them are exactly the shapes the pitch forbids: `otp_from_digits_index`
+  (`otp = "".join(str(d[i]) for i in rng.randint(0, 9) ...)`) and `wait_alphabet_index_join` — a draw that
+  *selects* the material is how an OTP, a nonce string or an alphabet is assembled, so the subscript is the
+  secret, not a proof of innocence about it. `randrange` is excluded for the same reason (`randrange(len(x))`
+  is a subscript-shaped use of a draw whose whole job is picking one of `len(x)` things), and a `Subscript`
+  whose slice holds a call voids the chain instead of being skipped.
+- **Why it was withdrawn, in the numbers that made the decision.** Clock: 10 files, 1,410,767 bytes, **59
+  asks per scan** of which 35 reach the axis, paired order-alternating, block-averaged over 5 legs, with a
+  same-engine control bucket beside every ratio: never-reached **+0.000 µs, ratio 1.0000** (that control is
+  the +0.000 line — the added work is exactly the walk, so it never hides under it); reached-and-**refused**
+  15.121 → 70.060 µs = **+54.940 µs, ratio 4.6610**, `shipped <= head in 0/5 legs`; reached-and-**exempted**
+  25.391 → 511.719 µs = **+486.328 µs, ratio 19.3077**, 0/5. The refused bucket is the common one and is the
+  one that buys nothing. Rule 15.3 is a *shape* law as well as a ratio law — "all filter checks must be O(1)
+  or single-pass AST lookups, no multi-hop recursive graph walks" — and this is a per-ask O(scope) walk of
+  up to 800 nodes for 2 rows out of a 2,319-row report (0.086 %), which fails both halves. No cheaper
+  variant keeps those 2 rows: the O(1) direct-climb half alone measures **0** arena rows, the two assigned
+  names sit in scopes of **516 and 528** nodes so no cap below 800 reaches them, and a per-module `ast.Name`
+  index would add AST-reference memory for the same 2 rows. So the engine is HEAD again, the work is kept at
+  `scratch/mandate_defuse_cwe338_loop_bound.patch` (git-ignored) for the same reason the CWE-117 census is
+  kept — a re-ship should start from measured code, not from a blank file — and the 2 FPs stay loud, which
+  is the allowed direction.
+- **The lock is stronger than the exit-2 skip it replaces.** `cwe338_prng_context_probe.py` carries the
+  withdrawn axis as `BOUND_SEAL = 'withdrawn'` and a state probe that reads the module, so TIER 4 fails if
+  the flag and the engine ever disagree, and in the withdrawn state asserts all four methods absent, all
+  five tables absent and **0** call sites — a half-revert or an unlabelled re-ship fails loudly instead of
+  silently re-earning two rows. TIER 6 keeps its 21 boundary shapes and stops attributing silences that no
+  longer exist; with no engine method left to wrap, the pitch is restated **self-contained inside the gate**
+  and installed over the shipped `_cwe338_display_only_draw`, so its six falsifications *run* on today's
+  engine: `loop_bound_pitch_shipped` **7**, `bound_pitch_accepts_selection` **11**,
+  `bound_pitch_accepts_any_call` **18**, `bound_pitch_always_true` **50**, `bound_pitch_accepts_unread`
+  **25**, `bound_pitch_drops_credential_veto` **8** — all exit 1 CAUGHT, beside the seven pre-existing ones
+  (9/1/1/10/4/7/5). The gate is now 13 falsifications, `failures=0` → PASS.
+- **Gates on the exact code shipped.** `aa_parity.py` `baseline=425 now=425 MISSING=0 NEW=0` → `VERDICT:
+  PASS - parity 425/425, exact-set match` (read *after* both gate files grew, so the harness did not trip the
+  product); `big8_ab.py` `sha256 verified (119 pinned keys, engine 94c5ee2)` → `119/119 MISSING=0 NEW=0`
+  exact-set; `cross_runner.py` Precision and Recall **100.00 %**, F1 **1.0000**, `Suppressed sanitizer sites:
+  2`, `Exact-set match on all cases: YES`, `Suppression contract all cases: YES`, **360.12 ms** unsampled;
+  placeholder lock `locked_keys=59 cases=8 failures=0`; `cwe117_numeric_provenance_probe.py` `seal=refused
+  binding_seal=withdrawn shapes=28 must_report=18 already_quiet=10 clause_sensitive=7 binding_rows=23
+  locked_cwe117=49 failures=0`; `cwe338_prng_context_probe.py` `seal=shipped shapes=45 fp_rows=22
+  must_report=20 already_quiet=3 path_rows=15 demo_quiet=6 demo_tripwires=9 bound_seal=withdrawn bound_rows=21
+  bound_quiet=7 bound_loud=14 locked_cwe338=16 failures=0`; `cwe208_llm_token_timing_probe.py`
+  `locked_cwe208=36 failures=0`; **every runnable script under `benchmark/gates/` exit 0** in one sweep
+  (`scripts=30 non-zero=0`, the two non-gate modules `gate_common.py` and `scan_child.py` excluded by name).
+  Three-way process-tree peaks on the shipped bytes (parent / summed-USS / summed-RSS): the two touched
+  gates **61.8 / 83.5 / 129.9 MB** and **39.6 / 159.0 / 210.2 MB**, `aa_parity.py`
+  **16.6 / 84.8 / 127.0**, `big8_ab.py` **16.5 / 126.5 / 147.4**, `cross_runner.py`
+  **34.8 / 22.5 / 34.8** — every USS figure inside the ~400 MB budget, and summed RSS is reported because
+  it double-counts pages shared across a `spawn` pool, not because it is the number to hold.
+  TP moved **0**, FN **0**, FP **0 rows moved**, speed **identical to HEAD by blob
+  equality**, ability identical — plus one CWE-117 clause table that now fails if the value test becomes a
+  node test.
+- **Sign-off byte count, measured and reported rather than resolved.** `AGENTS.md` line 8 is **1003 bytes**
+  in this working tree (HEAD's is 899) and ends with a trailing space, because the user's own uncommitted
+  edit appended the credits clause; the file's own note still says "899 characters … with no trailing
+  space". Both statements cannot be satisfied at once, so line 8 was neither retyped nor "fixed" — it is
+  pasted from the file, which is what the sign-off rule asks for — and the discrepancy is recorded here for
+  the owner to settle.
+- **Deviation from the mandate's target file, stated rather than hidden.** The mandate asked for engine
+  code. None ships: target 1 is already in `ast_scanner.py` and was measured as such, and target 2 was in
+  and then reverted on a measured 4.66x. Two gate files and this record ship —
+  `benchmark/gates/cwe117_numeric_provenance_probe.py` (clause table, exact-set, new falsification, repaired
+  installer) and `benchmark/gates/cwe338_prng_context_probe.py` (withdrawn-axis seal, self-contained pitch,
+  six new falsifications) — and the scratch harnesses that produced the arena and clock figures
+  (`_c117_arena_reach.py`, `_c338_bound_ab.py`, `_c338_bound_clock.py`, `_c338_bound_cap.py`,
+  `_c338_bound_size.py`, `_bound_pred.py`) stay git-ignored because they read the ignored arena tree.
+
 
 
 

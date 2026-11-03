@@ -102,11 +102,31 @@ not ship. Measured on the shipped engine, one process each:
                                    populate-under-tests-stays-loud go quiet, and TIER 4 breaks the
                                    allow set, the veto words and the `test_` prefixes)
 
-Seven mutations, seven exits of 1, zero skips: the two path mutations used to exit 2 because no path
-guard existed, and they exit 1 now that Step 2 shipped it. `test-prefix-module-stays-loud` does NOT
-move under `widen_to_tests_segment` even though the mutation adds `test` to the allow set -- the segment
-in that path is `test_populate`, and whole-segment matching cannot see it. That row is protected by the
-matching rule itself, which no table mutation in this list can soften.
+Thirteen mutations, thirteen exits of 1, zero skips: the two path mutations used to exit 2 because no path
+guard existed, and they exit 1 now that Step 2 shipped it; the nine mutations that used to patch the
+loop-bound axis in the engine are rebuilt as six self-contained pitch variants (see the withdrawal note at
+the bottom of this docstring), so every one of them runs against the shipped engine today.
+
+  loop_bound_pitch_shipped  exit=1 CAUGHT on 7 rows  (exactly the 7 count-shaped draws -- the FP price of
+                                   the withdrawal, and nothing else)
+  bound_pitch_accepts_selection exit=1 CAUGHT on 11 (the 7 + subscript_select, slice_select and, decisively,
+                                   otp_from_digits_index + wait_alphabet_index_join -- the mandate's own
+                                   literal reading silences two code-assembling rows)
+  bound_pitch_accepts_any_call  exit=1 CAUGHT on 18 (the 7 + other_call, shadowed_range, list_append,
+                                   str_concat + reset_token, salt_getrandbits, seconds_join_digits,
+                                   cooldown_getrandbits, big8_vocab_append, demo-populate-join-code,
+                                   tests-plain-stays-loud)
+  bound_pitch_always_true   exit=1 CAUGHT on 50 rows (all 21 bound shapes + 29 credential, blessed-line,
+                                   CSPRNG and demo rows -- what a rule delete looks like here)
+  bound_pitch_accepts_unread exit=1 CAUGHT on 25 (the 7 + 14 assigned-shape look-alikes incl. module_scope
+                                   and never_read + randbytes_draw, big8_global_rng_ctor,
+                                   demo-populate-rng-ctor/getrandbits and three test-tree tripwires)
+  bound_pitch_drops_credential_veto exit=1 CAUGHT on 8 (the 7 + credential_named, so the veto inside the
+                                   axis is load-bearing and not only the guard-level one)
+
+`test-prefix-module-stays-loud` does NOT move under `widen_to_tests_segment` even though the mutation adds
+`test` to the allow set -- the segment in that path is `test_populate`, and whole-segment matching cannot
+see it. That row is protected by the matching rule itself, which no table mutation in this list can soften.
 
 The 231-vs-221 arithmetic
 -------------------------
@@ -141,11 +161,52 @@ sentence, and `widen_to_tests_segment` is the mutation that proves the `tests` h
 
 The seal switch is still there for the old rollback test: `python scratch/_c338_sealrun.py abstained`
 moves `PRNG_CTX_SEAL` in memory without editing this file, and the display rows come back loud.
+
+The loop-bound def-use axis: written, measured, and withdrawn on its own numbers
+---------------------------------------------------------------------------------
+The mandate asked for a CWE-338 exemption decided by the *use* of the draw rather than by its name: a
+draw consumed only as a loop bound is a count, not a secret. It was built (`range`/`xrange` argument
+role proven by a parent climb for the direct spelling and by a bounded `ast.walk` of the enclosing
+function for an assigned name -- **every** load must land in a `range` argument, so a `Subscript`, a
+`Slice` or an unread draw fails closed), it was greened across six tiers, and then it was costed.
+
+  arena yield    : `scratch/_c338_bound_ab.py rows` -> head 260 rows / shipped 258,
+                   CWE-338 156 -> 154, RETIRED=2 ADDED=0 over the 67 CWE-338-bearing files
+                   (4,374,330 bytes). The two are `_arena/src/transformers/data/datasets/
+                   language_modeling.py:280` and `:488`, both the assigned-name shape.
+  blessed reach  : `scratch/_c338_bound_ab.py blessed` -> both arms `blessed_lines=16
+                   draw_calls_located=16 predicate_asks=16 silenced_by_bound_axis=0` -> PASS, so no
+                   blessed key moved in either direction.
+  cost           : `scratch/_c338_bound_clock.py` (paired, order-alternating, block-min over 8 windows
+                   of ~0.35 s CPU, 5 legs per bucket, 10 files / 1,410,767 bytes, 59 guard asks and 35
+                   axis calls per scan, 55 rows reported):
+                     axis never reached (control)  3.906 -> 3.906 us  ADDED +0.000  ratio 1.0000
+                     axis reached, refused        15.121 -> 70.060 us  ADDED +54.940 ratio 4.6610 (0/5 legs <= head)
+                     axis reached, exempted       25.391 -> 511.719 us ADDED +486.328 ratio 19.3077 (0/5)
+                   The control is exactly zero, so the delta is the walk and not the machine.
+
+Rule 15.3 is a shape law as well as a ratio law -- "all filter checks must be O(1) or single-pass AST
+lookups, no multi-hop recursive graph walks" -- and this check is a per-ask O(scope) walk that measures
+4.66x at the site it sits on, for 2 rows out of a 2,319-row report (0.086 %). There is no cheaper variant
+that keeps those 2 rows: the O(1) direct-climb half alone measures 0 arena rows, and lowering the node cap
+below the two real scopes (516 and 528 nodes) also measures 0. An index of every `ast.Name` load per scope
+would make the test O(occurrences), but it is a new per-module table of AST references -- the memory
+direction the standing RAM law points the other way -- and no version of it is worth 2 rows.
+
+So the engine is byte-identical to HEAD (`git hash-object ast_scanner.py` = `git rev-parse
+HEAD:ast_scanner.py` = `8bcdbad93659170b...`), the work is kept as
+`scratch/mandate_defuse_cwe338_loop_bound.patch` (git-ignored) so a re-ship starts from measured code, and
+the 2 FPs stay loud -- which is the allowed direction. `BOUND_SEAL` below states that state, TIER 4 and
+TIER 6 refuse to let it lie, and `loop_bound_pitch_shipped` installs the withdrawn guard in memory so the
+gate fails on the 7 shapes it would silence. This is the same disposition the CWE-117 binding census got
+(`cwe117_numeric_provenance_probe.py`, `binding_seal=withdrawn`): a guard whose cost is measured real and
+whose benefit is measured tiny does not ship.
 """
 
 from __future__ import annotations
 
 import contextlib
+import ast
 import inspect
 import io
 import os
@@ -162,6 +223,18 @@ from gate_common import META, load_keys, scan_rows  # noqa: E402
 
 PRNG_CTX_SEAL = 'shipped'
 SEAL_TARGETS = ('abstained', 'shipped')
+
+# The loop-bound axis is a separate decision from the display-value and demo-path rules, so it carries its
+# own state flag -- and the flag is checked against the module, not trusted. `withdrawn` is the shipped
+# state: the guard was built, measured at 2 arena rows and 4.66x on its own ask, and reverted.
+BOUND_SEAL = 'withdrawn'
+BOUND_SEAL_TARGETS = ('withdrawn', 'shipped')
+
+
+def bound_axis_shipped() -> bool:
+    """Ask the engine whether the loop-bound axis exists. Reads the module, never a comment."""
+    return (hasattr(ast_scanner.TaintTracker, '_cwe338_draw_is_loop_bound_only')
+            and hasattr(ast_scanner, 'CWE338_BOUND_ONLY_CALLS'))
 
 # The blessed CWE-338 population in each frozen baseline. Counted, not assumed: 9 rows in
 # `parity_before.keys` (all credential-named) and 7 in `big8_before.keys` (all plain-named, which is
@@ -367,6 +440,56 @@ PATH_ROWS = [
 DEMO_QUIET_ROWS = [row[0] for row in PATH_ROWS if row[3] == QUIET]
 DEMO_TRIPWIRE_ROWS = [row[0] for row in PATH_ROWS if row[3] == REPORT]
 
+# The def-use loop-bound axis (Step 3). The mandate asked for "subscript / index usage provenance": if a
+# draw's value is used as an array index, silence it. That half was REFUSED and is measured here as loud
+# rows -- `pool[idx]` and `img[top:top + h]` are a draw *selecting material out of a container*, which is
+# exactly how a weak-randomness OTP or a shuffled secret is assembled, and the same argument is why a
+# slice bound stays reported. What ships instead is the only consumer in Python that turns a number into
+# "how many times", and nothing else: a `range(...)` argument. 21 shapes, measured through the real record
+# path (`python scratch/_bound_rows_finding.py`): 7 quiet, 14 loud, and every quiet row is quiet *because
+# of this axis* (TIER 6 re-scans each with the axis blinded and requires it loud), so the silence is
+# attributed rather than asserted.
+# (label, source, expected under seal='shipped')
+BOUND_ROWS = [
+    ('bound_direct', 'import random\n\n\ndef f():\n    for i in range(random.randint(1, 9)):\n        pass\n', QUIET),
+    ('bound_assigned', 'import random\n\n\ndef f(c):\n    a_end = random.randint(1, len(c) - 1)\n'
+                       '    for i in range(a_end):\n        pass\n', QUIET),
+    ('bound_arith', 'import random\n\n\ndef f(i):\n    n = random.randrange(5)\n    for j in range(i, n + 1):\n        pass\n', QUIET),
+    ('bound_two_loads', 'import random\n\n\ndef f():\n    n = random.randint(1, 9)\n    for a in range(n):\n        pass\n'
+                        '    for b in range(n):\n        pass\n', QUIET),
+    ('bound_choice', 'import random\n\n\ndef f(k):\n    for i in range(random.choice(k)):\n        pass\n', QUIET),
+    ('bound_xrange', 'import random\n\n\ndef f():\n    for i in xrange(random.randint(0, 9)):\n        pass\n', QUIET),
+    ('bound_unary_neg', 'import random\n\n\ndef f():\n    k = random.randint(1, 3)\n    for i in range(-k):\n        pass\n', QUIET),
+    # --- the mandate's own examples, kept loud because a selection is not a count -----------------
+    ('subscript_select', 'import random\n\n\ndef f(pool):\n    idx = random.randint(0, len(pool) - 1)\n'
+                         '    return pool[idx]\n', REPORT),
+    ('slice_select', 'import random\n\n\ndef f(img, h):\n    top = random.randint(0, 9)\n'
+                     '    return img[top:top + h]\n', REPORT),
+    # --- every other way a bound-looking number can leave the function ----------------------------
+    ('other_call', 'import random\n\n\ndef f():\n    n = random.randint(1, 9)\n    return do(n)\n', REPORT),
+    ('never_read', 'import random\n\n\ndef f():\n    n = random.randint(1, 9)\n    return 1\n', REPORT),
+    ('module_scope', 'import random\n\nN = random.randint(1, 9)\nfor i in range(N):\n    pass\n', REPORT),
+    ('shadowed_range', 'import random\n\n\ndef range(x):\n    return [1, 2, 3]\n\n\ndef f():\n'
+                       '    n = random.randint(1, 9)\n    for i in range(n):\n        pass\n', REPORT),
+    ('credential_named', 'import random\n\n\ndef f():\n    token_index = random.randint(1, 5)\n'
+                         '    for i in range(token_index):\n        pass\n', REPORT),
+    ('tuple_unpack', 'import random\n\n\ndef f():\n    a, b = random.randint(1, 2), 5\n'
+                     '    for i in range(a):\n        pass\n', REPORT),
+    ('returned_value', 'import random\n\n\ndef f():\n    n = random.randint(1, 9)\n    return n\n', REPORT),
+    ('augassign', 'import random\n\n\ndef f():\n    n = 0\n    n += random.randint(1, 9)\n'
+                  '    for i in range(n):\n        pass\n', REPORT),
+    ('list_append', 'import random\n\n\ndef f(out):\n    n = random.randint(1, 9)\n    out.append(n)\n', REPORT),
+    ('str_concat', 'import random\n\n\ndef f():\n    n = random.randint(1, 9)\n'
+                   "    for i in range(len('a' + str(n))):\n        pass\n", REPORT),
+    ('starred_args', 'import random\n\n\ndef f(nums):\n    n = random.randint(1, 9)\n'
+                     '    for i in range(*nums):\n        pass\n', REPORT),
+    ('keyword_slot', 'import random\n\n\ndef f():\n    n = random.randint(1, 9)\n'
+                     '    for i in enumerate(seq, start=n):\n        pass\n', REPORT),
+]
+
+BOUND_QUIET_ROWS = [row[0] for row in BOUND_ROWS if row[2] == QUIET]
+BOUND_LOUD_ROWS = [row[0] for row in BOUND_ROWS if row[2] == REPORT]
+
 # The duration family the fix is allowed to add, and the words it is forbidden to add. A table, so a
 # mutation can widen or shrink it in memory and the truth tier has to notice.
 TIMING_MARKERS = ('interval', 'seconds', 'timeout', 'backoff', 'wait', 'cooldown', 'keepalive')
@@ -506,6 +629,98 @@ def check_vocabulary():
         failures.append(('the path guard has no scope to read', params))
     if not hasattr(ast_scanner.TaintTracker, '_cwe338_module_is_demo_generator'):
         failures.append(('demo path helper missing', '_cwe338_module_is_demo_generator'))
+    # --- the def-use loop-bound axis ---------------------------------------------------------------
+    # Its state is read from the module, and the state decides which pins run: the shipped pins would all
+    # pass on a half-reverted engine (a missing table makes `getattr` return the default, and the default
+    # answers False on every row), so a blind axis and an absent axis have to be told apart by shape.
+    axis_in_engine = bound_axis_shipped()
+    print(f'  loop-bound axis in the engine: {axis_in_engine}  declared BOUND_SEAL={BOUND_SEAL!r}')
+    if BOUND_SEAL not in BOUND_SEAL_TARGETS or (BOUND_SEAL == 'shipped') != axis_in_engine:
+        failures.append(('the bound seal does not describe the engine', (BOUND_SEAL, axis_in_engine)))
+        return failures
+    if BOUND_SEAL == 'withdrawn':
+        # The refusal is machine-checked, so a re-ship has to flip BOUND_SEAL on purpose and a half-revert
+        # that leaves one helper or one table behind fails here instead of quietly widening the rule.
+        left = [name for name in ('_cwe338_bound_consumer_calls', '_cwe338_load_is_bound',
+                                  '_cwe338_enclosing_function', '_cwe338_draw_is_loop_bound_only')
+                if hasattr(ast_scanner.TaintTracker, name)]
+        tables = [name for name in ('CWE338_BOUND_ONLY_CALLS', '_CWE338_BOUND_ARITH_OPS',
+                                    '_CWE338_BOUND_SCOPE_NODE_LIMIT', '_CWE338_BOUND_CLIMB_LIMIT',
+                                    '_CWE338_BOUND_SCOPE_HOP_LIMIT')
+                  if hasattr(ast_scanner, name)]
+        wired = inspect.getsource(ast_scanner).count('self._cwe338_draw_is_loop_bound_only(')
+        print(f'  withdrawn state: helpers left={left or "none"} tables left={tables or "none"} '
+              f'call sites={wired}')
+        if left or tables or wired:
+            failures.append(('the loop-bound axis is still partly in the engine', (left, tables, wired)))
+        return failures
+    # Shipped pins: a name table is the cheapest thing for a refactor to widen, so it is pinned exactly;
+    # the rest read the method's own source, because "it asks the right question" is a property of the
+    # code, not of a row count -- a blind axis and an axis that never gets asked both move 0 rows.
+    bound_calls = set(getattr(ast_scanner, 'CWE338_BOUND_ONLY_CALLS', frozenset()))
+    print(f'  bound consumer calls={sorted(bound_calls) or "none wired"}')
+    if bound_calls != {'range', 'xrange'}:
+        failures.append(('CWE338_BOUND_ONLY_CALLS is not exactly {range, xrange}', sorted(bound_calls)))
+    arith = tuple(getattr(ast_scanner, '_CWE338_BOUND_ARITH_OPS', ()))
+    selection = [op.__name__ for op in arith
+                 if op in (ast.Subscript, ast.Slice, ast.List, ast.Tuple, ast.Set, ast.Dict,
+                           ast.Compare, ast.Call, ast.JoinedStr, ast.Starred)]
+    print(f'  bound arithmetic ops={sorted(op.__name__ for op in arith)} non-numeric={selection or "none"}')
+    if selection:
+        failures.append(('a selecting/boolean type joined the bound climb', selection))
+    missing_helpers = [h for h in ('_cwe338_bound_consumer_calls', '_cwe338_load_is_bound',
+                                   '_cwe338_enclosing_function', '_cwe338_draw_is_loop_bound_only')
+                       if not hasattr(ast_scanner.TaintTracker, h)]
+    if missing_helpers:
+        failures.append(('bound axis helper missing', missing_helpers))
+        print(f'  bound axis helpers missing: {missing_helpers}')
+        return failures
+    load_src = inspect.getsource(ast_scanner.TaintTracker._cwe338_load_is_bound)
+    axis_src = inspect.getsource(ast_scanner.TaintTracker._cwe338_draw_is_loop_bound_only)
+    draw_src = inspect.getsource(ast_scanner.TaintTracker._cwe338_display_only_draw)
+    flat_load = ' '.join(load_src.split())
+    arg_slot = 'any(arg is current for arg in parent.args)'
+    print(f'  load binds an argument slot by identity: {arg_slot in flat_load}')
+    if arg_slot not in flat_load:
+        failures.append(('the bound test stopped requiring an argument slot', arg_slot))
+    flat_axis = ' '.join(axis_src.split())
+    if 'isinstance(parent, ast.AugAssign): return False' not in flat_axis:
+        failures.append(('aug-assign refusal lost from the bound axis', 'ast.AugAssign'))
+    veto_recheck = 'self._cwe338_name_is_security_named(name) for name in names'
+    print(f'  bound axis re-checks the credential veto: {veto_recheck in flat_axis}')
+    if veto_recheck not in flat_axis:
+        failures.append(('the bound axis no longer re-checks the credential veto', veto_recheck))
+    # Indentation-agnostic: the pin is about the control flow (a refusal inside the loop), not about how
+    # many spaces the method happens to sit at.
+    short_circuit = ('if not self._cwe338_load_is_bound(child, allowed): return False')
+    print(f'  bound axis short-circuits on the first unbound load: {short_circuit in flat_axis}')
+    if short_circuit not in flat_axis:
+        failures.append(('the bound axis collects every load before testing (the 108 us refusal path)',
+                         'short-circuit'))
+    cap = getattr(ast_scanner, '_CWE338_BOUND_SCOPE_NODE_LIMIT', None)
+    climb = getattr(ast_scanner, '_CWE338_BOUND_CLIMB_LIMIT', None)
+    hops = getattr(ast_scanner, '_CWE338_BOUND_SCOPE_HOP_LIMIT', None)
+    print(f'  bound scope node cap={cap} climb={climb} scope hops={hops}')
+    if not isinstance(cap, int) or not 0 < cap <= 2000:
+        failures.append(('bound scope node cap missing or unbounded', cap))
+    if not isinstance(climb, int) or not 0 < climb <= 8:
+        failures.append(('bound arithmetic climb limit missing or unbounded', climb))
+    if not isinstance(hops, int) or not 0 < hops <= 64:
+        failures.append(('bound scope hop limit missing or unbounded', hops))
+    if 'visited > ' not in flat_axis or '_CWE338_BOUND_SCOPE_NODE_LIMIT: return False' not in flat_axis:
+        failures.append(('the cap is not enforced inside the walk', '_CWE338_BOUND_SCOPE_NODE_LIMIT'))
+    # Wiring: asked exactly once, from inside the display-draw guard, after the marker loop and ahead of
+    # the path axis -- so a module path can never be the reason a draw is quiet when its own chain is
+    # unproven, and so no second emitter can fork this answer.
+    module_lines = inspect.getsource(ast_scanner).splitlines()
+    n_axis = sum(1 for line in module_lines if 'self._cwe338_draw_is_loop_bound_only(' in line)
+    after_marker = draw_src.find('CWE338_DISPLAY_VALUE_MARKERS for segment in segments')
+    at_axis = draw_src.find('self._cwe338_draw_is_loop_bound_only(')
+    before_path = draw_src.find('self._cwe338_module_is_demo_generator(')
+    print(f'  wiring: call sites={n_axis} in-guard={at_axis >= 0} '
+          f'after-marker={0 <= after_marker < at_axis} ahead-of-path={0 <= at_axis < before_path}')
+    if n_axis != 1 or not (0 <= after_marker < at_axis < before_path):
+        failures.append(('bound axis wiring moved', (n_axis, after_marker, at_axis, before_path)))
     return failures
 
 
@@ -529,6 +744,53 @@ def check_path_rows():
     return failures
 
 
+def check_bound_rows():
+    """TIER 6: the loop-bound boundary, decided by the seal -- 7 count shapes and 14 look-alikes.
+
+    Scanned through the real record path, so this is the behavioural proof of the def-use rule. At
+    `BOUND_SEAL='shipped'` the 7 count-shaped draws are quiet and the attribution half runs: each is
+    re-scanned with the axis blinded and must go loud, because a row could otherwise be quiet on a marker
+    word or the demo path and the gate would be crediting an axis that never fired (the law this repository
+    already wrote for the CWE-22 prune: "a gate that explains a silence must be able to name which
+    disjunct bought it").
+
+    At `BOUND_SEAL='withdrawn'` -- the shipped state -- every one of the 21 rows must report. The 7 are
+    then the false-positive price of the withdrawal, kept on the table rather than tidied away, and the 14
+    tripwires mean the same thing in both states. `loop_bound_pitch_shipped` re-installs the withdrawn
+    guard in memory and is caught by exactly these 7 rows.
+    """
+    failures = []
+    shipped = BOUND_SEAL == 'shipped'
+    if shipped:
+        blinded = []
+        original = ast_scanner.TaintTracker._cwe338_draw_is_loop_bound_only
+        try:
+            ast_scanner.TaintTracker._cwe338_draw_is_loop_bound_only = (
+                lambda self, node, scope_id: False)
+            for label, source, _expected in BOUND_ROWS:
+                if label in BOUND_QUIET_ROWS and scan_cwe338(source):
+                    blinded.append(label)
+        finally:
+            ast_scanner.TaintTracker._cwe338_draw_is_loop_bound_only = original
+        print(f'  silence bought by this axis (loud when blinded): {len(blinded)} of {len(BOUND_QUIET_ROWS)}')
+        if blinded != BOUND_QUIET_ROWS:
+            failures.append(('a bound row is quiet for a reason other than the axis',
+                             sorted(set(BOUND_QUIET_ROWS) - set(blinded))))
+    else:
+        print(f'  axis withdrawn: {len(BOUND_QUIET_ROWS)} count-shaped draws stay loud (the measured '
+              f'price: 2 arena rows, at +54.940 us per refused ask) -- no silence to attribute')
+    for label, source, pitch_want in BOUND_ROWS:
+        expected = pitch_want if shipped else REPORT
+        found = scan_cwe338(source)
+        status = REPORT if found else QUIET
+        note = '; '.join(f'L{n}:{m.replace("CWE-338: ", "")}' for n, m in found)[:44]
+        print(f'  {label:20s} pitch={pitch_want:5s} want={expected:5s} got={status:5s} '
+              f'{"ok" if status == expected else "MISMATCH"} {note}')
+        if status != expected:
+            failures.append((label, 'the loop-bound boundary moved', expected, status))
+    return failures
+
+
 def main() -> int:
     if PRNG_CTX_SEAL not in SEAL_TARGETS:
         print(f'BAD SEAL: {PRNG_CTX_SEAL!r} is not one of {SEAL_TARGETS}')
@@ -543,10 +805,15 @@ def main() -> int:
     failures += check_vocabulary()
     print('TIER 5 - the demo path exempts fake data only, in all three spellings:')
     failures += check_path_rows()
+    print('TIER 6 - the loop-bound boundary, by BOUND_SEAL:')
+    failures += check_bound_rows()
     print(f'\nseal={PRNG_CTX_SEAL} shapes={len(SHAPES)} fp_rows={len(FP_ROWS)} '
           f'must_report={len(MUST_REPORT_ROWS)} already_quiet={len(ALREADY_QUIET_ROWS)} '
           f'path_rows={len(PATH_ROWS)} demo_quiet={len(DEMO_QUIET_ROWS)} '
           f'demo_tripwires={len(DEMO_TRIPWIRE_ROWS)} '
+          f'bound_seal={BOUND_SEAL} bound_rows={len(BOUND_ROWS)} '
+          f'bound_quiet={len(BOUND_QUIET_ROWS)} '
+          f'bound_loud={len(BOUND_LOUD_ROWS)} '
           f'locked_cwe338={sum(CWE338_LOCKED.values())} failures={len(failures)}')
     for item in failures[:12]:
         print(f'  !! {item}')
@@ -562,8 +829,135 @@ def main() -> int:
           f'{len(FP_ROWS)} display-value rows '
           + ('still loud at seal=abstained' if PRNG_CTX_SEAL == 'abstained' else 'exempted')
           + f', {len(DEMO_QUIET_ROWS)} demo-data paths exempted and {len(DEMO_TRIPWIRE_ROWS)} '
-            'demo-path tripwires still loud.')
+            'demo-path tripwires still loud, '
+          + (f'{len(BOUND_QUIET_ROWS)} loop-bound draws exempted on their def-use chain and '
+             f'{len(BOUND_LOUD_ROWS)} bound-looking shapes still loud' if BOUND_SEAL == 'shipped' else
+             f'the loop-bound axis WITHDRAWN (2 arena rows for +54.940 us per refused ask), so all '
+             f'{len(BOUND_ROWS)} shapes report: {len(BOUND_QUIET_ROWS)} count draws stay reported -- the '
+             f'measured price of the withdrawal -- and the {len(BOUND_LOUD_ROWS)} look-alikes (subscript, '
+             'slice, other call, return, never-read, module scope, shadowed range, credential name, tuple '
+             'unpack, aug-assign, container append, starred and keyword slots) are refused on their own '
+             'right') + '.')
     return 0
+
+
+# --- the withdrawn loop-bound axis, kept here so the refusal stays falsifiable -------------------------
+# The engine no longer carries this guard (`BOUND_SEAL='withdrawn'`: 2 arena rows for +54.940 us on every
+# ask that refused it). The implementation is restated below -- self-contained, over the same primitives
+# the engine still ships (`_scope_module`, `_module_shadowed_names`, `_cwe338_name_is_security_named`,
+# the `.parent` links) -- and `loop_bound_pitch_shipped` installs it over the live display-draw guard. So
+# the truth table bites the pitch on exactly the rows the pitch would silence, which is Rule 15.5 rung 6:
+# a refusal handed back with a falsification of the pitch's own row, not with a comment.
+PITCH_BOUND_CALLS = frozenset({'range', 'xrange'})
+PITCH_ARITH_OPS = (ast.Add, ast.Sub, ast.Mult, ast.Div, ast.FloorDiv, ast.Mod, ast.Pow)
+PITCH_CLIMB_LIMIT = 6
+PITCH_SCOPE_HOPS = 64
+PITCH_NODE_LIMIT = 800
+
+# Captured at import, before any mutation is installed, so the pitch is a *second* answer layered over the
+# shipped one rather than a replacement of it.
+_PRISTINE_DISPLAY_ONLY_DRAW = ast_scanner.TaintTracker._cwe338_display_only_draw
+
+
+def _pitch_consumers(tracker, scope_id):
+    """`PITCH_BOUND_CALLS` minus what the scanned module binds itself; unresolved module means no axis."""
+    mod_name = tracker._scope_module(scope_id)
+    if not mod_name:
+        return frozenset()
+    return PITCH_BOUND_CALLS - tracker._module_shadowed_names(mod_name)
+
+
+def _pitch_consumer_hit(expr, allowed, accept_selection=False, accept_any_call=False):
+    """Is this value an argument of a recognised bound consumer, through arithmetic only?"""
+    current = expr
+    for _ in range(PITCH_CLIMB_LIMIT):
+        parent = getattr(current, 'parent', None)
+        if parent is None:
+            return False
+        if isinstance(parent, ast.BinOp) and isinstance(parent.op, PITCH_ARITH_OPS):
+            current = parent
+            continue
+        if isinstance(parent, ast.UnaryOp) and isinstance(parent.op, (ast.UAdd, ast.USub)):
+            current = parent
+            continue
+        break
+    parent = getattr(current, 'parent', None)
+    if accept_selection and isinstance(parent, (ast.Subscript, ast.Slice)):
+        return True
+    if not isinstance(parent, ast.Call):
+        return False
+    if accept_any_call:
+        return any(arg is current for arg in list(parent.args) + [kw.value for kw in parent.keywords])
+    if not isinstance(parent.func, ast.Name) or parent.func.id not in allowed:
+        return False
+    return any(arg is current for arg in parent.args)
+
+
+def _pitch_enclosing_function(node):
+    current = node
+    for _ in range(PITCH_SCOPE_HOPS):
+        parent = getattr(current, 'parent', None)
+        if parent is None:
+            return None
+        if isinstance(parent, (ast.FunctionDef, ast.AsyncFunctionDef)):
+            return parent
+        current = parent
+    return None
+
+
+def _pitch_axis(tracker, node, scope_id, accept_selection=False, accept_any_call=False,
+                credential_veto=True, accept_unread=False):
+    """The withdrawn guard, verbatim in its control flow, with each refused door toggleable.
+
+    Every door here was a mutation when the axis shipped, and each one is still a mutation now: a variant
+    that goes on to silence a tripwire row is the proof that the door was load-bearing.
+    """
+    allowed = _pitch_consumers(tracker, scope_id)
+    if not allowed:
+        return False
+    if _pitch_consumer_hit(node, allowed, accept_selection, accept_any_call):
+        return True
+    parent = getattr(node, 'parent', None)
+    if isinstance(parent, ast.AugAssign):
+        return False
+    if not isinstance(parent, (ast.Assign, ast.AnnAssign)):
+        return False
+    targets = list(getattr(parent, 'targets', None) or [parent.target])
+    names = [t.id for t in targets if isinstance(t, ast.Name)]
+    if not names or len(names) != len(targets):
+        return False
+    if credential_veto and any(tracker._cwe338_name_is_security_named(name) for name in names):
+        return False
+    if accept_unread:
+        return True
+    scope = _pitch_enclosing_function(node)
+    if scope is None:
+        return False
+    wanted = frozenset(names)
+    seen = False
+    visited = 0
+    for child in ast.walk(scope):
+        visited += 1
+        if visited > PITCH_NODE_LIMIT:
+            return False
+        if not isinstance(child, ast.Name) or child.id not in wanted:
+            continue
+        if not isinstance(child.ctx, ast.Load):
+            continue
+        if not _pitch_consumer_hit(child, allowed, accept_selection, accept_any_call):
+            return False
+        seen = True
+    return seen
+
+
+def _pitch_display_draw(**flags):
+    """A `_cwe338_display_only_draw` that keeps the shipped answer and adds the withdrawn axis under it."""
+    def _patched(self, node, scope_id):
+        if _PRISTINE_DISPLAY_ONLY_DRAW(self, node, scope_id):
+            return True
+        return _pitch_axis(self, node, scope_id, **flags)
+
+    return _patched
 
 
 MUTATIONS = {
@@ -626,6 +1020,66 @@ MUTATIONS = {
             setattr(ast_scanner, 'CWE338_DEMO_PATH_VETO_SEGMENTS', frozenset()),
             setattr(ast_scanner, 'CWE338_DEMO_PATH_VETO_PREFIXES', ())),
     },
+    # --- the withdrawn loop-bound axis -------------------------------------------------------------
+    # Nine mutations used to patch this guard's own methods in the engine. The guard is not in the engine,
+    # so they would all have exited 2; they are rebuilt as six self-contained variants of `_pitch_axis`
+    # installed over the live display-draw guard, which means every one of them runs and bites today. Each
+    # `rows` list is the set the variant silences, measured by running it -- not assumed.
+    'loop_bound_pitch_shipped': {
+        'what': 'install the withdrawn loop-bound def-use axis exactly as it was built (this is the '
+                'refusal: 2 arena rows for +54.940 us per refused ask, so TIER 6 must call these 7 loud)',
+        'rows': list(BOUND_QUIET_ROWS),
+        'requires': None,
+        'apply': lambda: setattr(ast_scanner.TaintTracker, '_cwe338_display_only_draw',
+                                 _pitch_display_draw()),
+    },
+    'bound_pitch_accepts_selection': {
+        'what': "ship the mandate's literal reading -- a subscript index or a slice bound counts as a "
+                'bound. This is the refusal, and it is a false negative, not a style choice: the same '
+                'door silences two OTP/code-assembling rows that have nothing to do with a loop',
+        'rows': list(BOUND_QUIET_ROWS) + ['subscript_select', 'slice_select',
+                 'otp_from_digits_index', 'wait_alphabet_index_join'],
+        'requires': None,
+        'apply': lambda: setattr(ast_scanner.TaintTracker, '_cwe338_display_only_draw',
+                                 _pitch_display_draw(accept_selection=True)),
+    },
+    'bound_pitch_accepts_any_call': {
+        'what': 'widen the consumer from range/xrange to any callee, positional or keyword slot',
+        'rows': list(BOUND_QUIET_ROWS) + ['other_call', 'shadowed_range', 'list_append', 'str_concat',
+                 'reset_token', 'salt_getrandbits', 'seconds_join_digits', 'cooldown_getrandbits',
+                 'big8_vocab_append', 'demo-populate-join-code', 'tests-plain-stays-loud'],
+        'requires': None,
+        'apply': lambda: setattr(ast_scanner.TaintTracker, '_cwe338_display_only_draw',
+                                 _pitch_display_draw(accept_any_call=True)),
+    },
+    'bound_pitch_always_true': {
+        'what': 'answer "just a count" for every draw -- a rule delete dressed as a provenance test '
+                '(measured: all 21 bound shapes plus 29 credential, blessed-line, CSPRNG and demo rows)',
+        'rows': list(BOUND_QUIET_ROWS) + list(BOUND_LOUD_ROWS) + ['+ 29 TIER 3/5 rows'],
+        'requires': None,
+        'apply': lambda: setattr(ast_scanner.TaintTracker, '_cwe338_display_only_draw',
+                                 lambda self, node, scope_id: True),
+    },
+    'bound_pitch_accepts_unread': {
+        'what': 'exempt an assigned draw that is never read -- a decision taken on an absence, and it '
+                'then over-reaches to every assigned shape (module scope included)',
+        'rows': list(BOUND_QUIET_ROWS) + ['subscript_select', 'slice_select', 'other_call', 'never_read',
+                 'module_scope', 'shadowed_range', 'returned_value', 'list_append', 'str_concat',
+                 'starred_args', 'keyword_slot', 'randbytes_draw', 'big8_global_rng_ctor',
+                 'demo-populate-rng-ctor', 'demo-populate-getrandbits', 'test-prefix-module-stays-loud',
+                 'populate-under-tests-stays-loud', 'no-scope-plain-draw-stays-loud'],
+        'requires': None,
+        'apply': lambda: setattr(ast_scanner.TaintTracker, '_cwe338_display_only_draw',
+                                 _pitch_display_draw(accept_unread=True)),
+    },
+    'bound_pitch_drops_credential_veto': {
+        'what': 'remove the credential veto re-check that lives inside the axis (defence in depth: the '
+                'guard-level veto holds the same row, so this variant proves the in-body one is real)',
+        'rows': ['credential_named'],
+        'requires': None,
+        'apply': lambda: setattr(ast_scanner.TaintTracker, '_cwe338_display_only_draw',
+                                 _pitch_display_draw(credential_veto=False)),
+    },
 }
 
 
@@ -649,7 +1103,9 @@ def run_mutation(name: str) -> int:
     failures += check_vocabulary()
     print('TIER 5 - the demo path exempts fake data only:')
     failures += check_path_rows()
-    for item in failures[:12]:
+    print('TIER 6 - the loop-bound def-use axis exempts a count, never a selection:')
+    failures += check_bound_rows()
+    for item in failures:
         print(f'  !! {item}')
     caught = bool(failures)
     print(f"\nFALSIFICATION VERDICT ({name}): "
