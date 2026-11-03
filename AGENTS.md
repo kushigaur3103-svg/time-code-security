@@ -1723,6 +1723,162 @@ every run.
   the census, the two reach tables, the spy tier and its four mutations.
 
 
+### The instance-attribute temp-root hop: 44 arena CWE-22 rows retired by a real symbol-table blind
+### spot, three mandated clusters refused on their own AST shapes
+
+The mandate was "autonomous noise elimination on the Transformers arena (~2,531 findings)" with four
+named clusters, a no-implementation-hints directive and the zero-FN floor. It is the first step in this
+file whose arena numbers are measured here rather than deferred: the tree the CI job scans is on this
+machine at `scratch/target_arena/` (2,847 `.py`, 56.84 MB, git-ignored) and its high-signal rows are
+local at `scratch/_arena_rows_hisignal.json` (**3,679 raw → 2,363 kept** through the shipped
+`.tcs.yaml`, recomputed with `TcsConfig.excludes_path` + `rule_excluded` at root `target_arena`). One
+AST slice ships, inside the guard the previous CWE-22 step owns; three of the four clusters are refused,
+each on a number that says the pitch's shape is not the population the engine has.
+
+- **The prompt's four counts are not the artifact's four counts.** Kept rows, per rule: CWE-22
+  **1,004** (1,461 raw; the prompt said ~610 remaining *production* opens), CWE-208 **351** (402 raw —
+  matches), CWE-117 **348** (895 raw — matches), CWE-338 **156** (201 raw; the prompt's 194 is the count
+  in the *other*, older artifact, `benchmark_results/arena_result.json`, which holds 2,777 rows with
+  CWE-22 1,162 / CWE-117 357 / CWE-208 351 / CWE-338 194, and its "~2,531" is that file minus its own
+  exclusions). The head arm of this step's A/B reproduces the kept CWE-22 population exactly —
+  **1,004 CWE-22 of 1,768 total rows over 22 rules** across the 405 files that carry one — so the two
+  arms run on the rows the workflow reports, not on a local re-derivation.
+- **The loudest cluster (CWE-22, 1,004) is the one that ships.** The mandate's item 2 asked for the real
+  AST shapes of the largest cluster, and the answer was a blind spot rather than a filter: the guard
+  `_c22_path_is_proven_temp_root` (`ast_scanner.py:7114`) resolves a plain `ast.Name` through
+  `assignments_by_scope` / `_assignment_records`, and those tables key **`ast.Name` targets only** — a
+  `self.x = ...` write is an `ast.Attribute` target and is invisible to them. It does live in a table the
+  collector already builds for exactly that shape: `class_field_assignments`, keyed
+  `(cls_scope, attr)`. So the arena's `setUp` → `self.tmpdirname = tempfile.mkdtemp()` → `tearDown` →
+  `shutil.rmtree(self.tmpdirname)` idiom could never be proven, however airtight the rest of the guard is.
+- **What ships: one hop into that table (`ast_scanner.py:7159-7171`, 13 lines, in the `ast.Attribute`
+  branch of the method above).** `self._get_enclosing_class_scope(scope_id)` resolves the enclosing
+  class, `class_field_assignments.get((cls_scope, expr.attr), [])` returns *every* write of that
+  attribute, and **all of them** must prove themselves through the same guard recursively
+  (`all(...)`, `depth + 1`). An unresolved class scope or an empty table returns False, so it fails
+  closed and the finding stays. A later `self.tmpdirname = request.args["d"]` voids the proof rather
+  than being skipped — that is Rule 15.5 rung 1 (a positive proof of what the `tempfile` module
+  returned, never an absence). The hop reads no file name, no directory name and no function name, so
+  rung 2 holds: the deciding axis is the value, not a name. It is reachable only through
+  `_c22_cleanup_is_temp_teardown`, which is callee-first over `CWE22_CLEANUP_DELETE_SINKS` (`os.remove`,
+  `os.unlink`, `shutil.rmtree` — exactly three), and all three wirings sit in a suppressing position, so
+  the hop can retire a CWE-22 sink and can never create one.
+- **Yield, measured through the real record path in CI mode.** The 405 CWE-22-bearing files
+  (9,484,571 bytes, 41 byte-capped chunks, `TaintTracker(files=chunk, max_workers=1)` +
+  `cli._findings_for`), head arm = the shipped guard with `class_field_assignments` blinded *inside the
+  predicate only* — the identical patch to the gate's `attribute_hop_dropped`, so the arms differ by
+  exactly those 13 lines: **head 1,768 rows → shipped 1,724, RETIRED=44, ADDED=0**, all 44
+  `CWE-22: shutil.rmtree`, over **40 files**, and the kept arena report moves **2,363 → 2,319**
+  (**−1.86 % of the report, −4.38 % of the rule**). Every one of the 44 lives under `target_arena/tests/`
+  — the tree `**/tests/**` under CWE-22 is a locked refusal for (reach 11 of the 16 blessed Big-8 keys) —
+  which is what makes this Rule 15.5 rung 3 rather than a folder dodge: the same 44 rows go silent at
+  **0 blessed reach** and **0 lines of path policy moved**.
+- **Blessed reach 0, and 0 in both arms.** Asked with the cascade's own triple through the record path
+  (TIER 6, `_ask_records_on` + `_ask_guard`): parity `blessed_lines=8 asks=8 answers_temp_root=0` and
+  Big-8 `blessed_lines=16 asks=13 answers_temp_root=0`, head **and** shipped alike. So the hop never
+  fires on a blessed key even widened, and the two blessed delete keys (`modeling_utils.py:3494
+  os.remove(full_filename)`, `trainer.py:2008 shutil.rmtree(checkpoint, ignore_errors=True)`) are refused
+  by the guard, not skipped by the question.
+- **CWE-208 (351) refused: the shape the mandate names is not emittable.** It asked to silence "generic
+  architecture/model string comparisons like `config.model_type == "bert"`". Each of the 351 kept rows
+  was re-parsed at its own reported line and scored for a string `ast.Constant` operand: **0 of 351 have
+  one**. Structural, not lucky — `_compares_two_secrets` (`ast_scanner.py:7251`) returns `not
+  any(isinstance(o, ast.Constant) ...)` over `[node.left] + node.comparators`, so any compare holding
+  `"bert"` is refused by the emitter before a marker word is ever read (the module already documents
+  that at `ast_scanner.py:1261`). A filter for a zero population is dead code a later refactor cannot
+  tell from a regression, so none was written.
+- **CWE-117 (348) refused under Rule 15.3 on the previous step's own measurements.** The only provable
+  half that is not already live is the numeric-only-hole seal; the binding census that would answer it
+  costs **8.59 / 9.38 / 11.72 ms per cold walk** (29.7 ms over the three modules holding all 43 blessed
+  CWE-117 keys = **1.73 % of a scan**) and returned **0 of 119** real asks changing answer, **0** numeric
+  bindings there and **0** rows inside either frozen baseline across 25,005 local files. Re-shipping
+  needs a measured yield; the yield measured zero twice, so `cwe117_numeric_provenance_probe` still
+  prints `seal=refused binding_seal=withdrawn … locked_cwe117=49 failures=0` and the FP price of the
+  withdrawal stays on the table in TIER 6.
+- **CWE-338 (156) refused, unchanged from the step that measured it.** All 16 blessed CWE-338 keys reach
+  the rule through stdlib `random` / `random.Random` and no other root, so the 122 `random` rows in this
+  population are the rule's own vocabulary; the 25 object-receiver rows (`distributions.*`, `self.*`,
+  `model.*`, `prior.*`) are names for **an instance**, provable only with the import table of the tree
+  being scanned, and are banned from the table by `OBJECT_RECEIVER_ROOTS`. The no-folder-glob law is
+  likewise unchanged: `**/tests/**` under CWE-338 reaches 7 of 7 blessed Big-8 keys.
+- **A second slice of the same hop was screened over the whole tree and rejected on its own census.**
+  The symmetric widening would let `self.x = os.path.dirname(__file__)` in `__init__` feed
+  `_c22_path_is_internal_repo_anchor` later in the same class. Counted before written: all **2,847**
+  arena files parse to **44,726** `self.<attr>` / `cls.<attr>` writes and **0** of them name `__file__`,
+  `resources.files` or `importlib_resources` in the value. A hop with no population fails Rule 15.3 by
+  itself, so the anchor guard keeps its plain-name lookup and this is written down as a measured zero.
+- **Locks.** `benchmark/gates/cwe22_pil_tempfile_probe.py` goes 34 → **38** SHAPES (loud→quiet:
+  `self_attr_written_to_mkdtemp`, `self_attr_written_to_path_mkdtemp`; loud→loud tripwires:
+  `self_attr_rebound_to_request`, `self_attr_from_constructor_param`), 29 → **36** PREDICATES
+  (**15** proven / **21** refused; the four new refusals are the second-write-to-`request`, the
+  constructor-parameter, the sibling-class-same-name and the nested-attribute shapes), 5 → **6** PAIRS
+  (one attribute written once versus the same attribute rebound later), 10 → **13** MUTATIONS, plus
+  three new TIER 7 source-drift pins on the shipped lines themselves
+  (`cls_scope = self._get_enclosing_class_scope(scope_id)`,
+  `self.class_field_assignments.get((cls_scope, expr.attr), [])`, and the `all(...)` recursion) — so a
+  refactor that turns `all` into `any` or drops the scope resolution fails the gate instead of quietly
+  widening the rule. Clean run: `seal=shipped shapes=38 fp_rows=5 must_report=15 already_quiet=18
+  pred_rows=36 pred_proven=15 pred_refused=21 pairs=6 locked_cwe22=24 failures=0` → **PASS**. All
+  **13** falsifications exit 1 CAUGHT, each with the tier split the runner prints (T3 findings table /
+  T4 predicate table / T5 pairs / T6 blessed reach): `delete_temp_guard` 27 `[T3=5 T4=15 T5=6 T6=1]`,
+  `temp_guard_always_true` 44 `[T3=15 T4=21 T5=6 T6=2]`, `accept_tmp_word_without_proof` 14
+  `[T3=4 T4=8 T5=2]`, `accept_scope_name_teardown` 7 `[T3=3 T4=3 T5=1]`, `accept_tests_path_teardown` 4
+  `[T3=1 T4=1 T6=2]`, `drop_every_write_check` 3 `[T3=1 T4=1 T5=1]`, **`attribute_hop_dropped` 6
+  [T3=2 T4=3 T5=1]**, **`attribute_hop_takes_first_write` 3 [T3=1 T4=1 T5=1]**, `allow_escape_literal` 1
+  `[T4=1]`, `allow_arbitrary_join_receiver` 11 `[T3=7 T4=1 T5=3]`, `accept_nondelete_sink` 3
+  `[T4=2 T6=1]`, `pil_pitch_shipped` 1 `[T3=1]`, `move_dest_pitch_shipped` 2 `[T3=2]`.
+  `attribute_hop_takes_first_write` is the rung-1 pin: it installs `any(...)` over the very same table
+  and dies on exactly the tripwire rows, which makes `all(...)` load-bearing rather than stylistic — and
+  `drop_every_write_check` (3) is the same law on the pre-existing walk.
+- **Speed (Rule 15.3), priced on the tuples a real scan hands the guard.** Over a 12-file, 578,975-byte
+  sample the predicate is asked at depth 0 **34 times per scan — 30 hop-reachable, 4 every other shape**
+  (recorded with a pass-through spy that cannot change an answer, and 10 of the 34 are the very rows this
+  corpus retires). Paired, order-alternating, block-min over 8 windows: hop-reachable head
+  **2.418 → shipped 4.280 µs/ask (+1.862 µs)**, every other ask **7.325 → 7.325 µs (+0.000 µs)** — the
+  hop costs nothing where it cannot reach, because its two `isinstance` tests are the branch's own
+  preconditions. Per-scan addition on that corpus = 30 × 1.862 µs = **+0.056 ms**; the arena bound is the
+  population it applies to, 44 hop-reachable asks × 1.862 µs = **≤0.082 ms per arena scan**. The
+  scan-level legs are reported and then discarded, per the standing law: 7 alternating legs gave CPU
+  ratio median **1.0084** (shipped ≤ head in 3/7) while a **same-engine control** over two Big-8 modules
+  — a corpus in which the arms *cannot* differ — gave median **1.0625**, i.e. the control is worse than
+  the measured corpus, so those legs are the machine and the claim rests on the analytic bound.
+- **The clock-harness defect this step found, and its permanent fix.** Every early leg died on
+  `ZeroDivisionError`, because Windows accounts process CPU in **15.6 ms quanta**: a window of a few
+  hundred predicate calls reports `0.0` CPU in both arms, and one leg reported a cold walk as exactly
+  `15625.0 µs` — the tick, not the work. The harness now calibrates the per-call cost over ~2,000
+  replays, sizes each window to **~0.35 s of CPU**, takes the minimum over BLOCK=8 windows, and keeps a
+  same-engine control corpus beside every ratio so machine noise can never again be read as a predicate.
+  Stated as the sixth harness law: **a CPU ratio is only reportable when its window is longer than the
+  quantum and a zero-row control arm is run beside it.**
+- **Gates on the exact code shipped** (engine blob `944ba8ca94c142f4` → `8bcdbad93659170b`):
+  `aa_parity.py` `baseline=425 now=425 MISSING=0 NEW=0` → `VERDICT: PASS - parity 425/425, exact-set
+  match` — read after the probe grew 4 shapes, 7 predicate rows, 1 pair, 3 mutations and 3 source pins,
+  so the harness did not trip the product and the recorded gate laws held (no `exec`/`compile`, corpus
+  joins written at the `open()` site, no regex built from a loop variable, no secret-named local, no
+  angle-bracket placeholder in a print). `big8_ab.py` `sha256 verified (119 pinned keys, engine
+  94c5ee2)` → `119/119 MISSING=0 NEW=0`, exact-set. `cross_runner.py` Precision and Recall **100.00 %**,
+  F1 **1.0000**, `Suppressed sanitizer sites: 2`, `Exact-set match on all cases: YES`, `Suppression
+  contract all cases: YES`. `cwe117_cwe22_unknown_source_probe` `locked_keys=59 cases=8 failures=0`;
+  the other three CWE-22 tables — `cwe22_repo_anchor_path` (`shapes=42 locked_cwe22=24 failures=0`),
+  `cwe22_dirent_closure` (16) and `cwe22_sink_argument` (24) — and **all 30 runnable scripts under
+  `benchmark/gates/` exit 0** in one sweep on this tree (`scripts=30 non-zero=0 []`). Three-way
+  process-tree peaks on the shipped bytes (parent / summed-USS / summed-RSS): touched probe
+  **185.7 / 172.8 / 211.7 MB**, parity **16.6 / 143.8 / 188.9**, Big-8 **16.4 / 126.5 / 147.4**,
+  cross-file **34.7 / 24.2 / 36.5** — every USS figure inside the ~400 MB budget. TP moved **0** (both
+  baselines exact-set), FN **0**, FP **−44 arena rows and 0 baseline rows**, ability strictly widened in
+  the safe direction: the guard now *can* answer a class-attribute teardown, and refuses it on every
+  shape the tables say is unproven.
+- **Deviation from the mandate's staging list, stated rather than hidden.** Item 1 — stage and commit
+  the four pending probe files so the tree is clean and 30 gates are tracked — shipped first, as
+  ordered, as `e6c2472`. This commit is `ast_scanner.py`,
+  `benchmark/gates/cwe22_pil_tempfile_probe.py` and `AGENTS.md`: no `.tcs.yaml` line moves, because the
+  44 rows live inside the one tree every CWE-22 glob is refused for and the guard reaches them by proof
+  instead, and no `tests/test_workflow_controls.py` change is needed because no policy changed. The four
+  clusters therefore end as **one shipped AST slice (44 rows, 0 blessed reach) and three refusals (351 /
+  348 / 156 rows)**, each refusal carried by a number, and each refusal that the engine can be asked
+  about at all carried by a falsification of the pitch's own row.
+
+
 ### Permanent Fix Mandate (Root-Cause Immunity & Anti-Band-Aid Rule)
 
 All engine modifications, precision improvements, and bug fixes must be architecturally permanent:

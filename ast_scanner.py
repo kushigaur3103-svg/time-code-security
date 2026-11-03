@@ -7156,6 +7156,19 @@ class TaintTracker:
             if records:
                 return all(self._c22_path_is_proven_temp_root(
                     r.value_node, r.scope_id, r.lineno, depth + 1) for r in records)
+            if isinstance(expr.value, ast.Name) and expr.value.id in ("self", "cls"):
+                # `self.tmpdirname = tempfile.mkdtemp()` in `setUp`, deleted in `tearDown`. The
+                # assignment table keys plain-name targets only, so an instance attribute is
+                # invisible to the lookup above; `class_field_assignments` is the table
+                # `collect_statements` already builds for exactly these writes, and *every* write
+                # the class shows must prove itself -- a later `self.tmpdirname = request.args[...]`
+                # voids the proof instead of being skipped.
+                cls_scope = self._get_enclosing_class_scope(scope_id)
+                writes = (self.class_field_assignments.get((cls_scope, expr.attr), [])
+                          if cls_scope else [])
+                if writes:
+                    return all(self._c22_path_is_proven_temp_root(
+                        r.value_node, r.scope_id, r.lineno, depth + 1) for r in writes)
             if expr.attr in self._C22_PATH_CHAIN_ATTRS:
                 return self._c22_path_is_proven_temp_root(
                     expr.value, scope_id, lineno, depth + 1)

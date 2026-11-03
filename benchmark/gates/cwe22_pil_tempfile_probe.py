@@ -243,6 +243,26 @@ SHAPES = [
     # shipped wirings all sit in a suppressing position.
     ('makedirs_is_not_a_cwe22_sink', REQ + HEAD +
      'os.makedirs(os.path.join("models", request.args["f"]), exist_ok=True)\n', 'quiet', 'quiet'),
+    # ---- the instance-attribute hop: the assignment table's blind spot, not a new exemption ----
+    # `self.<attr>` writes are recorded in `class_field_assignments`, never in `assignments_by_scope`,
+    # so a root the class itself created in `setUp` was invisible to the proof at `tearDown`.
+    ('self_attr_written_to_mkdtemp', REQ + HEAD + '\n\nclass GateCase:\n'
+     '    def setUp(self):\n        self.tmpdirname = tempfile.mkdtemp()\n\n'
+     '    def tearDown(self):\n        shutil.rmtree(self.tmpdirname)\n', 'loud', 'quiet'),
+    ('self_attr_written_to_path_mkdtemp', REQ + HEAD + '\n\nclass GateCase:\n'
+     '    def setUp(self):\n        self.out = Path(tempfile.mkdtemp(prefix="gate-"))\n\n'
+     '    def clean(self):\n        os.remove(self.out / "f.json")\n', 'loud', 'quiet'),
+    # The tripwire is the whole point of the hop: a second write to the same attribute makes the proof
+    # false, so the row that says temp in `setUp` and takes the directory from `request` in `go` stays
+    # reported. Deleting the `all(...)` fold (mutation `attribute_hop_takes_first_write`) lights this up.
+    ('self_attr_rebound_to_request', REQ + HEAD + '\n\nclass GateCase:\n'
+     '    def setUp(self):\n        self.tmpdirname = tempfile.mkdtemp()\n\n'
+     '    def go(self):\n        self.tmpdirname = request.args["dir"]\n'
+     '        shutil.rmtree(self.tmpdirname)\n', 'loud', 'loud'),
+    ('self_attr_from_constructor_param', REQ + HEAD + '\n\nclass GateCase:\n'
+     '    def __init__(self, where):\n        self.outdir = where\n\n'
+     '    def clean(self):\n        shutil.rmtree(self.outdir)\n\n\n'
+     'GateCase(request.args.get("d")).clean()\n', 'loud', 'loud'),
 ]
 
 FP_ROWS = [row for row in SHAPES if row[2] == 'loud' and row[3] == 'quiet']
@@ -263,6 +283,8 @@ PAIRS = [
      'twice_written_root_in_join'),
     ('delete of a proven root vs delete of a parameter somebody passed in',
      'name_bound_to_path_mkdtemp', 'function_parameter_path'),
+    ('an instance attribute written once to a temp root vs the same attribute rebound to a request '
+     'value later in the class', 'self_attr_written_to_mkdtemp', 'self_attr_rebound_to_request'),
 ]
 
 # The guard's own truth table, asked at the expression the wiring passes it. Rows quiet at finding level
@@ -326,6 +348,32 @@ PREDICATES = [
     ('read_sink_on_temp_path', 'open', REQ + HEAD + 'open(Path(tempfile.mkdtemp()) / "x.json")\n', False),
     ('image_open_on_temp_path', 'Image.open', REQ + 'from PIL import Image\nimport tempfile\n'
      'from pathlib import Path\nImage.open(Path(tempfile.mkdtemp()) / "x.gif")\n', False),
+    # ---- the instance-attribute hop, one axis per row ----
+    ('self_attr_mkdtemp_root', 'shutil.rmtree', REQ + HEAD + '\n\nclass C:\n'
+     '    def setUp(self):\n        self.tmpdirname = tempfile.mkdtemp()\n\n'
+     '    def tearDown(self):\n        shutil.rmtree(self.tmpdirname)\n', True),
+    ('self_attr_path_div', 'os.remove', REQ + HEAD + '\n\nclass C:\n'
+     '    def setUp(self):\n        self.out = Path(tempfile.mkdtemp())\n\n'
+     '    def clean(self):\n        os.remove(self.out / "f.json")\n', True),
+    ('self_attr_both_writes_temp', 'shutil.rmtree', REQ + HEAD + '\n\nclass C:\n'
+     '    def setUp(self):\n        self.tmpdirname = tempfile.mkdtemp()\n\n'
+     '    def redo(self):\n        self.tmpdirname = tempfile.mkdtemp()\n'
+     '        shutil.rmtree(self.tmpdirname)\n', True),
+    ('self_attr_second_write_request', 'shutil.rmtree', REQ + HEAD + '\n\nclass C:\n'
+     '    def setUp(self):\n        self.tmpdirname = tempfile.mkdtemp()\n\n'
+     '    def go(self):\n        self.tmpdirname = request.args["dir"]\n'
+     '        shutil.rmtree(self.tmpdirname)\n', False),
+    ('self_attr_constructor_param', 'shutil.rmtree', REQ + HEAD + '\n\nclass C:\n'
+     '    def __init__(self, where):\n        self.outdir = where\n\n'
+     '    def clean(self):\n        shutil.rmtree(self.outdir)\n', False),
+    # The table is keyed by class, so a sibling class that writes the same attribute name from a
+    # request value must not lend its proof to this one -- and must not lose its own finding either.
+    ('self_attr_sibling_class_writes_same_name', 'shutil.rmtree', REQ + HEAD + '\n\nclass A:\n'
+     '    def go(self):\n        self.d = request.args["d"]\n        shutil.rmtree(self.d)\n\n\n'
+     'class B:\n    def go(self):\n        self.d = tempfile.mkdtemp()\n        shutil.rmtree(self.d)\n',
+     False),
+    ('self_attr_nested_attribute', 'shutil.rmtree', REQ + HEAD + '\n\nclass C:\n'
+     '    def go(self, holder):\n        shutil.rmtree(self.root.tmpdirname)\n', False),
 ]
 
 PRED_PROVEN = [row for row in PREDICATES if row[3]]
@@ -730,6 +778,16 @@ def check_tables_and_wiring():
              'a path method on somebody else\'s value is not os.path.join'),
             ('CWE22_TEMPFILE_ROOT_CALLS', 'the root must be a tempfile entry point'),
             ('allow_literal=(seg != "resolve")', 'a resolve() call must not launder a bare literal'),
+            ('cls_scope = self._get_enclosing_class_scope(scope_id)',
+             'the instance-attribute hop resolves the *class*, so a sibling class writing the same '
+             'attribute name cannot lend its proof'),
+            ('self.class_field_assignments.get((cls_scope, expr.attr), [])',
+             'and reads the table collect_statements already builds for `self.<attr>` writes -- the '
+             'assignment map keys plain-name targets only, so this is a blind spot, not an exemption'),
+            ('return all(self._c22_path_is_proven_temp_root(\n'
+             '                        r.value_node, r.scope_id, r.lineno, depth + 1) for r in writes)',
+             'every write the class shows must prove itself -- `any` would let a later '
+             '`self.tmpdirname = request.args[...]` ride the first write'),
     ):
         if fragment not in _method_source('_c22_path_is_proven_temp_root'):
             failures.append(('predicate body', fragment, 'present', 'absent', why))
@@ -821,6 +879,42 @@ def _proven_first_write_only(self, expr, scope_id='', lineno=0, depth=0, allow_l
     return _ORIG_PROVEN(self, expr, scope_id, lineno, depth, allow_literal)
 
 
+def _proven_without_attribute_hop(self, expr, scope_id='', lineno=0, depth=0, allow_literal=False):
+    """Mutation: delete the instance-attribute hop and nothing else.
+
+    The class-field table is blinded for this predicate only, so `self.tmpdirname` becomes an
+    unresolved name again while every other arm of the guard keeps its shipped answer. A mutation
+    that restored the pre-hop method text instead would also drop the `..`, subscript and receiver
+    vetoes and prove nothing about the one line under test.
+    """
+    table = self.class_field_assignments
+    self.class_field_assignments = {}
+    try:
+        return _ORIG_PROVEN(self, expr, scope_id, lineno, depth, allow_literal)
+    finally:
+        self.class_field_assignments = table
+
+
+def _proven_attribute_first_write(self, expr, scope_id='', lineno=0, depth=0, allow_literal=False):
+    """Mutation: `any` write of the attribute proves the root instead of *every* write.
+
+    One axis from the shipped hop: the fold. A class that writes `self.tmpdirname` to `mkdtemp()`
+    in `setUp` and to `request.args["dir"]` later then reads as proven again.
+    """
+    if _ORIG_PROVEN(self, expr, scope_id, lineno, depth, allow_literal):
+        return True
+    if (expr is not None and depth <= 8 and isinstance(expr, ast.Attribute)
+            and isinstance(expr.value, ast.Name) and expr.value.id in ('self', 'cls')):
+        cls_scope = self._get_enclosing_class_scope(scope_id)
+        writes = (self.class_field_assignments.get((cls_scope, expr.attr), [])
+                  if cls_scope else [])
+        if writes:
+            return any(_proven_attribute_first_write(
+                self, record.value_node, record.scope_id, record.lineno, depth + 1)
+                for record in writes)
+    return False
+
+
 def _literal_ok_ignoring_escape(self, expr, allow_literal):
     """Mutation: any string constant is a safe literal segment, `..` included."""
     return isinstance(expr, ast.Constant) and isinstance(expr.value, str) and expr.value != ''
@@ -880,6 +974,26 @@ MUTATIONS = {
         'rows': ['root_rebound_to_request', 'twice_written_root_in_join', 'root_rebound_to_request'],
         'apply': lambda: setattr(ast_scanner.TaintTracker, '_c22_path_is_proven_temp_root',
                                  _proven_first_write_only),
+    },
+    'attribute_hop_dropped': {
+        'what': 'delete the instance-attribute hop and nothing else: the assignment table keys plain '
+                '`ast.Name` targets only, so `self.tmpdirname = tempfile.mkdtemp()` written in `setUp` '
+                'and deleted in `tearDown` is an unresolved name again and every one of those rows '
+                'comes back. This is the blind spot the hop fixes, priced as a regression rather than '
+                'as an exemption -- the guard still refuses a name, a parameter and a loop variable',
+        'rows': ['self_attr_written_to_mkdtemp', 'self_attr_written_to_path_mkdtemp',
+                 'self_attr_mkdtemp_root', 'self_attr_path_div', 'self_attr_both_writes_temp'],
+        'apply': lambda: setattr(ast_scanner.TaintTracker, '_c22_path_is_proven_temp_root',
+                                 _proven_without_attribute_hop),
+    },
+    'attribute_hop_takes_first_write': {
+        'what': 'the hop folds `any` class write instead of `all`: a test class that sets '
+                '`self.tmpdirname` from `tempfile.mkdtemp()` and later points the same attribute at '
+                '`request.args["dir"]` is silenced on the strength of the first write, which is the '
+                'rebinding every other arm of this rule refuses',
+        'rows': ['self_attr_rebound_to_request', 'self_attr_second_write_request'],
+        'apply': lambda: setattr(ast_scanner.TaintTracker, '_c22_path_is_proven_temp_root',
+                                 _proven_attribute_first_write),
     },
     'allow_escape_literal': {
         'what': 'any string constant is a safe literal segment -- `os.path.join(root, "../etc")` is then '
