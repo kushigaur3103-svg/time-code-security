@@ -2324,6 +2324,19 @@ CWE3A_CREDENTIAL_LABEL_RE = re.compile(
 CWE3A_IDOR_MODELS = {"user", "account", "profile", "invoice", "order", "payment", "document", "token"}
 CWE3A_LOCALHOST_HOSTS = {"localhost", "127.0.0.1", "0.0.0.0", "::1"}
 CWE3A_SCHEMA_DOMAINS = {"w3.org", "schemas.microsoft.com", "xml.org", "docs.oasis-open.org", "schemas.xmlsoap.org", "json-schema.org"}
+# ── CWE-319 public-asset-fetch vocabulary ──
+# Measured on the arena before these lines were written: 283 of its 311 cleartext `http://` string
+# literals are the one COCO sample image (`images.cocodataset.org/val2017/000000039769.jpg`) that the
+# vision conversion scripts download to smoke-test a pipeline, and 98 of the rule's 102 kept rows sit
+# on those two lines. Each table member therefore has rows behind it, and `get` is the only verb the
+# population uses -- `httpx`, `urlopen` and `urlretrieve` carry zero cleartext asset fetches here, so
+# they stay loud until measured (`asset_member_joined_without_population` falsifies the widening).
+CWE319_ASSET_SUFFIXES = (".jpg", ".jpeg")
+CWE319_ASSET_READ_VERBS = frozenset({"get"})
+CWE319_ASSET_LIBRARY_ROOTS = frozenset({"requests"})
+# Transport options change *how* the request is made; `data`, `json`, `params`, `files`, `headers`,
+# `auth` and `cookies` carry content out of the process. Only the first kind may be present.
+CWE319_ASSET_TRANSPORT_KEYWORDS = frozenset({"stream", "timeout", "verify", "allow_redirects", "cert"})
 CWE3A_NETWORK_SINKS = {
     "requests.get", "requests.post", "requests.put", "requests.delete",
     "urllib.request.urlopen", "urlopen", "httpx.get", "httpx.post",
@@ -14769,6 +14782,54 @@ class TaintTracker:
         return False
 
     # ── 10. CWE-319: cleartext HTTP aimed at a host only known at runtime ─────────────
+    def _c319_is_public_static_asset_fetch(self, url_val, call: ast.Call, mod_name: str) -> bool:
+        """True only for a read-only cleartext GET whose whole payload is a public image sample.
+
+        CWE-319 is *exposure of sensitive information* over an unencrypted channel, and a script that
+        fetches `http://images.cocodataset.org/val2017/000000039769.jpg` to feed a vision pipeline
+        exposes nothing: no request body leaves, and what comes back is a published JPEG. Two lines of
+        that kind produced 98 of the rule's 102 kept arena rows, which is why the question is worth
+        answering per-shape instead of per-folder. Six clauses, every one a positive fact about the
+        call the file actually writes: the URL must be a cleartext *literal* with no userinfo, query or
+        fragment (a token rides a query string, and `?` is why the template collector at
+        `_collect_cwe319_insecure_transport` is deliberately not consulted -- its URLs are built from
+        names, so nothing there can prove it is static); the last path segment must end in a raster
+        image suffix, so a checkpoint, a `.json` config or a `.env` never inherits the answer; the verb
+        must be a read the table proves; the callee head must resolve through this module's own imports
+        to the library the population uses, which is what keeps a `requests.Session` carrying an
+        `auth=` or a bearer `headers=` out of reach (a session's headers are invisible at the call, so
+        only the module-level `requests.get` counts as proof); and the call must send only the URL --
+        one positional, and keywords limited to transport options.
+        """
+        if not isinstance(url_val, str) or not url_val.lower().startswith("http://"):
+            return False
+        if "?" in url_val or "#" in url_val:
+            return False
+        if "{" in url_val or "}" in url_val or "%" in url_val:
+            # A hole the runtime fills is not a static asset: `f"http://{host}/x.jpg"` names a host
+            # nobody proved, and `%` is either a format slot or a percent-encoded segment.
+            return False
+        rest = url_val[len("http://"):]
+        host, slash, tail = rest.partition("/")
+        if not slash or not tail or "@" in host:
+            return False
+        if not tail.rsplit("/", 1)[-1].lower().endswith(CWE319_ASSET_SUFFIXES):
+            return False
+        func = call.func
+        if not isinstance(func, ast.Attribute) or func.attr not in CWE319_ASSET_READ_VERBS:
+            return False
+        head = func.value
+        while isinstance(head, ast.Attribute):
+            head = head.value
+        if not isinstance(head, ast.Name):
+            return False
+        origin = (self.imports.get(mod_name) or {}).get(head.id)
+        if origin is None or origin.split(".")[0] not in CWE319_ASSET_LIBRARY_ROOTS:
+            return False
+        if len(call.args) != 1:
+            return False
+        return all(kw.arg in CWE319_ASSET_TRANSPORT_KEYWORDS for kw in call.keywords or [])
+
     def _collect_cwe319_insecure_transport(self, tree, filename, source_lines):
         """`requests.get(url)` where `url` was built as `f"http://{host}/log"` or `"http://{}:{}".format(...)`.
 
@@ -16220,7 +16281,8 @@ class TaintTracker:
                                 return resolved
                     return None
 
-                def _is_cleartext_url(expr, scope: str, lineno: int, fn_node) -> bool:
+                def _is_cleartext_url(expr, scope: str, lineno: int, fn_node,
+                                      call=None) -> bool:
                     url = _url_string(expr, scope, lineno, fn_node)
                     if not isinstance(url, str) or not url.lower().startswith(
                             CLUSTER2_CLEARTEXT_SCHEME):
@@ -16234,6 +16296,12 @@ class TaintTracker:
                     for schema_domain in CLUSTER2_SCHEMA_DOMAINS:
                         if schema_domain in url:
                             return False
+                    # The one asset-fetch answer, asked here too: this registry path emits the same
+                    # CWE-319 row on the same line as the phase-7 collector, so silencing only there
+                    # would relabel the finding rather than retire it.
+                    if call is not None and self._c319_is_public_static_asset_fetch(
+                            url, call, mod_name):
+                        return False
                     return True
 
                 def _contains_wildcard(expr, scope: str, lineno: int) -> bool:
@@ -16631,7 +16699,7 @@ class TaintTracker:
                             if "url" in kw_map:
                                 url_arg = kw_map["url"].value
                         if url_arg is not None and _is_cleartext_url(url_arg, scope, lineno,
-                                                                     fn_node):
+                                                                     fn_node, node):
                             _add(node, "CLEARTEXT_HTTP_REQUEST", "INSECURE_TRANSPORT", "CWE-319")
                         break
 
@@ -18065,7 +18133,8 @@ class TaintTracker:
                                     if schema in url_val:
                                         is_whitelisted = True
                                         break
-                                if not is_whitelisted:
+                                if not is_whitelisted and not self._c319_is_public_static_asset_fetch(
+                                        url_val, node, mod_name):
                                     _p7_lines = self._source_lines_by_file.get(file_path, [])
                                     def _p7_sup(lno):
                                         if not (1 <= lno <= len(_p7_lines)):
@@ -18574,7 +18643,8 @@ class TaintTracker:
                         defaults[a.arg] = dflt
                 default_hits = set()
                 for param, dflt in defaults.items():
-                    if _offending_literal(dflt) is None:
+                    dflt_url = _offending_literal(dflt)
+                    if dflt_url is None:
                         continue
                     if _suppressed(func.lineno):
                         continue
@@ -18594,6 +18664,10 @@ class TaintTracker:
                                 if kw.arg == "url":
                                     url_arg = kw.value
                         if isinstance(url_arg, ast.Name) and url_arg.id == param:
+                            # The one asset-fetch answer, asked per sink call rather than per default,
+                            # so a second call that is not a static image read still reports.
+                            if self._c319_is_public_static_asset_fetch(dflt_url, call, mod_name):
+                                continue
                             if not _suppressed(call.lineno):
                                 default_hits.add(func.lineno)
                 for def_line in default_hits:
@@ -18624,7 +18698,12 @@ class TaintTracker:
                     if not cands:
                         continue
                     a_line, a_value = cands[-1]
-                    if _offending_literal(a_value) is None:
+                    a_url = _offending_literal(a_value)
+                    if a_url is None:
+                        continue
+                    # Same predicate, same arguments, so the assignment line and the sink line cannot
+                    # disagree about one `requests.get` of one JPEG.
+                    if self._c319_is_public_static_asset_fetch(a_url, call, mod_name):
                         continue
                     if _suppressed(a_line):
                         continue

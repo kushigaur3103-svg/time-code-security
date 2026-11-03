@@ -2555,6 +2555,117 @@ call. Engine: 37 lines added, 0 deleted (`ast_scanner.py` blob `8bcdbad93659170b
   TIER 1 of `confidence_label_probe.py`, TIER 1/2 of `cwe79_latency_gates_probe.py`), which read
   `inspect.getsource` and fail the day a citation stops matching the code.
 
+### The CWE-319 public-asset-fetch clause: 102 arena rows retired by six positive proofs, and the
+### whole rule stays live on every shape that is not one of them
+
+The owner's standing ask is the ~2k Transformers arena rows, "permanently par safely to tp fn", and the
+previous step delivered 117. This step goes to the one loud rule that **no prior step of this repository
+has ever partitioned**: CWE-319 (cleartext transmission). Its arena population is 129 raw / **102 kept**
+rows in 48 files, its blessed population is **35 parity keys and 0 Big-8 keys**, and the two are disjoint
+in a way that can be proved per-shape rather than per-folder. Engine: `ast_scanner.py`
+`6917cb69f2fdbeef → 2d6c19f017ffb5d5`, **84 insertions / 5 deletions**; `cli.py 34588435d8c8e15e`,
+`rule_engine.py 86147fdb11063475`, `tcs_config.py 5c9a1815ca836abb` and `iac_auditor.py 2a8cf3f2f1d5561b`
+are each `git hash-object`-equal to `git rev-parse HEAD:<file>`. Kept arena report **2,202 → 2,100**.
+
+- **The shape, in one line.** Two lines of vision-conversion scripts produced 98 of the 102: the same COCO
+  sample image fetched to smoke-test a pipeline. Of the arena's 311 cleartext literals, **283** are that
+  image. A `**/models/**`-style glob over that tree is a *locked refusal* in this repository — the same
+  files carry CWE-312 cleartext storage (`tokenization_tapex.py:510`) and 4 CWE-532 sensitive-logging rows —
+  so the deciding axis is the **value and the call shape**, never a path (Rule 15.5 rungs 1 and 2).
+- **`_c319_is_public_static_asset_fetch` (`ast_scanner.py:14785`) is a conjunction of six positive proofs**,
+  each over tables at `:2334-2339`: the URL is a cleartext *literal* `http://` with no `?`, `#`, `{`, `}`,
+  `%` and no userinfo, carrying a host plus a non-empty path tail; the last path segment ends in
+  `.jpg`/`.jpeg` (`CWE319_ASSET_SUFFIXES`) so a checkpoint, a `config.json` or a `.env` can never inherit
+  the answer; the verb is in `CWE319_ASSET_READ_VERBS` (`get`) on an `ast.Attribute`; the chain head,
+  unwrapped through Attributes, is an `ast.Name` whose `origin` through **this module's own import table**
+  has `requests` as its dot-boundary root (`CWE319_ASSET_LIBRARY_ROOTS`) — which is what keeps a
+  `requests.Session` carrying `auth=` or a bearer `headers=` out of reach, because a session's headers are
+  invisible at the call; exactly one positional argument; and only transport options among the keywords
+  (`stream`/`timeout`/`verify`/`allow_redirects`/`cert`). A `https://` URL, a query string riding a token,
+  an `f"http://{host}/x.jpg"` and `requests.post(url, data=payload)` are all refused, not by name but by
+  the same six tests answering False.
+- **Four consults, because three produced a relabel instead of a retirement.** The rule emits from
+  `_collect_batch3a_structural_findings` (`:18136`, `CLEARTEXT_HTTP_TRANSMISSION`),
+  `_collect_cluster2_structural_findings` through its `_is_cleartext_url` closure (`:16302`,
+  `CLEARTEXT_HTTP_REQUEST`), and `_collect_cwe319_variable_resolution_findings` twice (`:18669` a default
+  parameter holding the literal, `:18706` a local bound to it). The first draft consulted three of them and
+  the arena A/B read `RETIRED=102 ADDED=52`: the transmission rows went quiet and the cluster-2 registry
+  immediately surfaced the same line under a *different symbol*. That is a relabel, not a retirement — the
+  count barely moves and a downstream consumer sees a new rule name on an old line. All four consults sit
+  in a **suppressing** position, so the clause can retire a CWE-319 row and can never create one.
+- **Yield: 102 retired, 0 added, 0 blessed moved.** Through the real record path on the 48 CWE-319-bearing
+  arena files: **head 102 rows → shipped 0, RETIRED=102, ADDED=0** — the rule's whole kept population, each
+  row proven to be a static raster GET rather than excused by a directory. The parity corpus is
+  **474 → 474 rows with CWE-319 at 35 = 35**, and the blessed census asks the frozen keys directly:
+  `parity blessed_lines=35 (locked 35) calls_asked=37 url_resolved=15 asks=37 lines_with_no_call=0
+  answers_asset_fetch=0`, `big8 blessed_lines=0 asks=0 answers_asset_fetch=0`. So the rule is not silenced
+  — it is silenced *on this shape*, and 35 hand-written true positives say so with their own line numbers.
+- **The lock is the 32nd tracked gate**, `benchmark/gates/cwe319_cleartext_asset_probe.py`:
+  `seal=shipped shapes=35 must_report=24 retired=9 multi_emitter=2 pred_rows=21 pairs=9 consults=4
+  locked_cwe319=35 failures=0` → **PASS** across seven tiers — blessed floors (35 parity / 0 Big-8, and a
+  `LOCKED` count that fails if the frozen file ever stops carrying 35), CWE-319 exact-set on the parity
+  corpus, the findings truth table (9 retired shapes × every emitter symbol, 24 tripwires), the 21-row
+  predicate table, nine one-axis pairs, the blessed reach above, and the wiring + four tables read out of
+  the engine's own AST. `default_arg_double_emit` is the finding-level pin on the fourth consult: 0 rows
+  with the clause live, **2 rows** (one per symbol) with it blinded, so dropping that consult or the `node`
+  argument its caller passes fails the table without waiting for a baseline. TIER 7 counts the consult
+  sites structurally (`{batch3a: 1, cluster2: 1, variable_resolution: 2}`, total 4) so the same drift fails
+  twice — once behaviourally, once as a shape.
+- **All eleven falsifications exit 1 CAUGHT on the shipped bytes** (`CAUGHT on N row(s)` with the tier split
+  the runner prints — T3 findings / T4 predicate / T5 pairs / T6 blessed reach / T7 wiring+tables):
+  `delete_asset_clause` 32 [T3=11 T4=7 T5=9 T6=1 T7=4], `asset_clause_always_true` 76 [T3=26 T4=36 T5=9
+  T6=1 T7=4], `asset_suffix_accepts_a_weight_file` 9, `asset_verb_joined_without_population` 5,
+  `asset_root_joined_without_population` 6, `asset_transport_keywords_accept_a_payload` 10,
+  `asset_head_proof_dropped` 23 [T3=6 T4=10 T5=3 T7=4], `asset_positional_count_dropped` 11,
+  `asset_root_match_becomes_a_substring` 8 [T4=4 T7=4], `asset_url_accepts_a_query_hole` 13 [T3=4 T4=4 T5=1
+  T7=4], `asset_url_accepts_a_format_hole` 11 [T3=3 T4=4 T7=4]. The two table-only roots are honest, and
+  named: the `httpx`/`requests_toolbelt` spellings have **no finding-level population** because the emitter
+  itself does not recognise those libraries, so that clause is pinned at the predicate table plus the
+  source fragment — Rule 15.5 rung 5, a predicate-only defect pinned twice.
+- **Two of this gate's own defects, both already recorded as laws and re-bitten here.** (1) `_rows` and
+  TIER 4/6/7 called the *pristine* method object directly, so a `--mutate` rebind was invisible to the tier
+  written against it and two falsifications reported **MISSED (exit 0)** on a guard that is load-bearing —
+  that is the "must not clobber an active mutation" law; everything now asks through `_installed()`, which
+  reads the class attribute at call time, and the blinded arm restores whatever was installed before it.
+  (2) `asset_url_accepts_a_query_hole` was a dead tripwire in a new way: `?` and `#` already break
+  `endswith(".jpg")`, so deleting the hole clause moved **no row** and the mutation was caught only by four
+  table assertions — the tenth law's own shape. `query_after_suffix` and `fragment_after_suffix`, where the
+  query or fragment value *itself* ends in `.jpg`, are refused by the hole clause and nothing else; after
+  adding them that mutation bites 13 rows including four finding-level ones.
+- **Speed (Rule 15.3), priced per ask bucket on the tuples a real scan hands the clause.** The clause is new
+  code, so the head arm is the clause *absent* (`lambda: False`) — the honest number is the added absolute,
+  with the same-engine control beside every ratio. Paired, order-alternating, min over 5 legs, every window
+  0.22–0.36 s of CPU against a 15.6 ms quantum (`python scratch/_c319_clock.py`):
+  **exempted** (the real 47-ask population) head 0.105 → shipped **1.391 µs/ask (+1.287)**;
+  **cheap-reject** (scheme/hole, fixture-priced) 0.255 (+0.151); **suffix-reject** 0.596 (+0.498);
+  **walk-reject** (the callee/import/positional refusals — the expensive walk) 0.914 (+0.816). The
+  same-engine control read ratio median **0.8636**, i.e. the noise band is ±14 % and no bucket-level ratio
+  is quoted as a speed-up. Full-arena census over every one of the **2,382** files holding an `http:`
+  literal (**54,744,231 bytes**, chunks of 25, one tracker at a time): **186 asks, all 186 on the
+  `exempted` branch, 0 on the refusal branches** — the walk-then-refuse path is never taken in this arena,
+  so the bound is **186 × 1.287 µs = 0.239 ms per full arena scan**. Collector-level, on 154,666 bytes /
+  24 files, 6 alternating legs of the three touched collectors: head **91.26 ms → shipped 90.85 ms, CPU
+  ratio 0.9955** with the rows moving 37 → 6 in the same pair (31 arena rows retiring and **0** blessed).
+- **Memory:** `python scratch/_gate_rss.py benchmark/gates/cwe319_cleartext_asset_probe.py` →
+  **162.8 parent / 279.8 summed-USS / 334.1 summed-RSS MB**, inside the ~400 MB budget (USS is the figure
+  to hold; summed RSS double-counts pages shared across a `spawn` pool).
+- **Gates on the exact code shipped.** `python benchmark/gates/aa_parity.py` → `baseline=425 now=425
+  MISSING=0 NEW=0` → `VERDICT: PASS - parity 425/425, exact-set match`, read *after* the new gate existed in
+  `benchmark/gates/` (parity scans that whole tree), so the harness did not trip the product and the eleven
+  recorded gate laws held. `big8_ab.py` → `sha256 verified (119 pinned keys, engine 94c5ee2)` →
+  `119/119 MISSING=0 NEW=0` exact-set. `cross_runner.py` → Precision and Recall **100.00 %**, F1 **1.0000**,
+  `Cross-File False Negatives (Bad case, missed): 0`, `Exact-set match on all cases: YES`, `Suppression
+  contract all cases: YES`, `OVERALL VERDICT: [PASS]`. The new gate PASS as above, the placeholder lock
+  `locked_keys=59 cases=8 failures=0`, and `python scratch/_sweep_all.py` → **`scripts=32 non-zero=0 []`**.
+  TP moved **0** (both baselines exact-set), FN **0**, FP **−102 arena rows and 0 baseline rows**.
+- **Deviation from the mandate's file list, stated rather than hidden.** The ask was engine work; it ships
+  with one gate file beside it (`benchmark/gates/cwe319_cleartext_asset_probe.py`, tracked) because the
+  Permanent Fix Mandate items 2 and 3 require a fail-loud lock with a falsification for every shipped
+  suppression, and because CWE-319's blessed population lives in **one** baseline — 35 keys in parity, 0 in
+  Big-8 — so the standing rule applies: a truth table is this rule's only protection, and it had to ship
+  before the narrowing was claimed, not after. `scratch/_c319_clock.py`, `_c319_ab.py` and the arena tree
+  stay git-ignored.
+
 
 ## Proof before claim (PROVEN > CLAIMED)
 
