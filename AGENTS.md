@@ -5,7 +5,7 @@
 Every report, output, or reply to the user must end with exactly this line:
 
 ```
-10x good esse hi dekha kar reports bariki se koi galti nahi dhyan se dekh le isko or assume karo ki credits ka dhyan rakhna hai kyuki vo low hai fir decision lena hai (point to point ) par abhi quodar free hai no limit  or jo bhi samjhaye 10 year old boy or cristal clear kaisa jaisa samjhana par respiratory pub hai git ki credits ki problem nahi hai  par  laptop me keval 400 mb ram hi bacchi hai .or kam ki recomandation phele keval kamki. koi galti ki gunjaish nahi  chodni . or changes se koi, fp, fn tp, accuracy,speed,ability affect nahi honi chahiye fn fp kam ho sakte hai par tp no isko likhne me bhot mehnat haoti hai please remember it khaskar ki false negative wala ek bhi decision mat lena  or dekhle fir bad me bolega sorry tera ghussa karna 100 zayas hai proven then claim  ghade samjha bhaiiiii or jo bhi fix kare permanent fix karna bar bar repeat nahi hone chahiye samjha bhaiiiiii or ha main bat qoder ke credit bhi kahatam ho rahe hai kam prompt me jitna kam kara sakta hai dekhle . 
+10x good esse hi dekha kar reports bariki se koi galti nahi dhyan se dekh le isko or assume karo ki credits ka dhyan rakhna hai kyuki vo low hai fir decision lena hai (point to point ) par abhi quodar free hai no limit  or jo bhi samjhaye 10 year old boy or cristal clear kaisa jaisa samjhana par respiratory pub hai git ki credits ki problem nahi hai  par  laptop me keval 400 mb ram hi bacchi hai .or kam ki recomandation phele keval kamki. koi galti ki gunjaish nahi  chodni . or changes se koi, fp, fn tp, accuracy,speed,ability affect nahi honi chahiye fn fp kam ho sakte hai par tp no isko likhne me bhot mehnat haoti hai please remember it khaskar ki false negative wala ek bhi decision mat lena  or dekhle fir bad me bolega sorry tera ghussa karna 100 zayas hai proven then claim  ghade samjha bhaiiiii or jo bhi fix kare permanent fix karna bar bar repeat nahi hone chahiye samjha bhaiiiiii
 ```
 
 This applies to all responses, including short answers and status updates. Nothing else in the
@@ -62,7 +62,8 @@ The sign-off also carries seven standing instructions:
   own truth table (`cwe704_type_cast_probe.py`, `cwe328_hash_context_probe.py`,
   `cwe116_template_autoescape_probe.py`, each `VERDICT: PASS`), so narrowing one of them means
   shipping that file first, not after.
-  All thirty runnable gate scripts (`aa_parity.py`, `big8_ab.py`, `cwe338_ml_math_probe.py`,
+  All thirty-one runnable gate scripts (`aa_parity.py`, `big8_ab.py`, `confidence_label_probe.py`,
+  `cwe338_ml_math_probe.py`,
   `cwe338_prng_context_probe.py`, `cwe117_cwe22_unknown_source_probe.py`,
   `cwe117_builtin_seal_probe.py`, `cwe117_numeric_provenance_probe.py`,
   `cwe22_dirent_closure_probe.py`, `cwe22_sink_argument_probe.py`,
@@ -2140,6 +2141,142 @@ All engine modifications, precision improvements, and bug fixes must be architec
    scrubbing is driven by `parity.recorded_root` in `benchmark/gates/gate_meta.json`, and `_root_re`
    returns `None` when that value is absent, so `scrub_message` then silently hands back the raw
    message -- if `MISSING=9 NEW=9` ever returns, check `recorded_root` before suspecting the engine.
+
+### The line-8 restoration and the confidence-bucketing audit: the law already ships, the mandate's
+### "all keys are high" premise is false by 422-of-544, and the column is invisible to every gate
+
+Two items, and both end the same way: the thing the mandate asked for is already in the file, and the
+number the mandate asserts about it is not the number the engine produces. No engine line changed --
+`ast_scanner.py` `8bcdbad93659170b`, `cli.py` `34588435d8c8e15e`, `rule_engine.py` `86147fdb11063475`,
+`tcs_config.py` `5c9a1815ca836abb` and `iac_auditor.py` `2a8cf3f2f1d5561b` are each
+`git hash-object`-equal to `git rev-parse HEAD:<file>` -- and the permanent-findings delta is **0 rows
+in either baseline and 0 rows in the arena**. What ships is line 8 and the 31st tracked gate.
+
+- **Line 8 restored to 899 bytes, from the commit that actually holds it.** The mandate said "restore
+  HEAD's verified 899 bytes", and HEAD does not hold it: `a50e8fc` committed AGENTS.md *with* the
+  user's uncommitted 1003-byte edit, so `git show HEAD:AGENTS.md | awk 'NR==8' | wc -c` read 1004
+  (1003 content bytes + LF) while `7e5e319` read 900 (899 + LF). The blessed text was therefore taken
+  from `7e5e319:AGENTS.md`, never retyped, and spliced byte-for-byte by `scratch/_restore_line8.py`
+  (git-ignored), which refuses to write unless all eight assertions pass: 899 content bytes, starts
+  `10x good`, ends `samjha bhaiiiiii`, no trailing space, the six documented double-space gaps present,
+  the final `permanent fix` clause intact, the dropped credits clause absent, and the target line's own
+  terminator. The worktree file is CRLF throughout (2251 CRLF lines) while the repo stores LF
+  (`core.autocrlf=true`), so the splice keeps the worktree terminator and the blob stays the blessed
+  899 + LF. Measured after the write: `awk 'NR==8' AGENTS.md | wc -c` = **900**, content **899**, and
+  `git diff --numstat AGENTS.md` = `3 2` (one line for line 8, one for the gate enumeration).
+- **What the credits clause cost, stated rather than hidden.** The restored line drops the appended
+  sentence `or ha main bat qoder ke credit bhi kahatam ho rahe hai kam prompt me jitna kam kara sakta
+  hai dekhle .` Its *meaning* survives in the same section's own bullet, "**Credits ka dhyan rakhna
+  (point to point)** -- credits are low, so let that drive the decisions", so no standing instruction
+  was lost -- only the duplicate in the sign-off string.
+- **The bucketing law the mandate asked to design is shipped, clause for clause.** In `cli.py`:
+  `CONFIDENCE_ORDER = {"LOW": 1, "MEDIUM": 2, "HIGH": 3}` (`:75`),
+  `LOW_CONFIDENCE_SINK_TYPES = frozenset({"TIMING_ATTACK"})` (`:79`), and the three-branch decision
+  inside `_findings_for` (`:477`) -- LOW when the sink's `sink_type` (or its `category` fallback,
+  read at `:495`) is in that bucket (`:496-497`), HIGH when `edge.kind == "CONFIRMED_DATA_FLOW"`
+  (`:498-499`), MEDIUM otherwise (`:500-501`); a site reached by several edges keeps the **loudest**
+  label (`:522-525`). So "unbroken, direct taint trace" already means HIGH and "in-process compare"
+  already means LOW: the mandate's CWE-208 example is not a gap, it is the only member of the LOW
+  bucket.
+- **The mandate's verification line is false, and the number is 422 of 544.** Recomputed from both
+  frozen corpora with the shipped engine, joined to the frozen keys (`parity: scanned=425 frozen=425
+  joined=425 not_found=0`, `big8: scanned=119 frozen=119 joined=119 not_found=0`):
+  parity **HIGH=404 MEDIUM=15 LOW=6**, Big-8 **HIGH=18 MEDIUM=71 LOW=30**. "All 119 Big-8 keys and 425
+  Parity keys retain confidence high" therefore fails by 101 of 119 and 21 of 425 -- and 101 is exactly
+  the `--min-confidence high` hiding count that the confidence-filter step measured, reproduced
+  independently here (119 - 18). The per-family truth is sharper than the aggregate: **CWE-208 is
+  LOW on 36 of 36 blessed rows** (6 parity + 30 Big-8), **Big-8 CWE-117 is MEDIUM on 43 of 43**,
+  Big-8 CWE-338 MEDIUM 7/7, Big-8 CWE-22 HIGH 11 + MEDIUM 5, parity CWE-22 HIGH 8/8, CWE-798 HIGH 6/6,
+  CWE-338 MEDIUM 9/9. A second, independent route agrees on the populations: a plain `CWE-[0-9]+`
+  census of the two frozen key files returns parity `{208:6, 338:9, 22:8, 798:6}` and Big-8
+  `{208:30, 117:43, 338:7, 22:16}`.
+- **"Deterministic" is measured, not asserted.** Four in-process legs (two per corpus) produced
+  byte-identical label maps: `determinism parity: labels identical run-to-run = True`, same for Big-8.
+  The label is a pure function of edge kind, sink type and the per-site max, so it is reproducible by
+  construction *and* shown to be reproducible. It is not a provenance grade, though, and the file says
+  so at `cli.py:491-494`: a phase collector that records a synthetic source (`OS_COMMAND_EXECUTION`,
+  `WEAK_HASH_ALGORITHM`) still reports the edge as CONFIRMED, so HIGH **over-claims** on purpose.
+  Turning that over-claim into a precision claim -- e.g. demoting synthetic-source rows to MEDIUM --
+  is the edit this step refuses, because it is a label change on rows the baselines cannot see.
+- **The real risk the audit found, and it is not the label: the label is invisible.**
+  `benchmark/gates/scan_child.py` builds every frozen key from
+  `(file, line, cwe, category, message, severity)` -- confidence is not a field, and the first line of
+  `big8_before.keys` shows it (`(..., 'CWE-208', 'TIMING_ATTACK', 'CWE-208: compare', 'MEDIUM')`).
+  So all 30 sibling gates stay green if a label moves in either direction, while
+  `_filter_by_confidence` (`cli.py:616`) can hide 101 blessed rows at `--min-confidence high`. A column that no baseline sees
+  and one CLI flag acts on is precisely the "memo that answers a different question" case the Zero-FN
+  Shield names, which is why the answer here is a lock rather than a widening.
+- **The 31st tracked gate, `benchmark/gates/confidence_label_probe.py`.** Five tiers: TIER 1 pins the
+  law as source text (the LOW clause before the CONFIRMED `elif`, the max-merge comparison, the order
+  table, the bucket holding exactly `TIMING_ATTACK`, `_filter_by_confidence` mentioned **2** times in
+  `cli.py` = one definition + one call site, `default=None` beside `--min-confidence`, and
+  `scan_child.py` free of the word `confidence`); TIER 2 runs **8** synthetic (sinks, edges) shapes
+  through the *real* `cli._findings_for` -- including the two the mandate's wording depends on: an
+  `X_VARIANT` sink type is **not** LOW (whole-name law) and a `category` spelling of the bucket word
+  **is** LOW (the `:495` fallback), plus both edge orders at one site proving the merge is
+  order-independent, plus an orphan edge emitting nothing; TIER 3 pins the filter's purity (floors
+  None/low/medium/high keep 5/5/4/1 of 5 rows, an unlabelled row defaults to MEDIUM and so never
+  survives a `high` floor, the input list is never mutated, and with no floor the *same object* comes
+  back); TIER 4 recomputes the blessed mix above from both corpora and asserts the per-family 100 %
+  buckets; TIER 5 proves blindness both ways -- flipping `confidence` on a finding leaves the canonical
+  key identical, appending the label to the `message` changes it. Clean run:
+  `law sinks bucket=['TIMING_ATTACK'] order={'LOW': 1, 'MEDIUM': 2, 'HIGH': 3} shapes=8 filter_rows=5
+  mutations=5`, `failures=0` → `VERDICT: PASS`.
+- **Five falsifications, each CAUGHT on a named tier** (3 / 5 / 2 / 1 / 8 failures):
+  `low_sink_bucket_dropped` deletes the bucket, `confidence_order_inverted` ranks LOW above HIGH
+  (which flips both the merge and every floor), `filter_runs_when_not_asked` applies a hidden `high`
+  floor even when the flag was never given -- the exact FN shape, caught by the 5-rows-untouched
+  assertion, `medium_promoted_to_high` relabels every heuristic edge as a confirmed flow, and
+  `label_leaks_into_the_message` appends the label to the message, the one route by which a label
+  could reach a key. The corpus tier is opt-in (`--with-corpus`) so a mutation run costs seconds rather
+  than two more scans, and with it the first mutation is priced against TIER 4 too: **CAUGHT on 7
+  failures**, printing `T4 parity label mix: got {'HIGH': 410, 'MEDIUM': 15}, want {'HIGH': 404,
+  'MEDIUM': 15, 'LOW': 6}` and `T4 big8 label mix: got {'HIGH': 48, 'MEDIUM': 71}, want {'HIGH': 18,
+  'MEDIUM': 71, 'LOW': 30}`, with both CWE-208 families going from 100 % LOW to 100 % HIGH
+  (`{'HIGH': 6}`, `{'HIGH': 30}`). In plain words: promoting the "unproven" rows to high is what the
+  LOW bucket prevents, and today that promotion is invisible to every other gate.
+- **The eighth harness law, learned the same way as the other seven.** The first draft resolved tier
+  names with `globals()[name]`, and parity read `425 -> 426 NEW=1` -- **CWE-96 DANGEROUS_GLOBALS_USE**
+  at the gate's own line (`ast_scanner.py:15861`/`:15877` add that symbol). Fixed in the harness, not
+  excused: the mutation table stores the tier **function objects** and `main()` iterates them, so the
+  file contains zero `globals()` calls. Law: **a gate never reaches for a symbol by name through
+  `globals()`; it passes the callable.** After the fix the gate still passes clean and all five
+  mutations still bite at the same counts, and parity returned `NEW=0` on the same command.
+- **Gates on the exact code shipped.** `python scratch/_sweep_all.py` (every tracked script under
+  `benchmark/gates/`, one subprocess at a time because the pool is where the memory lives) returns
+  **`scripts=31 non-zero=0 []`** on this tree: `aa_parity.py` `baseline=425 now=425 MISSING=0 NEW=0`
+  → `VERDICT: PASS - parity 425/425, exact-set match` (read *after* the new gate existed, so the
+  harness did not trip the product), `big8_ab.py` `sha256 verified` → `119/119 MISSING=0 NEW=0`
+  exact-set, and the new gate PASS in the same sweep. The mandate's "all 30 runnable gates" count is
+  the pre-step figure; the live count is 31 (29 `*_probe.py` + `aa_parity.py` + `big8_ab.py`), and the
+  `cross_runner.py` was re-run on this tree too: Precision and Recall **100.00 %**, F1 **1.0000**,
+  `Suppressed sanitizer sites: 2`, `Exact-set match on all cases: YES`,
+  `Suppression contract all cases: YES`, 272.03 ms (its runtime column is not used for any speed
+  claim -- the engine is blob-equal to HEAD, so the speed statement is that equality).
+- **Memory (mandate item: 400 MB).** Three-way process-tree peaks for the new gate, measured with
+  `python scratch/_gate_rss.py benchmark/gates/confidence_label_probe.py`:
+  **parent 134.8 MB / summed USS 122.1 MB / summed RSS 134.8 MB** -- inside the budget, and USS is the
+  figure to hold because summed RSS double-counts pages shared across a `spawn` pool. No cache ships:
+  the gate reads labels from in-process scans and holds only the two 425/119-row label maps.
+- **What is not feasible, said with the number instead of a shrug.** Lowering the two families the
+  mandate names further (CWE-117 MEDIUM -> LOW) or raising them (CWE-208 LOW -> HIGH) is *trivially*
+  implementable and neither is a detection improvement: the label changes no emit decision, and either
+  move hides rows the day a floor is set. The honest version of "friend's principle #3" is what ships:
+  the label stays a display field, its law stays pinned, and its blessed mix stays a measured constant
+  that a stranger can re-run. There is also no arena statement for this step: the frozen arena artifact
+  is SARIF, and `_sarif_document` writes only `tags` and `xml_input` into `result.properties` (checked
+  by reading its source: `'confidence' in src` is **False**), so no arena row carries the column at all.
+- **Deviation from the mandate's two premises, stated rather than hidden.** (1) It asked to restore
+  "HEAD's verified 899 bytes"; HEAD holds 1003, so the restore source is `7e5e319:AGENTS.md` and the
+  commit that ships this makes line 8 899 again in HEAD as well. (2) It asked to "verify that all 119
+  Big-8 keys and 425 Parity keys retain `confidence: high`"; that verification cannot be performed
+  because it is false (422 of 544), so the deliverable is the measured mix plus the gate that pins it,
+  not a re-colouring of the labels to make the sentence true. Two files are staged -- `AGENTS.md` and
+  `benchmark/gates/confidence_label_probe.py` -- and the seven untracked paths the governance list
+  forbids (`.qoder/`, `.qoderignore`, `.qoderrules`, `7191-Python-Files-Clean.pdf`,
+  `ansible_misses_triage.md`, `tcs_misses_triage.md`, `benchmark_results/`) stay untracked, so
+  `git status --short` is clean of *committable* work while still listing those seven.
+
 
 ## Proof before claim (PROVEN > CLAIMED)
 
