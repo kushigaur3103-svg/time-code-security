@@ -32,10 +32,10 @@ back a value the `tempfile` module returned.
 
 What the guard proves, and only that
 ------------------------------------
-`_c22_cleanup_is_temp_teardown` (ast_scanner.py:7176) asks the callee first -- `dotted_name(node.func)`
+`_c22_cleanup_is_temp_teardown` (ast_scanner.py:7237) asks the callee first -- `dotted_name(node.func)`
 must be in `CWE22_CLEANUP_DELETE_SINKS` (`os.remove`, `os.unlink`, `shutil.rmtree`, exactly three names),
 because a path handed to `open` or `send_file` can still be read or shipped, which is a different question
-from the teardown retiring. Then `_c22_path_is_proven_temp_root` (ast_scanner.py:7066) must resolve the
+from the teardown retiring. Then `_c22_path_is_proven_temp_root` (ast_scanner.py:7114) must resolve the
 path expression to a `tempfile` entry point:
 
   * only the fully-qualified stdlib spelling counts (`tempfile.mkdtemp`, `tempfile.mkstemp`,
@@ -102,6 +102,40 @@ Measured evidence behind the numbers
                       tests is not the argument the rule reads, and the `os.makedirs` half of that pitch
                       has no population to quiet.
 
+The HTTP response body stream: a stream object is not a path
+-------------------------------------------------------------
+A third shape reached this rule from the arena census rather than from a mandate: 117 kept CWE-22 rows are
+`Image.open(requests.get(url, stream=True).raw)`-shaped. The argument is the urllib3 body stream the server
+filled; nothing in it names a file, so the traversal sink the *callee name* suggests has no path to
+traverse. That is the same reasoning `io.BytesIO` already gets -- `_is_in_memory_buffer_path`
+(ast_scanner.py:7433) exempts a buffer construction in the path slot -- so the clause ships **inside that
+one shared predicate** (ast_scanner.py:7440), not as a fourth CWE-22 exemption: all three CWE-22 consult
+sites inherit one answer, and TIER 7 proves by walking the collector ASTs that no other rule consults it.
+
+Two tables keep it a positive proof, and both are narrower than the shape that pays:
+  * the attribute must be the stream slot itself -- `_HTTP_STREAM_ATTRS = {"raw"}` -- so `.text` and
+    `.content`, which a path-named sink really can be handed *as a filename*, stay loud
+    (`stream_text_attr_is_not_a_stream`, `stream_content_attr_is_not_a_stream`);
+  * the receiver must be a **call** whose head resolves through this module's import table to
+    `_HTTP_STREAM_ROOTS = {"requests"}` -- so `resp.raw` after `resp = requests.get(url)` is refused
+    (a name is not the library: `assignments_by_scope` would have to be trusted for the value, and the
+    arena has 0 rows of that shape -- `stream_name_bound_response_is_not_proven`), a `requests` object the
+    module made itself is refused (`stream_local_object_named_requests`), an unimported `requests` is
+    refused (`stream_unimported_requests_name`), and `urllib3`/`httpx`/`torch` are refused because a table
+    entry needs rows behind it (`stream_httpx_root_is_not_requests`, `stream_urllib3_root_is_not_requests`,
+    `stream_requests_mock_is_not_requests`), and a chain whose head is a constructor is refused before the
+    root table is read (`stream_constructor_chain_is_refused` -- a named over-block, not an axis).
+The sink wrapper's own three clauses are re-pinned beside the new ones, because the clause widens *what
+counts as a stream*, not what counts as a sink: a stream buried inside a path expression still joins a
+path (`stream_raw_inside_join_still_joins`), a caller-controlled second argument still rides past the first
+slot (`stream_raw_second_arg_dynamic`), a non-literal keyword likewise (`stream_non_literal_keyword`), and a
+`*args` unpacking is not an argument the guard can read (`stream_starred_argument`).
+
+Yield and cost, measured: 117 arena CWE-22 rows retired, **ADDED=0**, over 86 files, and blessed reach 0
+asked on all 24 frozen lines by name (TIER 6). The three retired spellings that are *not* the arena's shape
+(`io.open(...raw)`, `import requests as rq`, a literal second argument) are asserted anyway, because a
+clause that only answers one spelling is a fixture, not a rule.
+
 Seal semantics - `CWE22_TEMP_SEAL`
 ------------------------------------
   'shipped'   : the proven-temp rows MUST be silent and every tripwire MUST stay loud.
@@ -150,6 +184,11 @@ BLESSED_DELETE_LINES = {
 
 REQ = 'from flask import request\n'
 HEAD = 'import os\nimport shutil\nimport tempfile\nfrom pathlib import Path\n'
+# The stream fixtures need a library that answers with a stream, an image loader that reads a path *or* a
+# stream, and one tainted value in the module so the sink it sits behind is the same shape the arena has.
+RLIB = 'import requests\n'
+PIL = 'from PIL import Image\n'
+URL = 'url = request.args.get("u")\nprint(url)\n'
 
 # (label, source, expect_when_abstained, expect_when_shipped)
 # 'loud' = a CWE-22 finding is required in that module, 'quiet' = none is allowed.
@@ -263,6 +302,59 @@ SHAPES = [
      '    def __init__(self, where):\n        self.outdir = where\n\n'
      '    def clean(self):\n        shutil.rmtree(self.outdir)\n\n\n'
      'GateCase(request.args.get("d")).clean()\n', 'loud', 'loud'),
+    # ---- the HTTP response body stream: an object in the path slot, so no path is ever reached ----
+    # Every row here is loud at HEAD, because the clause that reads it is new. The retired spellings are
+    # one per clause the proof depends on: the keyword that makes it a stream, the two sink names, the
+    # import alias, a literal companion argument and an attribute-chain head.
+    ('stream_raw_image_open', RLIB + PIL + URL + 'img = Image.open(requests.get(url, stream=True).raw)\n'
+     'print(img)\n', 'loud', 'quiet'),
+    ('stream_raw_image_open_plain', RLIB + PIL + URL + 'img = Image.open(requests.get(url).raw)\n'
+     'print(img)\n', 'loud', 'quiet'),
+    ('stream_raw_builtin_open', RLIB + URL + HEAD + 'data = open(requests.get(url).raw)\nprint(data)\n',
+     'loud', 'quiet'),
+    ('stream_raw_io_open', 'import io\n' + RLIB + URL + 'data = io.open(requests.get(url).raw)\n'
+     'print(data)\n', 'loud', 'quiet'),
+    ('stream_raw_import_alias', 'import requests as rq\n' + PIL + URL
+     + 'img = Image.open(rq.get(url).raw)\nprint(img)\n', 'loud', 'quiet'),
+    ('stream_raw_literal_companion_arg', RLIB + PIL + URL
+     + 'img = Image.open(requests.get(url).raw, "PNG")\nprint(img)\n', 'loud', 'quiet'),
+    ('stream_raw_attribute_chain_head', RLIB + URL + PIL
+     + 'img = Image.open(requests.adapters.CaseInsensitiveDict(url).raw)\nprint(img)\n', 'loud', 'quiet'),
+    # Tripwires: each is one axis from a retired row, and each is a case where a real path *can* reach the
+    # sink -- so the proof is a refusal here, not a gap in coverage.
+    ('stream_text_attr_is_not_a_stream', RLIB + PIL + URL + 'img = Image.open(requests.get(url).text)\n'
+     'print(img)\n', 'loud', 'loud'),
+    ('stream_content_attr_is_not_a_stream', RLIB + PIL + URL
+     + 'img = Image.open(requests.get(url).content)\nprint(img)\n', 'loud', 'loud'),
+    ('stream_json_call_is_not_a_stream', RLIB + PIL + URL + 'img = Image.open(requests.get(url).json())\n'
+     'print(img)\n', 'loud', 'loud'),
+    ('stream_name_bound_response_is_not_proven', RLIB + PIL + URL
+     + 'resp = requests.get(url)\nimg = Image.open(resp.raw)\nprint(img)\n', 'loud', 'loud'),
+    ('stream_session_bound_response_is_not_proven', RLIB + PIL + URL
+     + 'sess = requests.Session()\nimg = Image.open(sess.get(url).raw)\nprint(img)\n', 'loud', 'loud'),
+    ('stream_unimported_requests_name', PIL + URL
+     + 'img = Image.open(requests.get(url).raw)\nprint(img)\n', 'loud', 'loud'),
+    ('stream_local_object_named_requests', PIL + URL
+     + 'class Requests:\n    def get(self, u):\n        return self\n\n\nrequests = Requests()\n'
+     'img = Image.open(requests.get(url).raw)\nprint(img)\n', 'loud', 'loud'),
+    ('stream_raw_inside_join_still_joins', RLIB + URL + HEAD
+     + 'open(os.path.join(requests.get(url).raw, "x.json"))\n', 'loud', 'loud'),
+    ('stream_raw_second_arg_dynamic', RLIB + URL + HEAD
+     + 'mode = request.args.get("m")\nprint(mode)\nopen(requests.get(url).raw, mode)\n', 'loud', 'loud'),
+    ('stream_non_literal_keyword', RLIB + PIL + URL
+     + 'img = Image.open(requests.get(url).raw, formats=["PNG"])\nprint(img)\n', 'loud', 'loud'),
+    ('stream_starred_argument', RLIB + URL + HEAD
+     + 'paths = [requests.get(url).raw]\nopen(*paths)\n', 'loud', 'loud'),
+    ('stream_httpx_root_is_not_requests', 'import httpx\n' + PIL + URL
+     + 'img = Image.open(httpx.get(url).raw)\nprint(img)\n', 'loud', 'loud'),
+    ('stream_urllib3_root_is_not_requests', 'import urllib3\n' + PIL + URL
+     + 'img = Image.open(urllib3.request("GET", url).raw)\nprint(img)\n', 'loud', 'loud'),
+    ('stream_requests_mock_is_not_requests', 'import requests_mock\n' + PIL + URL
+     + 'img = Image.open(requests_mock.get(url).raw)\nprint(img)\n', 'loud', 'loud'),
+    # A named over-block, not an axis: the chain head here is a constructor call, so the clause refuses it
+    # before the root table is ever read -- widening either table cannot move this row.
+    ('stream_constructor_chain_is_refused', 'import requests_toolbelt\n' + PIL + URL
+     + 'img = Image.open(requests_toolbelt.Session().get(url).raw)\nprint(img)\n', 'loud', 'loud'),
 ]
 
 FP_ROWS = [row for row in SHAPES if row[2] == 'loud' and row[3] == 'quiet']
@@ -285,6 +377,15 @@ PAIRS = [
      'name_bound_to_path_mkdtemp', 'function_parameter_path'),
     ('an instance attribute written once to a temp root vs the same attribute rebound to a request '
      'value later in the class', 'self_attr_written_to_mkdtemp', 'self_attr_rebound_to_request'),
+    # One axis per stream pair, and the dirty arm is a case where a real path can still reach the sink.
+    ('the stream slot of a response vs the same response read as text', 'stream_raw_image_open_plain',
+     'stream_text_attr_is_not_a_stream'),
+    ('a call whose head this module imported from requests vs the same call on an unimported name',
+     'stream_raw_image_open_plain', 'stream_unimported_requests_name'),
+    ('a stream in the path slot vs the same stream buried inside a join', 'stream_raw_builtin_open',
+     'stream_raw_inside_join_still_joins'),
+    ('a stream with a literal companion argument vs the same call with a caller-controlled mode',
+     'stream_raw_literal_companion_arg', 'stream_raw_second_arg_dynamic'),
 ]
 
 # The guard's own truth table, asked at the expression the wiring passes it. Rows quiet at finding level
@@ -378,6 +479,77 @@ PREDICATES = [
 
 PRED_PROVEN = [row for row in PREDICATES if row[3]]
 PRED_REFUSED = [row for row in PREDICATES if not row[3]]
+
+# The stream proof's own truth table, at two levels, because the clause and the wrapper that consults it
+# answer different questions. `want_sink` is what the CWE-22 wiring sees -- `_is_in_memory_buffer_sink`
+# on the whole call, which also demands a positional first argument and literal companions. `want_expr`
+# is the new clause alone -- `_is_http_response_stream` on that first argument. A row where the two
+# disagree is the interesting one: it proves a wrapper clause is load-bearing on the new shape, so the
+# stream table could never be accused of having widened the *sink* test along with the *path* test.
+# (label, sink callee, source, want_sink, want_expr)
+STREAMS = [
+    ('raw_stream_direct', 'Image.open', RLIB + PIL + URL
+     + 'img = Image.open(requests.get(url).raw)\nprint(img)\n', True, True),
+    ('stream_true_keyword', 'Image.open', RLIB + PIL + URL
+     + 'img = Image.open(requests.get(url, stream=True).raw)\nprint(img)\n', True, True),
+    ('builtin_open_stream', 'open', RLIB + URL + HEAD
+     + 'data = open(requests.get(url).raw)\nprint(data)\n', True, True),
+    ('io_open_stream', 'io.open', 'import io\n' + RLIB + URL
+     + 'data = io.open(requests.get(url).raw)\nprint(data)\n', True, True),
+    ('head_imported_by_alias', 'Image.open', 'import requests as rq\n' + PIL + URL
+     + 'img = Image.open(rq.get(url).raw)\nprint(img)\n', True, True),
+    ('function_imported_directly', 'Image.open', 'from requests import get\n' + PIL + URL
+     + 'img = Image.open(get(url).raw)\nprint(img)\n', True, True),
+    ('receiver_attribute_chain', 'Image.open', RLIB + URL + PIL
+     + 'img = Image.open(requests.adapters.CaseInsensitiveDict(url).raw)\nprint(img)\n', True, True),
+    ('text_slot_is_a_string', 'Image.open', RLIB + PIL + URL
+     + 'img = Image.open(requests.get(url).text)\nprint(img)\n', False, False),
+    ('content_slot_is_bytes', 'Image.open', RLIB + PIL + URL
+     + 'img = Image.open(requests.get(url).content)\nprint(img)\n', False, False),
+    ('json_call_is_not_a_slot', 'Image.open', RLIB + PIL + URL
+     + 'img = Image.open(requests.get(url).json())\nprint(img)\n', False, False),
+    ('name_bound_response', 'Image.open', RLIB + PIL + URL
+     + 'resp = requests.get(url)\nimg = Image.open(resp.raw)\nprint(img)\n', False, False),
+    ('session_bound_response', 'Image.open', RLIB + PIL + URL
+     + 'sess = requests.Session()\nimg = Image.open(sess.get(url).raw)\nprint(img)\n', False, False),
+    ('attribute_of_a_non_call', 'Image.open', RLIB + PIL + URL
+     + 'img = Image.open(requests.holder.raw)\nprint(img)\n', False, False),
+    ('unimported_head', 'Image.open', PIL + URL
+     + 'img = Image.open(requests.get(url).raw)\nprint(img)\n', False, False),
+    ('locally_defined_head', 'Image.open', PIL + URL
+     + 'class Requests:\n    def get(self, u):\n        return self\n\n\nrequests = Requests()\n'
+     + 'img = Image.open(requests.get(url).raw)\nprint(img)\n', False, False),
+    ('other_library_root', 'Image.open', 'import httpx\n' + PIL + URL
+     + 'img = Image.open(httpx.get(url).raw)\nprint(img)\n', False, False),
+    ('second_other_library_root', 'Image.open', 'import urllib3\n' + PIL + URL
+     + 'img = Image.open(urllib3.request("GET", url).raw)\nprint(img)\n', False, False),
+    ('mock_head_is_not_the_root', 'Image.open', 'import requests_mock\n' + PIL + URL
+     + 'img = Image.open(requests_mock.get(url).raw)\nprint(img)\n', False, False),
+    ('constructor_head_chain', 'Image.open', 'import requests_toolbelt\n' + PIL + URL
+     + 'img = Image.open(requests_toolbelt.Session().get(url).raw)\nprint(img)\n', False, False),
+    ('stream_inside_join', 'open', RLIB + URL + HEAD
+     + 'open(os.path.join(requests.get(url).raw, "x.json"))\n', False, False),
+    ('starred_slot', 'open', RLIB + URL + HEAD
+     + 'paths = [requests.get(url).raw]\nopen(*paths)\n', False, False),
+    ('non_literal_keyword_blocks', 'Image.open', RLIB + PIL + URL
+     + 'img = Image.open(requests.get(url).raw, formats=["PNG"])\nprint(img)\n', False, True),
+    ('dynamic_second_arg_blocks', 'open', RLIB + URL + HEAD
+     + 'mode = request.args.get("m")\nprint(mode)\nopen(requests.get(url).raw, mode)\n', False, True),
+]
+
+STREAM_PROVEN = [row for row in STREAMS if row[3]]
+STREAM_REFUSED = [row for row in STREAMS if not row[3]]
+# Both tables are asked with the same triple the wiring builds, so a blessed line the stream proof would
+# silence is counted by name rather than inferred from a baseline diff. These are the sink segments the 24
+# frozen CWE-22 keys actually carry, so `asks` can be required to equal the locked count exactly.
+BLESSED_SINK_SEGMENTS = ('open', 'remove', 'rmtree', 'extract', 'read_bytes')
+
+STREAM_ATTRS_REQUIRED = ('raw',)
+STREAM_ATTRS_FORBIDDEN = ('content', 'text', 'json', 'data', 'stream', 'body', 'headers',
+                          'reason', 'raw_data', 'file')
+STREAM_ROOTS_REQUIRED = ('requests',)
+STREAM_ROOTS_FORBIDDEN = ('httpx', 'urllib3', 'urllib', 'aiohttp', 'torch', 'numpy', 'random',
+                         'secrets', 'self', 'session', 'resp', 'requests_toolbelt', 'requests_mock')
 
 DELETE_SINKS_REQUIRED = ('os.remove', 'os.unlink', 'shutil.rmtree')
 DELETE_SINKS_FORBIDDEN = ('open', 'Image.open', 'PIL.Image.open', 'os.rmdir', 'send_file',
@@ -521,6 +693,30 @@ def predicate_ask(source, sink, module='m.py'):
     return None
 
 
+def stream_ask_both(source, sink, module='m.py'):
+    """Ask the stream proof on the first call to `sink`, at both levels, with the wiring's own triple.
+
+    `(sink-level answer, clause-level answer)`, or `(None, None)` when the fixture holds no readable call.
+    The clause is asked on `args[0]` because that is the only slot the shipped wrapper consults, and the
+    wrapper is asked on the whole node because its three companion clauses are part of its contract.
+    """
+    tree = ast.parse(source)
+    with contextlib.redirect_stderr(_io.StringIO()):
+        tracker = ast_scanner.TaintTracker(files={module: source}, audit_all=True)
+        _, _, edges = tracker.analyze()
+        cli._findings_for(tracker, edges)
+    for node in ast.walk(tree):
+        if callee_of(node) != sink:
+            continue
+        expr = path_expr_of_call(node)
+        if expr is None:
+            continue
+        scope_id = enclosing_scope_id(tree, module[:-3], node.lineno)
+        return (bool(tracker._is_in_memory_buffer_sink(node, module[:-3], scope_id, node.lineno)),
+                bool(tracker._is_http_response_stream(expr, module[:-3])))
+    return (None, None)
+
+
 # --------------------------------------------------------------------------- tiers
 
 def check_floors():
@@ -650,6 +846,32 @@ def _ask_records_on(source, module, wanted_lines, predicate):
     return asked, hits
 
 
+def _stream_ask_on_lines(source, module, wanted_lines):
+    """Ask the sink-level stream proof on every path-named sink call on `wanted_lines`.
+
+    The record route cannot see a retired row -- the collector `continue`s before it registers the sink --
+    so this walks the parsed file instead and asks with the triple the wiring builds. `BLESSED_SINK_SEGMENTS`
+    is what makes `asked` equal the locked key count exactly: a census that asked nothing would look just
+    like a safe zero.
+    """
+    tree = ast.parse(source)
+    with contextlib.redirect_stderr(_io.StringIO()):
+        tracker = ast_scanner.TaintTracker(files={module: source}, audit_all=True)
+        tracker.analyze()
+    mod = module[:-3] if module.endswith('.py') else module
+    asked = hits = 0
+    for node in ast.walk(tree):
+        if not isinstance(node, ast.Call) or node.lineno not in wanted_lines:
+            continue
+        if (ast_scanner.dotted_name(node.func) or '').split('.')[-1] not in BLESSED_SINK_SEGMENTS:
+            continue
+        asked += 1
+        if tracker._is_in_memory_buffer_sink(
+                node, mod, enclosing_scope_id(tree, mod, node.lineno), node.lineno):
+            hits += 1
+    return asked, hits
+
+
 def check_blessed_lines():
     """TIER 6: the 24 blessed CWE-22 lines, asked about directly. Zero answers, twice proved alive.
 
@@ -672,12 +894,28 @@ def check_blessed_lines():
     print(f'  control (proven-temp fixtures the sweep must answer True on): '
           f'{control_hits}/{len(controls)}')
 
+    # The same discipline for the stream proof: three fixtures it must answer True on, so the 0 below is a
+    # refusal and not a route that asked nothing.
+    stream_controls = ('raw_stream_direct', 'builtin_open_stream', 'head_imported_by_alias')
+    stream_control_hits = 0
+    for label in stream_controls:
+        row = next(r for r in STREAMS if r[0] == label)
+        if stream_ask_both(row[2], row[1])[0]:
+            stream_control_hits += 1
+    if stream_control_hits != len(stream_controls):
+        failures.append(('stream control',
+                         'the sweep must answer buffer-sink on the 3 proven stream fixtures',
+                         len(stream_controls), stream_control_hits))
+    print(f'  stream control (proven-stream fixtures the sweep must answer True on): '
+          f'{stream_control_hits}/{len(stream_controls)}')
+
     for kind in ('parity', 'big8'):
         rows = _blessed_rows(kind)
         by_file = {}
         for row in rows:
             by_file.setdefault(str(row[0]), set()).add(row[1])
         asked = answered = delete_lines_asked = 0
+        stream_asked = stream_answered = 0
         for name, lines in sorted(by_file.items()):
             relative = (name if kind == 'parity' else os.path.join(
                 'benchmark_gates_data', 'corpus_big8', os.path.basename(name)))
@@ -691,6 +929,9 @@ def check_blessed_lines():
             a, h = _ask_records_on(source, module, lines, _ask_guard)
             asked += a
             answered += h
+            sa, sh = _stream_ask_on_lines(source, module, lines)
+            stream_asked += sa
+            stream_answered += sh
             for row in rows:
                 if str(row[0]) != name:
                     continue
@@ -698,10 +939,20 @@ def check_blessed_lines():
                     delete_lines_asked += 1
                     if h:
                         print(f'  REACHABLE  {name}:{row[1]}  {str(row[4])[:40]}')
+                    if sh:
+                        print(f'  STREAM REACHABLE  {name}:{row[1]}  {str(row[4])[:40]}')
         print(f'  {kind:7s} blessed_lines={len(rows)}  predicate_asks={asked}  '
               f'answers_temp_root={answered}  delete_sink_blessed_lines={delete_lines_asked}')
+        print(f'  {kind:7s} stream_asks={stream_asked}  answers_buffer_sink={stream_answered}  '
+              f'(every blessed line must be asked, so asks must equal blessed_lines)')
         if answered:
             failures.append((kind, 'a blessed CWE-22 line is reachable by the temp guard', 0, answered))
+        if stream_answered:
+            failures.append((kind, 'a blessed CWE-22 line is reachable by the stream proof',
+                             0, stream_answered))
+        if stream_asked != len(rows):
+            failures.append((kind, 'the stream census must ask every blessed line by name',
+                             len(rows), stream_asked))
         if asked == 0:
             failures.append((kind, 'no blessed CWE-22 record could be rebuilt to ask about', 1, 0))
         if kind == 'big8' and delete_lines_asked != len(BLESSED_DELETE_LINES):
@@ -924,6 +1175,63 @@ _ORIG_GUARD = ast_scanner.TaintTracker._c22_cleanup_is_temp_teardown
 _ORIG_PROVEN = ast_scanner.TaintTracker._c22_path_is_proven_temp_root
 _ORIG_LITERAL = ast_scanner.TaintTracker._c22_anchor_literal_ok
 _ORIG_QUALIFIED = ast_scanner.TaintTracker._is_module_qualified
+_ORIG_STREAM = ast_scanner.TaintTracker._is_http_response_stream
+
+
+def _stream_accepts_any_head(self, expr, mod_name):
+    """Mutation: a head this module never imported is the library anyway.
+
+    One axis from the shipped clause -- the import lookup. A module that defines `requests = Requests()`
+    or simply uses the name without importing it then reads as an HTTP stream, which is the CWE-338
+    "a bare alias exempts an unresolved receiver" defect in this rule's own vocabulary.
+    """
+    if not (isinstance(expr, ast.Attribute) and expr.attr in self._HTTP_STREAM_ATTRS):
+        return False
+    call = expr.value
+    if not isinstance(call, ast.Call):
+        return False
+    imports = self.imports.get(mod_name) or {}
+    func = call.func
+    if isinstance(func, ast.Attribute):
+        head = func.value
+        while isinstance(head, ast.Attribute):
+            head = head.value
+        if not isinstance(head, ast.Name):
+            return False
+        origin = imports.get(head.id) or head.id
+    elif isinstance(func, ast.Name):
+        origin = imports.get(func.id) or func.id
+    else:
+        return False
+    return origin.split('.')[0] in self._HTTP_STREAM_ROOTS
+
+
+def _stream_root_match_becomes_a_substring(self, expr, mod_name):
+    """Mutation: `requests` *inside* the resolved origin exempts, so the dot boundary is gone.
+
+    One axis from the shipped clause -- how the origin is matched. `requests_mock` and
+    `requests_toolbelt` are different libraries whose `.raw` slot is whatever that library puts there, and
+    under a substring law they inherit the `requests` proof without ever being measured.
+    """
+    if not (isinstance(expr, ast.Attribute) and expr.attr in self._HTTP_STREAM_ATTRS):
+        return False
+    call = expr.value
+    if not isinstance(call, ast.Call):
+        return False
+    imports = self.imports.get(mod_name) or {}
+    func = call.func
+    if isinstance(func, ast.Attribute):
+        head = func.value
+        while isinstance(head, ast.Attribute):
+            head = head.value
+        if not isinstance(head, ast.Name):
+            return False
+        origin = imports.get(head.id)
+    elif isinstance(func, ast.Name):
+        origin = imports.get(func.id)
+    else:
+        return False
+    return origin is not None and any(p in origin for p in self._HTTP_STREAM_ROOTS)
 
 MUTATIONS = {
     'delete_temp_guard': {
@@ -1184,6 +1492,118 @@ def check_cache_anchor_refusal():
     return failures
 
 
+def _consult_sites():
+    """Every TaintTracker method that consults the buffer/stream proof, counted from the engine's AST.
+
+    Read structurally, not as a text count: the law is *which rule may inherit this answer*, and a method
+    rename must not turn the lock into a string match.
+    """
+    module_tree = ast.parse(inspect.getsource(ast_scanner))
+    sites = {'_is_in_memory_buffer_sink': {}, '_is_http_response_stream': {}}
+    for cls in (n for n in ast.walk(module_tree) if isinstance(n, ast.ClassDef)
+                and n.name == 'TaintTracker'):
+        for method in (m for m in cls.body
+                       if isinstance(m, (ast.FunctionDef, ast.AsyncFunctionDef))):
+            for call in (c for c in ast.walk(method) if isinstance(c, ast.Call)
+                         and isinstance(c.func, ast.Attribute)
+                         and isinstance(c.func.value, ast.Name) and c.func.value.id == 'self'):
+                if call.func.attr in sites:
+                    sites[call.func.attr][method.name] = sites[call.func.attr].get(method.name, 0) + 1
+    return sites
+
+
+def check_stream_proof():
+    """TIER 9: the stream clause -- its two-level table, its two tables and who may consult it."""
+    failures = []
+    print('  the stream predicate table, asked at both levels (sink wrapper / new clause):')
+    for label, sink, source, want_sink, want_expr in STREAMS:
+        got_sink, got_expr = stream_ask_both(source, sink)
+        marker = 'ok' if (got_sink, got_expr) == (want_sink, want_expr) else 'MISMATCH'
+        print(f'  {label:34} want=({want_sink!s:5},{want_expr!s:5}) '
+              f'got=({str(got_sink):5},{str(got_expr):5}) {marker:8s} sink={sink}')
+        if got_sink is None:
+            failures.append((label, 'no call to the named sink in the fixture -- the row asks nothing',
+                             sink))
+        elif (got_sink, got_expr) != (want_sink, want_expr):
+            failures.append((label, 'stream predicate answers', (want_sink, want_expr),
+                             (got_sink, got_expr), 'the clause no longer answers its own contract'))
+    disagree = [row[0] for row in STREAMS if row[3] != row[4]]
+    print(f'  rows where the wrapper and the clause disagree (each one proves a companion clause is '
+          f'load-bearing on the new shape): {disagree}')
+    if len(disagree) < 2:
+        failures.append(('wrapper clauses', 'at least 2 rows must separate the clause from the wrapper',
+                         2, len(disagree)))
+
+    mod = ast_scanner
+    attrs = set(mod.TaintTracker._HTTP_STREAM_ATTRS)
+    absent = [n for n in STREAM_ATTRS_REQUIRED if n not in attrs]
+    present = [n for n in STREAM_ATTRS_FORBIDDEN if n in attrs]
+    print(f'  stream attrs       n={len(attrs)}  {sorted(attrs)}  absent={absent} forbidden={present}')
+    if absent or present or attrs != set(STREAM_ATTRS_REQUIRED):
+        failures.append(('stream attrs', STREAM_ATTRS_REQUIRED, sorted(attrs),
+                         '`.text` and `.content` are bytes a path-named sink can be handed as a filename, '
+                         'so only the stream slot itself may be exempt'))
+    roots = set(mod.TaintTracker._HTTP_STREAM_ROOTS)
+    absent = [n for n in STREAM_ROOTS_REQUIRED if n not in roots]
+    present = [n for n in STREAM_ROOTS_FORBIDDEN if n in roots]
+    bare = sorted(n for n in roots if not n.islower())
+    print(f'  stream roots       n={len(roots)}  {sorted(roots)}  absent={absent} forbidden={present} '
+          f'odd={bare}')
+    if absent or present or bare:
+        failures.append(('stream roots', STREAM_ROOTS_REQUIRED, sorted(roots),
+                         'a root joins the table only with measured arena rows behind it (the '
+                         'table-population law), and an alias or a bare object name would exempt an '
+                         'unresolved receiver'))
+
+    try:
+        clause = inspect.getsource(mod.TaintTracker._is_http_response_stream)
+    except (OSError, TypeError):
+        clause = ''
+        failures.append(('clause body', 'the shipped clause is unreadable -- the method that answers '
+                         'now is not the method this table measures', 'readable', 'gone'))
+    for fragment, why in (
+            ('expr.attr in self._HTTP_STREAM_ATTRS', 'the attribute is the table, not a literal compare'),
+            ('if not isinstance(call, ast.Call):', 'a name or an attribute is not a call the library made'),
+            ('imports = self.imports.get(mod_name) or {}',
+             'the receiver is resolved through this module\'s import table, so a locally defined object '
+             'named `requests` does not qualify'),
+            ('if not isinstance(head, ast.Name):', 'the chain head must be a name somebody imported'),
+            ('origin is not None', 'an unresolved head fails closed -- no taint-free guess'),
+            ('origin.split(".")[0] in self._HTTP_STREAM_ROOTS',
+             'the match is on the top-level package, so `requests_mock` does not inherit `requests`'),
+    ):
+        if fragment not in clause:
+            failures.append(('clause body', fragment, 'present', 'absent', why))
+    for fragment, why in (
+            ('if self._is_http_response_stream(expr, mod_name):',
+             'the clause ships inside the one shared path predicate, so every CWE-22 consult site '
+             'inherits the same answer instead of growing a third exemption'),
+            ('if self._is_buffer_construction(expr, mod_name):',
+             'and it sits beside the BytesIO proof it generalises, not behind a new table of sinks'),
+    ):
+        if fragment not in inspect.getsource(mod.TaintTracker._is_in_memory_buffer_path):
+            failures.append(('shared predicate body', fragment, 'present', 'absent', why))
+
+    sites = _consult_sites()
+    buffer_sites = sites['_is_in_memory_buffer_sink']
+    clause_sites = sites['_is_http_response_stream']
+    non_cwe22 = sorted(m for m in buffer_sites if 'cwe22' not in m.lower())
+    print(f'  consult sites: buffer sink=' + str(dict(sorted(buffer_sites.items()))) +
+          f' (total={sum(buffer_sites.values())}, want 3, non-cwe22={non_cwe22})')
+    print(f'  consult sites: stream clause=' + str(dict(sorted(clause_sites.items()))) +
+          f' (total={sum(clause_sites.values())}, want 1, inside _is_in_memory_buffer_path)')
+    if sum(buffer_sites.values()) != 3 or non_cwe22 or sum(clause_sites.values()) != 1 \
+            or list(clause_sites) != ['_is_in_memory_buffer_path']:
+        failures.append(('consult sites',
+                         'the stream/buffer proof is consulted by the three CWE-22 sites only, through '
+                         'one shared predicate', (3, [], 1),
+                         (sum(buffer_sites.values()), non_cwe22, sum(clause_sites.values())),
+                         'a rule outside CWE-22 that inherits this answer would silence findings this '
+                         'gate has never measured -- widening it is a decision, not a refactor'))
+    return failures
+
+
+
 def _ask_raw_temp_root(tracker, record, expr):
     """The refused reading: the temp proof asked without the callee-first test, so `open` counts too."""
     return tracker._c22_path_is_proven_temp_root(expr, record.scope_id, record.lineno)
@@ -1203,6 +1623,62 @@ MUTATIONS['widen_temp_root_to_file_sinks'] = {
     'rows': ['blessed:test_utils.py:5537', 'blessed:test_utils.py:5539', 'blessed:test_utils.py:5565'],
     'keeps_loud': ['temp_root_file_sink_control is the proof that this widening is alive, not inert'],
     'apply': _apply_widen_to_file_sinks,
+}
+
+
+MUTATIONS['delete_stream_clause'] = {
+    'what': 'the stream clause always answers "not a stream" -- every retired row comes back, which is '
+            'the 117-row arena population this clause exists for',
+    'rows': [row[0] for row in SHAPES if row[0].startswith('stream_') and row[3] == 'quiet'],
+    'apply': lambda: setattr(ast_scanner.TaintTracker, '_is_http_response_stream',
+                             lambda self, *a, **k: False),
+}
+
+MUTATIONS['stream_clause_always_true'] = {
+    'what': 'the clause answers "stream" for any expression -- the widest reading of "it is an object, '
+            'not a path", and the reason the attribute table and the import lookup both exist',
+    'rows': ['text_slot_is_a_string', 'content_slot_is_bytes', 'unimported_head',
+             'locally_defined_head', 'other_library_root', 'second_other_library_root',
+             'mock_head_is_not_the_root', 'constructor_head_chain', 'blessed parity/big8 lines'],
+    'apply': lambda: setattr(ast_scanner.TaintTracker, '_is_http_response_stream',
+                             lambda self, *a, **k: True),
+}
+
+MUTATIONS['stream_attrs_accept_response_payload'] = {
+    'what': 'add text/content/json to `_HTTP_STREAM_ATTRS` -- the response *payload* joins the stream '
+            'slot, and `open(requests.get(url).text)` (a path the server chose) reads as a file-like '
+            'object',
+    'rows': ['stream_text_attr_is_not_a_stream', 'stream_content_attr_is_not_a_stream',
+             'stream_json_call_is_not_a_stream', 'text_slot_is_a_string', 'content_slot_is_bytes'],
+    'apply': lambda: setattr(ast_scanner.TaintTracker, '_HTTP_STREAM_ATTRS',
+                             frozenset({'raw', 'text', 'content', 'json'})),
+}
+
+MUTATIONS['stream_roots_accept_other_libraries'] = {
+    'what': 'put urllib3/httpx/urllib in `_HTTP_STREAM_ROOTS` with no arena rows behind them -- the '
+            'table-population law is what this breaks, and `.raw` means something different in each '
+            'of those libraries',
+    'rows': ['stream_httpx_root_is_not_requests', 'stream_urllib3_root_is_not_requests',
+             'other_library_root', 'second_other_library_root', 'stream roots table'],
+    'apply': lambda: setattr(ast_scanner.TaintTracker, '_HTTP_STREAM_ROOTS',
+                             frozenset({'requests', 'urllib3', 'httpx', 'urllib'})),
+}
+
+MUTATIONS['stream_accepts_unimported_head'] = {
+    'what': 'the receiver lookup falls back to the name as written, so a module-local object called '
+            '`requests` -- or no `requests` at all -- is proven to be the library',
+    'rows': ['stream_unimported_requests_name', 'stream_local_object_named_requests',
+             'unimported_head', 'locally_defined_head'],
+    'apply': lambda: setattr(ast_scanner.TaintTracker, '_is_http_response_stream',
+                             _stream_accepts_any_head),
+}
+
+MUTATIONS['stream_root_match_becomes_a_substring'] = {
+    'what': 'match the resolved origin with a substring test instead of the top-level package, so '
+            '`requests_mock` inherits the `requests` proof it was never measured for',
+    'rows': ['stream_requests_mock_is_not_requests', 'mock_head_is_not_the_root'],
+    'apply': lambda: setattr(ast_scanner.TaintTracker, '_is_http_response_stream',
+                             _stream_root_match_becomes_a_substring),
 }
 
 
@@ -1229,6 +1705,8 @@ def run_mutation(name: str) -> int:
         tiers.append(('T6', check_blessed_lines()))
         print('TIER 8 - the mandated HF cache anchors and the file-sink widening:')
         tiers.append(('T8', check_cache_anchor_refusal()))
+        print('TIER 9 - the HTTP response body stream table, its two clause tables and its sites:')
+        tiers.append(('T9', check_stream_proof()))
     except Exception as exc:  # a mutation that cannot even run is not a falsification
         print('MUTATION ERROR: ' + type(exc).__name__ + ': ' + str(exc))
         print('\nFALSIFICATION VERDICT (' + name + '): ERROR - the mutation is broken, '
@@ -1267,24 +1745,30 @@ def main() -> int:
     failures += check_tables_and_wiring()
     print('TIER 8 - the mandated HF cache anchors and the file-sink widening, scored on the blessed 24:')
     failures += check_cache_anchor_refusal()
+    print('TIER 9 - the HTTP response body stream: its table, its two clause tables, its consult sites:')
+    failures += check_stream_proof()
     print(f'\nseal={CWE22_TEMP_SEAL} shapes={len(SHAPES)} fp_rows={len(FP_ROWS)} '
           f'must_report={len(MUST_REPORT_ROWS)} already_quiet={len(ALREADY_QUIET_ROWS)} '
           f'pred_rows={len(PREDICATES)} pred_proven={len(PRED_PROVEN)} '
-          f'pred_refused={len(PRED_REFUSED)} pairs={len(PAIRS)} '
+          f'pred_refused={len(PRED_REFUSED)} stream_rows={len(STREAMS)} '
+          f'stream_proven={len(STREAM_PROVEN)} stream_refused={len(STREAM_REFUSED)} '
+          f'pairs={len(PAIRS)} '
           f'locked_cwe22={sum(CWE22_LOCKED.values())} failures={len(failures)}')
     for item in failures[:12]:
         print(f'  !! {item}')
     if failures:
-        print('VERDICT: FAIL - the CWE-22 temp-teardown predicate no longer matches its measured '
-              'evidence. Restore the answer or update the seal with a re-measured truth table; never '
+        print('VERDICT: FAIL - the CWE-22 temp-teardown and stream predicates no longer match their '
+              'measured evidence. Restore the answer or update the seal with a re-measured truth table; never '
               're-bless a baseline -- the 2 blessed delete keys (`modeling_utils.py:3494`, '
               '`trainer.py:2008`) are a directory listing and a checkpoint loop variable and the guard '
-              'must stay blind to both, and the PIL row stays refused.')
+              'must stay blind to both, the PIL row stays refused, and the stream clause may only ever '
+              'answer for the attribute and the imported root it names.')
         return 1
     print(f'VERDICT: PASS - all {sum(CWE22_LOCKED.values())} blessed CWE-22 keys still reported, '
-          f'parity corpus exact-set, {len(FP_ROWS)} proven-temp shapes silent, '
+          f'parity corpus exact-set, {len(FP_ROWS)} proven-temp and stream shapes silent, '
           f'{len(MUST_REPORT_ROWS)} caller/name/scope/path shapes reported, '
-          f'{len(PRED_REFUSED)} predicate refusals held, {len(PAIRS)} pairs agreeing.')
+          f'{len(PRED_REFUSED)} predicate refusals and {len(STREAM_REFUSED)} stream refusals held, '
+          f'{len(PAIRS)} pairs agreeing.')
     return 0
 
 

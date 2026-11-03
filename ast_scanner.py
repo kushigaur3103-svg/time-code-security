@@ -7395,12 +7395,49 @@ class TaintTracker:
                     and origin.rsplit(".", 1)[-1] in self._MEMORY_BUFFER_LEAVES)
         return False
 
+    _HTTP_STREAM_ATTRS = frozenset({"raw"})
+    _HTTP_STREAM_ROOTS = frozenset({"requests"})
+
+    def _is_http_response_stream(self, expr: ast.AST, mod_name: str) -> bool:
+        """True for the body stream of an HTTP response, which is an object and never a path string.
+
+        `Image.open(requests.get(url, stream=True).raw)` hands PIL the urllib3 stream the server
+        filled: nothing in that argument names a file, so the traversal sink the callee name
+        suggests has no path to traverse. Two clauses keep it a positive proof. The attribute must
+        be the stream slot itself -- `raw`, and not `content` / `text` / `json`, which are
+        attacker-controlled bytes or strings that a path-named sink can be handed *as a filename*.
+        And the receiver must be a call this module imported from the library that defines the
+        shape, so a local class named `requests` is not evidence of one and an unimported name
+        keeps reporting.
+        """
+        if not (isinstance(expr, ast.Attribute) and expr.attr in self._HTTP_STREAM_ATTRS):
+            return False
+        call = expr.value
+        if not isinstance(call, ast.Call):
+            return False
+        imports = self.imports.get(mod_name) or {}
+        func = call.func
+        if isinstance(func, ast.Attribute):
+            head = func.value
+            while isinstance(head, ast.Attribute):
+                head = head.value
+            if not isinstance(head, ast.Name):
+                return False
+            origin = imports.get(head.id)
+        elif isinstance(func, ast.Name):
+            origin = imports.get(func.id)
+        else:
+            return False
+        return origin is not None and origin.split(".")[0] in self._HTTP_STREAM_ROOTS
+
     def _is_in_memory_buffer_path(self, expr: Optional[ast.AST], mod_name: str, scope_id: str,
                                   lineno: int, depth: int = 0) -> bool:
         """True when the expression holds a stream rather than a path, one unique binding at a time."""
         if expr is None or depth > 4 or isinstance(expr, ast.Starred):
             return False
         if self._is_buffer_construction(expr, mod_name):
+            return True
+        if self._is_http_response_stream(expr, mod_name):
             return True
         if isinstance(expr, ast.Name):
             records = _assignment_records(self.assignments_by_scope, expr.id, scope_id, lineno)

@@ -931,10 +931,10 @@ The invariant is true and it is worthless, and the mandate's item 2 names three 
   answers 0 on (`big8 answers_temp_root: 0 -> 3`).
 - **What shipped.** `CWE22_CLEANUP_DELETE_SINKS` (`os.remove`, `os.unlink`, `shutil.rmtree` -- exactly three),
   `CWE22_TEMPFILE_ROOT_CALLS` (six fully-qualified `tempfile.*` entry points, no bare leaf) and
-  `CWE22_TEMPFILE_NAME_ATTRS` (`name`, `filename`) at `ast_scanner.py:1844-1851`; the predicate
-  `_c22_path_is_proven_temp_root` (`:7066`) and the callee-first wrapper `_c22_cleanup_is_temp_teardown`
-  (`:7176`), wired at three sites -- the phase-11 collector (`:22336`), the phase-5 `FILE_DELETE` branch
-  (`:22890`) and the registry prune as its fourth disjunct (`:25921`) -- all in a suppressing position, so the
+  `CWE22_TEMPFILE_NAME_ATTRS` (`name`, `filename`) at `ast_scanner.py:1889-1896`; the predicate
+  `_c22_path_is_proven_temp_root` (`:7114`) and the callee-first wrapper `_c22_cleanup_is_temp_teardown`
+  (`:7237`), wired at three sites -- the phase-11 collector (`:22434`), the phase-5 `FILE_DELETE` branch
+  (`:22988`) and the registry prune as its fourth disjunct (`:26019`) -- all in a suppressing position, so the
   guard can only ever remove a CWE-22 sink, never add one. It reads a value the `tempfile` module returned and
   nothing else: a name resolves through **every** write `_assignment_records` shows (a root later pointed at
   `request.args` fails closed), every non-literal part of a join / `+` / f-string must prove itself (a temp root
@@ -2388,6 +2388,172 @@ silenced: 0 in either frozen baseline and 0 in the arena.**
   `tests/test_workflow_controls.py` (the pin on the glob's shape, from the loader's side) and
   `AGENTS.md`. `benchmark_results/` is the source of every arena figure here and stays untracked, as the
   governance list requires.
+
+
+### The HTTP response body stream: 37 lines of engine make a CWE-22 sink refuse an object, and the
+### arena population that is a category error goes silent at 0 blessed reach
+
+The mandate was "the Transformers arena holds ~2k+ FPs; kill them all, permanently, safely for TP and FN,
+with real intelligence, and do not abandon the task". No glob and no rule-scope can answer that (every tree
+in the arena that holds those rows has been measured to hold blessed keys), so the work is the Rule 15.2
+partition: find the AST sub-shape whose *sink argument is not a path at all*. One such shape is large,
+uniformly shaped, provably zero-blessed-reach and it was not covered by any of the four existing CWE-22
+proofs: a path-named sink handed an **HTTP response body stream** —
+`Image.open(requests.get(url, stream=True).raw)`. Nothing in that argument names a file; the callee name
+suggests a traversal sink that has no path to traverse, so the row is a category error, not a judgement
+call. Engine: 37 lines added, 0 deleted (`ast_scanner.py` blob `8bcdbad93659170b → 6917cb69f2fdbeef`).
+
+- **Where it ships, and why there and nowhere else.** `_HTTP_STREAM_ATTRS = frozenset({"raw"})` and
+  `_HTTP_STREAM_ROOTS = frozenset({"requests"})` at `ast_scanner.py:7398-7399`; the predicate
+  `_is_http_response_stream` at `:7401-7431`; and **one** consult line — `:7440`, inside
+  `_is_in_memory_buffer_path` (`:7433`), immediately after `_is_buffer_construction` answers and before the
+  `ast.Name` binding walk. That placement is the whole design: `_is_in_memory_buffer_path` is the single
+  answer to "does this expression hold a stream rather than a path", so the three CWE-22 record paths
+  (`_collect_cwe22_parameter_path_sinks` at `:13621`, `_collect_cwe22_path_traversal_findings` at `:22092`
+  and `:22429`, all reached through `_is_in_memory_buffer_sink` at `:7453`) inherit one verdict instead of
+  growing three copies — Rule 15.5 rung 4, the same move as the 3-line CWE-117 delegation. TIER 9 re-counts
+  this structurally on every run: `buffer sink={'_collect_cwe22_parameter_path_sinks': 1,
+  '_collect_cwe22_path_traversal_findings': 2} (total=3, want 3, non-cwe22=[])` and `stream clause={'_is_in_memory_buffer_path': 1}
+  (total=1, want 1)`. So the audit that the clause cannot reach another rule is a count, not a claim:
+  `_is_in_memory_buffer_sink` appears **0** times outside those two collectors, which is why no other rule's
+  blessed population is in reach and no other rule's noise moves.
+- **Two clauses, both positive proofs, and what each of them refuses.** The attribute must be the *stream
+  slot*: `raw`, and never `content` / `text` / `json` — those are attacker-chosen bytes or strings, which is
+  exactly what `open(requests.get(url).text)` would read as a filename. The receiver must be a `ast.Call`
+  whose chain **head is an `ast.Name`** that resolves through `self.imports.get(mod_name)`, matched on
+  `origin.split(".")[0]` (the dot boundary, so `requests_toolbelt` and `requests_mock` do not inherit the
+  proof); a head that is a constructor call, a local object named `requests`, an unimported name, or a
+  library that was never measured for this shape all fail closed. `.stream` / `httpx` / `urllib3` / `urllib`
+  roots and the `Name → .raw` attribute hop were **refused** — the last because it turns a local variable
+  into a library identity with no rows behind it, which is the table-population law.
+- **Yield, and the FN floor under it.** Measured through the real record path on the local arena
+  (`python scratch/_stream_ab.py`, 86 files -- the CWE-22-bearing files whose kept rows carry a `.raw` shape
+  -- head arm = the clause blinded, shipped arm = the bytes above): **head 310 rows → shipped 193,
+  RETIRED=117, ADDED=0**, and every one of the 117 is `CWE-22: PIL.Image.open`, spread over all **86** files;
+  within the rule that is **CWE-22 164 → 47**. The kept arena report moves **2,319 → 2,202**
+  (**−5.05 % of the report**) and the kept CWE-22 population **960 → 843** (**−12.19 % of the rule**), both
+  read off the chain this file already owns: 3,679 raw arena rows → 2,363 kept by `.tcs.yaml` → 2,319 after
+  `e49838a`'s 44 engine retirements → 2,202 after these 117. The 117 are kept rows, not raw ones: the A/B
+  scans only files whose *kept* rows carry the `.raw` shape, and its head arm counts 164 CWE-22 in those 86
+  files. ADDED=0 is the
+  FN-side half of the claim: nothing that HEAD stayed silent about starts reporting, so the clause cannot
+  have been widened past its shape. Kept loud, by name and by tier: `Image.open(gif_path)` where the target
+  is a *function parameter* (`pil_image_open_param_path`), the upload-handle spelling
+  (`pil_image_open_upload_handle`), `open(requests.get(url).text)` and `.content` and `.json()`
+  (`text_slot_is_a_string`, `content_slot_is_bytes`), a `Name` bound to the response
+  (`stream_name_bound_response_is_not_proven`), a session object (`stream_session_bound_response_is_not_proven`),
+  and `.raw` buried inside a join (`stream_raw_inside_join_still_joins`) -- 16 of the 23 stream predicate
+  rows are refusals, and the retired population is 7 of them.
+- **Blessed reach 0, asked on the blessed lines themselves.** TIER 6 runs each of the 24 frozen CWE-22 keys
+  through the real record path and asks the shipped proofs with the cascade's own triple: parity
+  `blessed_lines=8 predicate_asks=8 answers_temp_root=0 delete_sink_blessed_lines=0` and
+  `stream_asks=8 answers_buffer_sink=0`; Big-8 `blessed_lines=16 predicate_asks=13 answers_temp_root=0
+  delete_sink_blessed_lines=2` and `stream_asks=16 answers_buffer_sink=0`. Every blessed line is asked (the
+  tier fails if `asks` ever falls short of `blessed_lines`, which is the "census that asks nothing looks like
+  a safe zero" law), and the same sweep answers True on 3/3 temp controls and 3/3 stream controls — so the
+  zero is a refusal, not an unasked question. The two Big-8 delete keys (`modeling_utils.py:3494
+  os.remove(full_filename)`, `trainer.py:2008 shutil.rmtree(checkpoint, ignore_errors=True)`) are the rule's
+  own vocabulary and stay reported.
+- **The lock.** `benchmark/gates/cwe22_pil_tempfile_probe.py` gains **TIER 9** (its own 23-row STREAMS
+  predicate table, both clause tables read out of the shipped class, the structural consult-site count, and
+  the two `ast.Constant`-only argument clauses), 22 new SHAPES rows (7 loud→quiet, 15 loud→loud tripwires),
+  5 new PAIRS and **6** new falsifications, taking the gate to
+  `seal=shipped shapes=60 fp_rows=12 must_report=30 already_quiet=18 pred_rows=36 pred_proven=15
+  pred_refused=21 stream_rows=23 stream_proven=7 stream_refused=16 pairs=10 locked_cwe22=24 failures=0` →
+  **PASS**, with **20** falsifications in the file. All **20** exit 1 CAUGHT on the shipped bytes
+  (`python benchmark/gates/cwe22_pil_tempfile_probe.py --mutate=NAME` once per name, every row saved to
+  `scratch/_mut_all.txt`; the total is the runner's own
+  `CAUGHT on N row(s)` line, with the tier split it names — T3 findings table / T4 predicate table / T5 pairs
+  / T6 blessed reach / T8 cache-anchor refusal / T9 stream table):
+  the **6** new ones are `delete_stream_clause` 27 `[T3=7 T5=4 T6=1 T9=15]`, `stream_clause_always_true` 60
+  `[T3=26 T5=9 T6=4 T8=1 T9=20]`, `stream_attrs_accept_response_payload` 6 `[T3=2 T5=1 T9=3]`,
+  `stream_roots_accept_other_libraries` 5 `[T3=2 T9=3]`, `stream_accepts_unimported_head` 7 `[T3=2 T5=1 T9=4]`
+  and `stream_root_match_becomes_a_substring` 3 `[T3=1 T9=2]` — the first two bite at finding level on the 7
+  loud→quiet shapes, the last four each bite its own clause (the attr table, the root table, the head clause,
+  the dot boundary), which is what the tenth law above demands of a tripwire. The **14** pre-existing ones
+  moved or held: `delete_temp_guard` 28, `temp_guard_always_true` 65, `accept_tmp_word_without_proof` 15,
+  `accept_scope_name_teardown` 8, `accept_tests_path_teardown` 6, `drop_every_write_check` 3,
+  `attribute_hop_dropped` 6, `attribute_hop_takes_first_write` 3, `allow_escape_literal` 1,
+  `allow_arbitrary_join_receiver` 29, `accept_nondelete_sink` 4, `pil_pitch_shipped` 4,
+  `move_dest_pitch_shipped` 2, `widen_temp_root_to_file_sinks` 5. Their counts grew because the tables grew
+  (`temp_guard_always_true` 46 → 65, `allow_arbitrary_join_receiver` 11 → 29), which is arithmetic, not a
+  weakening — and one growth is worth naming rather than burying: `pil_pitch_shipped` went 1 → 4 because the
+  PIL pitch is modeled as *"silence `CWE-22: PIL.Image.open` unless the sink line itself spells the request"*,
+  and three of this step's stream tripwires are `Image.open` rows whose line does not spell `request`
+  (`httpx.get(url).raw`, a `Name`-bound response, a session-bound response). So the pitch as worded reaches
+  past PIL and mutes a proved-tainted-looking source the moment the call is written on one line — the fourth
+  row is `pil_image_open_param_path`, the one it was written for, and the three extra rows are the pitch's own
+  collateral.
+- **The tenth harness law, bought by a dead tripwire.** Two of the original root-refusal fixtures were
+  useless and *looked* fine: `urllib3.PoolManager().urlopen(…).raw` and
+  `requests_toolbelt.Session().get(…).raw` stayed loud under the root widening **and** under the substring
+  law, because their chain head is a constructor `Call`, not an `ast.Name` — they were stopped by the head
+  clause, so the mutation they were supposed to falsify was caught only by a table assertion (1 row each).
+  Measured, not guessed: the replacements are `httpx.get(url).raw` (moves under root widening only) and
+  `requests_mock.get(url).raw` (moves under the substring law only), and the toolbelt constructor stays as
+  a *declared over-block* (`stream_constructor_chain_is_refused`). After the swap the two mutations bite 5
+  and 3 rows including finding-level rows. Law: **a tripwire must move under exactly the mutation it is
+  written against — a row that stays loud under every mutation is testing a different clause, and a
+  falsification caught only at a table assertion is not a falsification of the rule.**
+- **The clock-law extension, same defect class as the two earlier tick collapses.** `_calibrate` grew its
+  own probe (32 → 512 → 8192 → 65536 replays until the window reports > 0.05 s CPU) because a single-replay
+  probe reads `0.0` for a group of microsecond asks and the old code turned that zero into a `reps` of its
+  own choosing; and the sizing is `TARGET / (per_call × len(group))`, not `TARGET / per_call`, because
+  `reps` counts sweeps over the group and not calls. The first version over-sized a 300-ask bucket by 300x
+  and a 10-minute leg died in the calibration loop.
+- **Speed (Rule 15.3), priced per ask bucket on the tuples a real scan hands the predicate, then multiplied
+  by an arena ask census instead of a density guess.** Clock corpus: 22 files, 1,916,824 bytes (the 6 arena
+  files with the most `.raw`, the 2 that carry `.raw` without the `requests` token, 6 buffer-bearing arena
+  files, the 6 Big-8 modules that hold all 16 blessed CWE-22 keys, plus 3 one-shape fixtures for the
+  walk-then-refuse path). One scan asks the predicate **276** times and reports 43 CWE-22 rows. Paired,
+  order-alternating, block-min over 8 windows, every window 0.17-0.36 s CPU against a 15.6 ms quantum
+  (`python scratch/_stream_clock.py` → `scratch/_stream_clock.txt`):
+  `buffer-already-exempt` (n=6, the clause is never asked — the same-engine control) head 0.908 → shipped
+  0.851 µs, ratio median **0.9333**, legs 0.7647-1.0000; `not-a-stream-attr` (n=203, the common ask: two
+  C-level tests then False) 1.551 → 1.699 µs (**+0.148 µs**, ratio 1.0952, shipped ≤ head in 1/5 legs);
+  `stream-attr-refused` (n=9) 0.378 → 0.795 µs (**+0.416 µs**, ratio 2.1000); `stream-attr-exempted`
+  (n=58) 0.383 → 0.852 µs (**+0.468 µs**, ratio 2.2222). Added work summed over that corpus: **0.0606 ms per
+  scan**. The sign of the bulk bucket is not stable across legs — an earlier leg of the identical bytes read
+  −0.161 µs (ratio 1.0000) against this leg's +0.148 µs (1.0952), while the control swung 0.9167 → 0.9333
+  over the same two legs — so the claim rests on the census below, not on one ratio.
+  `python scratch/_stream_census.py` counts the asks a *full* arena pass makes, uncapped, over every file
+  that carries a kept CWE-22 row (405 files, **401 opened**, 9,362,567 bytes, 5 chunks, one shipped-arm
+  scan): **3,648 asks** — `not-a-stream-attr` **3,406**, `stream-attr-exempted` **236**,
+  `buffer-already-exempt` 6 and `stream-attr-refused` **0**. The zero is now measured on the whole
+  405-file population rather than on the 86-file A/B slice: every `.raw` that sits in a path slot in this
+  arena does resolve to `requests`, so the expensive walk-then-refuse branch is never taken in the arena,
+  and the three fixtures exist to price a branch the population does not have. Multiplying the census by the
+  two legs gives the arena statement: **+0.614 ms** (leg B: 3,406 × 0.148 + 236 × 0.468) and **−0.459 ms**
+  (leg A), so the bound to report is **≤0.62 ms per full arena CWE-22 pass** — and `e49838a` measured that
+  identical 405-file / 9.48 MB corpus at **7.42-8.34 s** per leg, which makes the worst-case scan CPU ratio
+  **1.00008**, inside a leg-to-leg spread of ±0.8 s by two orders of magnitude. No scan-level leg was run for
+  this step; the bound is the claim, per the standing law.
+- **Memory.** Three-way process-tree peaks on the shipped bytes for the touched gate
+  (`python scratch/_gate_rss.py benchmark/gates/cwe22_pil_tempfile_probe.py`): **187.2 parent / 174.9 summed-USS /
+  187.2 summed-RSS MB**, inside the ~400 MB budget (USS is the figure to hold; summed RSS double-counts
+  pages shared across a `spawn` pool, and here no pool outlives the run).
+- **Gates on the exact code shipped** (engine blob `8bcdbad93659170b` → `6917cb69f2fdbeef`, +37/−0).
+  `python benchmark/gates/aa_parity.py` → `baseline=425 now=425 MISSING=0 NEW=0` → `VERDICT: PASS - parity
+  425/425, exact-set match`, read *after* the gate grew its 22 shapes, 23 stream rows, 5 pairs and 6
+  falsifications, so the harness did not trip the product and the ten recorded gate laws held.
+  `python scratch/_sweep_all.py` → **`scripts=31 non-zero=0 []`** in one sweep on this tree, which includes
+  `big8_ab.py` → `sha256 verified` → `119/119 MISSING=0 NEW=0` exact-set, the placeholder lock
+  `cwe117_cwe22_unknown_source_probe` `locked_keys=59`, all four CWE-22 tables
+  (`cwe22_pil_tempfile_probe` `failures=0` as above, `cwe22_repo_anchor_path` 24, `cwe22_dirent_closure` 16,
+  `cwe22_sink_argument` 24), `workflow_controls_probe`, `mechanism_pitch_probe` and `confidence_label_probe`
+  all PASS. `python benchmark/cross_runner.py` → Precision and Recall **100.00 %**, F1 **1.0000**,
+  `Cross-File False Negatives (Bad case, missed): 0`, `Suppressed sanitizer sites: 2`, `Exact-set match on all
+  cases: YES`, `Suppression contract all cases: YES`, `OVERALL VERDICT: [PASS]` — its `Total Runtime:
+  451.52 ms` is not used as a speed claim (this file's standing rule: that column moves 300-8,700 ms on
+  identical bytes). TP moved **0** (both baselines exact-set), FN **0**, FP **−117 arena rows and 0 baseline
+  rows**, and the ability change is one clause: a CWE-22 sink can now refuse an object it was never a path
+  of, and still refuses every payload, name, session and library the tables say is unproven.
+- **Line-number drift, stated once.** The engine citations in the sections above are the ones that were
+  true when each step was written, and `ast_scanner.py` has grown since: a method named at `:7114` in one
+  section and `:7237` in another is the same method at two different commits. Do not trust a prose line
+  number — trust the machine-checked source pins (TIER 7 of the CWE-22 gates, TIER 5 of the CWE-89 probe,
+  TIER 1 of `confidence_label_probe.py`, TIER 1/2 of `cwe79_latency_gates_probe.py`), which read
+  `inspect.getsource` and fail the day a citation stops matching the code.
 
 
 ## Proof before claim (PROVEN > CLAIMED)
