@@ -1042,6 +1042,170 @@ MUTATIONS = {
 }
 
 
+# ---------------------------------------------------------------- the cache-anchor refusal, measured
+#
+# The mandate after the attribute hop asked to resolve "safe provenance for arguments deriving from
+# standard HuggingFace cache anchors (`pretrained_model_name_or_path`, `cache_dir`, `subfolder`,
+# `resolved_archive_file`)" over the file sinks in `src/transformers/models/`, and to widen this guard
+# from the three cleanup deletes to `open()`. Both were measured on the shipped predicates before any
+# engine line was trusted, and both are refused. The numbers they produced are frozen here.
+
+ANCHOR_FIXTURES = [
+    # (label, source, callee) -- every one is the mandate's own shape, and none may be provable.
+    ('anchor_cache_dir_param', '''
+def load(cache_dir):
+    return open(os.path.join(cache_dir, "config.json"))
+''', 'open'),
+    ('anchor_model_path_param', '''
+def load(pretrained_model_name_or_path):
+    return open(pretrained_model_name_or_path)
+''', 'open'),
+    ('anchor_subfolder_param', '''
+def save(subfolder, filename):
+    return open(os.path.join(subfolder, filename), "w")
+''', 'open'),
+    ('anchor_resolved_archive_file_download', '''
+def load(resolved_archive_file):
+    resolved_archive_file = http_get(url).name
+    return open(resolved_archive_file)
+''', 'open'),
+    ('anchor_pretrained_path_from_request', '''
+def load(request):
+    pretrained_model_name_or_path = request.args["model"]
+    return open(os.path.join(pretrained_model_name_or_path, "weights.bin"))
+''', 'open'),
+    # the alive control: a value the `tempfile` module returned, on a FILE sink. The raw proof accepts
+    # it, which is exactly why the widening is a false-negative machine and not an inert rule.
+    ('temp_root_file_sink_control', '''
+import tempfile
+
+
+def write_vocab():
+    with tempfile.TemporaryDirectory() as tmp:
+        return open(os.path.join(tmp, "vocab.json"), "w")
+''', 'open'),
+]
+ANCHOR_REFUSED = ANCHOR_FIXTURES[:-1]
+ANCHOR_CONTROL = ANCHOR_FIXTURES[-1]
+WIDEN_BLESSED_DEATHS = 3          # big8 tests__generation__test_utils.py 5537 / 5539 / 5565
+WIDEN_BLESSED_LINES = {5537, 5539, 5565}
+
+
+def _ask_proofs(source, module, sink):
+    """The two shipped CWE-22 provenance proofs, asked raw (no callee test) on the first `sink` call."""
+    tree = ast.parse(source)
+    with contextlib.redirect_stderr(_io.StringIO()):
+        tracker = ast_scanner.TaintTracker(files={module: source}, audit_all=True)
+        tracker.analyze()
+        for node in ast.walk(tree):
+            if callee_of(node) != sink:
+                continue
+            expr = path_expr_of_call(node)
+            if expr is None:
+                continue
+            scope = enclosing_scope_id(tree, module[:-3], node.lineno)
+            return (bool(tracker._c22_path_is_proven_temp_root(expr, scope, node.lineno)),
+                    bool(tracker._c22_path_is_internal_repo_anchor(expr, scope, node.lineno)))
+    return (None, None)
+
+
+def _sweep_blessed(ask):
+    """Ask `ask` on all 24 blessed CWE-22 records; return (asks, hits, the lines that answered True)."""
+    asked = hits = 0
+    lines_hit = set()
+    for kind in ('parity', 'big8'):
+        rows = _blessed_rows(kind)
+        by_file = {}
+        for row in rows:
+            by_file.setdefault(str(row[0]), set()).add(row[1])
+        for name, wanted in sorted(by_file.items()):
+            relative = (name if kind == 'parity' else os.path.join(
+                'benchmark_gates_data', 'corpus_big8', os.path.basename(name)))
+            path = os.path.abspath(os.path.join(ROOT, relative))
+            if not os.path.exists(path):
+                return asked, hits, lines_hit
+            with open(path, encoding='utf-8', errors='replace') as handle:
+                source = handle.read()
+            module = os.path.basename(name)
+            with contextlib.redirect_stderr(_io.StringIO()):
+                tracker = ast_scanner.TaintTracker(files={module: source}, audit_all=True)
+                tracker.analyze()
+            for record in tracker.sink_records:
+                if record.lineno not in wanted or not is_cwe22_record(record.security_node.metadata):
+                    continue
+                expr = delete_target_of(record)
+                if expr is None:
+                    continue
+                asked += 1
+                if ask(tracker, record, expr):
+                    hits += 1
+                    lines_hit.add(record.lineno)
+    return asked, hits, lines_hit
+
+
+def check_cache_anchor_refusal():
+    """TIER 8: the mandated HF cache anchors, the file-sink widening, and the 3 blessed keys it costs."""
+    failures = []
+    print('  the four mandated anchors, asked of the shipped proofs (both must refuse):')
+    for label, source, sink in ANCHOR_REFUSED:
+        temp, anchor = _ask_proofs(source, 'm.py', sink)
+        ok = temp is False and anchor is False
+        print(f'  {"ok" if ok else "REACHES":8s} {label:42s} temp_root={temp} repo_anchor={anchor}')
+        if not ok:
+            failures.append((label, 'a mandated HF cache anchor name is provable as a safe root',
+                             (False, False), (temp, anchor),
+                             'a parameter or a downloaded archive is not an internal anchor'))
+    temp, anchor = _ask_proofs(ANCHOR_CONTROL[1], 'm.py', ANCHOR_CONTROL[2])
+    print(f'  {"ok" if temp else "DEAD":8s} {ANCHOR_CONTROL[0]:42s} temp_root={temp} '
+          f'(the proof is alive on a file sink)')
+    if not temp:
+        failures.append((ANCHOR_CONTROL[0], 'the raw temp proof must answer on a proven tempfile root',
+                         True, temp, 'a sweep that answers nothing cannot prove a refusal'))
+
+    shipped_ask, shipped_hits, shipped_lines = _sweep_blessed(_ask_guard)
+    widen_ask, widen_hits, widen_lines = _sweep_blessed(_ask_raw_temp_root)
+    print(f'  blessed CWE-22 asks: shipped callee-first wrapper asks={shipped_ask} '
+          f'silenced={shipped_hits}')
+    print(f'  blessed CWE-22 asks: widened to file sinks  asks={widen_ask} '
+          f'silenced={widen_hits} lines={sorted(widen_lines)}')
+    if shipped_hits:
+        failures.append(('blessed', 'the shipped guard silences a blessed CWE-22 key', 0, shipped_hits))
+    if widen_hits != WIDEN_BLESSED_DEATHS or set(widen_lines) != WIDEN_BLESSED_LINES:
+        failures.append(('blessed', 'the frozen cost of widening the temp proof to file sinks',
+                         (WIDEN_BLESSED_DEATHS, sorted(WIDEN_BLESSED_LINES)),
+                         (widen_hits, sorted(widen_lines)),
+                         'the reach of the refused widening moved - re-measure before anyone ships it'))
+    table = inspect.getsource(ast_scanner.TaintTracker._c22_cleanup_is_temp_teardown)
+    callee_first = 'CWE22_CLEANUP_DELETE_SINKS' in table
+    print(f'  wiring: the wrapper is still callee-first over the delete table={callee_first} '
+          f'delete sinks={sorted(ast_scanner.CWE22_CLEANUP_DELETE_SINKS)}')
+    if not callee_first:
+        failures.append(('wiring', '_c22_cleanup_is_temp_teardown must test the callee before anything'))
+    return failures
+
+
+def _ask_raw_temp_root(tracker, record, expr):
+    """The refused reading: the temp proof asked without the callee-first test, so `open` counts too."""
+    return tracker._c22_path_is_proven_temp_root(expr, record.scope_id, record.lineno)
+
+
+def _apply_widen_to_file_sinks():
+    """Install the widening in memory: the wrapper stops asking which callee it is guarding."""
+    ast_scanner.TaintTracker._c22_cleanup_is_temp_teardown = (
+        lambda self, call_node, path_expr, scope_id='', lineno=0:
+        self._c22_path_is_proven_temp_root(path_expr, scope_id, lineno))
+
+
+MUTATIONS['widen_temp_root_to_file_sinks'] = {
+    'what': 'widen the proven-temp-root proof from the three cleanup deletes to every CWE-22 sink, '
+            'which is the mandate\'s "open() and file sinks load local cached weights" reading - it '
+            'must die on the 3 blessed test_utils.py file sinks it silences',
+    'rows': ['blessed:test_utils.py:5537', 'blessed:test_utils.py:5539', 'blessed:test_utils.py:5565'],
+    'keeps_loud': ['temp_root_file_sink_control is the proof that this widening is alive, not inert'],
+    'apply': _apply_widen_to_file_sinks,
+}
+
+
 def run_mutation(name: str) -> int:
     """Apply one in-memory mutation and run the real gate over it. Exit 1 = the mutation was caught."""
     global _PIL_PITCH_APPLIED, _MOVE_PITCH_APPLIED
@@ -1063,6 +1227,8 @@ def run_mutation(name: str) -> int:
         tiers.append(('T5', check_pairs()))
         print('TIER 6 - the 24 blessed lines, asked about directly:')
         tiers.append(('T6', check_blessed_lines()))
+        print('TIER 8 - the mandated HF cache anchors and the file-sink widening:')
+        tiers.append(('T8', check_cache_anchor_refusal()))
     except Exception as exc:  # a mutation that cannot even run is not a falsification
         print('MUTATION ERROR: ' + type(exc).__name__ + ': ' + str(exc))
         print('\nFALSIFICATION VERDICT (' + name + '): ERROR - the mutation is broken, '
@@ -1099,6 +1265,8 @@ def main() -> int:
     failures += check_blessed_lines()
     print('TIER 7 - three tables, the PIL and move refusals, and the wiring sites:')
     failures += check_tables_and_wiring()
+    print('TIER 8 - the mandated HF cache anchors and the file-sink widening, scored on the blessed 24:')
+    failures += check_cache_anchor_refusal()
     print(f'\nseal={CWE22_TEMP_SEAL} shapes={len(SHAPES)} fp_rows={len(FP_ROWS)} '
           f'must_report={len(MUST_REPORT_ROWS)} already_quiet={len(ALREADY_QUIET_ROWS)} '
           f'pred_rows={len(PREDICATES)} pred_proven={len(PRED_PROVEN)} '

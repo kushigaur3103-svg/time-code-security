@@ -1879,7 +1879,108 @@ each on a number that says the pitch's shape is not the population the engine ha
   about at all carried by a falsification of the pitch's own row.
 
 
-### Permanent Fix Mandate (Root-Cause Immunity & Anti-Band-Aid Rule)
+### The multi-cluster harvest mandate: cluster 1 measured at 98 rows / 4 blessed deaths, cluster 2 at
+### 12 rows / 3 blessed deaths, the four mandated cache anchors at 4 rows, all of them downloaded
+
+The mandate was "minimum 300+ arena FPs across two named clusters, strict zero-FN": a CWE-208 tensor-shape
+and non-secret-arithmetic filter inside `_compares_two_secrets`, and a CWE-22 "internal model cache &
+weight loader" resolution for arguments deriving from `pretrained_model_name_or_path`, `cache_dir`,
+`subfolder` and `resolved_archive_file`. Both were measured on the shipped engine before any engine line
+was trusted, and both end at the same place: **the provable, zero-blessed-reach slice of each cluster is
+measured in single digits, and every reading that reaches hundreds of rows reaches a blessed true
+positive.** No engine line changed — `ast_scanner.py` `8bcdbad93659170b`, `cli.py` `34588435d8c8e15e`,
+`tcs_config.py` `5c9a1815ca836abb` and `rule_engine.py` `86147fdb11063475` are each
+`git hash-object`-equal to `git rev-parse HEAD:<file>` — and the kept arena report stays at **2,319 rows**;
+**0 rows moved this step**. What ships is the lock that makes the refusal arithmetic, not opinion:
+TIER 8 of `benchmark/gates/cwe22_pil_tempfile_probe.py` plus a falsification of the widening.
+
+- **Cluster 1 is blocked by the emitter's own contract, and the arithmetic is one line.** The only CWE-208
+  emitter fires exclusively on a compare holding a marker of `token`/`secret`/`signature`/`hmac`/`api_key`/
+  `auth_token` (`_collect_batch4_structural_findings`, `ast_scanner.py:19282`, with the two shipped vetoes
+  called at `:19358` and `:19360`). So *every* emittable row carries a credential-shaped name by
+  construction: the mandate's own keep-loud clause ("unless a token/secret/signature/auth name is involved")
+  applied to its own exemption silences **0 of 351** kept rows — measured as `either-rescued 0` /
+  `all-rescued 0` — while dropping that clause reaches **98** rows and kills **4** of the 36 locked CWE-208
+  keys (`src__transformers__generation__utils.py:1077`, `tests__generation__test_utils.py:5325` and `:5329`,
+  `tests__models__whisper__test_modeling_whisper.py:314`). There is no third reading.
+- **The clause-subset hunt (Rule 15.5 rung 3) was run, not asserted.** Seven subsets of the mandated list
+  were scored for arena yield against blessed deaths: `.ndim`/`.dtype`/`.size()`/`.dim()`/`.numel()`
+  **0 arena rows** (no population at all); `x.shape[i]` subscripts 68 rows / 2 deaths; `len()` calls 19 / 2;
+  loop-index and int-forced names 16 / 2; drop-`.shape`-entirely 30 / 2; the full list 98 / 4; and exactly
+  one subset with **0 deaths** — integer constants and arithmetic only — which buys **5 rows**
+  (`prev_output_tokens == -100` ×3, `decoder_pad_token_mask == -1`, `each_tokens_ids == int(self.eos_token)`).
+  Four of those five names carry the credential word `token`, so the veto that would make the slice safe
+  empties it, and shipping it anyway means flipping `sentinel_literal_negative` from its frozen
+  must-report seal — a re-bless of a lock to buy 0.2 % of one rule. Refused on those numbers.
+- **The two prior refusals of this same cluster still hold and were re-used, not re-argued:** the dimension
+  pitch is frozen at `PITCH_REACH = {dimension: 2, nonstring: 28}` with `dimension_pitch_shipped` CAUGHT on
+  the verbatim whisper:314 spelling, and the sentinel pitch at
+  `SENTINEL_REACH.big8 = {named: 12, contains: 9}` with `sentinel_pitch_shipped` CAUGHT on 7 rows. The
+  mandate's examples name blessed true positives directly: `decoder_start_token_id.shape[0] != batch_size`
+  *is* "subscript indexing on a shape tuple", and `expectation == len(generated_tokens[0])` *is* a `len()`
+  call.
+- **Cluster 2's four anchor names reach 4 rows in the whole arena, and all four are downloaded or `None`.**
+  Through the real record path over all 1,004 kept CWE-22 rows (405 files, 9.48 MB; 960 after `e49838a`):
+  `pretrained_model_name_or_path` resolves on 4 rows, `resolved_archive_file` on 4, `cache_dir` on **0** and
+  `subfolder` on **0**; the union is 4 file sinks — `modeling_flax_utils.py:440/:444`,
+  `modeling_tf_utils.py:841/:2936` — and their own value producers are `http_get`/`cached_file` returns or
+  `None` initialisers. A hub-downloaded archive path is the network arriving at a path, which is the finding,
+  not the exemption. The producers census says what the population actually is: `os.path.join` 406,
+  `requests…raw` 120, `hf_hub_download` 76, `tempfile.mkdtemp` 46, `cached_file`/`cached_download`/
+  `get_file_from_repo`/`wget.download` 24 — **106 rows are network-shaped**, and 797 of the 813 file-sink
+  rows carry **no** proof the engine could accept. Inside `src/transformers/models/` (479 kept rows,
+  459 of them file sinks) the mandated shapes measure **0 temp-rooted, 0 anchor-named, 0 repo-anchored**, so
+  "hundreds of loaders anchored to the HF cache names" is not a population the AST can see.
+- **The widening the mandate implies — asking the proven-temp-root proof of file sinks, not only of the
+  three cleanup deletes — costs 3 blessed keys, and that is now the frozen number.** Over the same
+  population the shipped proof answers True on **44** cleanup rows (exactly what `e49838a` retired) and on
+  **12** file sinks; asked on the 24 blessed CWE-22 lines, the shipped callee-first wrapper answers
+  `asks=21 silenced=0` while the widened reading answers `asks=21 silenced=3 lines=[5537, 5539, 5565]` —
+  `tests__generation__test_utils.py` `open(custom_generate_dir / "generate.py", "w")`, a blessed Big-8 key.
+  Twelve rows for three true positives is the trade the Zero-FN Shield forbids, and the guard stays
+  callee-first over `os.remove`/`os.unlink`/`shutil.rmtree`.
+- **The lock.** TIER 8 of `cwe22_pil_tempfile_probe.py`, `check_cache_anchor_refusal()`, scores five
+  `ANCHOR_FIXTURES` (`anchor_cache_dir_param`, `anchor_model_path_param`, `anchor_subfolder_param`,
+  `anchor_resolved_archive_file_download`, `anchor_pretrained_path_from_request`) through the *real*
+  shipped predicates — `_c22_path_is_proven_temp_root` **and** `_c22_path_is_internal_repo_anchor`, both
+  asked raw, no callee test — and fails if either ever accepts a mandated anchor. It refuses a silent
+  sweep: `temp_root_file_sink_control` (`with tempfile.TemporaryDirectory() as tmp:` +
+  `open(os.path.join(tmp, "vocab.json"), "w")`) **must** answer `temp_root=True`, which is the alive
+  control proving the 0 on the anchors is a refusal and the 3 on the blessed lines is real. It then pins
+  both blessed counters (`wrapper silenced == 0`, `widened silenced == 3` with the exact line set) and
+  re-reads `inspect.getsource` of the wrapper to pin the callee-first test. The falsification is
+  `--mutate=widen_temp_root_to_file_sinks`, which installs the widening in memory and is **CAUGHT on 5
+  rows [T4=2 T6=1 T8=2]** — naming `image_open_on_temp_path`, `read_sink_on_temp_path`, the Big-8 blessed
+  counter, the shipped-guard counter and the wiring pin. The three pre-existing mutations on the same
+  guard were re-run after the edit and still exit 1: `delete_temp_guard` 28 `[T3=5 T4=15 T5=6 T6=1 T8=1]`,
+  `temp_guard_always_true` 46 `[T3=15 T4=21 T5=6 T6=2 T8=2]`, `attribute_hop_dropped` 6 `[T3=2 T4=3 T5=1]`.
+  Clean run: `seal=shipped shapes=38 fp_rows=5 must_report=15 already_quiet=18 pred_rows=36
+  pred_proven=15 pred_refused=21 pairs=6 locked_cwe22=24 failures=0` → **PASS**.
+- **Gates on the exact code shipped.** `aa_parity.py` `baseline=425 now=425 MISSING=0 NEW=0` →
+  `VERDICT: PASS - parity 425/425, exact-set match`; `big8_ab.py` `VERDICT: PASS - big8 119/119,
+  exact-set match`; `cross_runner.py` Precision **100.00 %**, Recall **100.00 %**, F1 **1.0000**,
+  `Exact-set match YES`, `Suppression contract YES`, 331.04 ms; placeholder lock, both CWE-208 tables
+  (36 / 36), all four CWE-22 tables (24 / 24 / 16 / 24), `mechanism_pitch_probe` and
+  `workflow_controls_probe` all PASS, and **`scripts=30 non-zero=0 []`** in one sweep on this tree.
+  TP moved **0**, FN **0**, FP **0 rows moved**, speed **identical to HEAD by blob equality**, ability
+  identical — plus one gate that now fails loudly if either mandated reading is ever shipped.
+- **"300+" is stated, not evaded.** Across the kept report the largest four populations are CWE-22 960,
+  CWE-208 351, CWE-117 348, CWE-338 156, and each has now been partitioned against the frozen keys:
+  CWE-22 by the temp/anchor/self-described/upload proofs (44 retired at 0 blessed reach, 12 refused at 3,
+  797 unprovable), CWE-208 by the metric, codec/config and hardcoded-integer readings (0 retired, 5 refused
+  on their own veto, 98 refused on 4 deaths), CWE-117 by the binding census (withdrawn at measured 0 yield),
+  CWE-338 by the display-value, `populate/` and canonical-root tables (39 retired, the 122 `random` rows
+  being the rule's own vocabulary, the 25 object-receiver rows unprovable without the scanned tree's import
+  table). A 300-row harvest exists only in the readings that delete blessed TPs, so it is not shipped, and
+  the counts above are the receipt.
+- **Deviation from the mandate's staging list, stated rather than hidden.** The list said
+  `git add ast_scanner.py AGENTS.md benchmark/gates/`. `ast_scanner.py` carries **no** change — its two
+  mandated filters were each measured and refused — and nothing else is staged: one gate file and this
+  record. The scratch harnesses that produced the numbers (`_c208_census.py`, `_c208_reach.py`,
+  `_c208_five.py`, `_c22_cache_census.py`, `_c22_partition.py`, `_c22_widen_measure.py`) stay git-ignored
+  because they read the ignored arena tree; every claim they made is reproduced by the tracked TIER 8.
+
+
 
 All engine modifications, precision improvements, and bug fixes must be architecturally permanent:
 
