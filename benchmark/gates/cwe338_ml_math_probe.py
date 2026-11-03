@@ -35,13 +35,18 @@ Two properties make a canonical root safe where an alias cannot be, and both are
     asserted, and the mutation `prefix_matches_without_a_dot_boundary` turns the boundary into a
     plain `startswith` and is CAUGHT on 4 rows.
 
-Refused, and named so the next round does not re-litigate it: the object-name family
-(`distributions.Bernoulli` 2, `distributions.Categorical` 2, `distributions.Gumbel` 1,
-`distributions.RelaxedBernoulli` 1, `distribution` 4, `distr` 3, `self` 4, `self.prior` 1,
-`prior` 1, `model` 3, `bart_model` 2 = 24 rows) stays loud because a variable *called*
-`distributions` is not a module identity -- `sample = multivariate_normal.MultivariateNormal(...).sample()`
-is the same shape and is only exempt once canonicalisation *proves* the torch family behind it,
-which is the `EXEMPT` half of that duplicated pair in the table.
+Refused, and named so the next round does not re-litigate it: the object-name family is **25 rows in
+12 distinct symbols** -- `distributions.Bernoulli` 2, `distributions.Categorical` 2,
+`distributions.Gumbel` 1, `distributions.RelaxedBernoulli` 1, `distributions.RelaxedOneHotCategorical`
+1 (= 7), `self.sample` 4 + `self.prior.sample` 1 (= 5), `distribution.sample` 4, `distr.sample` 3,
+`model.sample` 3, `bart_model.sample` 2, `prior.sample` 1 -- and 0 rows carry a `scipy` receiver.
+They stay loud because a variable *called* `distributions` is not a module identity: `sample =
+multivariate_normal.MultivariateNormal(...).sample()` is the same shape and is only exempt once
+canonicalisation *proves* the torch family behind it, which is the `EXEMPT` half of that duplicated
+pair in the table. Proving those 25 would need the arena's import table, which is not in this
+repository, so the mandate's own conditional decides it -- not provable, stays reported. Every one of
+the 12 symbols is now a `REPORT` row here, all seven roots sit in `FORBIDDEN_ROOTS`, and the
+`object_receiver_alias_shipped` mutation ships them on the table in memory and is CAUGHT.
 
 Falsification
 -------------
@@ -53,14 +58,16 @@ Falsification
     drop_the_new_library_prefixes          8 rows  (the four new roots must each have a proof case)
     credential_veto_blanked               23 rows  (a security-named destination re-arms every library)
     derived_matcher_drops_the_dot          6 rows  (the engine's derived matcher, not the reference loop)
+    object_receiver_alias_shipped         13 rows  (the 25-row arena family, exempted by name)
 
 Each patch is applied in memory, never to the file, and restored in a `finally`; exit 0 under a
-mutation would mean the guard is decorative. The first four replace
-`ast_scanner.TaintTracker._is_ml_math_random_draw`; the fifth leaves the predicate alone and rebinds
+mutation would mean the guard is decorative. The first four and the sixth replace
+`ast_scanner.TaintTracker._is_ml_math_random_draw` with a reference implementation over a widened
+table; the fifth leaves the predicate alone and rebinds
 `ast_scanner._ML_MATH_MATCHER_CACHE` to a dotless pair -- the seam the predicate actually reads,
 carrying the live table object in slot 0 so the engine's own identity test does not heal the patch --
 so a derivation bug in the fast path is caught by the same table rather than only by a row count. The
-equivalence tier scores all 22 `MATCHER_ROOTS` spellings against the reference test on every clean run,
+equivalence tier scores all 26 `MATCHER_ROOTS` spellings against the reference test on every clean run,
 and the wiring tier asserts the predicate reads that cache, keeps the dot boundary, has exactly one
 writer, and that no second matcher survives beside it.
 """
@@ -112,6 +119,27 @@ CASES = [
     ('sample = multivariate_normal.MultivariateNormal(loc, scale).sample()', EXEMPT,
      'torch.distributions.multivariate_normal',
      'canonicalisation proving the torch family is what retires this key in big8'),
+    # --- the 25 object receivers left loud in the arena, spelled exactly as the artifact shows --
+    # Measured on the frozen 194-row CWE-338 artifact: `distributions` 7, `self` 5, `distribution` 4,
+    # `distr` 3, `model` 3, `bart_model` 2, `prior` 1 = 25 rows, and 0 rows carry a `scipy` receiver.
+    # None of these seven words is a module identity -- each is a name a local can be bound to, so
+    # the only door is canonicalisation, which needs the source tree's import table. That table is
+    # not in this repository, so the mandate's own conditional applies: not provable -> stays loud.
+    ('x = distributions.Bernoulli(logits).sample()', REPORT, None,
+     'a local named distributions is not torch.distributions'),
+    ('x = distributions.Categorical(probs).sample()', REPORT, None, 'the arena spelling, verbatim'),
+    ('x = distributions.RelaxedBernoulli(logits).sample()', REPORT, None, 'same root, other class'),
+    ('x = distribution.sample()', REPORT, None, 'an object built on some earlier line'),
+    ('x = distr.sample(8)', REPORT, None, 'a shorter alias of the same idea'),
+    ('x = self.prior.sample()', REPORT, None, 'an attribute of the instance'),
+    ('x = self.sample()', REPORT, None, 'the receiver that names nothing but the object'),
+    ('x = model.sample()', REPORT, None, 'model is a variable, not a library'),
+    ('x = bart_model.sample()', REPORT, None, 'a model instance named after an architecture'),
+    ('x = prior.sample()', REPORT, None, 'a distribution instance held in a local'),
+    ('x = distributions.Bernoulli(logits).sample()', EXEMPT, 'torch.distributions',
+     'the very same row retires once the receiver resolves to the torch family'),
+    ('x = scipy.stats.norm.sample(size=8)', REPORT, None,
+     'no scipy entry ships: measured 0 arena rows carry that receiver, so nothing proves it'),
     # --- proven torch / numpy.random index arithmetic with no credential name ----------------
     ('idx = torch.randint(0, 50257, (8,))', EXEMPT, None, 'vocabulary index'),
     ('input_ids = torch.randint(1, config.vocab_size, (1, 8))', EXEMPT, None, 'input ids'),
@@ -217,10 +245,15 @@ def evaluate(source, canon_override):
 
 
 # Roots that must never appear in `ML_MATH_RANDOM_PREFIXES`. The first four are the rule's own
-# vocabulary and the CSPRNGs; the last four are two-letter convention aliases (`tf`, `np`, `nn`,
+# vocabulary and the CSPRNGs; the next four are two-letter convention aliases (`tf`, `np`, `nn`,
 # `ray`) that any local can be re-bound to -- those qualify only through canonicalisation, never
-# as a written root, which is what `tf = random` above pins.
-FORBIDDEN_ROOTS = ('random', 'secrets', 'os', 'SystemRandom', 'tf', 'np', 'nn', 'ray')
+# as a written root, which is what `tf = random` above pins. The last seven are the arena's object
+# receivers: each is a name for *an instance*, so matching it would exempt `self.sample()` on any
+# object in any file, which is the rule being deleted rather than narrowed.
+OBJECT_RECEIVER_ROOTS = ('distributions', 'distribution', 'distr', 'prior', 'self', 'model',
+                         'bart_model')
+FORBIDDEN_ROOTS = ('random', 'secrets', 'os', 'SystemRandom', 'tf', 'np', 'nn', 'ray') \
+    + OBJECT_RECEIVER_ROOTS
 
 # Every shape the derived prefix matcher can be handed, scored against the reference test. The
 # near-misses matter more than the hits: `torchvision` and `numpy.randomstate` inherit nothing,
@@ -229,7 +262,8 @@ FORBIDDEN_ROOTS = ('random', 'secrets', 'os', 'SystemRandom', 'tf', 'np', 'nn', 
 MATCHER_ROOTS = ('torch', 'TORCH', 'torchvision', 'torch.nn', 'numpy', 'numpy.random',
                  'numpy.randomstate', 'tensorflow', 'tensorflow.random', 'jax', 'jax.random',
                  'ray', 'ray.tune', 'nn', 'nn.initializers', 'random', 'secrets', 'os.urandom',
-                 'tf.random', 'np.random', '', 'softmax')
+                 'tf.random', 'np.random', '', 'softmax',
+                 'distributions', 'self.prior', 'bart_model', 'scipy.stats')
 
 
 def run_cases(verbose=True):
@@ -365,6 +399,13 @@ MUTATIONS = {
     'credential_veto_blanked': {
         'what': 'stop asking the destination name, so session_key = tf.random.uniform goes quiet',
         'patch': ('veto', True)},
+    # The 25 arena object receivers are the population this step was asked to consider and refused.
+    # Adding them with the boundary law intact is exactly the widening the mandate named, so this
+    # mutation ships it in memory and the truth table must answer it on its own rows.
+    'object_receiver_alias_shipped': {
+        'what': 'put distributions / distribution / distr / prior / self / model / bart_model on '
+                'the table, so any object with a .sample() method is exempt',
+        'patch': ('objects', True)},
     # The engine answers the table through a derived matcher rather than a per-entry loop, so the
     # boundary can also be lost inside that derivation. This mutation patches the matcher and leaves
     # the predicate alone, which is the only way to prove the tier tests the code that runs.
@@ -448,6 +489,8 @@ def run_mutation(name: str) -> int:
         boundary = True
     elif kind == 'veto':
         veto = lambda node: False  # noqa: E731
+    elif kind == 'objects':
+        prefixes = base + OBJECT_RECEIVER_ROOTS
     original = ast_scanner.TaintTracker._is_ml_math_random_draw
     ast_scanner.TaintTracker._is_ml_math_random_draw = _mutated(prefixes, boundary, veto)
     try:

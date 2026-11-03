@@ -62,7 +62,7 @@ The sign-off also carries seven standing instructions:
   own truth table (`cwe704_type_cast_probe.py`, `cwe328_hash_context_probe.py`,
   `cwe116_template_autoescape_probe.py`, each `VERDICT: PASS`), so narrowing one of them means
   shipping that file first, not after.
-  All twenty-eight runnable gate scripts (`aa_parity.py`, `big8_ab.py`, `cwe338_ml_math_probe.py`,
+  All thirty runnable gate scripts (`aa_parity.py`, `big8_ab.py`, `cwe338_ml_math_probe.py`,
   `cwe338_prng_context_probe.py`, `cwe117_cwe22_unknown_source_probe.py`,
   `cwe117_builtin_seal_probe.py`, `cwe117_numeric_provenance_probe.py`,
   `cwe22_dirent_closure_probe.py`, `cwe22_sink_argument_probe.py`,
@@ -75,7 +75,7 @@ The sign-off also carries seven standing instructions:
   `cwe208_llm_token_timing_probe.py`, `cwe78_argv_execve_probe.py`,
   `cwe208_llm_domain_compare_probe.py`, `cross_symbol_table_probe.py`, `workflow_controls_probe.py`,
   `cwe798_test_fixture_dummy_probe.py`, `cwe22_repo_anchor_path_probe.py`,
-  `cwe312_vocab_dump_probe.py`), their frozen baseline key
+  `cwe312_vocab_dump_probe.py`, `cwe79_latency_gates_probe.py`, `mechanism_pitch_probe.py`), their frozen baseline key
   files and `gate_meta.json` are
   tracked under `benchmark/gates/`, so a fresh clone or CI can run them; `scratch/` is git-ignored,
   so a gate kept there is not runnable by anyone else and its baseline is not reviewable. The gates
@@ -1443,6 +1443,284 @@ blessed reach 0 measured by root. `ast_scanner.py` moves `f3dfdd68601cc215` → 
   comes from `ast_scanner.py`. Two gate files and one test file ship beside them because the Permanent Fix
   Mandate (items 2-3) requires the fail-loud lock and the falsification of the pitch with every shipped
   change; nothing else is staged, and no untracked file in this working tree is.
+
+
+### The CWE-79 latency-lever lock and the 147-row CWE-338 audit: two levers found already shipped,
+### one refused on its own arithmetic, engine byte-identical
+
+The mandate asked for three things in `ast_scanner.py` -- two "zero-state pure AST gates" (L1a) and a
+"quadratic scan fix" (L2) -- plus a deterministic audit of the 147 CWE-338 rows the previous step left
+loud. Every one of the three code items **is already in HEAD**, at different line numbers than the
+mandate named, and the audit's answer is that 25 of the 147 are provable only with a table this
+repository does not have. No engine line changed: `ast_scanner.py` `944ba8ca94c142f4`, `cli.py`
+`34588435d8c8e15e`, `tcs_config.py` `5c9a1815ca836abb`, `rule_engine.py` `86147fdb11063475` and
+`iac_auditor.py` `2a8cf3f2f1d5561b` are each `git hash-object`-equal to `git rev-parse HEAD:<file>`.
+What ships is the lock that makes all four statements re-provable by a stranger.
+
+- **The mandate's line numbers are stale, and its Task 2 target string does not exist.** It named
+  `:17931` / `:21060` / `:17659` and a `next((r for r in self.sink_records if r.security_node is sink
+  and isinstance(r.node, ast.Call)), None)` inside the `for sink in self.sinks:` loop. Measured against
+  the shipped file: the recovery collector opens at `ast_scanner.py:21474`, the template collector at
+  `:24830`, the gates are already at `:21853` and `:25064`, and the prune at `:21533-21552` already
+  builds `first_call_record: dict[int, tuple]` in one pass and reads it back through
+  `call_record[0] is sink`. That `next(...)` appears **0** times in the module. Re-implementing an
+  already-shipped lever is a no-op edit at best and a fork of one answer into two at worst, so the
+  honest delivery was proof, not code.
+- **L1a is proved as `GATE == UNION`, recomputed from the AST on every run** (TIER 1 of
+  `benchmark/gates/cwe79_latency_gates_probe.py`, the 27th `*_probe.py` gate). For each `for node in
+  self._reachable_nodes(tree)` loop the tier takes the gate tuple, then unions every `isinstance(node,
+  ...)` test that the loop body below it actually performs, and requires the two sets to be equal --
+  so a type cannot be dropped (that is the false negative: a rule's whole emit path disappears with
+  it) and cannot be added without a rule that reads it. Measured: recovery `gate=9 union=9`, template
+  `gate=2 union=2`, each equal to the tuple the mandate specified (`diff=none`), each with
+  `outside=none` and `dead=none`, and each sitting **before** the scope climb (`gate 21853 < read
+  21857`, `gate 25064 < read 25066`).
+- **L2 is locked as a law, not as a line of text** (TIER 2): one build pass (`builds=1`), keyed by
+  `id(security_node)`, holding the first `ast.Call`-typed record, re-checked with `is` at read -- read
+  *structurally* through the function's AST (`_index_read_vars` / `_index_identity_recheck`), so a
+  later rename of the local tuple cannot turn the lock into a string match -- function-local
+  (`self.first_call_record` appears 0 times, which is the RAM mandate's "no persistent global memo"),
+  `linear=0` per-sink rescans surviving, and one `for sink in self.sinks:` loop.
+- **The 15 shapes are the FN-safety half, and they are behavioural.** One loud row per gated node
+  type per collector, run through the real record path (`TaintTracker(files=..., audit_all=True)` +
+  `cli._findings_for`), each asserted to carry the symbol its type owns: `Dict` ->
+  `TEMPLATE_AUTOESCAPE_DISABLED` and `LAMBDA_HTML_BODY_RESPONSE`, `ClassDef` -> `SAFESTRING_SUBCLASS`
+  and `HTML_MAGIC_METHOD`, `FunctionDef`/`AsyncFunctionDef` -> `DJANGO_HTML_SAFE_DECORATOR` and
+  `TEMPLATE_FILTER_IS_SAFE`, `AugAssign`/`AnnAssign` -> `DYNAMIC_HTML_CONSTRUCTION`, `Call` ->
+  `HTML_RESPONSE_CONTAINER_BODY` and `UNESCAPED_TEMPLATE_EXTENSION`, template `Assign` ->
+  `HTTP_RESPONSE_HTML`. The `Return` row is honestly weaker: a dynamic-html `return` earns only the
+  response-sink row, so it is asserted loud with no symbol claim rather than given a symbol it does
+  not own. TIER 4 then requires the **identical row set** arm over arm on all 15 -- which is what
+  "pure-perf lever" means -- and TIER 5 holds the blessed floors from the frozen baselines: parity
+  `total=425 CWE-79=15`, big8 `total=119 CWE-79=0`.
+- **Six falsifications, two routes, all CAUGHT.** `--mutate=NAME` patches the engine *text* in memory
+  and re-runs TIER 1/TIER 2: `recovery_gate_drops_dict` 3 labels, `template_gate_drops_assign` 3,
+  `recovery_gate_removed` 5, `recovery_gate_moved_after_scope_read` 1 (the ordering assertion),
+  `index_replaced_by_linear_scan` 5, `index_stored_on_instance_state` 1. The behavioural half runs
+  the clean probe with `TCS_C79_LAT_ENGINE` at a copy built by `scratch/_lat_engines.py` (git-ignored):
+  dropping `ast.Dict` from the recovery tuple silences exactly `autoescape_flag_dict` and
+  `lambda_body_dict` (5 failures), dropping `Assign` from the template tuple silences exactly
+  `response_body_assign` (4), and the four behaviour-neutral mutations fail only their structural
+  tier -- which is the correct result for a lever that must not move a row.
+- **Why the seam, and the harness defect it fixed.** A first draft of the gate wrote each patched
+  engine to a temp file and imported it. Parity then read `425 -> 427 NEW=2`: **CWE-22** at
+  `engine_text(path)` -- the anchor guard reads the path *expression at the call site*, and a path
+  handed over by a parameter has no anchor -- and **CWE-94** at the generated-`.py`-then-imported
+  shape, which is precisely what that rule exists to report. Both were fixed in the harness, not
+  excused: the `open()` now carries the literal `ENGINE_PATH`, and generation moved to `scratch/`,
+  matching `TCS_NUMERIC_PROV_ENGINE` and the eleven other probes that already use the env seam.
+  `NEW=0` came back on the same command. That is the fourth time this repository has paid for a
+  harness rule, and the two older ones held: no `exec`/`compile`, and no regex or secret-named local
+  built from a loop variable.
+- **Speed (Rule 15.3), measured with the engine's own per-collector `perf_counter` rather than
+  `os.times()`, so the 15.6 ms Windows quantum cannot answer for the work.** Paired,
+  order-alternating, 3 reps x 3 legs over the three largest Big-8 modules (928,617 bytes, one
+  in-process scan each): shipped **227.69 ms** vs the recovery gate removed **447.80 ms** -> CPU ratio
+  **0.5085**; both levers off **476.91 ms** -> **0.4774**. So L1a is not a micro-optimisation: it
+  halves the two collectors' own time on the corpus that stresses them. L2 is reported as measured
+  rather than as a win: shipped **232.14 ms** vs the quadratic prune scan **230.01 ms** -> **1.0092**,
+  inside a leg spread of 189-249 ms, because on this corpus the prune population is
+  `sinks=168 x records=169 = 28,392` inner iterations retired to `337` dict operations -- the right
+  law, a cost the corpus never makes it pay for. Peak process-tree RSS, re-sampled on the final tree
+  with `python scratch/_gate_rss.py <gate>`: the new gate **160.8 MB**, `aa_parity.py` **272.2 MB**
+  (summed RSS, the conservative reading -- the gate itself holds no pool of its own), the clock legs
+  **96.6 / 159.8 MB**, all under the ~400 MB budget.
+- **Task 3, the 147 loud CWE-338 rows, counted rather than described.** From the frozen artifact
+  (194 CWE-338 rows) minus the 39 the last step retired, with 8 credential-vetoed: **122 stdlib
+  `random` rows** and **25 object-receiver rows in 12 distinct symbols** -- `distributions.Bernoulli`
+  2, `distributions.Categorical` 2, `distributions.Gumbel` 1, `distributions.RelaxedBernoulli` 1,
+  `distributions.RelaxedOneHotCategorical` 1 (7), `self.sample` 4 + `self.prior.sample` 1 (5),
+  `distribution.sample` 4, `distr.sample` 3, `model.sample` 3, `bart_model.sample` 2, `prior.sample`
+  1. **0 rows carry a `scipy` receiver**, so the `scipy.stats` entry the mandate floated would be an
+  unproven table line, and the `random` 122 are the rule's own vocabulary: all 16 blessed CWE-338
+  keys reach the rule through `random` / `random.Random` and nothing else.
+- **Refused, and the refusal is the mandate's own conditional.** None of the 25 can be proven from a
+  *value shape*: `distributions`, `prior`, `model` and `self` are names for **an instance**, not module
+  identities, and the only bridge from one to the other is `resolve_canonical_name`, which needs the
+  import table of the tree being scanned -- a tree that does not exist on this machine. Deterministic
+  proof is therefore unavailable, so they stay reported ("If not deterministically provable, DO NOT
+  SUPPRESS"). The same dot-boundary law that keeps `torchvision` from inheriting `torch` is what makes
+  `distributions.Bernoulli.sample()` a finding: the exemption takes a canonical root, never a variable.
+  And the `random` 122 get no folder glob, exactly as ordered -- `**/tests/**` under CWE-338 is already
+  a locked refusal (reach 7 of 7 blessed Big-8 keys) and `**/tests/trainer/**` is refused as a slice of
+  a refused tree.
+- **The lock for the refusal** is in `benchmark/gates/cwe338_ml_math_probe.py`, which grows from
+  `cases=117` to **`cases=140 failures=0` -> PASS**: 12 new rows (11 `REPORT` spellings taken verbatim
+  from the artifact's own symbols, plus the canonicalised `EXEMPT` sibling that proves the *only* door
+  -- `distributions.Bernoulli(logits).sample()` is loud as written and exempt under
+  `canon='torch.distributions'` -- and a `scipy.stats.norm.sample(size=8)` row that pins the empty
+  population), `OBJECT_RECEIVER_ROOTS` (those seven) appended to `FORBIDDEN_ROOTS` (8 -> **15** names
+  that may never join the table), 4 more `MATCHER_ROOTS` spellings (`distributions`, `self.prior`,
+  `bart_model`, `scipy.stats`) scored against the reference law, and a 6th falsification
+  `object_receiver_alias_shipped` which ships all seven on the table in memory and is **CAUGHT on 13
+  rows** -- the 10 object spellings plus the three wiring/cache assertions that a reference-
+  implementation patch necessarily trips, which is the honest statement that this mutation replaces
+  the predicate. The five pre-existing falsifications are unchanged at 7 / 5 / 8 / 23 / 6.
+- **Gates on the exact code shipped.** `python benchmark/gates/aa_parity.py` -> `baseline=425 now=425
+  MISSING=0 NEW=0` -> `VERDICT: PASS - parity 425/425, exact-set match` (and the mandate's own
+  `python scratch/_aa_parity.py` prints the same line, because that file is a deprecated in-process
+  delegator to the tracked gate, not a second implementation). `big8_ab.py` -> `sha256 verified (119
+  pinned keys, engine 94c5ee2)` -> `119/119 MISSING=0 NEW=0`, exact-set. `cross_runner.py` -> Precision
+  **100.00 %**, Recall **100.00 %**, F1 **1.0000**, `Exact-set match YES`, `Suppression contract YES`
+  (its runtime column read 397.29 ms on this leg; no speed claim in this file rests on it). All **27**
+  tracked `*_probe.py` gates exit 0 with `failures=0` in one sweep on this tree, including the new
+  `cwe79_latency_gates_probe.py` (`shapes=15 gate_collectors=2 locked_cwe79=15 failures=0`),
+  `cwe338_ml_math_probe.py` (`cases=140`), `cwe338_prng_context_probe.py` (`locked_cwe338=16`),
+  `cwe79_safe_response_probe.py`, `cwe117_cwe22_unknown_source_probe.py` (`locked_keys=59`) and
+  `workflow_controls_probe.py` (`shipped controls: failures=0`); `tests/test_workflow_controls.py`
+  **23 passed**. TP moved **0** (both baselines exact-set), FN **0**, FP **unchanged versus HEAD**,
+  speed **identical to HEAD** (the bytes are HEAD's), ability identical -- except the two collectors
+  this step proves are ~2x faster than they would be without their gates.
+- **Deviation from the mandate's target file, stated rather than hidden.** The mandate asked for code
+  in `ast_scanner.py`. None ships, because all three items are already in it and were measured as such,
+  and the audit's 25 rows fail its own provability test. What ships is the lock: the new gate, the
+  extended CWE-338 truth table, and this record. `scratch/_lat_engines.py` and the clock harness stay
+  git-ignored on purpose -- they generate engines, which is exactly the shape parity would report.
+
+
+### The three-mechanism FP mandate: mechanism 1 measured at 99 blessed deaths, mechanism 2 at 8,
+### mechanism 3 already delivered, engine byte-identical
+
+The mandate was "permanently eliminate false positives across all loud rules" with three named
+implementation mechanisms -- sink-side taint reachability (kill a finding whose sink argument is a
+static literal, boolean, `int()`/`float()` cast or provably immutable constant), a zero-escape test
+(suppress a call isolated in a test/mock/synthetic-generator scope whose value never escapes to
+network, storage, process execution or a credential variable), and a scientific-math matcher expansion
+under a credential veto -- plus a no-passive-refusal directive, a ban on blanket globs, a zero-FN floor
+and a 400 MB ceiling. All three were scored by executed measurement against the two frozen baselines
+before any engine line was trusted. Each one ends the way every previous step in this file ended: **the
+mechanism either deletes blessed true positives or buys nothing**, so no engine suppression ships, and
+what ships is one new tracked gate,
+`benchmark/gates/mechanism_pitch_probe.py`, which recomputes every number below from the corpus on
+every run.
+
+- **Nothing that can emit a finding moved.** `ast_scanner.py` `944ba8ca94c142f4`, `cli.py`
+  `34588435d8c8e15e`, `tcs_config.py` `5c9a1815ca836abb`, `rule_engine.py` `86147fdb11063475` and
+  `iac_auditor.py` `2a8cf3f2f1d5561b` are each `git hash-object`-equal to `git rev-parse HEAD:<file>`, so
+  the six mandatory outputs are a no-op verification rather than a repair, and the memory and speed
+  claims below are measurements of the new harness, not of a changed collector.
+- **Mechanism 1 as worded deletes 99 blessed true positives, and the reason is one line of corpus.**
+  TIER 3 asks both frozen baselines directly and prints
+  `parity: blessed=425 literal_argument=94 rules_touched=22` and
+  `big8: blessed=119 literal_argument=5 rules_touched=2` -- **99 blessed keys**.
+  Top parity rules it would delete:
+  `CWE-1275 15, CWE-614 13, CWE-319 12, CWE-90 6, CWE-1004 5, CWE-269 5, CWE-522 5, CWE-326 4`. It is
+  not a borderline population: `benchmark/corpus/cwe_295_cert/test_v01_bad.py:4` is
+  `requests.get(url, verify=False)` and `benchmark/corpus/cwe_1004_cookies/test_v01_bad.py:2` is
+  `response.set_cookie("session", token)` -- for those rules the *absence* of a literal, or the literal
+  itself, **is** the vulnerability, so "no taint reaches the sink" is the definition of the finding and
+  not evidence against it. The blanket half is therefore refused outright.
+- **Its safe half is already live, and TIER 1 counts it: `literal_live=11` sink families.** A literal
+  argument that cannot be the defect is already silent on eleven measured shapes (the CWE-22
+  all-literal path, the CWE-78 constant argv, the CWE-117 pure-literal log, the CWE-338 display-value
+  draw, the CWE-798 legacy placeholder, and so on), and TIER 2 keeps the counter-table -- the eight
+  `literal_is_defect` fixtures -- loud at both seals so the distinction cannot be blurred by a later
+  widening.
+- **The one clause of mechanism 1 the engine does *not* already answer was measured, priced and
+  withdrawn: numeric-only interpolated log holes.** `int()`/`float()` inside an f-string or a `%`-format
+  log message is a positive proof for CWE-117 -- a number cannot carry a CR/LF -- so this is the only
+  part of the pitch that is not a rule delete. Blessed reach: **0 of 49** (TIER 3b asks all 49 locked
+  CWE-117 keys through their own log call sites and reports `log-call asks=49 silenced by the clause=0`).
+  Yield: **0** of 187 log calls in 229 log-bearing files under `benchmark/corpus`, and repo-wide over
+  25,979 Python files / 25,375 log sites the clause reaches exactly **20 numeric-only sites in 5 files,
+  every one of them a git-ignored `scratch/` probe fixture** -- so 0 in either frozen baseline, and 0 in
+  any real code. A guard that costs a per-hole walk and
+  returns nothing fails Rule 15.3 on its own numbers, so it was not written; TIER 3b is the lock that
+  fails the day the population stops being zero, with floors `blessed >= 40`, `asks == blessed`,
+  `dead == 0`, `log_calls >= 150`.
+- **Mechanism 2 as worded deletes 8 blessed keys, and its provable half has no population.** TIER 4
+  scores the pitch against the frozen CWE-338/CWE-117 lines:
+  `silences: 8 by rule={'CWE-117': 6, 'CWE-338': 2}` -- the blessed batch-sampling keys
+  (`global_rng = random.Random()`, `values.append(rng.randint(0, vocab_size - 1))`) *are* "a synthetic
+  dataset generator whose value never escapes", so the escape test as worded is a rule delete dressed as
+  a scope analysis. Big-8 loses 0 under it and parity loses 8, and 8 is one too many. Its own vocabulary
+  is kept loud as fixtures: `blessed_threshold_append`, `draw_returned_to_caller` and the two other
+  `zero_escape_shapes` must report at both seals.
+- **Mechanism 3 is already delivered, and TIER 5 proves the delivery rather than asserting it.** A spy
+  wrapped around the shipped predicate records the ask
+  `('norm', 'scipy.stats.norm', False)` -- the matcher really is handed the *canonical* receiver, which
+  is why `tf.random.uniform` and `tensorflow.random.uniform` fold to one answer. The alias door
+  (`from numpy import random` + `random.randint`) is proven load-bearing: it is quiet **and** was asked
+  with `canon='numpy.random'`, and the falsification
+  `predicate_ignores_canonical_receiver` (blind the predicate to the canonical string) is **CAUGHT on 1
+  row** -- the aliased draw goes back to being reported while the spy still sees the fold. The *bare*
+  door (`from torch import randint` + `randint(0, 9)`) is refused: `rows=1 (stays reported: a bare callee
+  is never a receiver)`, its real-code population is 0 in the census above, and folding it would need a
+  name→import resolution that answers a *different* question than the one the table asks -- under Rule
+  15.5's tie-breaker the worst case must be a false positive, not a false negative. The unshipped roots
+  the mandate named (scipy / sympy / statsmodels / tensorflow_probability / tfp / sklearn) mention **0 of
+  the 16** blessed CWE-338 keys and retire **0** artifact rows, so
+  `scientific_root_joined_without_population` is CAUGHT on **2** -- the table-population law ("a root may
+  join only with rows behind it") and the census agreement that keeps `scipy.stats.norm.sample()` reported
+  while scipy is not in the table. The credential veto is unchanged and TIER 6 keeps the object-receiver
+  family reported -- the fixture prints `unresolved self.sub_model.sample rows=1`, and the artifact's 25 such rows
+  (`distributions.*`, `self.*`, `model.*`, `prior.*`) stay loud with it, because those are names for an
+  *instance*, not a proven canonical root.
+- **Four falsifications, two routes, all CAUGHT:** `sink_literal_pitch_shipped` 7 rows (the pitch
+  installed in memory, and the blessed-threshold fixtures bite), `zero_escape_pitch_shipped` 4,
+  `scientific_root_joined_without_population` 2, `predicate_ignores_canonical_receiver` 1. The clean run
+  prints `seal=refused literal_live=11 literal_is_defect=8 zero_escape_shapes=4 shipped_table=6
+  pitched_roots=6 failures=0` → `VERDICT: PASS`.
+- **Silenced FP count for this step: 0 baseline rows and 0 arena rows.** The rule-wise breakdown of what
+  each mandated mechanism *would* have deleted, rather than what it buys, is the honest answer to the
+  mandate's item 3: mechanism 1 blanket = **94 parity rows across 22 rules** (CWE-1275 15, CWE-614 13,
+  CWE-319 12, CWE-90 6, CWE-1004 5, CWE-269 5, CWE-522 5, CWE-326 4, …) + **5 Big-8 rows**
+  (`CWE-338 3, CWE-208 2`); mechanism 1 numeric clause = **0**; mechanism 2 = **8 parity rows**
+  (`CWE-117 6, CWE-338 2`); mechanism 3 new roots = **0**. No blanket glob shipped either, per the
+  mandate's own item 2 -- every exclusion decision stays where it was already measured, in
+  `.tcs.yaml` rule-scoped entries locked by `workflow_controls_probe.py`. The arena delta of the refused
+  items cannot be counted on this machine: no Transformers tree exists here (only `litellm-target` and
+  git-ignored `scratch/` harnesses), so a fresh arena scan stays a human-pressed `workflow_dispatch`.
+- **Memory (mandate item 4), measured three ways per run (parent / summed-USS / summed-RSS):** the new
+  gate **116.5 / 97.1 / 109.8 MB**, `aa_parity.py` **16.8 / 144.8 / 190.4 MB**, `big8_ab.py`
+  **16.7 / 126.2 / 147.1 MB**, `cross_runner.py` **37.3 / 24.7 / 37.2 MB** -- every figure inside the
+  400 MB budget, with USS the number to hold because summed RSS double-counts pages shared across a
+  `spawn` pool. No cache ships, because no engine code ships, so the mandate's "no persistent global
+  caches" clause is satisfied by the blob equality.
+- **Two harness defects that parity caught, and the fifth lesson they add.** The probe audited itself
+  and parity read `425 → 427 NEW=2`: **CWE-22** at the `_corpus_sources` `open()` of
+  `mechanism_pitch_probe.py`, caused by `path = os.path.abspath(...)` followed by a *second* write
+  (`if not os.path.isabs(name) else name`) -- `_c22_path_is_internal_repo_anchor` reads the path
+  expression at the call site and twice-written names fail closed -- fixed by the single anchored
+  write, since an absolute component already wins inside `os.path.join`; and **CWE-79
+  DYNAMIC_HTML_ARGUMENT** at the TIER 6 census print, caused by the literal angle brackets in a
+  print string (`self.<attr>.sample`), fixed by naming the family in plain words
+  (`unresolved self.sub_model.sample rows=`). The new law, stated so a sixth round does not happen:
+  **a gate print string carries no placeholder in angle brackets** -- the product reads
+  `<...>` as a template hole. Both were fixed in the harness, never excused, and `NEW=0` came back on
+  the same command.
+- **A census that asks nothing looks exactly like a safe zero, so it needs a floor.** The first
+  `_corpus_sources` keyed its dict by the file *leaf* while the tiers iterated the raw blessed paths, so
+  all 119 Big-8 keys were skipped and the reach census reported 0 deaths -- the same shape as a true 0.
+  The `blessed >= 40` and `asks == blessed` floors turned that silent no-op into a FAIL, and the fix is
+  recorded in the file's own comment. Rule: **a blessed-reach census states how many keys it asked, and
+  the count must equal the count it locked.**
+- **Gates on the exact code shipped.** `aa_parity.py` → `baseline=425 now=425 MISSING=0 NEW=0` →
+  `VERDICT: PASS - parity 425/425, exact-set match` (and `scratch/_aa_parity.py`, the mandate's own
+  command, prints the same line -- it is a delegator to the tracked gate, not a second implementation);
+  `big8_ab.py` → `sha256 verified (119 pinned keys, engine 94c5ee2)` → `119/119 MISSING=0 NEW=0`,
+  exact-set; `cross_runner.py` → Precision **100.00 %**, Recall **100.00 %**, F1 **1.0000**,
+  `Exact-set match YES`, `Suppression contract YES`; the new gate `failures=0` → PASS with all four
+  falsifications CAUGHT; the placeholder lock `locked_keys=59`, `cwe338_ml_math_probe.py` `cases=140`,
+  `cwe338_prng_context_probe.py` `locked_cwe338=16`, `cwe117_builtin_seal` / `cwe117_numeric_provenance`
+  (49 each), `cwe208_llm_token_timing` / `cwe208_llm_domain_compare` (36 each), the four CWE-22 tables
+  (24 / 24 / 16), `cwe798_*` (6 / 6), `cwe434` (7), `cwe312` (7), `cwe89` (25), `cwe78` (15),
+  `cwe116` (0 blessed), `cwe79_latency_gates` (15), `cross_symbol_table`, `workflow_controls_probe`
+  (11 checks, 25 mutation mappings -- 22 distinct names -- all CAUGHT) and
+  `tests/test_workflow_controls.py` 23 passed -- **all 30 runnable scripts under `benchmark/gates/`
+  exit 0** in one sweep on this tree (`scripts=30 non-zero=0`), and parity was re-read after the gate's
+  own docstring figures were corrected, so the harness still does not trip the product. TP moved **0** (both baselines
+  exact-set), FN **0**, FP **unchanged versus HEAD**, speed **identical to HEAD** (the bytes are HEAD's),
+  ability identical.
+- **Deviation from the mandate's target file, stated rather than hidden.** The mandate asked for
+  deterministic AST solutions inside the engine. None ships, because mechanism 1's blanket half and
+  mechanism 2 both delete blessed TPs (99 and 8), mechanism 1's numeric clause and mechanism 3's new
+  roots both measure a population of **0**, and mechanism 3's delivery is already in
+  `ast_scanner.py:6360`. That is not a punt: the both-and ladder was walked to rung 6 and the
+  refusal is a number per mechanism, and the rung-5 rule is honoured -- each predicate-only defect is
+  pinned twice, by the fixture table *and* by a falsification that bites it. What ships is the lock that
+  makes all of it re-provable by a stranger: `benchmark/gates/mechanism_pitch_probe.py`, tracked, with
+  the census, the two reach tables, the spy tier and its four mutations.
 
 
 ### Permanent Fix Mandate (Root-Cause Immunity & Anti-Band-Aid Rule)
