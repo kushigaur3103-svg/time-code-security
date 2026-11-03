@@ -224,7 +224,8 @@ def test_shipped_policy_excludes_nothing_the_baselines_could_lose():
     assert "CWE-798" not in config.rule_excludes, "a committed secret is never path-excluded"
     forbidden = {
         "CWE-22": ("tests/**", "**/tests/**"),
-        "CWE-338": ("tests/**", "**/tests/**"),
+        "CWE-338": ("tests/**", "**/tests/**",
+                    "**/transformers/models/**", "**/models/**"),
         "CWE-208": ("**/tests/**", "tests/**"),
         "CWE-312": ("**/tests/**", "tests/**"),
         "CWE-770": ("**/tests/**",),
@@ -320,6 +321,40 @@ def test_a_slice_of_a_refused_tree_is_refused_with_it():
         "the slice is no longer inside the refused parent, so the inherited refusal is stale")
     assert path_matches("src/transformers/tests/trainer/x.py", "**/tests/**"), (
         "the slice is no longer inside the refused parent, so the inherited refusal is stale")
+
+
+def test_the_ml_models_tree_glob_is_refused_and_its_margin_is_the_prefix():
+    """`**/transformers/models/**` measures 0 blessed reach and is still refused -- on three facts.
+
+    Its yield is real (82 rows in 46 files of the frozen artifact, 58 live) and its own blessed
+    reach is 0 of 16 CWE-338 keys, so neither baseline can see the loss. The refusal is therefore
+    not a reach count: (a) the un-qualified parent `**/models/**` reaches the whisper Big-8 draw at
+    `tests/models/whisper/test_modeling_whisper.py:97`, so the `transformers/` segment carries the
+    whole margin and the two spellings must never be treated as one; (b) the glob is not bounded --
+    the library root and a near-miss name must stay outside it; (c) a path match cannot express the
+    proof CWE-338 asks of a draw, so shipping it deletes the credential question in a tree the same
+    artifact reports CWE-312 and CWE-532 rows in. Pinned behaviourally by the twelfth check of
+    `workflow_controls_probe.py`, whose three mutations each fail their own assertion.
+    """
+    repo_root = pathlib.Path(__file__).resolve().parents[1]
+    config = load_config(repo_root)
+    shipped = set(config.rule_excludes.get("CWE-338") or ())
+    assert "**/transformers/models/**" not in shipped, f"CWE-338 ships {shipped}"
+    assert "**/models/**" not in shipped, "the refused parent spelling shipped instead"
+    inside = ("src/transformers/models/jukebox/modeling_jukebox.py",
+              "src/transformers/models/deprecated/tapex/tokenization_tapex.py",
+              "src/transformers/models/flava/image_processing_flava.py",
+              "src/transformers/models/bart/modeling_flax_bart.py")
+    assert all(path_matches(one, "**/transformers/models/**") for one in inside), (
+        "the refusal note describes paths the glob no longer selects")
+    for outside in ("src/transformers/modeling_utils.py", "src/transformers/models_bert/x.py",
+                    "setup.py"):
+        assert not path_matches(outside, "**/transformers/models/**"), f"unbounded: {outside}"
+    blessed = "tests/models/whisper/test_modeling_whisper.py"
+    assert path_matches(blessed, "**/models/**"), (
+        "the parent glob lost the blessed key that makes this tree refused")
+    assert not path_matches(blessed, "**/transformers/models/**"), (
+        "the qualified and unqualified spellings now answer alike, so the prefix is not a margin")
 
 
 # ─── helpers ───

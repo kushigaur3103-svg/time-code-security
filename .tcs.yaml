@@ -62,6 +62,24 @@ rules:
   # directory. Locked by `REFUSED_SLICES` in `workflow_controls_probe.py` (mutation
   # `refused_tree_slice_shipped`) and by
   # `tests/test_workflow_controls.py::test_a_slice_of_a_refused_tree_is_refused_with_it`.
+  # Refused, with both of its true numbers on the table: `**/transformers/models/**`. Its blessed
+  # reach is genuinely 0 of 16 in every spelling, and it genuinely selects 82 rows in 46 files of
+  # the frozen artifact (58 rows in 30 files live -- 23 of the 82 are already muted by the root
+  # table above). It is refused because a path glob cannot answer the question CWE-338 asks, only
+  # delete it, and this tree provably handles secrets: CWE-312 at
+  # `models/deprecated/tapex/tokenization_tapex.py:510` and 4 CWE-532 rows in
+  # `models/jukebox/modeling_jukebox.py` / `models/musicgen/modeling_musicgen.py` -- 3 files that
+  # also hold 9 of the 58 draws. Its partition is not path-shaped either: 36 of the 58 are literally
+  # `dropout_probability = random.uniform(0, 1)` inside `modeling_tf_*` (20), `modeling_flax_*` (15)
+  # and `modeling_*` (1) -- the same files as the 17 `distributions.*.sample()` rows -- so the
+  # narrowest honest sub-glob, `models/*/image_processing_*.py`, buys 4 rows of 58. And the parent
+  # spelling `**/models/**` reaches the whisper Big-8 key at
+  # `tests/models/whisper/test_modeling_whisper.py:97`, so the `transformers/` prefix carries all
+  # the margin. Locked as `REFUSED_EXCLUDES["CWE-338"]` + `REFUSED_SLICES[("CWE-338", ...)]` and by
+  # the twelfth check of `workflow_controls_probe.py` (3 mutations, each failing its own assertion:
+  # shipped, unqualified, and behaved as a whole-file skip). The safe version is an engine-side
+  # value proof -- a `uniform(0, 1)` draw whose literal unit bounds are consumed only by a
+  # comparison against a dropout rate, behind the credential and `.join` vetoes -- not a directory.
   CWE-338:
     exclude:
       - "**/populate/**"

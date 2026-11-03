@@ -11,7 +11,7 @@ The controls are developer-facing filters that sit *outside* the AST rules:
 
 Every tier runs the shipped code and then re-runs the same check under a mutation that
 models the obvious regression, so a rolled-back guard fails this probe instead of passing
-silently. Exit 0 only when the shipped checks pass and all sixteen mutation mappings are caught.
+silently. Exit 0 only when the shipped checks pass and every mutation mapping is caught.
 
 A seventh tier reads the shipped root `.tcs.yaml` and the two frozen baselines together: no
 glob in the noise policy -- global or per rule -- may quiet a blessed finding under any
@@ -25,6 +25,13 @@ CWE-22 tier adds the two proofs the CWE-611 one cannot make: the scaffolding glo
 (a traversal in `src/transformers/models/` must survive), and the `transformers/` prefix is
 *load-bearing* (the same traversal in a top-level `benchmark/` directory must survive, because
 that is where this repository's own blessed corpus lives).
+
+A twelfth tier is the mirror image of those two: it locks an exclusion this repository *refuses*
+to ship -- a CWE-338 glob over `**/transformers/models/**`, measured at 0 blessed reach and 58
+live arena rows -- and demands the dropout draw in that tree stays loud, that the glob really does
+select its own artifact paths and nothing outside them, and that a second rule in the very file it
+would mute is still reported. The refusal is registered beside its parent `**/models/**`, which
+reaches a blessed Big-8 key, so shipping the qualified form fails both the tier and the reach table.
 
 The fixture trees are written into a TemporaryDirectory at run time. Nothing is added under
 `benchmark/`, which matters because the parity gate scans this tree and a planted sink here
@@ -427,7 +434,18 @@ REFUSED_EXCLUDES = {"CWE-208": ("**/tests/**",),      # 19 of 36 blessed keys
                     "CWE-770": ("**/tests/**",),      # 1 of 11
                     "CWE-95": ("**/tests/**",),       # 2 of 12
                     "CWE-400": ("**/tests/**",),      # 6 of 14
-                    "CWE-338": ("**/tests/**",),      # 7 of 16
+                    "CWE-338": ("**/tests/**",         # 7 of 16
+                               # The un-qualified spelling of the requested ML-models tree. The
+                               # `transformers/` prefix is again the whole margin: over the arena
+                               # reconstruction of both frozen corpora, `**/models/**` reaches the
+                               # whisper Big-8 draw at `tests/models/whisper/test_modeling_whisper.py:97`
+                               # while `**/transformers/models/**` reaches 0 -- and 0 reach bought by a
+                               # *path* still buys it in a tree the artifact itself proves secret-handling
+                               # (CWE-312 in `deprecated/tapex/tokenization_tapex.py`, CWE-532 in
+                               # `models/jukebox/modeling_jukebox.py` and `models/musicgen/modeling_musicgen.py`),
+                               # so the qualified form is refused as a slice below and this line keeps the
+                               # un-qualified one evidenced by a real blessed key.
+                               "**/models/**"),
                     "CWE-22": ("**/benchmark/**",     # all 8 parity blessed CWE-22 keys
                                "**/tests/**"),        # 11 of 24 (410 arena rows)
                     # The un-qualified spelling of the shipped CWE-22 scaffolding glob. It reaches
@@ -451,6 +469,17 @@ REFUSED_SLICES = {
         # the "slice" is an unrelated glob wearing a subdirectory's clothes and this law does
         # not cover it, so the note has to be re-measured instead of trusted.
         "inside": ("src/transformers/tests/trainer/x.py", "tests/trainer/x.py"),
+    },
+    # The mandated CWE-338 exclusion. Its own blessed reach measures 0 in every spelling, so the
+    # two baselines cannot see what it takes -- which is exactly the case this table exists for:
+    # the tree around it (`**/models/**`, one segment shorter) reaches a blessed Big-8 draw, and
+    # a path glob cannot express the positive proof the rule needs, because inside that tree the
+    # same files carry CWE-312 and CWE-532 rows. So the slice is refused with its parent, and the
+    # refusal dies loudly the day the parent's key moves or the slice stops meaning that tree.
+    ("CWE-338", "**/transformers/models/**"): {
+        "parent": ("CWE-338", "**/models/**"),
+        "inside": ("src/transformers/models/jukebox/modeling_jukebox.py",
+                   "src/transformers/models/deprecated/tapex/tokenization_tapex.py"),
     },
 }
 
@@ -776,6 +805,140 @@ def check_shipped_nonprod_exclude() -> list:
     return failures
 
 
+# --------------------------------------------------------------------------- #
+# Tier 12: the CWE-338 `transformers/models/` tree stays reported.
+#
+# Requested exclusion: `rules: CWE-338: exclude: ["**/transformers/models/**"]`, pitched as
+# ~120-140 dropout/training draws with EXACTLY ZERO blessed reach. Both halves of that premise
+# measure true -- and the exclusion is still refused, on a third number the pitch does not
+# contain. Measured through `TcsConfig._selects` and `_blessed_reach`:
+#   * blessed reach **0 of 16** CWE-338 keys in every spelling (stored, leaf, arena, corpus),
+#     which is what the `REFUSED_SLICES` entry above re-proves on every run;
+#   * yield **82 rows in 46 files** on the frozen artifact (194 CWE-338 rows), and **58 rows in
+#     30 files** on the current tree, because 23 of those 82 are `tensorflow` / `jax` /
+#     `nn.initializers` / `torch` spellings the engine already mutes by canonical root;
+#   * the pitch's partition does not exist as a path: 36 of the 58 are literally
+#     `dropout_probability = random.uniform(0, 1)` and they live in `modeling_tf_*` (20),
+#     `modeling_flax_*` (15) and `modeling_*` (1) -- the same files that carry the 17
+#     `distributions.*.sample()` rows -- so the narrowest honest sub-glob,
+#     `**/transformers/models/*/image_processing_*.py`, buys **4** rows of 58.
+# Why that is a false negative rather than a narrowing: a path match never reads the value, so it
+# does not *answer* the credential question the engine asks today -- it deletes the asking. And in
+# the 46 files it would mute, the same artifact already reports **CWE-312 cleartext sensitive
+# storage at `deprecated/tapex/tokenization_tapex.py:510`** and **4 CWE-532 sensitive-data-to-log
+# rows** in `jukebox/modeling_jukebox.py` and `musicgen/modeling_musicgen.py` -- three files that
+# also hold 9 of the 58 draws. That is a proven secret-handling tree, not a scaffolding tree, and
+# the doctrine is that a glob is allowed only over a tree whose findings the AST still decides.
+# So this tier asserts the opposite of the shipped-glob tiers: the production draw stays LOUD, and
+# every mutation that would silence it fails here on the assertion it was written for.
+# --------------------------------------------------------------------------- #
+C338_MODELS_GLOB = "**/transformers/models/**"
+C338_MODELS_PARENT = "**/models/**"
+CARRIER_LINE_DRAW = 7    # the `random.uniform(0, 1)` line in the snippet below
+CARRIER_LINE_HASH = 10   # the `hashlib.md5` sink that proves an exclusion there would be rule-scoped
+CARRIER_SOURCE = (
+    "import hashlib\n"
+    "import random\n"
+    "\n"
+    "\n"
+    "def apply_dropout(p_dropout, picked):\n"
+    "    chosen = list(picked)\n"
+    "    dropout_probability = random.uniform(0, 1)\n"
+    "    if dropout_probability > p_dropout:\n"
+    "        return chosen\n"
+    "    digest = hashlib.md5(str(chosen).encode()).hexdigest()\n"
+    "    return [digest] + chosen\n"
+)
+# Paths copied out of the frozen artifact so the pattern arithmetic is checkable without the
+# 57 MB tree, plus the spellings the glob must NOT reach (the bound, and a near-miss name).
+C338_MODELS_ARTIFACT_PATHS = (
+    "src/transformers/models/jukebox/modeling_jukebox.py",
+    "src/transformers/models/musicgen/modeling_musicgen.py",
+    "src/transformers/models/deprecated/tapex/tokenization_tapex.py",
+    "src/transformers/models/flava/image_processing_flava.py",
+    "src/transformers/models/lxmert/modeling_tf_lxmert.py",
+    "src/transformers/models/bart/modeling_flax_bart.py",
+)
+C338_MODELS_OUTSIDE_PATHS = (
+    "src/transformers/modeling_utils.py",         # the same draw, one directory up
+    "src/transformers/models_bert/x.py",          # a name that merely contains `models`
+    "src/transformers/trainer.py",
+    "setup.py",
+)
+
+
+def _policy_text(config) -> str:
+    """Render the *effective* policy, so a poisoned `load_config` reaches the fixture scan too.
+
+    The shipped-glob tiers copy `.tcs.yaml` verbatim; a refusal tier must react to a mutation that
+    exists only inside `load_config`, so it writes what the loader actually answered rather than
+    what the file says.
+
+    Assembled by concatenation: a `"\n".join(...)` over a list of `key:` strings is the exact shape
+    the CWE-89 query-builder heuristic reports -- its endpoint-path exemption needs a path
+    separator, and a newline has none -- so the join version made parity read `NEW=1` on this file.
+    The harness is corrected, not excused.
+    """
+    text = "exclude_paths:\n"
+    for pattern in config.exclude_paths:
+        text += f'  - "{pattern}"\n'
+    text += "rules:\n"
+    for cwe in sorted(config.rule_excludes):
+        text += f"  {cwe}:\n    exclude:\n"
+        for pattern in config.rule_excludes[cwe]:
+            text += f'      - "{pattern}"\n'
+    return text
+
+
+def check_c338_models_tree_loud() -> list:
+    """The refused CWE-338 models glob must be unshipped, dead here, bounded and rule-scoped."""
+    failures = []
+    config = load_config(Path(REPO_ROOT))
+    shipped = tuple(config.rule_excludes.get("CWE-338") or ())
+    if C338_MODELS_GLOB in shipped:
+        failures.append(f"CWE-338 ships the refused production-tree glob {C338_MODELS_GLOB}")
+    if C338_MODELS_PARENT in shipped:
+        failures.append(f"CWE-338 ships the refused unqualified glob {C338_MODELS_PARENT}")
+    selected = [path for path in C338_MODELS_ARTIFACT_PATHS if path_matches(path, C338_MODELS_GLOB)]
+    if len(selected) != len(C338_MODELS_ARTIFACT_PATHS):
+        failures.append(f"the refused glob no longer selects its own artifact paths: {selected}")
+    reached = [path for path in C338_MODELS_OUTSIDE_PATHS if path_matches(path, C338_MODELS_GLOB)]
+    if reached:
+        failures.append(f"the refused glob reaches outside the models tree: {reached}")
+    with tempfile.TemporaryDirectory() as directory:
+        models_file = os.path.join(directory, "src", "transformers", "models", "jukebox",
+                                   "modeling_jukebox.py")
+        outside_file = os.path.join(directory, "src", "transformers", "modeling_utils.py")
+        os.makedirs(os.path.dirname(models_file))
+        with open(models_file, "w", encoding="utf-8") as handle:
+            handle.write(CARRIER_SOURCE)
+        with open(outside_file, "w", encoding="utf-8") as handle:
+            handle.write(CARRIER_SOURCE)
+        with open(os.path.join(directory, ".tcs.yaml"), "w", encoding="utf-8") as handle:
+            handle.write(_policy_text(config))
+        listed = _run_cli(["scan", ".", "--format", "json", "--workers", "1"], directory)
+    by_file: dict = {}
+    for row in listed["findings"]:
+        by_file.setdefault(str(row["file"]).replace("\\", "/"), set()).add((row["line"], row["cwe"]))
+    inside = sorted(by_file.get("src/transformers/models/jukebox/modeling_jukebox.py", set()))
+    outside = sorted(by_file.get("src/transformers/modeling_utils.py", set()))
+    if (CARRIER_LINE_DRAW, "CWE-338") not in inside:
+        failures.append(f"CWE-338 went silent on the models-tree draw at "
+                        f"src/transformers/models/jukebox/modeling_jukebox.py:{CARRIER_LINE_DRAW} "
+                        f"(false negative), or the carrier stopped reaching the rule -- got {inside}")
+    if (CARRIER_LINE_HASH, "CWE-328") not in inside:
+        failures.append(f"CWE-328 went silent at modeling_jukebox.py:{CARRIER_LINE_HASH} in the same "
+                        "models-tree file, so a CWE-338 exclusion there is behaving as a whole-file "
+                        "skip (false negative) -- got " + str(inside))
+    if (CARRIER_LINE_DRAW, "CWE-338") not in outside:
+        failures.append("CWE-338 went silent one directory up, so the scan itself is not answering "
+                        f"-- got {outside}")
+    print(f"refused {C338_MODELS_GLOB}: models rows={inside} outside rows={len(outside)} "
+          f"artifact paths={len(selected)}/{len(C338_MODELS_ARTIFACT_PATHS)} "
+          f"bound violations={len(reached)}")
+    return failures
+
+
 def _mutation(name: str):
     """Apply one regression, returning a restore callable."""
     if name == "suppression_call_removed":
@@ -887,6 +1050,27 @@ def _mutation(name: str):
             "CWE-338": (*base.rule_excludes["CWE-338"], "**/tests/trainer/**")})
     if name == "nonprod_exclude_becomes_file_skip":
         return _rule_blind_exclude()
+    if name in ("c338_models_glob_shipped", "c338_models_glob_drops_the_package_prefix"):
+        # The mandated glob, or the un-qualified spelling its `transformers/` prefix is the whole
+        # margin against, installed as if the policy had shipped it. The first fails the refusal
+        # table and the tier's own loud half; the second additionally hides a blessed Big-8 key.
+        base = load_config(Path(REPO_ROOT))
+        pattern = C338_MODELS_GLOB if name == "c338_models_glob_shipped" else C338_MODELS_PARENT
+        return _poisoned_config(rule_excludes={
+            "CWE-338": (*base.rule_excludes["CWE-338"], pattern)})
+    if name == "c338_models_glob_becomes_file_skip":
+        # The glob shipped *and* honoured as a whole-file skip: the CWE-328 line in the same
+        # models-tree file goes silent too, which is the assertion the loud half cannot make alone.
+        base = load_config(Path(REPO_ROOT))
+        restore_config = _poisoned_config(rule_excludes={
+            "CWE-338": (*base.rule_excludes["CWE-338"], C338_MODELS_GLOB)})
+        restore_matcher = _rule_blind_exclude()
+
+        def restore() -> None:
+            restore_matcher()
+            restore_config()
+
+        return restore
     raise ValueError(name)
 
 
@@ -943,6 +1127,7 @@ CHECKS = {
     "shipped CWE-22 scaffolding exclude": check_shipped_c22_scaffold_exclude,
     "nonprod exclude doctrine": check_nonprod_exclude_doctrine,
     "shipped nonprod exclude": check_shipped_nonprod_exclude,
+    "refused CWE-338 models exclude": check_c338_models_tree_loud,
 }
 MUTATIONS = (
     ("suppression_call_removed", "suppression e2e"),
@@ -970,6 +1155,11 @@ MUTATIONS = (
     ("refused_tree_slice_shipped", "blessed reach"),
     ("nonprod_exclude_becomes_file_skip", "shipped nonprod exclude"),
     ("config_rule_excludes_ignored", "shipped nonprod exclude"),
+    ("c338_models_glob_shipped", "refused CWE-338 models exclude"),
+    ("c338_models_glob_drops_the_package_prefix", "refused CWE-338 models exclude"),
+    ("c338_models_glob_becomes_file_skip", "refused CWE-338 models exclude"),
+    ("c338_models_glob_shipped", "blessed reach"),
+    ("c338_models_glob_drops_the_package_prefix", "blessed reach"),
 )
 
 

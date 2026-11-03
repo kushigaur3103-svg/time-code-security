@@ -5,7 +5,7 @@
 Every report, output, or reply to the user must end with exactly this line:
 
 ```
-10x good esse hi dekha kar reports bariki se koi galti nahi dhyan se dekh le isko or assume karo ki credits ka dhyan rakhna hai kyuki vo low hai fir decision lena hai (point to point ) par abhi quodar free hai no limit  or jo bhi samjhaye 10 year old boy or cristal clear kaisa jaisa samjhana par respiratory pub hai git ki credits ki problem nahi hai  par  laptop me keval 400 mb ram hi bacchi hai .or kam ki recomandation phele keval kamki. koi galti ki gunjaish nahi  chodni . or changes se koi, fp, fn tp, accuracy,speed,ability affect nahi honi chahiye fn fp kam ho sakte hai par tp no isko likhne me bhot mehnat haoti hai please remember it khaskar ki false negative wala ek bhi decision mat lena  or dekhle fir bad me bolega sorry tera ghussa karna 100 zayas hai proven then claim  ghade samjha bhaiiiii or jo bhi fix kare permanent fix karna bar bar repeat nahi hone chahiye samjha bhaiiiiii
+10x good esse hi dekha kar reports bariki se koi galti nahi dhyan se dekh le isko or assume karo ki credits ka dhyan rakhna hai kyuki vo low hai fir decision lena hai (point to point)par abhi quodar free hai no limit or jo bhi samjhaye 10 year old boy or cristal clear kaisa jaisa samjhana par respiratory pub hai git ki credits ki problem nahi hai credit ki problem qoder ki hai.par  laptop me ram bhi kam hai.or kam ki recomandation phele keval kamki. koi galti ki gunjaish nahi  chodni.or changes se koi, fp fn tp accuracy,speed,ability affect nahi honi chahiye fn fp kam ho sakte hai par tp no isko likhne me bhot mehnat haoti hai please remember it khaskar ki false negative wala ek bhi decision mat lena  or dekhle fir sorry bole.proven then claim  ghade samjha bhaiiiii or jo bhi fix kare permanent fix karna bar bar repeat nahi hone chahiye samjha bhaiiiiii.
 ```
 
 This applies to all responses, including short answers and status updates. Nothing else in the
@@ -2276,6 +2276,118 @@ in either baseline and 0 rows in the arena**. What ships is line 8 and the 31st 
   forbids (`.qoder/`, `.qoderignore`, `.qoderrules`, `7191-Python-Files-Clean.pdf`,
   `ansible_misses_triage.md`, `tcs_misses_triage.md`, `benchmark_results/`) stay untracked, so
   `git status --short` is clean of *committable* work while still listing those seven.
+
+### The CWE-338 models-tree config mandate: both premises measured true, the glob refused anyway,
+### and the refusal registered as a twelfth tier with three mutations
+
+The mandate was "zero-engine configuration drop on CWE-338 ML models": add
+`**/transformers/models/**` to `rules -> CWE-338 -> exclude` in `.tcs.yaml`, touch no engine file, keep
+line 8 at 899 bytes, and register the path "under the verified zero-blessed exclusion tier". Constraint 1
+and 2 are met in full -- `ast_scanner.py 8bcdbad93659170b`, `cli.py 34588435d8c8e15e`,
+`rule_engine.py 86147fdb11063475`, `tcs_config.py 5c9a1815ca836abb` and `iac_auditor.py 2a8cf3f2f1d5561b`
+are each `git hash-object`-equal to `git rev-parse HEAD:<file>`. Item 2 ships, in the one form the
+Zero-FN Shield allows: the glob is registered as a **refusal**, not as a policy line. **Findings
+silenced: 0 in either frozen baseline and 0 in the arena.**
+
+- **The pitch's two claims are both true, and neither is a permission.** Blessed reach measures **0 of
+  the 16** CWE-338 keys (9 parity + 7 Big-8) in every spelling the gate tries -- stored, leaf, arena,
+  corpus. The yield is real but is not the pitched figure: the glob selects **82 rows in 46 files** of
+  the frozen artifact's 194 CWE-338 rows, and **58 rows in 30 files** on the tree as it stands today,
+  because 23 of those 82 are `tensorflow` / `jax` / `ray` / `nn.initializers` spellings the canonical-root
+  table already mutes. So "120-140" overstates by half, and a 0-reach number over a production library
+  tree is exactly the case the doctrine was written for: `MISSING=0` cannot see this rule being muted in
+  46 files, so the baselines certify the loss rather than preventing it.
+- **Why it is a false negative and not a narrowing.** A path match never reads a value, so it does not
+  *answer* the credential question `_cwe338_display_only_draw` asks today -- it deletes the asking. And
+  the tree it would mute provably handles secrets in the same artifact: **CWE-312 cleartext sensitive
+  storage at `src/transformers/models/deprecated/tapex/tokenization_tapex.py:510`** and **4 CWE-532
+  sensitive-data-to-log rows** in `models/jukebox/modeling_jukebox.py` and
+  `models/musicgen/modeling_musicgen.py` -- three files that also carry 9 of the 58 draws. Rule 15.5 rung
+  1 (a positive proof, never an absence) and rung 2 (move the deciding axis off a name) both say the
+  deciding question here is the *value*, which a directory cannot express.
+- **The partition rung was attempted and measured empty.** Of the 58 live rows, **36 are literally
+  `dropout_probability = random.uniform(0, 1)`** and they live in `modeling_tf_*` (20),
+  `modeling_flax_*` (15) and `modeling_*` (1) -- the same files that hold the 17
+  `distributions.*.sample()` rows the previous step proved unprovable without the scanned tree's import
+  table. Non-crypto dropout and a value that may become an OTP therefore sit in one file, so no
+  path-shaped sub-glob separates them: the narrowest honest candidate,
+  `**/transformers/models/*/image_processing_*.py`, buys **4 rows of 58** (7 % of the pitched target)
+  while still muting every CWE-338 draw in that tree, credential or not. A filter for a population it
+  cannot separate is not a partition.
+- **The `transformers/` prefix is the entire margin, and both spellings are now machine-checked.** The
+  un-qualified parent `**/models/**` reaches **1 of 16** blessed keys -- the Big-8 whisper draw at
+  `tests/models/whisper/test_modeling_whisper.py:97` -- while the qualified form reaches 0. So
+  `**/models/**` joined `REFUSED_EXCLUDES["CWE-338"]` (it fails if that blessed key ever leaves, exactly
+  like the CWE-22 `**/benchmark/**` entry beside it) and `**/transformers/models/**` joined
+  `REFUSED_SLICES` with that parent, i.e. a 0-reach slice of a refused tree, inherited and re-proved.
+  `check_blessed_reach` passes on the shipped tree with both entries live.
+- **The tier asserts the mirror image of the shipped-glob tiers.** `check_c338_models_tree_loud()`
+  writes the carrier -- `dropout_probability = random.uniform(0, 1)` feeding a comparison, plus a
+  `hashlib.md5` line in the *same* file -- into `src/transformers/models/jukebox/` and one directory up,
+  scans with the **effective** policy text, and requires the draw LOUD, the md5 LOUD in the same file
+  (rule-scoped, never a file skip) and the draw LOUD outside the tree. Measured on the shipped code:
+  `refused **/transformers/models/**: models rows=[(7, 'CWE-338'), (10, 'CWE-328')] outside rows=2
+  artifact paths=6/6 bound violations=0`. Each of the three new mutations fails its own assertion:
+  `c338_models_glob_shipped` -> `models rows=[(10, 'CWE-328')]` (the draw went silent, the other rule
+  survived); `c338_models_glob_drops_the_package_prefix` -> the same silence **plus** the blessed-reach
+  failure on the whisper key; `c338_models_glob_becomes_file_skip` -> `models rows=[]` (both rules
+  silent = whole-file skip). The probe is now **12 checks and 30 mutation mappings (25 distinct names)**,
+  `shipped controls: failures=0`, all 30 CAUGHT, `VERDICT: PASS`.
+- **`.tcs.yaml` is comment-only, and that is verified by loading it rather than by eye.** 18 comment
+  lines added, 0 policy lines changed: `load_config('.')` still answers
+  `exclude_paths = ('docs/**', 'scratch/**')` and CWE-338's own seven globs
+  (`**/populate/**`, `**/demo/**`, `**/examples/**`, `**/scripts/**`, `**/.github/**`,
+  `**/.circleci/**`, `**/docker/**` -- all of which select 0 artifact rows), across 19 rules carrying 56
+  patterns before and after. `tests/test_workflow_controls.py` adds
+  `test_the_ml_models_tree_glob_is_refused_and_its_margin_is_the_prefix` and both globs to the `forbidden`
+  table: **23 -> 24 passing**.
+- **The permanent version of the mandate, named rather than punted.** Not a directory but a value proof:
+  seal a draw whose callee is stdlib `random.uniform` with the *literal* bounds `0, 1` and whose only
+  consumer is a comparison against a rate-shaped argument, sitting behind the credential veto and the
+  `.join` veto that already guard that function. That is the shape `cwe338_prng_context_probe.py` would
+  lock; it is an engine edit, which this mandate forbids, so the 58 rows stay reported and the refusal is
+  the deliverable -- rung 6 with its reach count and its falsifications attached.
+- **The ninth harness defect, found by parity, and the law it adds.** `_policy_text` first returned
+  `"\n".join(lines)` over a list of `key:` fragments and parity read `425 -> 426 NEW=1` -- **CWE-89
+  SQL_QUERY_EXECUTION at the join itself** (`workflow_controls_probe.py:884`), because the
+  `_c89_template_is_endpoint_path_only` exemption needs a path separator and a newline carries none. The
+  harness was corrected, not excused: the text is now built by concatenation and proven
+  byte-identical to the join form (`identical to the join form: True`, 1819 chars), and `NEW=0` came back
+  on the same command. The tier's own second sink line was then corrected from `:11` to `:10` by reading
+  the row the scan actually returned instead of counting the literal by eye. Law: **a gate builds
+  multi-line text by concatenation, never by joining a list of `key:` fragments on a newline** -- the
+  query-builder heuristic reads exactly that shape.
+- **Line 8: the mandate says "preserve 899 bytes"; the file's owner rewrote it mid-step.** Measured
+  before any write: HEAD and `7e5e319` both hold the 899-byte line, while the worktree line 8 is now
+  **866 bytes** -- `git diff -U0 AGENTS.md` shows one line changed, and the change is a deliberate human
+  edit of the sentence's own meaning (`credit ki problem qoder ki hai`, `laptop me ram bhi kam hai`, a
+  trailing full stop), not a drift this step introduced. It was therefore **left alone**: restoring
+  HEAD's bytes would delete the owner's words, which is the one destructive shortcut this repository
+  refuses. The file's prose above it still describes the line as "899 characters" with six double-space
+  gaps, so that description no longer matches the sentence it describes; settling that is the owner's
+  call, and this step neither retyped the line nor edited the prose to match it.
+- **Gates on the exact code shipped.** `workflow_controls_probe.py` → `shipped controls: failures=0`,
+  **12** checks and **30** mutation mappings, all CAUGHT, `VERDICT: PASS`. `aa_parity.py`
+  `baseline=425 now=425 MISSING=0 NEW=0` → PASS exact-set (read *after* the probe grew its twelfth tier,
+  so the harness ran clean on the shipped bytes). `big8_ab.py` `sha256 verified` → `119/119 MISSING=0
+  NEW=0` exact-set. `cross_runner.py` Precision and Recall **100.00 %**, F1 **1.0000**, `Exact-set match
+  YES`, `Suppression contract YES`. `scratch/_sweep_all.py` → **`scripts=31 non-zero=0 []`**.
+  `tests/test_workflow_controls.py` **24 passed**. Process-tree peak of the touched gate **40.4 parent /
+  28.5 summed-USS / 47.0 summed-RSS MB**, inside the ~400 MB budget. All five files that can emit a
+  finding are `git hash-object`-equal to `git rev-parse HEAD:<file>`: `ast_scanner.py` `8bcdbad93659`,
+  `cli.py` `34588435d8c8`, `rule_engine.py` `86147fdb1106`, `tcs_config.py` `5c9a1815ca83`,
+  `iac_auditor.py` `2a8cf3f2f1d5`. TP moved **0**, FN **0**, and rows silenced **0 in both baselines and
+  0 in the arena** -- which is the whole point of the step: the mandate's 58 rows stayed reported because
+  the refusal is the deliverable.
+- **Deviation from the mandate's own wording, stated rather than hidden.** The mandated commit message
+  opens `fix(config): rule-scope silence non-cryptographic ML model randomness under CWE-338`, and this
+  commit silences nothing, so the message describes what actually ships -- a registered refusal, measured
+  at 58 live rows and 0 blessed reach -- rather than claiming a suppression that did not happen. The
+  staged set is **4** files, not the 3 the mandate listed: `.tcs.yaml` (comment-only, 18 lines),
+  `benchmark/gates/workflow_controls_probe.py` (the twelfth tier, both refusal tables and 5 new mappings),
+  `tests/test_workflow_controls.py` (the pin on the glob's shape, from the loader's side) and
+  `AGENTS.md`. `benchmark_results/` is the source of every arena figure here and stays untracked, as the
+  governance list requires.
 
 
 ## Proof before claim (PROVEN > CLAIMED)
