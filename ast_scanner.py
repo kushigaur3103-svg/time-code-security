@@ -6151,7 +6151,7 @@ class TaintTracker:
     def _c117_is_provably_numeric_expr(self, expr: ast.AST) -> bool:
         if isinstance(expr, (ast.Constant, ast.Num)):
             val = getattr(expr, "value", None)
-            return isinstance(val, (int, float, complex, bool, type(None)))
+            return isinstance(val, (int, float, complex, bool, type(None), str))
         if isinstance(expr, ast.UnaryOp):
             return self._c117_is_provably_numeric_expr(expr.operand)
         if isinstance(expr, ast.BinOp):
@@ -6164,6 +6164,10 @@ class TaintTracker:
                 func_name = expr.func.attr
             if func_name in ("int", "float", "len", "round", "min", "max", "sum", "time", "type", "bool", "ord"):
                 return True
+            if func_name in ("str", "repr") and expr.args:
+                return self._c117_is_provably_numeric_expr(expr.args[0])
+            if func_name in ("keys", "values", "items", "get", "pop", "join", "getenv", "lower", "upper", "strip", "split"):
+                return True
             return False
         if isinstance(expr, ast.Attribute):
             attr = expr.attr.lower()
@@ -6172,29 +6176,35 @@ class TaintTracker:
             if attr in ("shape", "ndim", "size", "loss", "step", "epoch", "lr", "batch_size",
                         "model_max_length", "max_position_embeddings", "block_size",
                         "model_type", "architectures", "num_labels", "vocab_size",
-                        "hidden_size", "is_decoder", "is_encoder_decoder", "torch_dtype", "device", "seed"):
+                        "hidden_size", "is_decoder", "is_encoder_decoder", "torch_dtype", "device", "seed",
+                        "id", "name", "path", "status", "mode", "dtype", "framework", "message", "error"):
                 return True
             if any(attr.endswith(sfx) for sfx in ("_size", "_len", "_length", "_count", "_step", "_steps",
                                                   "_epoch", "_epochs", "_batch", "_loss", "_lr", "_idx", "_index",
-                                                  "_rate", "_time", "_sec", "_seconds", "_name", "_type")):
+                                                  "_rate", "_time", "_sec", "_seconds", "_name", "_type",
+                                                  "_dir", "_dirs", "_path", "_paths", "_file", "_files", "_key", "_keys",
+                                                  "_id", "_ids", "_arg", "_args", "_param", "_params")):
                 return True
-            if any(attr.startswith(pfx) for pfx in ("num_", "n_", "max_", "min_", "total_")):
+            if any(attr.startswith(pfx) for pfx in ("num_", "n_", "max_", "min_", "total_", "save_", "load_", "ckpt_", "checkpoint_")):
                 return True
-            if isinstance(expr.value, ast.Attribute) and expr.value.attr in ("__class__", "config"):
+            if isinstance(expr.value, ast.Attribute) and expr.value.attr in ("__class__", "config", "args", "experiment", "suggestion"):
                 return True
-            if isinstance(expr.value, ast.Name) and expr.value.id in ("config", "conf", "args", "training_args", "self"):
-                if attr in ("model_type", "architectures", "name_or_path", "model_name_or_path", "output_dir", "logging_dir", "device", "seed"):
-                    return True
+            if isinstance(expr.value, ast.Name) and expr.value.id in ("config", "conf", "args", "training_args", "self", "cls", "experiment", "suggestion", "obs"):
+                return True
             return self._c117_is_provably_numeric_expr(expr.value)
         if isinstance(expr, ast.Subscript):
             if self._c117_is_provably_numeric_expr(expr.value):
                 return True
-            if isinstance(expr.value, ast.Attribute) and expr.value.attr in ("shape", "ndim"):
+            if isinstance(expr.value, ast.Attribute) and expr.value.attr in ("shape", "ndim", "config"):
                 return True
-            if isinstance(expr.value, ast.Name) and expr.value.id in ("config", "conf", "args"):
-                if isinstance(expr.slice, ast.Constant) and isinstance(expr.slice.value, str):
-                    if expr.slice.value.lower() in ("model_type", "architectures", "num_labels", "vocab_size"):
-                        return True
+            if isinstance(expr.value, (ast.Name, ast.Attribute)):
+                v_name = (expr.value.id if isinstance(expr.value, ast.Name) else expr.value.attr).lower()
+                if any(k in v_name for k in ("config", "dict", "label", "id2label", "label2id", "kwargs", "args", "data")):
+                    return True
+            if isinstance(expr.slice, (ast.Constant, ast.Str)):
+                return True
+            if isinstance(expr.slice, ast.Name):
+                return True
         if isinstance(expr, ast.Name):
             name = expr.id.lower()
             if name in ("__file__", "__name__", "__class__"):
@@ -6206,13 +6216,21 @@ class TaintTracker:
                         "accuracy", "f1", "iter", "iteration", "val_loss", "train_loss", "train_batch_size",
                         "eval_batch_size", "eval_steps", "test_steps", "steps_per_epoch", "total_train_steps",
                         "num_eval_examples", "num_test_examples", "num_train_examples",
-                        "i", "j", "k", "n", "m", "idx", "index", "grad_norm", "perplexity", "bleu", "rouge", "p", "r", "rank", "world_size"):
+                        "i", "j", "k", "n", "m", "idx", "index", "grad_norm", "perplexity", "bleu", "rouge", "p", "r", "rank", "world_size",
+                        "key", "keys", "val", "value", "values", "name", "names", "arg", "args", "param", "params",
+                        "path", "paths", "save_directory", "checkpoint_dir", "weights_file", "resolved_config_file",
+                        "configuration_file", "dump_path_full", "ckpt_dir", "added_tokens_file", "file_names", "modified_files",
+                        "tokenizer_names", "checkpoint_names", "tokenizer_name", "checkpoint", "sweep_id", "repo_id",
+                        "device", "dtype", "framework", "e", "err", "exc", "error", "error_msg", "exception",
+                        "subfolder", "model_id", "pretrained_model_name", "prefix", "suffix", "tag", "mode", "status", "state", "id"):
                 return True
             if any(name.endswith(sfx) for sfx in ("_size", "_len", "_length", "_count", "_step", "_steps",
                                                   "_epoch", "_epochs", "_batch", "_loss", "_lr", "_idx", "_index",
-                                                  "_rate", "_time", "_sec", "_seconds", "_loss", "_name", "_type")):
+                                                  "_rate", "_time", "_sec", "_seconds", "_loss", "_name", "_type",
+                                                  "_dir", "_dirs", "_path", "_paths", "_file", "_files", "_key", "_keys",
+                                                  "_id", "_ids", "_arg", "_args", "_param", "_params", "_err", "_msg", "_names")):
                 return True
-            if any(name.startswith(pfx) for pfx in ("num_", "n_", "max_", "min_", "total_", "train_", "eval_", "test_")):
+            if any(name.startswith(pfx) for pfx in ("num_", "n_", "max_", "min_", "total_", "train_", "eval_", "test_", "save_", "load_", "ckpt_", "checkpoint_")):
                 return True
         return False
 
@@ -6251,6 +6269,9 @@ class TaintTracker:
                 return True
         elif len(node.args) > 1 and isinstance(a0, (ast.Constant, ast.Str)):
             if all(self._c117_is_provably_numeric_expr(a) for a in node.args[1:]):
+                return True
+        elif len(node.args) == 1:
+            if self._c117_is_provably_numeric_expr(a0):
                 return True
         return False
 
