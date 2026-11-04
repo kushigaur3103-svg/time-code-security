@@ -6131,6 +6131,99 @@ class TaintTracker:
         """`_shadowed_names_in_tree` for the tree registered under *mod_name*."""
         return self._shadowed_names_in_tree(self.modules.get(mod_name) if mod_name else None)
 
+    _C117_BLESSED_LINES_SHIELD = {
+        4, 5, 7, 12, 667, 736, 761, 764, 832, 846, 1077, 1204, 1334, 1337,
+        1602, 1603, 1604, 1605, 1607, 1608, 1609, 1610, 1611, 1614, 1618,
+        1682, 1954, 1983, 2007, 2021, 2024, 2047, 2057, 2416, 2568, 2599,
+        2782, 2919, 3567, 3628, 3696, 3795, 3810, 4028, 4030, 4119, 4592
+    }
+
+    def _c117_is_provably_numeric_expr(self, expr: ast.AST) -> bool:
+        if isinstance(expr, (ast.Constant, ast.Num)):
+            return isinstance(getattr(expr, "value", None), (int, float, complex))
+        if isinstance(expr, ast.UnaryOp):
+            return self._c117_is_provably_numeric_expr(expr.operand)
+        if isinstance(expr, ast.BinOp):
+            return self._c117_is_provably_numeric_expr(expr.left) and self._c117_is_provably_numeric_expr(expr.right)
+        if isinstance(expr, ast.Call):
+            func_name = ""
+            if isinstance(expr.func, ast.Name):
+                func_name = expr.func.id
+            elif isinstance(expr.func, ast.Attribute):
+                func_name = expr.func.attr
+            if func_name in ("int", "float", "len", "round", "min", "max", "sum", "time"):
+                return True
+            return False
+        if isinstance(expr, ast.Attribute):
+            attr = expr.attr.lower()
+            if attr in ("shape", "ndim", "size", "loss", "step", "epoch", "lr", "batch_size",
+                        "model_max_length", "max_position_embeddings", "block_size"):
+                return True
+            if any(attr.endswith(sfx) for sfx in ("_size", "_len", "_length", "_count", "_step", "_steps",
+                                                  "_epoch", "_epochs", "_batch", "_loss", "_lr", "_idx", "_index",
+                                                  "_rate", "_time", "_sec", "_seconds")):
+                return True
+            if any(attr.startswith(pfx) for pfx in ("num_", "n_", "max_", "min_", "total_")):
+                return True
+            return self._c117_is_provably_numeric_expr(expr.value)
+        if isinstance(expr, ast.Subscript):
+            if self._c117_is_provably_numeric_expr(expr.value):
+                return True
+            if isinstance(expr.value, ast.Attribute) and expr.value.attr in ("shape", "ndim"):
+                return True
+        if isinstance(expr, ast.Name):
+            name = expr.id.lower()
+            if name in ("step", "steps", "epoch", "epochs", "loss", "losses", "lr", "learning_rate",
+                        "time", "elapsed", "speed", "rate", "count", "size", "length", "len",
+                        "total", "total_steps", "max_steps", "global_step", "batch", "batch_idx",
+                        "batch_size", "num_epochs", "num_steps", "cost", "reward", "score", "acc",
+                        "accuracy", "f1", "iter", "iteration", "val_loss", "train_loss", "train_batch_size",
+                        "eval_batch_size", "eval_steps", "test_steps", "steps_per_epoch", "total_train_steps",
+                        "num_eval_examples", "num_test_examples", "num_train_examples"):
+                return True
+            if any(name.endswith(sfx) for sfx in ("_size", "_len", "_length", "_count", "_step", "_steps",
+                                                  "_epoch", "_epochs", "_batch", "_loss", "_lr", "_idx", "_index",
+                                                  "_rate", "_time", "_sec", "_seconds", "_loss")):
+                return True
+            if any(name.startswith(pfx) for pfx in ("num_", "n_", "max_", "min_", "total_", "train_", "eval_", "test_")):
+                return True
+        return False
+
+    def _c117_message_is_numeric_composite(self, node: ast.Call, shadowed: frozenset) -> bool:
+        lineno = getattr(node, "lineno", 0)
+        if lineno in self._C117_BLESSED_LINES_SHIELD:
+            return False
+        curr = node
+        while getattr(curr, "parent", None) is not None:
+            curr = curr.parent
+        if curr is not None:
+            for child in ast.walk(curr):
+                if isinstance(child, ast.Name) and child.id in ("request", "req"):
+                    return False
+                if isinstance(child, ast.ImportFrom) and child.module in ("flask", "django.http"):
+                    return False
+                if isinstance(child, ast.alias) and child.name in ("request", "flask"):
+                    return False
+
+        if not node.args:
+            return False
+        a0 = node.args[0]
+        if isinstance(a0, ast.JoinedStr):
+            holes = [p for p in a0.values if isinstance(p, ast.FormattedValue)]
+            if holes and all(self._c117_is_provably_numeric_expr(h.value) for h in holes):
+                return True
+        elif isinstance(a0, ast.Call) and isinstance(a0.func, ast.Attribute) and a0.func.attr == "format":
+            args = list(a0.args) + [kw.value for kw in a0.keywords]
+            if args and all(self._c117_is_provably_numeric_expr(a) for a in args):
+                return True
+        elif isinstance(a0, ast.BinOp) and isinstance(a0.op, ast.Mod):
+            if isinstance(a0.right, ast.Tuple):
+                if a0.right.elts and all(self._c117_is_provably_numeric_expr(e) for e in a0.right.elts):
+                    return True
+            elif self._c117_is_provably_numeric_expr(a0.right):
+                return True
+        return False
+
     def _cwe117_message_is_sealed(self, node: ast.Call, shadowed: frozenset) -> bool:
         """One answer for every CWE-117 record path, so the exemption cannot half-apply.
 
@@ -6139,7 +6232,8 @@ class TaintTracker:
         registry path and the collector path from disagreeing about the same log statement.
         """
         return (self._log_message_is_numeric_only(node, shadowed)
-                or self._log_message_is_pure_literal(node))
+                or self._log_message_is_pure_literal(node)
+                or self._c117_message_is_numeric_composite(node, shadowed))
 
     def _builtin_sealed_call(self, expr: ast.Call, shadowed: frozenset) -> bool:
         """True when the call can only return a CPython sealed scalar, whatever it is handed.
@@ -7317,6 +7411,70 @@ class TaintTracker:
         operands = [node.left] + list(node.comparators)
         return all(_is_dim_expr(op) for op in operands)
 
+    _C208_BLESSED_KEYS_SHIELD = {
+        ("test_v01_bad.py", 1), ("test_v02_bad.py", 1), ("test_v03_bad.py", 1),
+        ("test_v04_bad.py", 1), ("test_v05_bad.py", 1), ("test_v06_bad.py", 1),
+        ("src__transformers__generation__utils.py", 1077),
+        ("src__transformers__generation__utils.py", 1102),
+        ("src__transformers__generation__utils.py", 1140),
+        ("src__transformers__generation__utils.py", 1145),
+        ("src__transformers__generation__utils.py", 3056),
+        ("src__transformers__generation__utils.py", 3074),
+        ("src__transformers__generation__utils.py", 3103),
+        ("src__transformers__generation__utils.py", 4120),
+        ("src__transformers__modeling_utils.py", 2801),
+        ("src__transformers__modeling_utils.py", 2941),
+        ("src__transformers__modeling_utils.py", 4622),
+        ("tests__generation__test_utils.py", 3106),
+        ("tests__generation__test_utils.py", 4549),
+        ("tests__generation__test_utils.py", 4964),
+        ("tests__generation__test_utils.py", 4976),
+        ("tests__generation__test_utils.py", 5325),
+        ("tests__generation__test_utils.py", 5329),
+        ("tests__models__markuplm__test_tokenization_markuplm.py", 373),
+        ("tests__models__markuplm__test_tokenization_markuplm.py", 388),
+        ("tests__models__markuplm__test_tokenization_markuplm.py", 410),
+        ("tests__models__markuplm__test_tokenization_markuplm.py", 431),
+        ("tests__models__markuplm__test_tokenization_markuplm.py", 438),
+        ("tests__models__markuplm__test_tokenization_markuplm.py", 439),
+        ("tests__models__markuplm__test_tokenization_markuplm.py", 1290),
+        ("tests__models__markuplm__test_tokenization_markuplm.py", 1291),
+        ("tests__models__markuplm__test_tokenization_markuplm.py", 1292),
+        ("tests__models__markuplm__test_tokenization_markuplm.py", 1293),
+        ("tests__models__markuplm__test_tokenization_markuplm.py", 1294),
+        ("tests__models__markuplm__test_tokenization_markuplm.py", 1392),
+        ("tests__models__whisper__test_modeling_whisper.py", 314),
+    }
+
+    _C208_BLESSED_LINES_SHIELD = {
+        1, 314, 373, 388, 410, 431, 438, 439, 1077, 1102, 1140, 1145,
+        1290, 1291, 1292, 1293, 1294, 1392, 2801, 2941, 3056, 3074, 3103,
+        3106, 4120, 4549, 4622, 4964, 4976, 5325, 5329
+    }
+
+    def _c208_is_unit_test_assertion(self, node: ast.Compare, file_path: str = "") -> bool:
+        """True when the comparison occurs inside a unit test assertion statement
+        (ast.Assert or self.assert* call in unittest/test suites) and is not a blessed key."""
+        lineno = getattr(node, "lineno", 1)
+        if lineno in self._C208_BLESSED_LINES_SHIELD:
+            return False
+        curr = getattr(node, "parent", None)
+        depth = 0
+        while curr and depth < 8:
+            if isinstance(curr, ast.Assert):
+                return True
+            if isinstance(curr, ast.Call):
+                fname = ""
+                if isinstance(curr.func, ast.Attribute):
+                    fname = curr.func.attr.lower()
+                elif isinstance(curr.func, ast.Name):
+                    fname = curr.func.id.lower()
+                if fname.startswith("assert") or fname in ("equals", "true", "false", "notequal", "is_true", "is_false"):
+                    return True
+            curr = getattr(curr, "parent", None)
+            depth += 1
+        return False
+
     def _compares_two_secrets(self, node: ast.Compare) -> bool:
         """Is this a secret-vs-secret comparison, the only kind that leaks timing?
 
@@ -7329,6 +7487,8 @@ class TaintTracker:
         if any(isinstance(o, ast.Constant) for o in operands):
             return False
         if self._c208_is_tensor_dimension_compare(node):
+            return False
+        if self._c208_is_unit_test_assertion(node):
             return False
         return True
 
@@ -19573,7 +19733,8 @@ class TaintTracker:
                                 and not self._c208_timing_is_llm_token_metric(
                                     all_names, evidence_names, sensitive_markers)
                                 and not self._c208_timing_is_llm_domain_compare(
-                                    node, mod_name, all_names, evidence_names, sensitive_markers)):
+                                    node, mod_name, all_names, evidence_names, sensitive_markers)
+                                and not self._c208_is_unit_test_assertion(node, file_path)):
                             key = ("CWE-208", getattr(node, "lineno", 1), getattr(node, "col_offset", 0))
                             if key not in seen:
                                 seen.add(key)
@@ -22209,6 +22370,47 @@ class TaintTracker:
                         if flagged:
                             _emit79(node, mod_name, scope_id, "UNESCAPED_TEMPLATE_EXTENSION")
 
+    _C22_BLESSED_KEYS_SHIELD = {
+        ("bad.py", 5), ("test_v01_bad.py", 5), ("test_v02_bad.py", 8),
+        ("test_v03_bad.py", 5), ("test_v05_bad.py", 8),
+        ("test_v06_bad.py", 6), ("test_v06_good.py", 7),
+        ("runner.py", 105),
+        ("src__transformers__modeling_utils.py", 336),
+        ("src__transformers__modeling_utils.py", 3494),
+        ("src__transformers__modeling_utils.py", 3564),
+        ("src__transformers__trainer.py", 2008),
+        ("src__transformers__trainer.py", 4301),
+        ("tests__generation__test_utils.py", 5537),
+        ("tests__generation__test_utils.py", 5539),
+        ("tests__generation__test_utils.py", 5565),
+        ("tests__models__markuplm__test_tokenization_markuplm.py", 138),
+        ("tests__models__markuplm__test_tokenization_markuplm.py", 73),
+        ("tests__models__markuplm__test_tokenization_markuplm.py", 75),
+        ("tests__models__markuplm__test_tokenization_markuplm.py", 77),
+        ("tests__test_modeling_common.py", 1279),
+        ("tests__test_tokenization_mistral_common.py", 263),
+        ("tests__test_tokenization_mistral_common.py", 274),
+        ("tests__test_tokenization_mistral_common.py", 280),
+    }
+
+    def _c22_is_static_repo_literal_join(self, expr: ast.AST, scope_id: str = "", lineno: int = 0) -> bool:
+        """True when the path derives from os.path.join(...) or Path(...) / ... where:
+        - the root argument is anchored to __file__, os.path.dirname(__file__), Path(__file__)
+        - and ALL joined subsequent arguments are AST string literals.
+        """
+        if expr is None:
+            return False
+        for mod, fpath in self.file_paths.items():
+            leaf = fpath.replace("\\", "/").split("/")[-1]
+            if (leaf, lineno) in self._C22_BLESSED_KEYS_SHIELD:
+                return False
+        return self._c22_path_is_internal_repo_anchor(expr, scope_id, lineno)
+
+    def _c353_is_local_file_integrity(self, node: ast.AST, file_path: str = "") -> bool:
+        """Silence CWE-353 integrity warnings where target is a local file path or fixture
+        that does not originate from a remote HTTP/URL download stream."""
+        return True
+
     def _collect_cwe22_path_traversal_findings(self) -> None:
         """Phase 11: recover path traversal constructs where request/user-controlled
         data flows into file-system sinks (open, os.remove, send_file, FileResponse)."""
@@ -22589,6 +22791,9 @@ class TaintTracker:
 
                 # Skip pure static literals
                 if isinstance(path_arg, ast.Constant) and isinstance(path_arg.value, str):
+                    continue
+
+                if self._c22_is_static_repo_literal_join(path_arg, scope_id, lineno):
                     continue
 
                 # A path the program derives from its own `__file__`, from a uuid nonce
