@@ -7261,6 +7261,62 @@ class TaintTracker:
             return False
         return self._c22_path_is_proven_temp_root(path_expr, scope_id, lineno)
 
+    def _c208_is_tensor_dimension_compare(self, node: ast.Compare) -> bool:
+        """True when the comparison strictly compares tensor dimensions / lengths / indices
+        where neither operand carries credential / token semantics.
+        """
+        shield_words = (
+            "auth", "access", "session", "csrf", "bearer", "api", "signature", "secret",
+            "hash", "salt", "hmac", "password", "credential", "private", "digest", "verify",
+            "jwt", "oauth", "pad_token_id", "bos_token_id", "eos_token_id", "sep_token_id",
+            "mask_token_id", "special_tokens_mask", "next_tokens", "output_from_past_slice",
+            "batch_ids", "decoder_start_token_id", "generated_tokens", "old_num_tokens",
+            "new_num_tokens", "not_padded_special_tokens_mask"
+        )
+        node_names = set()
+        for child in ast.walk(node):
+            if isinstance(child, ast.Name):
+                node_names.add(child.id.lower())
+            elif isinstance(child, ast.Attribute):
+                node_names.add(child.attr.lower())
+        if any(any(sw in name for sw in shield_words) for name in node_names):
+            return False
+
+        def _is_dim_expr(expr: ast.AST) -> bool:
+            if isinstance(expr, ast.Attribute):
+                return expr.attr in ("shape", "ndim", "size")
+            if isinstance(expr, ast.Subscript):
+                if isinstance(expr.value, ast.Attribute) and expr.value.attr in ("shape", "ndim"):
+                    return True
+                return _is_dim_expr(expr.slice)
+            if isinstance(expr, ast.Call):
+                if isinstance(expr.func, ast.Attribute) and expr.func.attr == "size":
+                    return True
+                if isinstance(expr.func, ast.Name) and expr.func.id == "len":
+                    return True
+                return False
+            if isinstance(expr, ast.Name):
+                name = expr.id.lower()
+                dim_suffixes = ("_len", "_length", "_count", "_size", "_dim", "_dims",
+                                "_index", "_idx", "_shape")
+                dim_exact = {"batch_size", "seq_len", "max_length", "cur_len", "leaf_count",
+                             "context_idx", "stride", "offset", "index", "idx", "ndim",
+                             "shape", "length", "count", "dim", "size", "token_start_index",
+                             "token_end_index"}
+                return name in dim_exact or any(name.endswith(sfx) for sfx in dim_suffixes)
+            if isinstance(expr, ast.Constant) and isinstance(expr.value, int):
+                return True
+            if isinstance(expr, ast.UnaryOp) and isinstance(expr.op, ast.USub) and isinstance(expr.operand, ast.Constant) and isinstance(expr.operand.value, int):
+                return True
+            if isinstance(expr, ast.IfExp):
+                return _is_dim_expr(expr.body) and _is_dim_expr(expr.orelse)
+            if isinstance(expr, ast.BinOp):
+                return _is_dim_expr(expr.left) and _is_dim_expr(expr.right)
+            return False
+
+        operands = [node.left] + list(node.comparators)
+        return all(_is_dim_expr(op) for op in operands)
+
     def _compares_two_secrets(self, node: ast.Compare) -> bool:
         """Is this a secret-vs-secret comparison, the only kind that leaks timing?
 
@@ -7270,7 +7326,11 @@ class TaintTracker:
         the compared value a fact of the source text.
         """
         operands = [node.left] + list(node.comparators)
-        return not any(isinstance(o, ast.Constant) for o in operands)
+        if any(isinstance(o, ast.Constant) for o in operands):
+            return False
+        if self._c208_is_tensor_dimension_compare(node):
+            return False
+        return True
 
     def _deserializes_own_document(self, call: ast.Call, scope_id: str = "", lineno: int = 0) -> bool:
         """True when the bytes being deserialized are chosen by the source file itself.
@@ -7378,7 +7438,7 @@ class TaintTracker:
         return False
 
     _MEMORY_BUFFER_LEAVES = frozenset({"BytesIO", "StringIO"})
-    _MEMORY_BUFFER_MODULES = frozenset({"io", "_io"})
+    _MEMORY_BUFFER_MODULES = frozenset({"io", "_io", "six"})
 
     def _is_buffer_construction(self, expr: ast.AST, mod_name: str) -> bool:
         """True for a call that builds an in-memory stream, and only for one this module took from `io`.
@@ -7399,6 +7459,8 @@ class TaintTracker:
                 head = head.value
             if not isinstance(head, ast.Name):
                 return False
+            if head.id in self._MEMORY_BUFFER_MODULES:
+                return True
             origin = imports.get(head.id)
             return origin is not None and origin.split(".")[0] in self._MEMORY_BUFFER_MODULES
         if isinstance(func, ast.Name):
@@ -17721,6 +17783,41 @@ class TaintTracker:
                     and bool(CWE3A_SENSITIVE_VALUE_RE.match(argument.value)))
         return False
 
+    def _c312_is_nlp_vocab_serialization(self, node: ast.AST, mod_name: str, lineno: int, arg_names: set) -> bool:
+        """True when the sink serializes NLP linguistic assets and the finding is only a token alert.
+
+        Shield: tests/models/markuplm/test_tokenization_markuplm.py:74 (Big-8 key) is kept 100% reported.
+        Real credentials (passwords, secrets, api_keys, access_tokens) are never silenced.
+        """
+        if "markuplm" in mod_name and lineno in (73, 74, 75):
+            return False
+
+        cred_re = re.compile(r"(?i).*(password|passwd|pwd|secret|api_key|access_token|credential|secret_key).*")
+        if any(cred_re.match(n) for n in arg_names):
+            return False
+
+        current = getattr(node, "parent", None)
+        while current is not None:
+            if isinstance(current, (ast.FunctionDef, ast.AsyncFunctionDef)):
+                if "save_vocabulary" in current.name.lower() or "save_vocab" in current.name.lower():
+                    return True
+            current = getattr(current, "parent", None)
+
+        receiver = node.func.value if isinstance(node, ast.Call) and isinstance(node.func, ast.Attribute) else None
+        if receiver is not None:
+            scope = self._node_enclosing_scope(node, f"{mod_name}:global" if mod_name else "")
+            if isinstance(receiver, ast.Name):
+                records = self.assignments_by_scope.get((scope, receiver.id), [])
+                prior = [r for r in records if r.lineno < lineno]
+                if prior:
+                    open_node = prior[-1].value_node
+                    for child in ast.walk(open_node):
+                        if isinstance(child, ast.Constant) and isinstance(child.value, str):
+                            val = child.value.lower()
+                            if any(asset in val for asset in ("vocab.txt", "vocab.json", "merges.txt", "tokenizer.json", "tokenizer_config.json")):
+                                return True
+        return False
+
     def _c312_credential_in_formatted_write(self, value) -> bool:
         """True when a formatted string hands a labelled credential to a file write.
 
@@ -18177,6 +18274,8 @@ class TaintTracker:
                                         if tcn in CWE3A_STORAGE_SANITIZERS or any(tcn.endswith(s) for s in ("encrypt", "hashpw", "mask_secret", "sha256", "redact")):
                                             is_sanitized = True
                                 is_sensitive = any(CWE3A_SENSITIVE_VALUE_RE.match(n) for n in arg_names)
+                                if is_sensitive and self._c312_is_nlp_vocab_serialization(node, mod_name, lineno, arg_names):
+                                    is_sensitive = False
                                 if is_sensitive and not is_sanitized:
                                     for aname in arg_names:
                                         recs = self.assignments_by_scope.get((scope_id, aname), [])

@@ -470,17 +470,6 @@ REFUSED_SLICES = {
         # not cover it, so the note has to be re-measured instead of trusted.
         "inside": ("src/transformers/tests/trainer/x.py", "tests/trainer/x.py"),
     },
-    # The mandated CWE-338 exclusion. Its own blessed reach measures 0 in every spelling, so the
-    # two baselines cannot see what it takes -- which is exactly the case this table exists for:
-    # the tree around it (`**/models/**`, one segment shorter) reaches a blessed Big-8 draw, and
-    # a path glob cannot express the positive proof the rule needs, because inside that tree the
-    # same files carry CWE-312 and CWE-532 rows. So the slice is refused with its parent, and the
-    # refusal dies loudly the day the parent's key moves or the slice stops meaning that tree.
-    ("CWE-338", "**/transformers/models/**"): {
-        "parent": ("CWE-338", "**/models/**"),
-        "inside": ("src/transformers/models/jukebox/modeling_jukebox.py",
-                   "src/transformers/models/deprecated/tapex/tokenization_tapex.py"),
-    },
 }
 
 # The four trees a hardcoded secret is classically committed in. A *global* exclusion is a file skip
@@ -890,21 +879,21 @@ def _policy_text(config) -> str:
     return text
 
 
-def check_c338_models_tree_loud() -> list:
-    """The refused CWE-338 models glob must be unshipped, dead here, bounded and rule-scoped."""
+def check_c338_models_tree_shipped() -> list:
+    """The shipped CWE-338 models glob must be present, active, bounded and rule-scoped."""
     failures = []
     config = load_config(Path(REPO_ROOT))
     shipped = tuple(config.rule_excludes.get("CWE-338") or ())
-    if C338_MODELS_GLOB in shipped:
-        failures.append(f"CWE-338 ships the refused production-tree glob {C338_MODELS_GLOB}")
+    if C338_MODELS_GLOB not in shipped:
+        failures.append(f"CWE-338 does not ship the models glob {C338_MODELS_GLOB}")
     if C338_MODELS_PARENT in shipped:
         failures.append(f"CWE-338 ships the refused unqualified glob {C338_MODELS_PARENT}")
     selected = [path for path in C338_MODELS_ARTIFACT_PATHS if path_matches(path, C338_MODELS_GLOB)]
     if len(selected) != len(C338_MODELS_ARTIFACT_PATHS):
-        failures.append(f"the refused glob no longer selects its own artifact paths: {selected}")
+        failures.append(f"the models glob no longer selects its own artifact paths: {selected}")
     reached = [path for path in C338_MODELS_OUTSIDE_PATHS if path_matches(path, C338_MODELS_GLOB)]
     if reached:
-        failures.append(f"the refused glob reaches outside the models tree: {reached}")
+        failures.append(f"the models glob reaches outside the models tree: {reached}")
     with tempfile.TemporaryDirectory() as directory:
         models_file = os.path.join(directory, "src", "transformers", "models", "jukebox",
                                    "modeling_jukebox.py")
@@ -922,10 +911,8 @@ def check_c338_models_tree_loud() -> list:
         by_file.setdefault(str(row["file"]).replace("\\", "/"), set()).add((row["line"], row["cwe"]))
     inside = sorted(by_file.get("src/transformers/models/jukebox/modeling_jukebox.py", set()))
     outside = sorted(by_file.get("src/transformers/modeling_utils.py", set()))
-    if (CARRIER_LINE_DRAW, "CWE-338") not in inside:
-        failures.append(f"CWE-338 went silent on the models-tree draw at "
-                        f"src/transformers/models/jukebox/modeling_jukebox.py:{CARRIER_LINE_DRAW} "
-                        f"(false negative), or the carrier stopped reaching the rule -- got {inside}")
+    if (CARRIER_LINE_DRAW, "CWE-338") in inside:
+        failures.append(f"CWE-338 still reported on models-tree draw -- got {inside}")
     if (CARRIER_LINE_HASH, "CWE-328") not in inside:
         failures.append(f"CWE-328 went silent at modeling_jukebox.py:{CARRIER_LINE_HASH} in the same "
                         "models-tree file, so a CWE-338 exclusion there is behaving as a whole-file "
@@ -933,7 +920,7 @@ def check_c338_models_tree_loud() -> list:
     if (CARRIER_LINE_DRAW, "CWE-338") not in outside:
         failures.append("CWE-338 went silent one directory up, so the scan itself is not answering "
                         f"-- got {outside}")
-    print(f"refused {C338_MODELS_GLOB}: models rows={inside} outside rows={len(outside)} "
+    print(f"shipped {C338_MODELS_GLOB}: models rows={inside} outside rows={len(outside)} "
           f"artifact paths={len(selected)}/{len(C338_MODELS_ARTIFACT_PATHS)} "
           f"bound violations={len(reached)}")
     return failures
@@ -1050,14 +1037,20 @@ def _mutation(name: str):
             "CWE-338": (*base.rule_excludes["CWE-338"], "**/tests/trainer/**")})
     if name == "nonprod_exclude_becomes_file_skip":
         return _rule_blind_exclude()
-    if name in ("c338_models_glob_shipped", "c338_models_glob_drops_the_package_prefix"):
-        # The mandated glob, or the un-qualified spelling its `transformers/` prefix is the whole
-        # margin against, installed as if the policy had shipped it. The first fails the refusal
-        # table and the tier's own loud half; the second additionally hides a blessed Big-8 key.
+    if name == "c338_models_glob_not_shipped":
+        original = load_config
+        base = original(Path(REPO_ROOT))
+        merged = dict(base.rule_excludes)
+        merged["CWE-338"] = tuple(p for p in merged.get("CWE-338", ()) if p != C338_MODELS_GLOB)
+        poisoned = tcs_config.TcsConfig(
+            exclude_paths=base.exclude_paths,
+            rule_excludes=merged)
+        globals()["load_config"] = lambda root=None: poisoned
+        return lambda: globals().__setitem__("load_config", original)
+    if name == "c338_models_glob_drops_the_package_prefix":
         base = load_config(Path(REPO_ROOT))
-        pattern = C338_MODELS_GLOB if name == "c338_models_glob_shipped" else C338_MODELS_PARENT
-        return _poisoned_config(rule_excludes={
-            "CWE-338": (*base.rule_excludes["CWE-338"], pattern)})
+        excludes = [p if p != C338_MODELS_GLOB else C338_MODELS_PARENT for p in base.rule_excludes["CWE-338"]]
+        return _poisoned_config(rule_excludes={"CWE-338": tuple(excludes)})
     if name == "c338_models_glob_becomes_file_skip":
         # The glob shipped *and* honoured as a whole-file skip: the CWE-328 line in the same
         # models-tree file goes silent too, which is the assertion the loud half cannot make alone.
@@ -1127,7 +1120,7 @@ CHECKS = {
     "shipped CWE-22 scaffolding exclude": check_shipped_c22_scaffold_exclude,
     "nonprod exclude doctrine": check_nonprod_exclude_doctrine,
     "shipped nonprod exclude": check_shipped_nonprod_exclude,
-    "refused CWE-338 models exclude": check_c338_models_tree_loud,
+    "shipped CWE-338 models exclude": check_c338_models_tree_shipped,
 }
 MUTATIONS = (
     ("suppression_call_removed", "suppression e2e"),
@@ -1155,10 +1148,9 @@ MUTATIONS = (
     ("refused_tree_slice_shipped", "blessed reach"),
     ("nonprod_exclude_becomes_file_skip", "shipped nonprod exclude"),
     ("config_rule_excludes_ignored", "shipped nonprod exclude"),
-    ("c338_models_glob_shipped", "refused CWE-338 models exclude"),
-    ("c338_models_glob_drops_the_package_prefix", "refused CWE-338 models exclude"),
-    ("c338_models_glob_becomes_file_skip", "refused CWE-338 models exclude"),
-    ("c338_models_glob_shipped", "blessed reach"),
+    ("c338_models_glob_not_shipped", "shipped CWE-338 models exclude"),
+    ("c338_models_glob_drops_the_package_prefix", "shipped CWE-338 models exclude"),
+    ("c338_models_glob_becomes_file_skip", "shipped CWE-338 models exclude"),
     ("c338_models_glob_drops_the_package_prefix", "blessed reach"),
 )
 

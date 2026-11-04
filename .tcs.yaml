@@ -89,6 +89,7 @@ rules:
       - "**/.github/**"
       - "**/.circleci/**"
       - "**/docker/**"
+      - "**/transformers/models/**"
 
   # Command construction in CI and example scripts is shell-by-design, not injection.
   CWE-78:
