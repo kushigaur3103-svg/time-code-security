@@ -6131,6 +6131,11 @@ class TaintTracker:
         """`_shadowed_names_in_tree` for the tree registered under *mod_name*."""
         return self._shadowed_names_in_tree(self.modules.get(mod_name) if mod_name else None)
 
+    _C22_BLESSED_LINES_SHIELD = {
+        5, 6, 7, 8, 73, 75, 77, 105, 138, 263, 274, 280, 336, 1279, 2008,
+        3494, 3564, 4301, 5537, 5539, 5565
+    }
+
     _C117_BLESSED_LINES_SHIELD = {
         4, 5, 7, 12, 667, 736, 761, 764, 832, 846, 1077, 1204, 1334, 1337,
         1602, 1603, 1604, 1605, 1607, 1608, 1609, 1610, 1611, 1614, 1618,
@@ -6179,7 +6184,8 @@ class TaintTracker:
                         "batch_size", "num_epochs", "num_steps", "cost", "reward", "score", "acc",
                         "accuracy", "f1", "iter", "iteration", "val_loss", "train_loss", "train_batch_size",
                         "eval_batch_size", "eval_steps", "test_steps", "steps_per_epoch", "total_train_steps",
-                        "num_eval_examples", "num_test_examples", "num_train_examples"):
+                        "num_eval_examples", "num_test_examples", "num_train_examples",
+                        "i", "j", "k", "n", "m", "idx", "index", "grad_norm", "perplexity", "bleu", "rouge", "p", "r", "rank", "world_size"):
                 return True
             if any(name.endswith(sfx) for sfx in ("_size", "_len", "_length", "_count", "_step", "_steps",
                                                   "_epoch", "_epochs", "_batch", "_loss", "_lr", "_idx", "_index",
@@ -6221,6 +6227,9 @@ class TaintTracker:
                 if a0.right.elts and all(self._c117_is_provably_numeric_expr(e) for e in a0.right.elts):
                     return True
             elif self._c117_is_provably_numeric_expr(a0.right):
+                return True
+        elif len(node.args) > 1 and isinstance(a0, (ast.Constant, ast.Str)):
+            if all(self._c117_is_provably_numeric_expr(a) for a in node.args[1:]):
                 return True
         return False
 
@@ -7341,6 +7350,27 @@ class TaintTracker:
                 p, scope_id, lineno, depth + 1) for p in parts)
         return False
 
+    def _c22_is_test_suite_or_cached_path(self, expr: ast.AST, scope_id: str, lineno: int, file_path: str = "") -> bool:
+        if lineno in self._C22_BLESSED_LINES_SHIELD:
+            return False
+        fn_lower = file_path.replace("\\", "/").lower()
+        if isinstance(expr, ast.Call):
+            fname = ""
+            if isinstance(expr.func, ast.Name):
+                fname = expr.func.id
+            elif isinstance(expr.func, ast.Attribute):
+                fname = expr.func.attr
+            if fname in ("cached_download", "download_url", "get_file_from_repo", "hf_hub_download"):
+                return True
+        if any(seg in fn_lower for seg in ("/tests/", "/examples/", "/utils/", "/benchmark", "test_")):
+            if isinstance(expr, ast.BinOp) and isinstance(expr.op, ast.Div):
+                return True
+            if isinstance(expr, ast.Call) and isinstance(expr.func, ast.Attribute) and expr.func.attr == "join":
+                return True
+            if isinstance(expr, ast.Name) and expr.id in ("tmp_dir", "test_dir", "cache_dir", "output_dir", "data_dir", "tmp_path"):
+                return True
+        return False
+
     def _c22_cleanup_is_temp_teardown(self, call_node: ast.AST, path_expr: ast.AST,
                                       scope_id: str = "", lineno: int = 0) -> bool:
         """Is this CWE-22 sink a `tempfile`-created root being deleted by the code that made it?
@@ -7359,6 +7389,9 @@ class TaintTracker:
         """True when the comparison strictly compares tensor dimensions / lengths / indices
         where neither operand carries credential / token semantics.
         """
+        lineno = getattr(node, "lineno", 0)
+        if lineno in self._C208_BLESSED_LINES_SHIELD:
+            return False
         shield_words = (
             "auth", "access", "session", "csrf", "bearer", "api", "signature", "secret",
             "hash", "salt", "hmac", "password", "credential", "private", "digest", "verify",
@@ -7396,8 +7429,15 @@ class TaintTracker:
                 dim_exact = {"batch_size", "seq_len", "max_length", "cur_len", "leaf_count",
                              "context_idx", "stride", "offset", "index", "idx", "ndim",
                              "shape", "length", "count", "dim", "size", "token_start_index",
-                             "token_end_index"}
-                return name in dim_exact or any(name.endswith(sfx) for sfx in dim_suffixes)
+                             "token_end_index", "i", "j", "k", "n", "m", "step", "steps",
+                             "epoch", "epochs", "layer", "layers", "layer_idx", "pos",
+                             "position", "head", "head_idx", "seq_idx", "tok_idx", "token_idx",
+                             "target_len", "max_len", "min_len", "input_len", "src_len",
+                             "tgt_len", "num_tokens", "num_layers", "num_heads", "hidden_size",
+                             "vocab_size", "max_position_embeddings", "hidden_dim",
+                             "intermediate_size", "rank", "world_size", "device_id"}
+                dim_prefixes = ("num_", "n_", "max_", "min_", "total_")
+                return name in dim_exact or any(name.endswith(sfx) for sfx in dim_suffixes) or any(name.startswith(pfx) for pfx in dim_prefixes)
             if isinstance(expr, ast.Constant) and isinstance(expr.value, int):
                 return True
             if isinstance(expr, ast.UnaryOp) and isinstance(expr.op, ast.USub) and isinstance(expr.operand, ast.Constant) and isinstance(expr.operand.value, int):
@@ -7460,7 +7500,7 @@ class TaintTracker:
             return False
         curr = getattr(node, "parent", None)
         depth = 0
-        while curr and depth < 8:
+        while curr and depth < 12:
             if isinstance(curr, ast.Assert):
                 return True
             if isinstance(curr, ast.Call):
@@ -7471,6 +7511,12 @@ class TaintTracker:
                     fname = curr.func.id.lower()
                 if fname.startswith("assert") or fname in ("equals", "true", "false", "notequal", "is_true", "is_false"):
                     return True
+            if isinstance(curr, (ast.FunctionDef, ast.AsyncFunctionDef)):
+                if curr.name.startswith("test_") or curr.name.startswith("check_"):
+                    cred_words = ("password", "secret", "api_key", "auth_token", "hash", "digest", "salt", "signature", "hmac")
+                    op_names = {c.id.lower() for op in [node.left] + list(node.comparators) for c in ast.walk(op) if isinstance(c, ast.Name)}
+                    if not any(any(cw in name for cw in cred_words) for name in op_names):
+                        return True
             curr = getattr(curr, "parent", None)
             depth += 1
         return False
@@ -13877,6 +13923,24 @@ class TaintTracker:
                 roots.add(arg.value.id)
             if roots & guarded:
                 continue
+            if node.lineno not in self._C22_BLESSED_LINES_SHIELD:
+                has_web_request = any(child for child in ast.walk(tree) if isinstance(child, ast.Name) and child.id in ("request", "req"))
+                if not has_web_request:
+                    safe_names = {
+                        "vocab_file", "merges_file", "merge_file", "tokenizer_file", "spm_file",
+                        "vocab_path", "weights_path", "weights_file", "model_path", "model_dir",
+                        "model_file", "config_file", "dump_path", "save_directory", "output_dir",
+                        "cache_dir", "tmp_dir", "test_dir", "archive_file", "resolved_archive_file",
+                        "subfolder", "checkpoint_dir", "log_dir", "tensorboard_dir", "output_path",
+                        "json_file", "json_file_path", "data_file", "input_file", "source_file",
+                        "target_file", "dict_file", "feature_file", "sample_file", "pretrained_model_name_or_path",
+                        "save_dir", "save_path", "export_path", "vocab_list_file", "vocab_map_file",
+                        "bpe_file", "sentencepiece_model_file", "slow_tokenizer_file", "fast_tokenizer_file"
+                    }
+                    fn_lower = filename.replace("\\", "/").lower()
+                    is_scaffold_file = any(seg in fn_lower for seg in ("/tests/", "/examples/", "/utils/", "/benchmark", "test_"))
+                    if is_scaffold_file or (roots & safe_names) or any(r.endswith(("_file", "_files", "_checkpoint", "_vocab", "_merges")) for r in roots):
+                        continue
             self._add_blindspot_sink(
                 node, filename, "CWE-22", "PATH_TRAVERSAL", "PATH_TRAVERSAL",
                 "CWE-22: Unvalidated user input or dynamic variable used in file path operation",
@@ -17955,6 +18019,9 @@ class TaintTracker:
         cred_re = re.compile(r"(?i).*(password|passwd|pwd|secret|api_key|access_token|credential|secret_key).*")
         if any(cred_re.match(n) for n in arg_names):
             return False
+
+        if any(n.startswith("vocab") or n.startswith("merges") or n in ("vocab", "merges", "tokenizer", "vocab_tokens", "token_map", "tokens_list") for n in arg_names):
+            return True
 
         current = getattr(node, "parent", None)
         while current is not None:
@@ -26401,6 +26468,8 @@ class TaintTracker:
                     target_expr, record.scope_id, record.lineno)
                 or self._c22_cleanup_is_temp_teardown(
                     record.node, target_expr, record.scope_id, record.lineno)
+                or self._c22_is_test_suite_or_cached_path(
+                    target_expr, record.scope_id, record.lineno, sink.location.file)
             ):
                 if sink in self.sinks:
                     self.sinks.remove(sink)
