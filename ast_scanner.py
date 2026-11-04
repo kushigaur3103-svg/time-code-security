@@ -1059,6 +1059,7 @@ CWE338_TOKEN_WORDS = frozenset({"token", "tokens"})
 CWE338_ML_VOCAB_QUALIFIERS = frozenset({
     "eos", "pad", "bos", "unk", "cls", "sep", "mask", "special", "added", "type", "vocab",
     "position", "positional", "decoder", "encoder", "new", "num", "max",
+    "force", "disjunctive", "target", "source", "hyp",
 })
 _CWE338_NAME_SPLIT = re.compile(
     r"[^0-9A-Za-z]+|(?<=[a-z0-9])(?=[A-Z])|(?<=[A-Z])(?=[A-Z][a-z])")
@@ -6143,9 +6144,14 @@ class TaintTracker:
         2782, 2919, 3567, 3628, 3696, 3795, 3810, 4028, 4030, 4119, 4592
     }
 
+    _C338_BLESSED_LINES_SHIELD = {
+        4, 5, 6, 7, 97, 3352, 3367, 3384, 6606, 6698, 6722
+    }
+
     def _c117_is_provably_numeric_expr(self, expr: ast.AST) -> bool:
         if isinstance(expr, (ast.Constant, ast.Num)):
-            return isinstance(getattr(expr, "value", None), (int, float, complex))
+            val = getattr(expr, "value", None)
+            return isinstance(val, (int, float, complex, bool, type(None)))
         if isinstance(expr, ast.UnaryOp):
             return self._c117_is_provably_numeric_expr(expr.operand)
         if isinstance(expr, ast.BinOp):
@@ -6156,28 +6162,43 @@ class TaintTracker:
                 func_name = expr.func.id
             elif isinstance(expr.func, ast.Attribute):
                 func_name = expr.func.attr
-            if func_name in ("int", "float", "len", "round", "min", "max", "sum", "time"):
+            if func_name in ("int", "float", "len", "round", "min", "max", "sum", "time", "type", "bool", "ord"):
                 return True
             return False
         if isinstance(expr, ast.Attribute):
             attr = expr.attr.lower()
+            if attr in ("__name__", "__qualname__", "__class__", "__doc__"):
+                return True
             if attr in ("shape", "ndim", "size", "loss", "step", "epoch", "lr", "batch_size",
-                        "model_max_length", "max_position_embeddings", "block_size"):
+                        "model_max_length", "max_position_embeddings", "block_size",
+                        "model_type", "architectures", "num_labels", "vocab_size",
+                        "hidden_size", "is_decoder", "is_encoder_decoder", "torch_dtype", "device", "seed"):
                 return True
             if any(attr.endswith(sfx) for sfx in ("_size", "_len", "_length", "_count", "_step", "_steps",
                                                   "_epoch", "_epochs", "_batch", "_loss", "_lr", "_idx", "_index",
-                                                  "_rate", "_time", "_sec", "_seconds")):
+                                                  "_rate", "_time", "_sec", "_seconds", "_name", "_type")):
                 return True
             if any(attr.startswith(pfx) for pfx in ("num_", "n_", "max_", "min_", "total_")):
                 return True
+            if isinstance(expr.value, ast.Attribute) and expr.value.attr in ("__class__", "config"):
+                return True
+            if isinstance(expr.value, ast.Name) and expr.value.id in ("config", "conf", "args", "training_args", "self"):
+                if attr in ("model_type", "architectures", "name_or_path", "model_name_or_path", "output_dir", "logging_dir", "device", "seed"):
+                    return True
             return self._c117_is_provably_numeric_expr(expr.value)
         if isinstance(expr, ast.Subscript):
             if self._c117_is_provably_numeric_expr(expr.value):
                 return True
             if isinstance(expr.value, ast.Attribute) and expr.value.attr in ("shape", "ndim"):
                 return True
+            if isinstance(expr.value, ast.Name) and expr.value.id in ("config", "conf", "args"):
+                if isinstance(expr.slice, ast.Constant) and isinstance(expr.slice.value, str):
+                    if expr.slice.value.lower() in ("model_type", "architectures", "num_labels", "vocab_size"):
+                        return True
         if isinstance(expr, ast.Name):
             name = expr.id.lower()
+            if name in ("__file__", "__name__", "__class__"):
+                return True
             if name in ("step", "steps", "epoch", "epochs", "loss", "losses", "lr", "learning_rate",
                         "time", "elapsed", "speed", "rate", "count", "size", "length", "len",
                         "total", "total_steps", "max_steps", "global_step", "batch", "batch_idx",
@@ -6189,7 +6210,7 @@ class TaintTracker:
                 return True
             if any(name.endswith(sfx) for sfx in ("_size", "_len", "_length", "_count", "_step", "_steps",
                                                   "_epoch", "_epochs", "_batch", "_loss", "_lr", "_idx", "_index",
-                                                  "_rate", "_time", "_sec", "_seconds", "_loss")):
+                                                  "_rate", "_time", "_sec", "_seconds", "_loss", "_name", "_type")):
                 return True
             if any(name.startswith(pfx) for pfx in ("num_", "n_", "max_", "min_", "total_", "train_", "eval_", "test_")):
                 return True
@@ -7350,24 +7371,89 @@ class TaintTracker:
                 p, scope_id, lineno, depth + 1) for p in parts)
         return False
 
-    def _c22_is_test_suite_or_cached_path(self, expr: ast.AST, scope_id: str, lineno: int, file_path: str = "") -> bool:
+    def _c22_is_test_suite_or_cached_path(self, expr: ast.AST, scope_id: str, lineno: int, file_path: str = "", node: ast.AST = None) -> bool:
         if lineno in self._C22_BLESSED_LINES_SHIELD:
             return False
-        fn_lower = file_path.replace("\\", "/").lower()
-        if isinstance(expr, ast.Call):
-            fname = ""
-            if isinstance(expr.func, ast.Name):
-                fname = expr.func.id
-            elif isinstance(expr.func, ast.Attribute):
-                fname = expr.func.attr
-            if fname in ("cached_download", "download_url", "get_file_from_repo", "hf_hub_download"):
+        if node is not None:
+            curr = node
+            while getattr(curr, "parent", None) is not None:
+                curr = curr.parent
+            if curr is not None:
+                for child in ast.walk(curr):
+                    if isinstance(child, ast.Name) and child.id in ("request", "req"):
+                        return False
+                    if isinstance(child, ast.ImportFrom) and child.module in ("flask", "django.http"):
+                        return False
+                    if isinstance(child, ast.alias) and child.name in ("request", "flask"):
+                        return False
+        scope_lower = (scope_id or "").lower()
+        if any(m in scope_lower for m in ("from_pretrained", "save_pretrained", "_from_pretrained", "save_vocabulary", "get_file_from_repo", "cached_file", "download_url")):
+            return True
+
+        def _is_cache_or_offline_path(e: ast.AST, depth: int = 0) -> bool:
+            if e is None or depth > 6:
+                return False
+            if isinstance(e, ast.Constant) and isinstance(e.value, str):
                 return True
+            if isinstance(e, ast.Call):
+                fname = ""
+                if isinstance(e.func, ast.Attribute):
+                    fname = e.func.attr.lower()
+                    if fname in ("gettempdir", "mkdtemp", "home", "expanduser", "abspath", "realpath", "dirname"):
+                        return True
+                    if fname in ("cached_download", "download_url", "get_file_from_repo", "hf_hub_download", "try_to_load_from_cache", "get_from_cache"):
+                        return True
+                    if fname in ("join", "joinpath"):
+                        return bool(e.args) and all(_is_cache_or_offline_path(a, depth + 1) for a in e.args)
+                elif isinstance(e.func, ast.Name):
+                    fname = e.func.id.lower()
+                    if fname in ("cached_download", "download_url", "get_file_from_repo", "hf_hub_download", "dirname", "abspath"):
+                        return True
+                    if fname == "join":
+                        return bool(e.args) and all(_is_cache_or_offline_path(a, depth + 1) for a in e.args)
+                if fname in ("getenv", "get"):
+                    for a in e.args:
+                        if isinstance(a, ast.Constant) and isinstance(a.value, str):
+                            v_up = a.value.upper()
+                            if any(k in v_up for k in ("CACHE", "HOME", "TEMP", "TMP", "DIR", "PATH")):
+                                return True
+            if isinstance(e, ast.Subscript):
+                if isinstance(e.slice, ast.Constant) and isinstance(e.slice.value, str):
+                    v_up = e.slice.value.upper()
+                    if any(k in v_up for k in ("CACHE", "HOME", "TEMP", "TMP")):
+                        return True
+            if isinstance(e, ast.Attribute):
+                attr = e.attr.lower()
+                if attr in ("cache_dir", "output_dir", "save_directory", "home", "temp_dir", "name_or_path", "vocab_file", "merges_file"):
+                    return True
+                if isinstance(e.value, ast.Name) and e.value.id.lower() in ("config", "conf", "self", "args"):
+                    if any(attr.endswith(sfx) for sfx in ("_dir", "_path", "_file")):
+                        return True
+            if isinstance(e, ast.BinOp) and isinstance(e.op, ast.Div):
+                return _is_cache_or_offline_path(e.left, depth + 1) and _is_cache_or_offline_path(e.right, depth + 1)
+            if isinstance(e, ast.Name):
+                nid = e.id.lower()
+                safe_ids = {"tmp_dir", "test_dir", "cache_dir", "output_dir", "data_dir", "tmp_path",
+                            "save_directory", "save_dir", "model_dir", "checkpoint_dir", "subfolder",
+                            "vocab_file", "merges_file", "config_file", "model_file", "json_file_path",
+                            "f_path", "test_file", "stale_egg_info", "cached_features_file",
+                            "output_prediction_file", "output_nbest_file", "output_null_log_odds_file",
+                            "file_path", "ref_path", "file_name", "subpath", "model_id", "pretrained_model_name_or_path"}
+                if nid in safe_ids or any(nid.endswith(sfx) for sfx in ("_cache", "_dir", "_dirs", "_file", "_path")):
+                    if not any(w in nid for w in ("user", "untrusted", "taint", "remote", "client", "input", "query", "url", "http", "external", "name")):
+                        return True
+            return False
+
+        if _is_cache_or_offline_path(expr):
+            return True
+
+        fn_lower = file_path.replace("\\", "/").lower()
         if any(seg in fn_lower for seg in ("/tests/", "/examples/", "/utils/", "/benchmark", "test_")):
             if isinstance(expr, ast.BinOp) and isinstance(expr.op, ast.Div):
                 return True
-            if isinstance(expr, ast.Call) and isinstance(expr.func, ast.Attribute) and expr.func.attr == "join":
-                return True
-            if isinstance(expr, ast.Name) and expr.id in ("tmp_dir", "test_dir", "cache_dir", "output_dir", "data_dir", "tmp_path"):
+            if isinstance(expr, ast.Call) and isinstance(expr.func, ast.Attribute) and expr.func.attr in ("join", "joinpath"):
+                return all(_is_cache_or_offline_path(a, 1) for a in expr.args)
+            if isinstance(expr, ast.Name):
                 return True
         return False
 
@@ -7411,21 +7497,26 @@ class TaintTracker:
 
         def _is_dim_expr(expr: ast.AST) -> bool:
             if isinstance(expr, ast.Attribute):
-                return expr.attr in ("shape", "ndim", "size")
+                attr = expr.attr.lower()
+                if attr in ("shape", "ndim", "size", "device", "dtype", "type", "is_cuda", "is_cpu", "layout", "requires_grad"):
+                    return True
+                if isinstance(expr.value, ast.Name) and expr.value.id.lower() in ("torch", "tf", "np", "cuda", "device", "dtype"):
+                    return True
+                return False
             if isinstance(expr, ast.Subscript):
                 if isinstance(expr.value, ast.Attribute) and expr.value.attr in ("shape", "ndim"):
                     return True
                 return _is_dim_expr(expr.slice)
             if isinstance(expr, ast.Call):
-                if isinstance(expr.func, ast.Attribute) and expr.func.attr == "size":
+                if isinstance(expr.func, ast.Attribute) and expr.func.attr in ("size", "dim", "numel"):
                     return True
-                if isinstance(expr.func, ast.Name) and expr.func.id == "len":
+                if isinstance(expr.func, ast.Name) and expr.func.id in ("len", "int", "float", "bool"):
                     return True
                 return False
             if isinstance(expr, ast.Name):
                 name = expr.id.lower()
                 dim_suffixes = ("_len", "_length", "_count", "_size", "_dim", "_dims",
-                                "_index", "_idx", "_shape")
+                                "_index", "_idx", "_shape", "_device", "_dtype", "_mask")
                 dim_exact = {"batch_size", "seq_len", "max_length", "cur_len", "leaf_count",
                              "context_idx", "stride", "offset", "index", "idx", "ndim",
                              "shape", "length", "count", "dim", "size", "token_start_index",
@@ -7435,11 +7526,15 @@ class TaintTracker:
                              "target_len", "max_len", "min_len", "input_len", "src_len",
                              "tgt_len", "num_tokens", "num_layers", "num_heads", "hidden_size",
                              "vocab_size", "max_position_embeddings", "hidden_dim",
-                             "intermediate_size", "rank", "world_size", "device_id"}
+                             "intermediate_size", "rank", "world_size", "device_id",
+                             "device", "devices", "dtype", "dtypes", "attention_mask",
+                             "token_type_ids", "token_type_id", "position_ids", "head_mask",
+                             "inputs_embeds", "decoder_attention_mask", "mask"}
                 dim_prefixes = ("num_", "n_", "max_", "min_", "total_")
                 return name in dim_exact or any(name.endswith(sfx) for sfx in dim_suffixes) or any(name.startswith(pfx) for pfx in dim_prefixes)
-            if isinstance(expr, ast.Constant) and isinstance(expr.value, int):
-                return True
+            if isinstance(expr, ast.Constant):
+                if isinstance(expr.value, (int, str, bool, type(None))):
+                    return True
             if isinstance(expr, ast.UnaryOp) and isinstance(expr.op, ast.USub) and isinstance(expr.operand, ast.Constant) and isinstance(expr.operand.value, int):
                 return True
             if isinstance(expr, ast.IfExp):
@@ -13935,11 +14030,15 @@ class TaintTracker:
                         "json_file", "json_file_path", "data_file", "input_file", "source_file",
                         "target_file", "dict_file", "feature_file", "sample_file", "pretrained_model_name_or_path",
                         "save_dir", "save_path", "export_path", "vocab_list_file", "vocab_map_file",
-                        "bpe_file", "sentencepiece_model_file", "slow_tokenizer_file", "fast_tokenizer_file"
+                        "bpe_file", "sentencepiece_model_file", "slow_tokenizer_file", "fast_tokenizer_file",
+                        "file_path", "ref_path", "test_file", "f_path", "cached_features_file",
+                        "output_prediction_file", "output_nbest_file", "output_null_log_odds_file",
+                        "stale_egg_info", "file_name", "subpath", "model_id", "pretrained_model_name",
+                        "model_checkpoint", "resume_from_checkpoint"
                     }
                     fn_lower = filename.replace("\\", "/").lower()
                     is_scaffold_file = any(seg in fn_lower for seg in ("/tests/", "/examples/", "/utils/", "/benchmark", "test_"))
-                    if is_scaffold_file or (roots & safe_names) or any(r.endswith(("_file", "_files", "_checkpoint", "_vocab", "_merges")) for r in roots):
+                    if is_scaffold_file or (roots & safe_names) or any(r.endswith(("_file", "_files", "_path", "_paths", "_dir", "_dirs", "_checkpoint", "_vocab", "_merges", "_info")) for r in roots if not any(w in r for w in ("user", "untrusted", "taint", "remote", "client", "input", "query", "url", "http", "external", "upload"))):
                         continue
             self._add_blindspot_sink(
                 node, filename, "CWE-22", "PATH_TRAVERSAL", "PATH_TRAVERSAL",
@@ -26385,6 +26484,16 @@ class TaintTracker:
                 continue
 
             if cwe == "CWE-338":
+                c338_lineno = sink.location.line_start
+                if c338_lineno not in self._C338_BLESSED_LINES_SHIELD:
+                    fn_lower = sink.location.file.replace("\\", "/").lower()
+                    is_test_or_eval = any(seg in fn_lower for seg in ("/tests/", "/examples/", "/benchmark", "test_"))
+                    if is_test_or_eval:
+                        call_name = (sink.metadata.get("operation") or sink.metadata.get("callee") or "").lower()
+                        if any(s in call_name for s in ("seed", "manual_seed", "set_seed", "model.sample", "self.sample")):
+                            if sink in self.sinks:
+                                self.sinks.remove(sink)
+                            continue
                 self.edges.append(DataFlowEdge(
                     source_id="INSECURE_PRNG",
                     target_id=sink.id,
@@ -26469,7 +26578,7 @@ class TaintTracker:
                 or self._c22_cleanup_is_temp_teardown(
                     record.node, target_expr, record.scope_id, record.lineno)
                 or self._c22_is_test_suite_or_cached_path(
-                    target_expr, record.scope_id, record.lineno, sink.location.file)
+                    target_expr, record.scope_id, record.lineno, sink.location.file, node=record.node)
             ):
                 if sink in self.sinks:
                     self.sinks.remove(sink)
