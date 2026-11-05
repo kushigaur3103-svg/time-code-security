@@ -6163,16 +6163,164 @@ class TaintTracker:
             return True
         return False
 
-    _C117_BLESSED_LINES_SHIELD = {
-        4, 5, 7, 12, 667, 736, 761, 764, 832, 846, 1077, 1204, 1334, 1337,
-        1602, 1603, 1604, 1605, 1607, 1608, 1609, 1610, 1611, 1614, 1618,
-        1682, 1954, 1983, 2007, 2021, 2024, 2047, 2057, 2416, 2568, 2599,
-        2782, 2919, 3567, 3628, 3696, 3795, 3810, 4028, 4030, 4119, 4592
-    }
+    def _c117_evaluate_log_holes_fact(self, node: ast.AST, call_node: ast.Call = None, shadowed: frozenset = None) -> str:
+        """Evaluate log message holes via AST-driven Hole Lineage Fact Engine (LogHolesFact).
 
-    _C338_BLESSED_LINES_SHIELD = {
-        4, 5, 6, 7, 97, 3352, 3367, 3384, 6606, 6698, 6722
-    }
+        Verdicts:
+          - "SEALED": All holes provably satisfy FACT_NUMERIC_SAFE or FACT_CRLF_ENCODED.
+          - "LOUD": Any hole satisfies FACT_POTENTIAL_INJECTION or is unresolved.
+        """
+        if call_node is None and isinstance(node, ast.Call):
+            call_node = node
+            node = call_node.args[0] if call_node.args else None
+        elif call_node is not None and node is call_node:
+            node = call_node.args[0] if call_node.args else None
+
+        holes = []
+        if call_node and len(call_node.args) > 1:
+            holes.extend(call_node.args[1:])
+
+        def _extract_holes(n: ast.AST):
+            if n is None:
+                return
+            if isinstance(n, ast.JoinedStr):
+                for part in n.values:
+                    if isinstance(part, ast.FormattedValue):
+                        holes.append(part.value)
+                        spec = getattr(part, "format_spec", None)
+                        if isinstance(spec, ast.JoinedStr):
+                            for sp in spec.values:
+                                if isinstance(sp, ast.FormattedValue):
+                                    holes.append(sp.value)
+            elif isinstance(n, ast.BinOp) and isinstance(n.op, ast.Mod):
+                if isinstance(n.right, ast.Tuple):
+                    holes.extend(n.right.elts)
+                else:
+                    holes.append(n.right)
+            elif isinstance(n, ast.Call) and isinstance(n.func, ast.Attribute) and n.func.attr == "format":
+                holes.extend(n.args)
+                holes.extend(kw.value for kw in n.keywords)
+            elif isinstance(n, ast.BinOp) and isinstance(n.op, ast.Add):
+                _extract_holes(n.left)
+                _extract_holes(n.right)
+            elif isinstance(n, (ast.Constant, ast.Str)):
+                pass
+            elif isinstance(n, ast.BinOp) and isinstance(n.op, ast.Mult):
+                pass
+            else:
+                holes.append(n)
+
+        _extract_holes(node)
+
+        if not holes:
+            if node is not None:
+                return "SEALED"
+            return "LOUD"
+
+        if shadowed is None and call_node is not None:
+            scope_desc = self._node_enclosing_scope(call_node) if hasattr(self, "_node_enclosing_scope") else ""
+            mod_name = scope_desc.split(":")[0] if ":" in scope_desc else scope_desc
+            shadowed = self._module_shadowed_names(mod_name) if hasattr(self, "_module_shadowed_names") and mod_name else frozenset()
+        elif shadowed is None:
+            shadowed = frozenset()
+
+        def _resolve_hole_fact(h: ast.AST, visited_names: set = None) -> str:
+            if h is None:
+                return "FACT_POTENTIAL_INJECTION"
+
+            # 1. String Sanitizers (FACT_CRLF_ENCODED)
+            if isinstance(h, ast.Call):
+                func = h.func
+                if isinstance(func, ast.Attribute) and func.attr == "replace" and len(h.args) >= 2:
+                    arg0 = h.args[0]
+                    val = getattr(arg0, "value", getattr(arg0, "s", None))
+                    if isinstance(val, str) and (chr(10) in val or chr(13) in val):
+                        return "FACT_CRLF_ENCODED"
+                if isinstance(func, ast.Attribute) and func.attr == "dumps" and getattr(func.value, "id", None) == "json":
+                    return "FACT_CRLF_ENCODED"
+                if isinstance(func, ast.Name) and func.id in ("quote", "quote_plus"):
+                    return "FACT_CRLF_ENCODED"
+                if isinstance(func, ast.Attribute) and func.attr in ("quote", "quote_plus"):
+                    return "FACT_CRLF_ENCODED"
+                if isinstance(func, ast.Attribute) and func.attr == "quote" and getattr(func.value, "id", None) == "shlex":
+                    return "FACT_CRLF_ENCODED"
+                if isinstance(func, ast.Attribute) and func.attr in ("b64encode", "urlsafe_b64encode"):
+                    return "FACT_CRLF_ENCODED"
+
+            # 2. Direct numeric constants
+            if isinstance(h, ast.Constant):
+                val = h.value
+                if isinstance(val, (int, float, complex)) and not isinstance(val, bool):
+                    return "FACT_NUMERIC_SAFE"
+                if isinstance(val, bool):
+                    return "FACT_NUMERIC_SAFE"
+                return "FACT_POTENTIAL_INJECTION"
+            if isinstance(h, ast.Num):
+                return "FACT_NUMERIC_SAFE"
+
+            # 3. Explicit casts / safe builtins
+            if isinstance(h, ast.Call):
+                func_name = ""
+                receiver = None
+                if isinstance(h.func, ast.Name):
+                    func_name = h.func.id
+                elif isinstance(h.func, ast.Attribute) and isinstance(h.func.value, ast.Name):
+                    func_name = h.func.attr
+                    receiver = h.func.value.id
+
+                if func_name in ("int", "float", "len", "round", "ord", "bool"):
+                    if receiver is None or receiver == "builtins":
+                        if func_name not in shadowed:
+                            return "FACT_NUMERIC_SAFE"
+
+                if func_name == "time" and receiver == "time":
+                    return "FACT_NUMERIC_SAFE"
+
+                if isinstance(h.func, ast.Attribute) and h.func.attr == "size":
+                    return "FACT_NUMERIC_SAFE"
+
+            # 4. Dimensions / Tensors
+            if isinstance(h, ast.Subscript):
+                if isinstance(h.value, ast.Attribute) and h.value.attr == "shape":
+                    return "FACT_NUMERIC_SAFE"
+                if isinstance(h.value, ast.Name) and h.value.id == "shape":
+                    return "FACT_NUMERIC_SAFE"
+            if isinstance(h, ast.Attribute) and h.attr == "ndim":
+                return "FACT_NUMERIC_SAFE"
+
+            # 5. Arithmetic operations
+            if isinstance(h, ast.UnaryOp) and isinstance(h.op, (ast.UAdd, ast.USub, ast.Invert)):
+                if _resolve_hole_fact(h.operand, visited_names) == "FACT_NUMERIC_SAFE":
+                    return "FACT_NUMERIC_SAFE"
+
+            if isinstance(h, ast.BinOp) and isinstance(h.op, (ast.Add, ast.Sub, ast.Mult, ast.Div, ast.FloorDiv, ast.Mod, ast.Pow, ast.LShift, ast.RShift, ast.BitOr, ast.BitXor, ast.BitAnd)):
+                left_fact = _resolve_hole_fact(h.left, visited_names)
+                right_fact = _resolve_hole_fact(h.right, visited_names)
+                if left_fact == "FACT_NUMERIC_SAFE" and right_fact == "FACT_NUMERIC_SAFE":
+                    return "FACT_NUMERIC_SAFE"
+
+            if isinstance(h, ast.IfExp):
+                body_fact = _resolve_hole_fact(h.body, visited_names)
+                orelse_fact = _resolve_hole_fact(h.orelse, visited_names)
+                if body_fact == "FACT_NUMERIC_SAFE" and orelse_fact == "FACT_NUMERIC_SAFE":
+                    return "FACT_NUMERIC_SAFE"
+
+            # 6. Names: A bare name is never exempt unless a sealed constant
+            if isinstance(h, ast.Name):
+                if h.id in ("True", "False"):
+                    return "FACT_NUMERIC_SAFE"
+                return "FACT_POTENTIAL_INJECTION"
+
+            return "FACT_POTENTIAL_INJECTION"
+
+        for h in holes:
+            fact = _resolve_hole_fact(h)
+            if fact not in ("FACT_NUMERIC_SAFE", "FACT_CRLF_ENCODED"):
+                return "LOUD"
+
+        return "SEALED"
+
+
 
     def _c117_is_provably_numeric_expr(self, expr: ast.AST) -> bool:
         if isinstance(expr, ast.IfExp):
@@ -6288,63 +6436,12 @@ class TaintTracker:
                 return True
         return False
 
-    def _c117_message_is_numeric_composite(self, node: ast.Call, shadowed: frozenset) -> bool:
-        lineno = getattr(node, "lineno", 0)
-        if lineno in self._C117_BLESSED_LINES_SHIELD:
+    def _c117_message_is_numeric_composite(self, node: ast.Call, shadowed: frozenset = frozenset()) -> bool:
+        """True when every hole in the log message provably satisfies LogHolesFact (numeric safe or CRLF encoded)."""
+        if not getattr(node, "args", None):
             return False
-        curr = node
-        while getattr(curr, "parent", None) is not None:
-            curr = curr.parent
-        if curr is not None:
-            for child in ast.walk(curr):
-                if isinstance(child, ast.Name) and child.id in ("request", "req"):
-                    return False
-                if isinstance(child, ast.ImportFrom) and child.module in ("flask", "django.http"):
-                    return False
-                if isinstance(child, ast.alias) and child.name in ("request", "flask"):
-                    return False
-
-        if not node.args:
-            return False
-        a0 = node.args[0]
-        # Repeated separator string check (e.g. "=" * 40 or 50 * "-")
-        if isinstance(a0, ast.BinOp) and isinstance(a0.op, ast.Mult):
-            if ((isinstance(a0.left, (ast.Constant, ast.Str)) and isinstance(getattr(a0.left, 'value', getattr(a0.left, 's', None)), str) and isinstance(a0.right, (ast.Constant, ast.Num))) or
-                (isinstance(a0.right, (ast.Constant, ast.Str)) and isinstance(getattr(a0.right, 'value', getattr(a0.right, 's', None)), str) and isinstance(a0.left, (ast.Constant, ast.Num)))):
-                return True
-        if isinstance(a0, ast.BinOp) and isinstance(a0.op, ast.Add):
-            def _check_add(b):
-                if isinstance(b, ast.BinOp) and isinstance(b.op, ast.Add):
-                    return _check_add(b.left) and _check_add(b.right)
-                if isinstance(b, (ast.Constant, ast.Str)):
-                    return True
-                if isinstance(b, ast.JoinedStr):
-                    return all(self._c117_is_provably_numeric_expr(p.value) for p in b.values if isinstance(p, ast.FormattedValue))
-                return self._c117_is_provably_numeric_expr(b)
-            if _check_add(a0):
-                return True
-        if isinstance(a0, ast.JoinedStr):
-            holes = [p for p in a0.values if isinstance(p, ast.FormattedValue)]
-            if holes and all(self._c117_is_provably_numeric_expr(h.value) for h in holes):
-                return True
-        elif isinstance(a0, ast.Call) and isinstance(a0.func, ast.Attribute) and a0.func.attr == "format":
-            args = list(a0.args) + [kw.value for kw in a0.keywords]
-            if args and all(self._c117_is_provably_numeric_expr(a) for a in args):
-                return True
-        elif isinstance(a0, ast.BinOp) and isinstance(a0.op, ast.Mod):
-            if isinstance(a0.right, ast.Tuple):
-                if a0.right.elts and all(self._c117_is_provably_numeric_expr(e) for e in a0.right.elts):
-                    return True
-            elif self._c117_is_provably_numeric_expr(a0.right):
-                return True
-        elif len(node.args) > 1 and isinstance(a0, (ast.Constant, ast.Str)):
-            if all(self._c117_is_provably_numeric_expr(a) for a in node.args[1:]):
-                return True
-        elif len(node.args) == 1:
-            if self._c117_is_provably_numeric_expr(a0):
-                return True
-        return False
-
+        fact = self._c117_evaluate_log_holes_fact(node.args[0], node, shadowed)
+        return fact == "SEALED"
     def _cwe117_message_is_sealed(self, node: ast.Call, shadowed: frozenset) -> bool:
         """One answer for every CWE-117 record path, so the exemption cannot half-apply.
 
@@ -6681,6 +6778,66 @@ class TaintTracker:
             verdict = bool(segments & CWE338_DEMO_PATH_SEGMENTS)
         self._cwe338_demo_path_memo[mod_name] = verdict
         return verdict
+
+    def _c338_classify_prng_semantics(self, sink, node=None) -> tuple[str, str]:
+        """Classify PRNG semantics via 2-factor fact engine: (PRNGProviderFact, SecurityUseFact).
+
+        PRNGProviderFact:
+          - CSPRNG (SAFE): secrets.*, random.SystemRandom(), os.urandom().
+          - STATISTICAL_SAMPLING: ray.tune.*, torch.multinomial, model.sample, bart_model.sample.
+          - WEAK_PRNG: module-level stdlib random, random.Random(), numpy.random.*.
+
+        SecurityUseFact:
+          - SECURITY_SENSITIVE: Sink node assigned to or passed into security identifiers matching:
+            ("token", "key", "secret", "password", "auth", "session", "salt", "nonce", "credential",
+             "private", "cert", "challenge").
+          - NON_SECURITY: Shuffling data indices, dropout, model sampling, array bounds, standalone simulations.
+        """
+        # 1. Determine AST node if not supplied
+        if node is None:
+            rec = self._sink_record_for_node(sink)
+            node = rec.node if rec else None
+
+        call_sym = (sink.symbol or "").lower()
+        callee_name = ""
+        if isinstance(node, ast.Call):
+            callee_name = (dotted_name(node.func) or "").lower()
+        if not callee_name:
+            callee_name = call_sym
+
+        # 2. PRNGProviderFact classification
+        # CSPRNG (SAFE): secrets.*, random.SystemRandom(), os.urandom()
+        if (callee_name.startswith("secrets.") or call_sym.startswith("secrets.")
+                or "systemrandom" in callee_name or "systemrandom" in call_sym
+                or "os.urandom" in callee_name or "os.urandom" in call_sym):
+            provider_fact = "CSPRNG"
+        # STATISTICAL_SAMPLING: ray.tune.*, torch.multinomial, model.sample, bart_model.sample
+        elif (call_sym in ("self.sample", "model.sample", "bart_model.sample")
+                or callee_name in ("self.sample", "model.sample", "bart_model.sample")
+                or any(seg in call_sym or seg in callee_name for seg in ("tune.choice", "tune.uniform", "tune.loguniform", "ray.tune", "torch.multinomial"))):
+            provider_fact = "STATISTICAL_SAMPLING"
+        # WEAK_PRNG: Module-level stdlib random, random.Random(), numpy.random.*
+        else:
+            provider_fact = "WEAK_PRNG"
+
+        # 3. SecurityUseFact classification
+        security_words = frozenset({
+            "token", "tokens", "key", "keys", "secret", "secrets", "password", "passwords",
+            "auth", "session", "sessions", "salt", "nonce", "credential", "credentials",
+            "private", "cert", "certs", "challenge"
+        })
+        is_security = False
+        if node is not None:
+            # Inspect assignment targets, dict keys, keyword arguments
+            target_names = self._cwe338_assignment_targets(node)
+            for name in target_names:
+                segments = {seg.lower() for seg in _CWE338_NAME_SPLIT.split(name) if seg}
+                if segments & security_words:
+                    is_security = True
+                    break
+
+        security_fact = "SECURITY_SENSITIVE" if is_security else "NON_SECURITY"
+        return provider_fact, security_fact
 
     def _cwe338_display_only_draw(self, node: ast.Call, scope_id: str = "") -> bool:
         """True only for a PRNG draw that is provably not a secret -- by name, by consumer, or by path.
@@ -26690,36 +26847,34 @@ class TaintTracker:
                 continue
 
             if cwe == "CWE-338":
-                c338_lineno = sink.location.line_start
-                if c338_lineno not in self._C338_BLESSED_LINES_SHIELD:
-                    fn_lower = sink.location.file.replace("\\", "/").lower()
-                    if fn_lower not in ("m.py", "<string>", "unknown.py"):
-                        call_sym = (sink.symbol or "").lower()
+                provider_fact, security_fact = self._c338_classify_prng_semantics(sink, record.node)
+                if provider_fact in ("CSPRNG", "STATISTICAL_SAMPLING"):
+                    if sink in self.sinks:
+                        self.sinks.remove(sink)
+                    continue
 
-                        # A. Non-PRNG model methods (autoregressive text generation in HuggingFace)
-                        if call_sym in ("self.sample", "model.sample", "bart_model.sample"):
-                            if sink in self.sinks:
-                                self.sinks.remove(sink)
-                            continue
+                fn_lower = sink.location.file.replace("\\", "/").lower()
+                if fn_lower not in ("m.py", "<string>", "unknown.py"):
+                    call_sym = (sink.symbol or "").lower()
 
-                        # B. Hyperparameter search (Ray Tune, SigOpt)
-                        if any(seg in call_sym for seg in ("tune.choice", "tune.uniform", "tune.loguniform")):
-                            if sink in self.sinks:
-                                self.sinks.remove(sink)
-                            continue
+                    # A. Non-PRNG model methods (autoregressive text generation in HuggingFace)
+                    if call_sym in ("self.sample", "model.sample", "bart_model.sample"):
+                        if sink in self.sinks:
+                            self.sinks.remove(sink)
+                        continue
 
-                        # C. Dataset / Collator token sampling (masking, shuffling tokens/indices)
-                        if any(p in fn_lower for p in ("language_modeling.py", "data_collator.py")):
-                            if sink in self.sinks:
-                                self.sinks.remove(sink)
-                            continue
+                    # B. Hyperparameter search (Ray Tune, SigOpt)
+                    if any(seg in call_sym for seg in ("tune.choice", "tune.uniform", "tune.loguniform")):
+                        if sink in self.sinks:
+                            self.sinks.remove(sink)
+                        continue
 
-                        # D. Test suites, benchmarks, examples reproducible seeding and sampling
-                        is_test_or_eval = any(seg in fn_lower for seg in ("/tests/", "/examples/", "/benchmark", "test_"))
-                        if is_test_or_eval and "populate" not in fn_lower:
-                            if sink in self.sinks:
-                                self.sinks.remove(sink)
-                            continue
+                    # C. Dataset / Collator token sampling (masking, shuffling tokens/indices)
+                    if any(p in fn_lower for p in ("language_modeling.py", "data_collator.py")):
+                        if sink in self.sinks:
+                            self.sinks.remove(sink)
+                        continue
+
                 self.edges.append(DataFlowEdge(
                     source_id="INSECURE_PRNG",
                     target_id=sink.id,
