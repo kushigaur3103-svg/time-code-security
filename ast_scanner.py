@@ -6132,36 +6132,116 @@ class TaintTracker:
         """`_shadowed_names_in_tree` for the tree registered under *mod_name*."""
         return self._shadowed_names_in_tree(self.modules.get(mod_name) if mod_name else None)
 
-    _C22_BLESSED_LINES_SHIELD = {
-        5, 6, 7, 8, 73, 75, 77, 105, 138, 263, 274, 280, 336, 1279, 2008,
-        3494, 3564, 4301, 5537, 5539, 5565
-    }
+    def _c22_evaluate_path_root_fact(self, expr: ast.AST, scope: str = "", lineno: int = 0, depth: int = 0, extra_params: frozenset = frozenset()) -> str:
+        """Evaluate path expression provenance via 2-factor PathRootFact:
+        Returns FACT_PATH_SAFE (suppress sink), FACT_PATH_TRAVERSAL (keep loud), or UNRESOLVED.
+        """
+        if expr is None:
+            return "FACT_PATH_TRAVERSAL"
+        if depth > 10:
+            return "UNRESOLVED"
 
-    def _is_c22_blessed_target(self, lineno: int, filename: str = "") -> bool:
-        fn = (filename or "").replace("\\", "/").lower()
-        leaf = fn.split("/")[-1]
-        while leaf.endswith(".py"):
-            leaf = leaf[:-3]
-        if leaf in ("m", "<string>", "unknown"):
-            return True
-        if lineno not in self._C22_BLESSED_LINES_SHIELD:
-            return False
-        if leaf in ("bad", "runner", "test_v01_bad", "test_v02_bad",
-                    "test_v03_bad", "test_v05_bad", "test_v06_bad", "test_v06_good"):
-            return True
-        if "modeling_utils" in leaf and lineno in (336, 3494, 3564):
-            return True
-        if "trainer" in leaf and lineno in (2008, 4301):
-            return True
-        if "test_utils" in leaf and lineno in (5537, 5539, 5565):
-            return True
-        if "markuplm" in leaf and lineno in (73, 75, 77, 138):
-            return True
-        if "test_modeling_common" in leaf and lineno == 1279:
-            return True
-        if "mistral" in leaf and lineno in (263, 274, 280):
-            return True
-        return False
+        # A. FACT_PATH_SAFE:
+        # 1. Internal repo anchor (__file__, __package__, etc.)
+        if self._c22_path_is_internal_repo_anchor(expr, scope, lineno):
+            return "FACT_PATH_SAFE"
+
+        # 2. Self-described static literal or constant nonce
+        if self._is_self_described(expr, scope, lineno):
+            return "FACT_PATH_SAFE"
+
+        # 3. Canonicalized / contained / sanitized
+        table = self.assignments_by_scope.get(scope, {}) if hasattr(self, "assignments_by_scope") else {}
+        if hasattr(self, "_c22_sanitized") and self._c22_sanitized(expr, table, lineno):
+            return "FACT_PATH_SAFE"
+
+        # B. FACT_PATH_TRAVERSAL:
+        # 1. Archive member inspection (tarfile TarInfo.name, ZipInfo.filename, member in loop)
+        for sub in ast.walk(expr):
+            if isinstance(sub, ast.Attribute) and sub.attr in ("name", "filename", "path"):
+                val_id = getattr(sub.value, "id", "").lower()
+                if any(k in val_id for k in ("member", "info", "tarinfo", "zipinfo", "entry", "item", "archive")):
+                    return "FACT_PATH_TRAVERSAL"
+            if isinstance(sub, ast.Name):
+                nid = sub.id.lower()
+                if any(w in nid for w in ("request", "req", "flask_request", "web_request", "argv")):
+                    return "FACT_PATH_TRAVERSAL"
+
+        # 2. Unvalidated function parameters
+        param_names = (self._enclosing_param_names(scope) if (scope and hasattr(self, "_enclosing_param_names")) else frozenset()) | frozenset(extra_params or ())
+        
+        # Check if expr directly refers to or is assigned from an unvalidated parameter
+        if isinstance(expr, ast.Name):
+            if expr.id in param_names:
+                return "FACT_PATH_TRAVERSAL"
+            records = _assignment_records(self.assignments_by_scope, expr.id, scope, lineno) if hasattr(self, "assignments_by_scope") else []
+            if records:
+                facts = [self._c22_evaluate_path_root_fact(r.value_node, r.scope_id, r.lineno, depth + 1, extra_params=extra_params) for r in records]
+                if any(f == "FACT_PATH_TRAVERSAL" for f in facts):
+                    return "FACT_PATH_TRAVERSAL"
+                if all(f == "FACT_PATH_SAFE" for f in facts):
+                    return "FACT_PATH_SAFE"
+            else:
+                if expr.id in param_names or any(w in expr.id.lower() for w in ("path", "file", "filename", "dir")):
+                    return "FACT_PATH_TRAVERSAL"
+
+        # Check attributes:
+        if isinstance(expr, ast.Attribute):
+            if isinstance(expr.value, ast.Name) and expr.value.id.lower() in ("args", "params", "request", "config"):
+                return "FACT_PATH_TRAVERSAL"
+            if isinstance(expr.value, ast.Attribute) and expr.value.attr.lower() in ("args", "params", "request", "config"):
+                return "FACT_PATH_TRAVERSAL"
+            if isinstance(expr.value, ast.Name) and expr.value.id in ("self", "cls"):
+                cls_scope = self._get_enclosing_class_scope(scope) if hasattr(self, "_get_enclosing_class_scope") else ""
+                writes = self.class_field_assignments.get((cls_scope, expr.attr), []) if cls_scope and hasattr(self, "class_field_assignments") else []
+                if writes:
+                    facts = [self._c22_evaluate_path_root_fact(r.value_node, r.scope_id, r.lineno, depth + 1, extra_params=extra_params) for r in writes]
+                    if any(f == "FACT_PATH_TRAVERSAL" for f in facts):
+                        return "FACT_PATH_TRAVERSAL"
+                    if all(f == "FACT_PATH_SAFE" for f in facts):
+                        return "FACT_PATH_SAFE"
+                else:
+                    return "FACT_PATH_TRAVERSAL"
+
+        # Check binary operations (joinpath / div / add):
+        if isinstance(expr, ast.BinOp) and isinstance(expr.op, (ast.Div, ast.Add)):
+            left_f = self._c22_evaluate_path_root_fact(expr.left, scope, lineno, depth + 1, extra_params=extra_params)
+            right_f = self._c22_evaluate_path_root_fact(expr.right, scope, lineno, depth + 1, extra_params=extra_params)
+            if left_f == "FACT_PATH_TRAVERSAL" or right_f == "FACT_PATH_TRAVERSAL":
+                return "FACT_PATH_TRAVERSAL"
+            if left_f == "FACT_PATH_SAFE" and right_f == "FACT_PATH_SAFE":
+                return "FACT_PATH_SAFE"
+
+        # Check Call (e.g. os.path.join(...), Path(...)):
+        if isinstance(expr, ast.Call):
+            func_name = getattr(expr.func, "attr", "") or getattr(expr.func, "id", "")
+            if func_name in ("join", "joinpath"):
+                arg_facts = [self._c22_evaluate_path_root_fact(a, scope, lineno, depth + 1, extra_params=extra_params) for a in expr.args]
+                if any(f == "FACT_PATH_TRAVERSAL" for f in arg_facts):
+                    return "FACT_PATH_TRAVERSAL"
+                if all(f == "FACT_PATH_SAFE" for f in arg_facts):
+                    return "FACT_PATH_SAFE"
+            elif func_name in ("getfile", "getsourcefile"):
+                return "FACT_PATH_TRAVERSAL"
+            else:
+                arg_facts = [self._c22_evaluate_path_root_fact(a, scope, lineno, depth + 1, extra_params=extra_params) for a in expr.args]
+                if any(f == "FACT_PATH_TRAVERSAL" for f in arg_facts):
+                    return "FACT_PATH_TRAVERSAL"
+
+        # Check JoinedStr (f-strings):
+        if isinstance(expr, ast.JoinedStr):
+            val_facts = [self._c22_evaluate_path_root_fact(v.value, scope, lineno, depth + 1, extra_params=extra_params) for v in expr.values if isinstance(v, ast.FormattedValue)]
+            if any(f == "FACT_PATH_TRAVERSAL" for f in val_facts):
+                return "FACT_PATH_TRAVERSAL"
+            if val_facts and all(f == "FACT_PATH_SAFE" for f in val_facts):
+                return "FACT_PATH_SAFE"
+
+        if param_names:
+            expr_names = {n.id for n in ast.walk(expr) if isinstance(n, ast.Name)}
+            if expr_names & param_names:
+                return "FACT_PATH_TRAVERSAL"
+
+        return "UNRESOLVED"""
 
     def _c117_evaluate_log_holes_fact(self, node: ast.AST, call_node: ast.Call = None, shadowed: frozenset = None) -> str:
         """Evaluate log message holes via AST-driven Hole Lineage Fact Engine (LogHolesFact).
@@ -7620,7 +7700,8 @@ class TaintTracker:
         return False
 
     def _c22_is_test_suite_or_cached_path(self, expr: ast.AST, scope_id: str, lineno: int, file_path: str = "", node: ast.AST = None) -> bool:
-        if self._is_c22_blessed_target(lineno, file_path):
+        fact = self._c22_evaluate_path_root_fact(expr, scope_id, lineno)
+        if fact != "FACT_PATH_SAFE":
             return False
         if node is not None:
             curr = node
@@ -14362,7 +14443,8 @@ class TaintTracker:
             roots = {n.id for n in ast.walk(arg) if isinstance(n, ast.Name)}
             if roots & guarded:
                 continue
-            if not self._is_c22_blessed_target(node.lineno, filename):
+            fact = self._c22_evaluate_path_root_fact(expr, filename, node.lineno, extra_params=params)
+            if fact != "FACT_PATH_TRAVERSAL":
                 has_web_request = any(child for child in ast.walk(tree) if isinstance(child, ast.Name) and child.id in ("request", "flask_request", "web_request"))
                 if not has_web_request:
                     safe_names = {
@@ -22885,29 +22967,6 @@ class TaintTracker:
                         if flagged:
                             _emit79(node, mod_name, scope_id, "UNESCAPED_TEMPLATE_EXTENSION")
 
-    _C22_BLESSED_KEYS_SHIELD = {
-        ("bad.py", 5), ("test_v01_bad.py", 5), ("test_v02_bad.py", 8),
-        ("test_v03_bad.py", 5), ("test_v05_bad.py", 8),
-        ("test_v06_bad.py", 6), ("test_v06_good.py", 7),
-        ("runner.py", 105),
-        ("src__transformers__modeling_utils.py", 336),
-        ("src__transformers__modeling_utils.py", 3494),
-        ("src__transformers__modeling_utils.py", 3564),
-        ("src__transformers__trainer.py", 2008),
-        ("src__transformers__trainer.py", 4301),
-        ("tests__generation__test_utils.py", 5537),
-        ("tests__generation__test_utils.py", 5539),
-        ("tests__generation__test_utils.py", 5565),
-        ("tests__models__markuplm__test_tokenization_markuplm.py", 138),
-        ("tests__models__markuplm__test_tokenization_markuplm.py", 73),
-        ("tests__models__markuplm__test_tokenization_markuplm.py", 75),
-        ("tests__models__markuplm__test_tokenization_markuplm.py", 77),
-        ("tests__test_modeling_common.py", 1279),
-        ("tests__test_tokenization_mistral_common.py", 263),
-        ("tests__test_tokenization_mistral_common.py", 274),
-        ("tests__test_tokenization_mistral_common.py", 280),
-    }
-
     def _c22_is_static_repo_literal_join(self, expr: ast.AST, scope_id: str = "", lineno: int = 0) -> bool:
         """True when the path derives from os.path.join(...) or Path(...) / ... where:
         - the root argument is anchored to __file__, os.path.dirname(__file__), Path(__file__)
@@ -22915,10 +22974,6 @@ class TaintTracker:
         """
         if expr is None:
             return False
-        for mod, fpath in self.file_paths.items():
-            leaf = fpath.replace("\\", "/").split("/")[-1]
-            if (leaf, lineno) in self._C22_BLESSED_KEYS_SHIELD:
-                return False
         return self._c22_path_is_internal_repo_anchor(expr, scope_id, lineno)
 
     def _c353_is_local_file_integrity(self, node: ast.AST, file_path: str = "") -> bool:
@@ -23877,11 +23932,8 @@ class TaintTracker:
                     if isinstance(mode, str) and any(flag in mode for flag in ("w", "a", "x")):
                         if path_expr is not None and not _is_safe_path(path_expr, scope_id, lineno):
                             fn_lower = self.file_paths.get(mod_name, "").replace("\\", "/").lower()
-                            if self._is_c22_blessed_target(lineno, fn_lower):
+                            if not self._c22_is_test_suite_or_cached_path(path_expr, scope_id, lineno, fn_lower, node=node):
                                 _add_finding(node, mod_name, scope_id, "FILE_WRITE", "PATH_TRAVERSAL", "CWE-22", "CWE-22")
-                            else:
-                                if not self._c22_is_test_suite_or_cached_path(path_expr, scope_id, lineno, fn_lower, node=node):
-                                    _add_finding(node, mod_name, scope_id, "FILE_WRITE", "PATH_TRAVERSAL", "CWE-22", "CWE-22")
 
                 if names & path_delete_sinks:
                     path_expr = next((kw.value for kw in node.keywords if kw.arg in {"path", "pathname"}), None)
@@ -23890,23 +23942,16 @@ class TaintTracker:
                     if path_expr is not None and not _is_safe_path(path_expr, scope_id, lineno) \
                             and not self._c22_cleanup_is_temp_teardown(node, path_expr, scope_id, lineno):
                         fn_lower = self.file_paths.get(mod_name, "").replace("\\", "/").lower()
-                        if self._is_c22_blessed_target(lineno, fn_lower):
+                        if not self._c22_is_test_suite_or_cached_path(path_expr, scope_id, lineno, fn_lower, node=node):
                             _add_finding(node, mod_name, scope_id, "FILE_DELETE", "PATH_TRAVERSAL", "CWE-22", "CWE-22")
-                        else:
-                            if not self._c22_is_test_suite_or_cached_path(path_expr, scope_id, lineno, fn_lower, node=node):
-                                _add_finding(node, mod_name, scope_id, "FILE_DELETE", "PATH_TRAVERSAL", "CWE-22", "CWE-22")
 
                 if isinstance(node.func, ast.Attribute) and node.func.attr == "extractall":
                     archive_kind = _archive_kind(node.func.value, scope_id, lineno, archive_vars)
                     if archive_kind and not _archive_is_safe(node, scope_id, lineno):
-                        fn_lower = self.file_paths.get(mod_name, "").replace("\\", "/").lower()
-                        if not self._is_c22_blessed_target(lineno, fn_lower) and any(seg in fn_lower for seg in ("/tests/", "/examples/", "test_", "convert_")):
-                            pass
-                        else:
-                            _add_finding(
-                                node, mod_name, scope_id, "ZIP_SLIP_EXTRACTION",
-                                "PATH_TRAVERSAL", "CWE-22", "ZIP_SLIP",
-                            )
+                        _add_finding(
+                            node, mod_name, scope_id, "ZIP_SLIP_EXTRACTION",
+                            "PATH_TRAVERSAL", "CWE-22", "ZIP_SLIP",
+                        )
 
                 if "ssl._create_unverified_context" in names:
                     _add_finding(
