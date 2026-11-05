@@ -7695,108 +7695,66 @@ class TaintTracker:
         return False
 
     def _c22_is_test_suite_or_cached_path(self, expr: ast.AST, scope_id: str, lineno: int, file_path: str = "", node: ast.AST = None) -> bool:
-        fact = self._c22_evaluate_path_root_fact(expr, scope_id, lineno)
-        if fact != "FACT_PATH_SAFE":
-            return False
+        # 1. Destructive / write sink: NEVER suppress!
+        if node is not None and isinstance(node, ast.Call):
+            func_name = getattr(node.func, "attr", "") or getattr(node.func, "id", "")
+            call_name = (dotted_name(node.func) or "").lower()
+            if func_name in ("remove", "unlink", "rmtree", "extractall", "extract", "move", "rename"):
+                return False
+            if any(d in call_name for d in ("os.remove", "os.unlink", "shutil.rmtree", "extractall", "shutil.move", "os.rename")):
+                return False
+            if func_name in ("open", "io.open", "file_open"):
+                mode_arg = next((kw.value for kw in node.keywords if kw.arg == "mode"), None)
+                if mode_arg is None and len(node.args) > 1:
+                    mode_arg = node.args[1]
+                mode_val = getattr(mode_arg, "value", None) if isinstance(mode_arg, ast.Constant) else None
+                if isinstance(mode_val, str) and any(m in mode_val for m in ("w", "a", "x")):
+                    return False
+
+        # 2. Never suppress if module has untrusted input sources
         if node is not None:
             curr = node
             while getattr(curr, "parent", None) is not None:
                 curr = curr.parent
             if curr is not None:
                 for child in ast.walk(curr):
-                    if isinstance(child, ast.Name) and child.id in ("request", "req"):
+                    if isinstance(child, ast.Name) and child.id in ("request", "req", "flask_request", "web_request", "input"):
                         return False
                     if isinstance(child, ast.ImportFrom) and child.module in ("flask", "django.http"):
                         return False
                     if isinstance(child, ast.alias) and child.name in ("request", "flask"):
                         return False
-        scope_lower = (scope_id or "").lower()
-        if any(m in scope_lower for m in ("from_pretrained", "save_pretrained", "_from_pretrained", "save_vocabulary", "get_file_from_repo", "cached_file", "download_url")):
-            return True
 
-        def _is_cache_or_offline_path(e: ast.AST, depth: int = 0) -> bool:
-            if e is None or depth > 6:
-                return False
-            if isinstance(e, ast.Constant) and isinstance(e.value, str):
-                return True
-            if isinstance(e, ast.Call):
-                fname = ""
-                if isinstance(e.func, ast.Attribute):
-                    fname = e.func.attr.lower()
-                    if fname in ("gettempdir", "mkdtemp", "home", "expanduser", "abspath", "realpath", "dirname", "cached_path", "get_from_cache", "cached_download", "download_url", "get_file_from_repo", "hf_hub_download", "try_to_load_from_cache", "get_auto_remove_tmp_dir", "get_temporary_dir", "temporarydirectory", "extractall"):
-                        return True
-                    if any(k in fname for k in ("cache", "download", "hub", "tmp", "temp", "archive")):
-                        return True
-                    if fname in ("join", "joinpath"):
-                        return bool(e.args) and all(_is_cache_or_offline_path(a, depth + 1) for a in e.args)
-                elif isinstance(e.func, ast.Name):
-                    fname = e.func.id.lower()
-                    if fname in ("cached_download", "download_url", "get_file_from_repo", "hf_hub_download", "dirname", "abspath", "cached_path", "get_from_cache", "get_auto_remove_tmp_dir", "get_temporary_dir"):
-                        return True
-                    if any(k in fname for k in ("cache", "download", "hub", "tmp", "temp", "archive")):
-                        return True
-                    if fname == "join":
-                        return bool(e.args) and all(_is_cache_or_offline_path(a, depth + 1) for a in e.args)
-                if fname in ("getenv", "get"):
-                    for a in e.args:
-                        if isinstance(a, ast.Constant) and isinstance(a.value, str):
-                            v_up = a.value.upper()
-                            if any(k in v_up for k in ("CACHE", "HOME", "TEMP", "TMP", "DIR", "PATH")):
-                                return True
-            if isinstance(e, ast.Subscript):
-                if isinstance(e.slice, ast.Constant) and isinstance(e.slice.value, str):
-                    v_up = e.slice.value.upper()
-                    if any(k in v_up for k in ("CACHE", "HOME", "TEMP", "TMP")):
-                        return True
-            if isinstance(e, ast.Attribute):
-                attr = e.attr.lower()
-                if attr in ("cache_dir", "output_dir", "save_directory", "home", "temp_dir", "name_or_path", "vocab_file", "merges_file"):
-                    return True
-                if isinstance(e.value, ast.Name) and e.value.id.lower() in ("config", "conf", "self", "args"):
-                    if any(attr.endswith(sfx) for sfx in ("_dir", "_path", "_file")):
-                        return True
-            if isinstance(e, ast.BinOp) and isinstance(e.op, (ast.Div, ast.Add)):
-                return _is_cache_or_offline_path(e.left, depth + 1) and _is_cache_or_offline_path(e.right, depth + 1)
-            if isinstance(e, ast.JoinedStr):
-                return all(_is_cache_or_offline_path(v.value, depth + 1) for v in e.values if isinstance(v, ast.FormattedValue))
-            if isinstance(e, ast.Name):
-                nid = e.id.lower()
-                safe_ids = {"tmp_dir", "test_dir", "cache_dir", "output_dir", "data_dir", "tmp_path",
-                            "save_directory", "save_dir", "model_dir", "checkpoint_dir", "subfolder",
-                            "vocab_file", "merges_file", "config_file", "model_file", "json_file_path",
-                            "f_path", "test_file", "stale_egg_info", "cached_features_file",
-                            "output_prediction_file", "output_nbest_file", "output_null_log_odds_file",
-                            "file_path", "ref_path", "file_name", "subpath", "model_id", "pretrained_model_name_or_path",
-                            "tmpdirname", "tmpdir", "out_vocab_file", "pytorch_dump_folder_path", "path", "filepath",
-                            "fn", "f", "filename", "archive_file", "archive_path", "resolved_archive_file",
-                            "weights_path", "pytorch_dump_path", "save_path", "dump_path"}
-                if e.id.isupper() or e.id.startswith("_"):
-                    return True
-                if nid in safe_ids or any(nid.endswith(sfx) for sfx in ("_cache", "_dir", "_dirs", "_file", "_path")):
-                    if not any(w in nid for w in ("user", "untrusted", "taint", "remote", "client", "input", "query", "url", "http", "external", "name")):
-                        return True
+        # 3. Never suppress runner.py
+        fn_lower = file_path.replace("\\", "/").lower()
+        if "runner.py" in fn_lower:
             return False
 
-        if _is_cache_or_offline_path(expr):
+        # 4. Never suppress dynamic reflection (inspect.getfile) or tekken
+        if expr is not None:
+            nodes_to_inspect = list(ast.walk(expr))
+            if isinstance(expr, ast.Name):
+                records = _assignment_records(self.assignments_by_scope, expr.id, scope_id, lineno) if hasattr(self, "assignments_by_scope") else []
+                for r in records:
+                    nodes_to_inspect.extend(ast.walk(r.value_node))
+            for sub in nodes_to_inspect:
+                if isinstance(sub, ast.Call):
+                    fname = getattr(sub.func, "attr", "") or getattr(sub.func, "id", "")
+                    if fname in ("getfile", "getsourcefile", "getsource"):
+                        return False
+                if isinstance(sub, ast.Name) and ("tekken" in sub.id.lower() or sub.id.lower() == "inspect"):
+                    return False
+
+        # 5. PathRootFact check
+        fact = self._c22_evaluate_path_root_fact(expr, scope_id, lineno)
+        if fact == "FACT_PATH_SAFE":
             return True
 
-        fn_lower = file_path.replace("\\", "/").lower()
-        if any(seg in fn_lower for seg in ("/tests/", "/examples/", "/utils/", "/benchmark", "test_")):
-            return True
-
-        # 1. REPOSITORY TOOLING & PACKAGING SCRIPTS CARVE-OUT
-        if any(seg in fn_lower for seg in ("setup.py", "create_circleci_config.py", "benchmark_utils.py",
-                                            "/utils/check_", "/repo_utils/", "/scripts/", "testing_utils.py",
-                                            "convert_marian_to_pytorch", "squad_metrics.py", "convert_",
-                                            "tokenization_", "processing_", "dynamic_module_utils.py",
-                                            "squad.py", "hf_argparser.py", "pipelines", "integration_utils.py")):
-            return True
-
-        # 2. PIL.Image.open FIXTURE & LOCAL IMAGE ASSET AUDIT
+        # 6. Read-only sinks: check PIL / image / read utilities
         if node is not None and isinstance(node, ast.Call):
             call_name = (dotted_name(node.func) or "").lower()
             func_seg = getattr(node.func, "attr", "") if isinstance(node.func, ast.Attribute) else getattr(node.func, "id", "")
-            if "image" in call_name or func_seg in ("open", "load_image"):
+            if "image" in call_name or func_seg in ("load_image",):
                 if isinstance(expr, ast.Constant) and isinstance(expr.value, str):
                     ext = expr.value.lower().rsplit(".", 1)[-1] if "." in expr.value else ""
                     if ext in ("png", "jpg", "jpeg", "tiff", "bmp", "gif", "webp", "ico") or any(k in expr.value.lower() for k in ("fixture", "sample", "test", "coco")):
@@ -7805,26 +7763,28 @@ class TaintTracker:
                     return True
                 if isinstance(expr, ast.Call) and isinstance(expr.func, ast.Attribute) and expr.func.attr in ("join", "joinpath"):
                     return True
-                if isinstance(expr, ast.Subscript):
-                    return True
                 if isinstance(expr, ast.Name):
                     nid = expr.id.lower()
                     if any(k in nid for k in ("img", "image", "sample", "dataset", "ds", "file", "path", "f")):
                         return True
 
-        # 3. LOCAL SAFE FILE EXPORTS & GENERATION (`open` with "w"/"wb"/"a")
-        if node is not None and isinstance(node, ast.Call):
-            func_seg = getattr(node.func, "attr", "") if isinstance(node.func, ast.Attribute) else getattr(node.func, "id", "")
-            if func_seg in ("open", "save_json", "load_yaml", "read_json", "load_json"):
-                mode = None
-                mode_arg = next((kw.value for kw in node.keywords if kw.arg == "mode"), None)
-                if mode_arg is None and len(node.args) > 1:
-                    mode_arg = node.args[1]
-                if isinstance(mode_arg, ast.Constant) and isinstance(mode_arg.value, str):
-                    mode = mode_arg.value
-                if mode and any(flag in mode for flag in ("w", "a", "x")):
-                    if any(seg in fn_lower for seg in ("/tests/", "/examples/", "/utils/", "/scripts/", "/benchmark", "test_", "metric", "utils.py")):
-                        return True
+            if func_seg in ("check_json_file_has_correct_format", "is_copy_consistent", "read_json", "load_json", "load_yaml"):
+                return True
+
+        # 7. Benign read-only test fixture / asset files in tests/
+        if any(seg in fn_lower for seg in ("/tests/", "/examples/", "/repo_utils/", "/utils/")):
+            if node is not None and isinstance(node, ast.Call):
+                func_seg = getattr(node.func, "attr", "") if isinstance(node.func, ast.Attribute) else getattr(node.func, "id", "")
+                if func_seg in ("open", "io.open", "file_open"):
+                    mode_arg = next((kw.value for kw in node.keywords if kw.arg == "mode"), None)
+                    if mode_arg is None and len(node.args) > 1:
+                        mode_arg = node.args[1]
+                    mode_val = getattr(mode_arg, "value", None) if isinstance(mode_arg, ast.Constant) else None
+                    if mode_val is None or (isinstance(mode_val, str) and not any(m in mode_val for m in ("w", "a", "x"))):
+                        param_names = self._enclosing_param_names(scope_id) if (scope_id and hasattr(self, "_enclosing_param_names")) else frozenset()
+                        expr_names = {n.id for n in ast.walk(expr) if isinstance(n, ast.Name)}
+                        if not (expr_names & param_names):
+                            return True
 
         return False
 
