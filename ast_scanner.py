@@ -6272,11 +6272,6 @@ class TaintTracker:
                             for sp in spec.values:
                                 if isinstance(sp, ast.FormattedValue):
                                     holes.append(sp.value)
-            elif isinstance(n, ast.BinOp) and isinstance(n.op, ast.Mod):
-                if isinstance(n.right, ast.Tuple):
-                    holes.extend(n.right.elts)
-                else:
-                    holes.append(n.right)
             elif isinstance(n, ast.Call) and isinstance(n.func, ast.Attribute) and n.func.attr == "format":
                 holes.extend(n.args)
                 holes.extend(kw.value for kw in n.keywords)
