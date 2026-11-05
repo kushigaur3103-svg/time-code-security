@@ -1,16 +1,17 @@
 fastapi
 uvicorn[standard]
-gunicorn>=21.2.0
-requests
-jinja2
+gunicorn>=22.0.0; sys_platform != 'win32'
+requests>=2.32.3
+urllib3>=2.2.2
+jinja2>=3.1.5
 python-dotenv
 pyyaml>=6.0
 
 passlib[bcrypt]
-bcrypt==3.2.2
-PyJWT
+bcrypt>=4.0.1
+PyJWT>=2.8.0
 
-fpdf
+fpdf2>=2.7.9
 SQLAlchemy
 psycopg2-binary
 google-generativeai

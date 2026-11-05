@@ -3,13 +3,40 @@ requires = ["setuptools>=77"]
 build-backend = "setuptools.build_meta"
 
 [project]
-name = "timecodesecurity"
-version = "1.0.0"
-description = "High-precision AST-based SAST scanner for Python"
+name = "time-code-security"
+version = "2.0.0"
+description = "Deterministic AST Security Scanner, Proof Graph Engine & Automated Remediation Framework"
 readme = "README.md"
 requires-python = ">=3.10"
 license = "MIT"
-dependencies = []
+dependencies = [
+    "fastapi",
+    "uvicorn[standard]",
+    "gunicorn>=22.0.0; sys_platform != 'win32'",
+    "requests>=2.32.3",
+    "urllib3>=2.2.2",
+    "jinja2>=3.1.5",
+    "python-dotenv",
+    "pyyaml>=6.0",
+    "passlib[bcrypt]",
+    "bcrypt>=4.0.1",
+    "PyJWT>=2.8.0",
+    "fpdf2>=2.7.9",
+    "SQLAlchemy",
+    "psycopg2-binary",
+    "google-generativeai",
+    "openai",
+    "cohere",
+    "celery",
+    "redis",
+    "pydantic",
+    "packaging",
+    "python-multipart",
+    "psutil>=5.9",
+    "tree-sitter>=0.23",
+    "tree-sitter-python>=0.21",
+    "tomli; python_version < '3.11'",
+]
 
 [project.scripts]
 timecode = "cli:main"
