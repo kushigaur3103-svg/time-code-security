@@ -2412,21 +2412,28 @@ CWE3A_STATE_MUTATING_FUNCTIONS = {
 GITHUB_OFFICIAL_ACTIONS: Tuple[str, ...] = (
     "actions/checkout",
     "actions/setup-python",
+    "actions/setup-node",
+    "actions/setup-go",
+    "actions/setup-java",
     "actions/upload-artifact",
     "actions/download-artifact",
     "actions/cache",
+    "actions/github-script",
+    "actions/stale",
+    "actions/labeler",
 )
 
 DOCKER_OFFICIAL_ACTIONS: Tuple[str, ...] = (
     "docker/setup-buildx-action",
     "docker/login-action",
     "docker/build-push-action",
+    "docker/metadata-action",
 )
 
 
 class TrustedPublisherPolicy:
     """Structured policy separating publisher identity from reference immutability (CWE-1357 / CWE-353)."""
-    POLICY_VERSION: str = "1.0.0"
+    POLICY_VERSION: str = "2.0.0"
     GITHUB_OFFICIAL: Tuple[str, ...] = GITHUB_OFFICIAL_ACTIONS
     DOCKER_OFFICIAL: Tuple[str, ...] = DOCKER_OFFICIAL_ACTIONS
     TRUSTED_PUBLISHERS: frozenset[str] = frozenset(GITHUB_OFFICIAL_ACTIONS + DOCKER_OFFICIAL_ACTIONS)
@@ -2437,11 +2444,17 @@ class TrustedPublisherPolicy:
     MUTABLE_BRANCHES: frozenset[str] = frozenset({
         "main", "master", "dev", "develop", "trunk", "latest", "nightly", "beta", "alpha"
     })
+    LOCAL_ACTION_PREFIXES: Tuple[str, ...] = ("./", "../", "/", ".github/", "docker://")
 
     @classmethod
     def is_trusted_publisher(cls, action_name: str) -> bool:
         norm = str(action_name).strip().rstrip("/").lower()
         return norm in cls._TRUSTED_LOWER
+
+    @classmethod
+    def is_local_action(cls, action_name: str) -> bool:
+        norm = str(action_name).strip().lower()
+        return norm.startswith(cls.LOCAL_ACTION_PREFIXES)
 
     @classmethod
     def is_commit_sha(cls, reference: str) -> bool:
@@ -2462,23 +2475,31 @@ class TrustedPublisherPolicy:
         Returns:
             (classification, severity, category)
             - ('SEALED_IMMUTABLE_PIN', None, None)
+            - ('REPOSITORY_INTERNAL_ACTION', None, None)
             - ('TRUSTED_PUBLISHER_MUTABLE_REF', 'LOW', 'TRUSTED_PUBLISHER_MUTABLE_REF')
+            - ('TRUSTED_PUBLISHER_MUTABLE_BRANCH', 'MEDIUM', 'TRUSTED_PUBLISHER_MUTABLE_BRANCH')
             - ('UNTRUSTED_THIRD_PARTY_MUTABLE_REF', 'HIGH' | 'MEDIUM', 'UNTRUSTED_THIRD_PARTY_MUTABLE_REF')
         """
         ref = str(reference).strip()
         act = str(action_name).strip()
+        act_lower = act.rstrip("/").lower()
 
         if cls.is_commit_sha(ref):
             return ("SEALED_IMMUTABLE_PIN", None, None)
 
-        is_trusted = cls.is_trusted_publisher(act)
+        if cls.is_local_action(act_lower):
+            return ("REPOSITORY_INTERNAL_ACTION", None, None)
+
+        is_trusted = act_lower in cls._TRUSTED_LOWER
         is_semver = cls.is_semver_tag(ref)
         is_branch = cls.is_mutable_branch(ref)
 
-        if is_trusted and is_semver:
-            return ("TRUSTED_PUBLISHER_MUTABLE_REF", "LOW", "TRUSTED_PUBLISHER_MUTABLE_REF")
+        if is_trusted:
+            if is_semver:
+                return ("TRUSTED_PUBLISHER_MUTABLE_REF", "LOW", "TRUSTED_PUBLISHER_MUTABLE_REF")
+            return ("TRUSTED_PUBLISHER_MUTABLE_BRANCH", "MEDIUM", "TRUSTED_PUBLISHER_MUTABLE_BRANCH")
 
-        severity = "HIGH" if is_branch else "MEDIUM"
+        severity = "HIGH" if (is_branch or not is_semver) else "MEDIUM"
         return ("UNTRUSTED_THIRD_PARTY_MUTABLE_REF", severity, "UNTRUSTED_THIRD_PARTY_MUTABLE_REF")
 
 

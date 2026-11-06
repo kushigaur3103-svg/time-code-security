@@ -28,16 +28,24 @@ except ImportError:
     GITHUB_OFFICIAL_ACTIONS = (  # type: ignore[misc]
         "actions/checkout",
         "actions/setup-python",
+        "actions/setup-node",
+        "actions/setup-go",
+        "actions/setup-java",
         "actions/upload-artifact",
         "actions/download-artifact",
         "actions/cache",
+        "actions/github-script",
+        "actions/stale",
+        "actions/labeler",
     )
     DOCKER_OFFICIAL_ACTIONS = (  # type: ignore[misc]
         "docker/setup-buildx-action",
         "docker/login-action",
         "docker/build-push-action",
+        "docker/metadata-action",
     )
     class TrustedPublisherPolicy:  # type: ignore[no-redef]
+        POLICY_VERSION: str = "2.0.0"
         GITHUB_OFFICIAL = GITHUB_OFFICIAL_ACTIONS
         DOCKER_OFFICIAL = DOCKER_OFFICIAL_ACTIONS
         TRUSTED_PUBLISHERS = frozenset(GITHUB_OFFICIAL_ACTIONS + DOCKER_OFFICIAL_ACTIONS)
@@ -45,11 +53,17 @@ except ImportError:
         COMMIT_SHA_RE = re.compile(r"^[0-9a-fA-F]{40}$")
         SEMVER_TAG_RE = re.compile(r"^v?\d+(?:\.\d+)*(?:-[a-zA-Z0-9.]+)?$")
         MUTABLE_BRANCHES = frozenset({"main", "master", "dev", "develop", "trunk", "latest", "nightly", "beta", "alpha"})
+        LOCAL_ACTION_PREFIXES: Tuple[str, ...] = ("./", "../", "/", ".github/", "docker://")
 
         @classmethod
         def is_trusted_publisher(cls, action_name: str) -> bool:
             norm = str(action_name).strip().rstrip("/").lower()
             return norm in cls._TRUSTED_LOWER
+
+        @classmethod
+        def is_local_action(cls, action_name: str) -> bool:
+            norm = str(action_name).strip().lower()
+            return norm.startswith(cls.LOCAL_ACTION_PREFIXES)
 
         @classmethod
         def is_commit_sha(cls, reference: str) -> bool:
@@ -67,14 +81,19 @@ except ImportError:
         def evaluate(cls, action_name: str, reference: str) -> Tuple[str, Optional[str], Optional[str]]:
             ref = str(reference).strip()
             act = str(action_name).strip()
+            act_lower = act.rstrip("/").lower()
             if cls.is_commit_sha(ref):
                 return ("SEALED_IMMUTABLE_PIN", None, None)
-            is_trusted = cls.is_trusted_publisher(act)
+            if cls.is_local_action(act_lower):
+                return ("REPOSITORY_INTERNAL_ACTION", None, None)
+            is_trusted = act_lower in cls._TRUSTED_LOWER
             is_semver = cls.is_semver_tag(ref)
             is_branch = cls.is_mutable_branch(ref)
-            if is_trusted and is_semver:
-                return ("TRUSTED_PUBLISHER_MUTABLE_REF", "LOW", "TRUSTED_PUBLISHER_MUTABLE_REF")
-            severity = "HIGH" if is_branch else "MEDIUM"
+            if is_trusted:
+                if is_semver:
+                    return ("TRUSTED_PUBLISHER_MUTABLE_REF", "LOW", "TRUSTED_PUBLISHER_MUTABLE_REF")
+                return ("TRUSTED_PUBLISHER_MUTABLE_BRANCH", "MEDIUM", "TRUSTED_PUBLISHER_MUTABLE_BRANCH")
+            severity = "HIGH" if (is_branch or not is_semver) else "MEDIUM"
             return ("UNTRUSTED_THIRD_PARTY_MUTABLE_REF", severity, "UNTRUSTED_THIRD_PARTY_MUTABLE_REF")
 
 # ── Dockerfile ────────────────────────────────────────────────────────────
@@ -90,7 +109,7 @@ WORKFLOW_SUFFIXES: Tuple[str, ...] = (".yml", ".yaml")
 USES_RE = re.compile(r"^\s*(?:-\s*)?uses:\s*(?P<value>[^\s#]+)\s*(?:#.*)?$")
 # An immutable reference is a full 40-character commit SHA.
 PINNED_SHA_RE = re.compile(r"^[0-9a-fA-F]{40}$")
-LOCAL_ACTION_PREFIXES: Tuple[str, ...] = ("./", "../", "/", "docker://")
+LOCAL_ACTION_PREFIXES: Tuple[str, ...] = ("./", "../", "/", ".github/", "docker://")
 
 
 def is_dockerfile_path(path: str) -> bool:
@@ -247,7 +266,7 @@ def audit_workflow(file_path: str, source: str) -> List[Dict[str, Any]]:
             continue
 
         classification, severity, category = TrustedPublisherPolicy.evaluate(action_name, reference)
-        if classification == "SEALED_IMMUTABLE_PIN" or severity is None:
+        if classification in ("SEALED_IMMUTABLE_PIN", "REPOSITORY_INTERNAL_ACTION") or severity is None:
             continue
 
         if classification == "TRUSTED_PUBLISHER_MUTABLE_REF":
@@ -255,6 +274,12 @@ def audit_workflow(file_path: str, source: str) -> List[Dict[str, Any]]:
                 f"GitHub Action step is pinned to a mutable semantic version tag from an official"
                 f" trusted publisher: {action_name}@{reference}. Pin to the full 40-character"
                 f" commit SHA for complete build immutability"
+            )
+        elif classification == "TRUSTED_PUBLISHER_MUTABLE_BRANCH":
+            message = (
+                f"GitHub Action step from an official trusted publisher is pinned to a mutable branch"
+                f" instead of an immutable commit SHA: {action_name}@{reference}. Pin to the full"
+                f" 40-character commit SHA to prevent upstream branch updates from silently altering build steps"
             )
         else:
             ref_type = "mutable branch" if severity == "HIGH" else "mutable tag"
