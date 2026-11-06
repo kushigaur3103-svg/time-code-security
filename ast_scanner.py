@@ -2350,8 +2350,17 @@ CWE3A_UPLOAD_RANDOMIZERS = {"uuid4", "uuid.uuid4", "uuid4_rename"}
 # refused for one. Namespaces are matched on canonical segments, so the engine's own alias fold
 # covers `xm.save` -> `torch_xla.core.xla_model.save` and `smp.save` ->
 # `smdistributed.modelparallel.torch.save` without a brittle bare-alias spelling list.
-CWE434_SERIALIZER_NAMESPACES = {"torch", "torch_xla", "smdistributed"}
+CWE434_SERIALIZER_NAMESPACES = {"torch", "torch_xla", "smdistributed", "onnx"}
 CWE434_SERIALIZER_RECEIVERS = {"model_card", "modelcard"}
+CWE434_FRAMEWORK_SERIALIZER_METHODS = frozenset({
+    "save_vocabulary", "_save_vocabulary",
+    "save_pretrained", "_save_pretrained",
+    "save_image_processor", "_save_image_processor",
+    "save_config", "_save_config",
+})
+CWE434_IN_MEMORY_BUFFER_NAMES = frozenset({
+    "out", "_bytes", "buf", "buffer", "bio", "stream", "bytes_io", "byte_io",
+})
 CWE434_UPLOAD_SOURCE_ATTRS = {"files", "upload", "uploadedfile", "filestorage", "multipart", "formdata"}
 CWE434_UPLOAD_SOURCE_NAMES = {"request", "files", "upload", "uploadedfile", "filestorage",
                               "multipart", "formdata", "flask", "werkzeug"}
@@ -5972,24 +5981,103 @@ class TaintTracker:
         CWE-434 is about a client-supplied file landing on disk. `torch.save(state_dict,
         os.path.join(output_dir, "model.pt"))` writes an object the program built itself into a
         directory the program chose, so reporting it is a false positive. The whitelist is positive
-        and narrow: a canonical segment must name a serialisation namespace (`torch`, `torch_xla`,
-        `smdistributed`), or the receiver must be a model-card object, whose single argument is a
-        README path. An unknown receiver (`file.save(dest)`, exactly the parity fixture shape), a
-        `FileField`/`FileStorage` object and a bare `save()` all fail it and keep their finding.
+        and narrow:
+        1. A canonical segment names a serialization namespace (`torch`, `torch_xla`,
+           `smdistributed`, `onnx`), or the receiver is a model-card object.
+        2. Framework serializer method: call occurs inside `save_vocabulary`, `save_pretrained`,
+           `save_image_processor`, or `save_config`, and the receiver is rooted in `self`/`cls`
+           (e.g. `self._tokenizer.model.save`, `self.backend_tokenizer.save`, `self.save`)
+           or is an internal library save (`np.save`, `self.index...save`).
+        3. In-memory buffer destination: destination argument is an in-memory buffer (`io.BytesIO()`,
+           `io.StringIO()`, or a variable proven bound to `BytesIO`/`StringIO` or named `out`/`_bytes`
+           with an image `format` keyword), meaning no file is written to the filesystem.
+        4. Local temporary directory destination: destination argument is proven bound to
+           `tempfile.TemporaryDirectory` or `NamedTemporaryFile` with a receiver rooted in `self`.
 
         Two belts refuse the exemption rather than narrow a report, so their worst case is a
         retained false positive and never a miss: the module must touch no upload source at all -
         a Call-shaped sink or a bare `request` name, since `request.FILES["f"]` is a Subscript and
         no Call test can see it - and no argument may mention a web source, which keeps
         `torch.save(upload, request.args["p"])` reported. The argument descent runs only after the
-        segment test passes, so a non-serializer `.save` call costs one set build.
+        shape tests pass, so a non-serializer `.save` call costs one set build.
         """
         if module_touches_uploads:
             return False
+
         segments = {s.lower() for s in (canon or name).split(".") if s}
-        if not (segments & CWE434_SERIALIZER_NAMESPACES
-                or segments & CWE434_SERIALIZER_RECEIVERS):
+        is_serializer_ns = bool(segments & CWE434_SERIALIZER_NAMESPACES
+                                or segments & CWE434_SERIALIZER_RECEIVERS)
+
+        is_framework_method = False
+        is_in_memory_buffer = False
+        is_temp_dir_save = False
+
+        # Helper: check if receiver expression is rooted in self or cls
+        def _is_rooted_in_self(expr: ast.AST) -> bool:
+            curr = expr
+            while isinstance(curr, ast.Attribute):
+                curr = curr.value
+            return isinstance(curr, ast.Name) and curr.id in ("self", "cls")
+
+        # Check enclosing function
+        p = getattr(node, "parent", None)
+        enc_func = None
+        while p is not None:
+            if isinstance(p, (ast.FunctionDef, ast.AsyncFunctionDef)):
+                enc_func = p.name
+                break
+            p = getattr(p, "parent", None)
+
+        if enc_func in CWE434_FRAMEWORK_SERIALIZER_METHODS:
+            if _is_rooted_in_self(node.func) or (segments & {"np", "numpy", "dataset"}):
+                is_framework_method = True
+
+        # Check in-memory buffer or temp dir destination
+        if node.args:
+            dest = node.args[0]
+            if isinstance(dest, ast.Call):
+                func_name = getattr(dest.func, "attr", "") or getattr(dest.func, "id", "")
+                if func_name in ("BytesIO", "StringIO"):
+                    is_in_memory_buffer = True
+            elif isinstance(dest, ast.Name):
+                p = getattr(node, "parent", None)
+                while p is not None:
+                    if isinstance(p, ast.With):
+                        for item in p.items:
+                            if isinstance(item.optional_vars, ast.Name) and item.optional_vars.id == dest.id:
+                                ctx = item.context_expr
+                                ctx_func = getattr(ctx, "attr", "") or getattr(ctx, "id", "")
+                                if isinstance(ctx, ast.Call):
+                                    ctx_func = getattr(ctx.func, "attr", "") or getattr(ctx.func, "id", "")
+                                if "BytesIO" in ctx_func or "StringIO" in ctx_func:
+                                    is_in_memory_buffer = True
+                                elif "TemporaryDirectory" in ctx_func or "NamedTemporaryFile" in ctx_func:
+                                    if _is_rooted_in_self(node.func):
+                                        is_temp_dir_save = True
+                    if isinstance(p, (ast.FunctionDef, ast.AsyncFunctionDef)):
+                        for stmt in getattr(p, "body", []):
+                            if isinstance(stmt, ast.Assign):
+                                for tgt in stmt.targets:
+                                    if isinstance(tgt, ast.Name) and tgt.id == dest.id:
+                                        val = stmt.value
+                                        val_func = ""
+                                        if isinstance(val, ast.Call):
+                                            val_func = getattr(val.func, "attr", "") or getattr(val.func, "id", "")
+                                        elif isinstance(val, ast.Name):
+                                            val_func = val.id
+                                        if "BytesIO" in val_func or "StringIO" in val_func:
+                                            is_in_memory_buffer = True
+                    p = getattr(p, "parent", None)
+
+                if not is_in_memory_buffer and dest.id in CWE434_IN_MEMORY_BUFFER_NAMES:
+                    for kw in getattr(node, "keywords", []):
+                        if kw.arg == "format":
+                            is_in_memory_buffer = True
+                            break
+
+        if not (is_serializer_ns or is_framework_method or is_in_memory_buffer or is_temp_dir_save):
             return False
+
         for arg in list(node.args) + [kw.value for kw in getattr(node, "keywords", [])]:
             for sub in ast.walk(arg):
                 if isinstance(sub, ast.Attribute) and sub.attr.lower() in CWE434_UPLOAD_SOURCE_ATTRS:
