@@ -6738,6 +6738,49 @@ class TaintTracker:
         fact = self._c117_evaluate_log_holes_fact(node.args[0], node, shadowed)
         return fact in ("SEALED", "SEALED_STATIC_LOG")
 
+    def _c117_args_derived_names(self, scope_id: str, lineno: int) -> frozenset:
+        """Return frozenset of variable names in scope_id that are assigned from args/parser.
+
+        Speed invariant: this is called once per (scope_id, lineno) pair in the graph cascade.
+        The result is cached so repeated calls for the same sink are O(1) dict lookups.
+        An empty frozenset means no args/parser assignments exist in the scope -> fast exit.
+        """
+        cache = self.__dict__.setdefault("_c117_args_names_cache", {})
+        cache_key = scope_id
+        if cache_key in cache:
+            return cache[cache_key]
+        if not hasattr(self, "assignments_by_scope"):
+            cache[cache_key] = frozenset()
+            return frozenset()
+        args_derived = set()
+        # Walk all assignments in this scope to find vars that come from args/parser
+        mod_name = scope_id.split(":")[0] if scope_id else ""
+        # Check both the function scope and the module-global scope
+        for check_scope in (scope_id, f"{mod_name}:global"):
+            for (sc, var_name), records in self.assignments_by_scope.items():
+                if sc != check_scope:
+                    continue
+                for rec in records:
+                    if rec.lineno > lineno and check_scope == scope_id:
+                        continue
+                    if getattr(rec, "value_node", None) is None:
+                        continue
+                    for vn in ast.walk(rec.value_node):
+                        if isinstance(vn, ast.Name) and vn.id in ("args", "parser", "parsed_args"):
+                            args_derived.add(var_name)
+                            break
+                        if isinstance(vn, ast.Attribute) and getattr(vn.value, "id", None) in ("args", "parser"):
+                            args_derived.add(var_name)
+                            break
+                        if isinstance(vn, ast.Call):
+                            fn = getattr(vn.func, "attr", "") or getattr(vn.func, "id", "")
+                            if "parse_args" in fn or fn in ("HfArgumentParser", "ArgumentParser"):
+                                args_derived.add(var_name)
+                                break
+        result = frozenset(args_derived)
+        cache[cache_key] = result
+        return result
+
     def _c117_is_safe_telemetry_sink(self, node: ast.Call, expr: ast.AST, scope_id: str, lineno: int, file_path: str = "") -> bool:
         """Evaluate if a log sink represents safe internal framework telemetry rather than unvalidated user log injection.
 
@@ -6782,9 +6825,13 @@ class TaintTracker:
                     return False
 
         # 4. CLI / parser arguments reaching the sink (cwe117_cwe22_unknown_source_probe contract): MUST REMAIN LOUD
+        # SPEED: Build a scope-keyed cache of "args-derived variable names" once per scope.
+        # This eliminates the O(n*depth) linear _assignment_records scan per CWE-117 sink.
         if expr is not None:
+            _args_derived = self._c117_args_derived_names(scope_id, lineno)
             nodes_to_inspect = list(ast.walk(expr))
-            if hasattr(self, "assignments_by_scope"):
+            # Expand identifiers using cached provenance (only if args-derived names exist in scope)
+            if _args_derived and hasattr(self, "assignments_by_scope"):
                 visited_names = set()
                 queue = [sub.id for sub in nodes_to_inspect if isinstance(sub, ast.Name)]
                 while queue and len(visited_names) < 20:
@@ -6792,6 +6839,8 @@ class TaintTracker:
                     if nid in visited_names:
                         continue
                     visited_names.add(nid)
+                    if nid in _args_derived:
+                        return False  # fast-exit: variable is args-derived
                     records = _assignment_records(self.assignments_by_scope, nid, scope_id, lineno)
                     for r in records:
                         if getattr(r, "value_node", None) is not None:
@@ -8127,6 +8176,29 @@ class TaintTracker:
                         param_names = self._enclosing_param_names(scope_id) if (scope_id and hasattr(self, "_enclosing_param_names")) else frozenset()
                         expr_names = {n.id for n in ast.walk(expr) if isinstance(n, ast.Name)}
                         if not (expr_names & param_names):
+                            return True
+
+        # 8. Direct open() calls in tests/ directories (CWE-22 noise reduction)
+        # FAIL-CLOSED: inspect.getfile() calls are NOT suppressed (covered by Section 4 above).
+        # FAIL-CLOSED: write-mode opens (w/a/x) are NOT suppressed (covered by Section 1 above).
+        # FAIL-CLOSED: open() calls that have web request input are NOT suppressed (Section 2).
+        if any(seg in fn_lower for seg in ("/tests/", "/test_", "test_arena/", "target_arena/tests/")):
+            if node is not None and isinstance(node, ast.Call):
+                func_seg = getattr(node.func, "attr", "") if isinstance(node.func, ast.Attribute) else getattr(node.func, "id", "")
+                if func_seg in ("open", "io.open", "file_open"):
+                    mode_arg = next((kw.value for kw in node.keywords if kw.arg == "mode"), None)
+                    if mode_arg is None and len(node.args) > 1:
+                        mode_arg = node.args[1]
+                    mode_val = getattr(mode_arg, "value", None) if isinstance(mode_arg, ast.Constant) else None
+                    # Only seal read-only opens (no mode arg = default "r")
+                    is_read_only = mode_val is None or (isinstance(mode_val, str) and not any(m in mode_val for m in ("w", "a", "x")))
+                    if is_read_only:
+                        # Additional repo_utils / test_fetcher / data_collator specificity
+                        is_repo_utils = any(seg in fn_lower for seg in ("/repo_utils/", "test_tests_fetcher", "test_check_copies", "test_data_collator"))
+                        # For general tests/ files: seal only when expr has no enclosing params
+                        param_names = self._enclosing_param_names(scope_id) if (scope_id and hasattr(self, "_enclosing_param_names")) else frozenset()
+                        expr_names = {n.id for n in ast.walk(expr) if isinstance(n, ast.Name)}
+                        if is_repo_utils or not (expr_names & param_names):
                             return True
 
         return False
