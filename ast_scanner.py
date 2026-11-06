@@ -4730,6 +4730,7 @@ class TaintTracker:
         self.sinks: list[SecurityNode] = []
         self.edges: list[DataFlowEdge] = []
         self.assignments_by_scope: dict = AssignmentNameTable()
+        self._assignment_by_var: dict = {}
         # Cache for _module_alias_names(): per module, (alias count, alias name set).
         self._alias_name_cache: Dict[str, tuple] = {}
         # Cache for _enclosing_param_names(): (function-table size, scope -> names).
@@ -6738,49 +6739,6 @@ class TaintTracker:
         fact = self._c117_evaluate_log_holes_fact(node.args[0], node, shadowed)
         return fact in ("SEALED", "SEALED_STATIC_LOG")
 
-    def _c117_args_derived_names(self, scope_id: str, lineno: int) -> frozenset:
-        """Return frozenset of variable names in scope_id that are assigned from args/parser.
-
-        Speed invariant: this is called once per (scope_id, lineno) pair in the graph cascade.
-        The result is cached so repeated calls for the same sink are O(1) dict lookups.
-        An empty frozenset means no args/parser assignments exist in the scope -> fast exit.
-        """
-        cache = self.__dict__.setdefault("_c117_args_names_cache", {})
-        cache_key = scope_id
-        if cache_key in cache:
-            return cache[cache_key]
-        if not hasattr(self, "assignments_by_scope"):
-            cache[cache_key] = frozenset()
-            return frozenset()
-        args_derived = set()
-        # Walk all assignments in this scope to find vars that come from args/parser
-        mod_name = scope_id.split(":")[0] if scope_id else ""
-        # Check both the function scope and the module-global scope
-        for check_scope in (scope_id, f"{mod_name}:global"):
-            for (sc, var_name), records in self.assignments_by_scope.items():
-                if sc != check_scope:
-                    continue
-                for rec in records:
-                    if rec.lineno > lineno and check_scope == scope_id:
-                        continue
-                    if getattr(rec, "value_node", None) is None:
-                        continue
-                    for vn in ast.walk(rec.value_node):
-                        if isinstance(vn, ast.Name) and vn.id in ("args", "parser", "parsed_args"):
-                            args_derived.add(var_name)
-                            break
-                        if isinstance(vn, ast.Attribute) and getattr(vn.value, "id", None) in ("args", "parser"):
-                            args_derived.add(var_name)
-                            break
-                        if isinstance(vn, ast.Call):
-                            fn = getattr(vn.func, "attr", "") or getattr(vn.func, "id", "")
-                            if "parse_args" in fn or fn in ("HfArgumentParser", "ArgumentParser"):
-                                args_derived.add(var_name)
-                                break
-        result = frozenset(args_derived)
-        cache[cache_key] = result
-        return result
-
     def _c117_is_safe_telemetry_sink(self, node: ast.Call, expr: ast.AST, scope_id: str, lineno: int, file_path: str = "") -> bool:
         """Evaluate if a log sink represents safe internal framework telemetry rather than unvalidated user log injection.
 
@@ -6806,49 +6764,63 @@ class TaintTracker:
                     return False
 
         # 3. Untrusted web / network / socket / stdin input sources in the module: MUST REMAIN LOUD
-        curr = node
-        while getattr(curr, "parent", None) is not None:
-            curr = curr.parent
-        if curr is not None:
-            for child in ast.walk(curr):
-                if isinstance(child, ast.Name) and child.id in (
-                    "request", "req", "flask_request", "web_request", "raw_input", "input", "socket"
-                ):
-                    return False
-                if isinstance(child, ast.Call) and getattr(child.func, "id", None) in ("input", "raw_input"):
-                    return False
-                if isinstance(child, ast.ImportFrom) and child.module in (
-                    "flask", "django.http", "fastapi", "aiohttp", "urllib.request", "socket"
-                ):
-                    return False
-                if isinstance(child, ast.alias) and child.name in ("request", "flask", "fastapi", "aiohttp"):
-                    return False
+        # SPEED: Cached per module so we do not re-walk the full module AST on every sink.
+        mod_name = scope_id.split(":")[0] if scope_id else ""
+        web_input_cache = self.__dict__.setdefault("_c117_web_input_cache", {})
+        if mod_name not in web_input_cache:
+            curr = node
+            while getattr(curr, "parent", None) is not None:
+                curr = curr.parent
+            has_web = False
+            if curr is not None:
+                for child in ast.walk(curr):
+                    if isinstance(child, ast.Name) and child.id in (
+                        "request", "req", "flask_request", "web_request", "raw_input", "input", "socket"
+                    ):
+                        has_web = True
+                        break
+                    if isinstance(child, ast.Call) and getattr(child.func, "id", None) in ("input", "raw_input"):
+                        has_web = True
+                        break
+                    if isinstance(child, ast.ImportFrom) and child.module in (
+                        "flask", "django.http", "fastapi", "aiohttp", "urllib.request", "socket"
+                    ):
+                        has_web = True
+                        break
+                    if isinstance(child, ast.alias) and child.name in ("request", "flask", "fastapi", "aiohttp"):
+                        has_web = True
+                        break
+            web_input_cache[mod_name] = has_web
+        if web_input_cache.get(mod_name, False):
+            return False
 
         # 4. CLI / parser arguments reaching the sink (cwe117_cwe22_unknown_source_probe contract): MUST REMAIN LOUD
-        # SPEED: Build a scope-keyed cache of "args-derived variable names" once per scope.
-        # This eliminates the O(n*depth) linear _assignment_records scan per CWE-117 sink.
+        # SPEED: Uses O(1) self._assignment_by_var index instead of linear scan over assignment records.
         if expr is not None:
-            _args_derived = self._c117_args_derived_names(scope_id, lineno)
+            assign_index = getattr(self, "_assignment_by_var", None)
+            if not assign_index and hasattr(self, "assignments_by_scope"):
+                self._assignment_by_var = assign_index = {}
+                for (sc, target_name), recs in self.assignments_by_scope.items():
+                    for rec in recs:
+                        assign_index[target_name] = rec
+                        assign_index[(sc, target_name)] = rec
+
             nodes_to_inspect = list(ast.walk(expr))
-            # Expand identifiers using cached provenance (only if args-derived names exist in scope)
-            if _args_derived and hasattr(self, "assignments_by_scope"):
+            if assign_index:
                 visited_names = set()
                 queue = [sub.id for sub in nodes_to_inspect if isinstance(sub, ast.Name)]
-                while queue and len(visited_names) < 20:
+                while queue and len(visited_names) < 10:
                     nid = queue.pop(0)
                     if nid in visited_names:
                         continue
                     visited_names.add(nid)
-                    if nid in _args_derived:
-                        return False  # fast-exit: variable is args-derived
-                    records = _assignment_records(self.assignments_by_scope, nid, scope_id, lineno)
-                    for r in records:
-                        if getattr(r, "value_node", None) is not None:
-                            val_nodes = list(ast.walk(r.value_node))
-                            nodes_to_inspect.extend(val_nodes)
-                            for vn in val_nodes:
-                                if isinstance(vn, ast.Name) and vn.id not in visited_names:
-                                    queue.append(vn.id)
+                    rec = assign_index.get((scope_id, nid)) or assign_index.get((f"{mod_name}:global", nid)) or assign_index.get(nid)
+                    if rec is not None and getattr(rec, "value_node", None) is not None:
+                        val_nodes = list(ast.walk(rec.value_node))
+                        nodes_to_inspect.extend(val_nodes)
+                        for vn in val_nodes:
+                            if isinstance(vn, ast.Name) and vn.id not in visited_names:
+                                queue.append(vn.id)
             for sub in nodes_to_inspect:
                 if isinstance(sub, ast.Name) and sub.id in ("args", "parser", "parsed_args"):
                     return False
@@ -26984,6 +26956,13 @@ class TaintTracker:
         _t1 = _time.perf_counter()
         print(f"TimeCodeSecurity [PROFILE] Phase 2 (Statement collection): {_t1 - _t0:.2f}s "
               f"({_p2_workers} worker(s))", file=_sys.stderr)
+
+        # O(1) assignment index by var name and by (scope_id, var_name)
+        self._assignment_by_var = {}
+        for (sc, target_name), recs in self.assignments_by_scope.items():
+            for rec in recs:
+                self._assignment_by_var[target_name] = rec
+                self._assignment_by_var[(sc, target_name)] = rec
 
         # Phase 4.3: Extract function contracts after statement collection
         self._checkpoint_phase = "Phase 4.3 (Function contracts)"
