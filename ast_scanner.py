@@ -2406,6 +2406,82 @@ CWE3A_STATE_MUTATING_FUNCTIONS = {
     "subprocess.Popen",
 }
 
+# ══════════════════════════════════════════════════════════════════════════
+# CWE-1357: Trusted Publisher Policy for GitHub Actions (also CWE-353)
+# ══════════════════════════════════════════════════════════════════════════
+GITHUB_OFFICIAL_ACTIONS: Tuple[str, ...] = (
+    "actions/checkout",
+    "actions/setup-python",
+    "actions/upload-artifact",
+    "actions/download-artifact",
+    "actions/cache",
+)
+
+DOCKER_OFFICIAL_ACTIONS: Tuple[str, ...] = (
+    "docker/setup-buildx-action",
+    "docker/login-action",
+    "docker/build-push-action",
+)
+
+
+class TrustedPublisherPolicy:
+    """Structured policy separating publisher identity from reference immutability (CWE-1357 / CWE-353)."""
+    POLICY_VERSION: str = "1.0.0"
+    GITHUB_OFFICIAL: Tuple[str, ...] = GITHUB_OFFICIAL_ACTIONS
+    DOCKER_OFFICIAL: Tuple[str, ...] = DOCKER_OFFICIAL_ACTIONS
+    TRUSTED_PUBLISHERS: frozenset[str] = frozenset(GITHUB_OFFICIAL_ACTIONS + DOCKER_OFFICIAL_ACTIONS)
+    _TRUSTED_LOWER: frozenset[str] = frozenset(a.lower() for a in GITHUB_OFFICIAL_ACTIONS + DOCKER_OFFICIAL_ACTIONS)
+
+    COMMIT_SHA_RE: re.Pattern[str] = re.compile(r"^[0-9a-fA-F]{40}$")
+    SEMVER_TAG_RE: re.Pattern[str] = re.compile(r"^v?\d+(?:\.\d+)*(?:-[a-zA-Z0-9.]+)?$")
+    MUTABLE_BRANCHES: frozenset[str] = frozenset({
+        "main", "master", "dev", "develop", "trunk", "latest", "nightly", "beta", "alpha"
+    })
+
+    @classmethod
+    def is_trusted_publisher(cls, action_name: str) -> bool:
+        norm = str(action_name).strip().rstrip("/").lower()
+        return norm in cls._TRUSTED_LOWER
+
+    @classmethod
+    def is_commit_sha(cls, reference: str) -> bool:
+        return bool(cls.COMMIT_SHA_RE.match(str(reference).strip()))
+
+    @classmethod
+    def is_semver_tag(cls, reference: str) -> bool:
+        return bool(cls.SEMVER_TAG_RE.match(str(reference).strip()))
+
+    @classmethod
+    def is_mutable_branch(cls, reference: str) -> bool:
+        return str(reference).strip().lower() in cls.MUTABLE_BRANCHES
+
+    @classmethod
+    def evaluate(cls, action_name: str, reference: str) -> Tuple[str, Optional[str], Optional[str]]:
+        """Evaluate action step pinning against publisher-aware trust policy.
+
+        Returns:
+            (classification, severity, category)
+            - ('SEALED_IMMUTABLE_PIN', None, None)
+            - ('TRUSTED_PUBLISHER_MUTABLE_REF', 'LOW', 'TRUSTED_PUBLISHER_MUTABLE_REF')
+            - ('UNTRUSTED_THIRD_PARTY_MUTABLE_REF', 'HIGH' | 'MEDIUM', 'UNTRUSTED_THIRD_PARTY_MUTABLE_REF')
+        """
+        ref = str(reference).strip()
+        act = str(action_name).strip()
+
+        if cls.is_commit_sha(ref):
+            return ("SEALED_IMMUTABLE_PIN", None, None)
+
+        is_trusted = cls.is_trusted_publisher(act)
+        is_semver = cls.is_semver_tag(ref)
+        is_branch = cls.is_mutable_branch(ref)
+
+        if is_trusted and is_semver:
+            return ("TRUSTED_PUBLISHER_MUTABLE_REF", "LOW", "TRUSTED_PUBLISHER_MUTABLE_REF")
+
+        severity = "HIGH" if is_branch else "MEDIUM"
+        return ("UNTRUSTED_THIRD_PARTY_MUTABLE_REF", severity, "UNTRUSTED_THIRD_PARTY_MUTABLE_REF")
+
+
 
 def _receiver_is_request(expr: ast.AST) -> bool:
     """True for `request`, `self.request`, or any dotted chain ending in `request`."""

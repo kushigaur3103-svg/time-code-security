@@ -18,6 +18,65 @@ from __future__ import annotations
 import re
 from typing import Any, Dict, List, Optional, Sequence, Tuple
 
+try:
+    from ast_scanner import (
+        GITHUB_OFFICIAL_ACTIONS,
+        DOCKER_OFFICIAL_ACTIONS,
+        TrustedPublisherPolicy,
+    )
+except ImportError:
+    GITHUB_OFFICIAL_ACTIONS = (  # type: ignore[misc]
+        "actions/checkout",
+        "actions/setup-python",
+        "actions/upload-artifact",
+        "actions/download-artifact",
+        "actions/cache",
+    )
+    DOCKER_OFFICIAL_ACTIONS = (  # type: ignore[misc]
+        "docker/setup-buildx-action",
+        "docker/login-action",
+        "docker/build-push-action",
+    )
+    class TrustedPublisherPolicy:  # type: ignore[no-redef]
+        GITHUB_OFFICIAL = GITHUB_OFFICIAL_ACTIONS
+        DOCKER_OFFICIAL = DOCKER_OFFICIAL_ACTIONS
+        TRUSTED_PUBLISHERS = frozenset(GITHUB_OFFICIAL_ACTIONS + DOCKER_OFFICIAL_ACTIONS)
+        _TRUSTED_LOWER = frozenset(a.lower() for a in GITHUB_OFFICIAL_ACTIONS + DOCKER_OFFICIAL_ACTIONS)
+        COMMIT_SHA_RE = re.compile(r"^[0-9a-fA-F]{40}$")
+        SEMVER_TAG_RE = re.compile(r"^v?\d+(?:\.\d+)*(?:-[a-zA-Z0-9.]+)?$")
+        MUTABLE_BRANCHES = frozenset({"main", "master", "dev", "develop", "trunk", "latest", "nightly", "beta", "alpha"})
+
+        @classmethod
+        def is_trusted_publisher(cls, action_name: str) -> bool:
+            norm = str(action_name).strip().rstrip("/").lower()
+            return norm in cls._TRUSTED_LOWER
+
+        @classmethod
+        def is_commit_sha(cls, reference: str) -> bool:
+            return bool(cls.COMMIT_SHA_RE.match(str(reference).strip()))
+
+        @classmethod
+        def is_semver_tag(cls, reference: str) -> bool:
+            return bool(cls.SEMVER_TAG_RE.match(str(reference).strip()))
+
+        @classmethod
+        def is_mutable_branch(cls, reference: str) -> bool:
+            return str(reference).strip().lower() in cls.MUTABLE_BRANCHES
+
+        @classmethod
+        def evaluate(cls, action_name: str, reference: str) -> Tuple[str, Optional[str], Optional[str]]:
+            ref = str(reference).strip()
+            act = str(action_name).strip()
+            if cls.is_commit_sha(ref):
+                return ("SEALED_IMMUTABLE_PIN", None, None)
+            is_trusted = cls.is_trusted_publisher(act)
+            is_semver = cls.is_semver_tag(ref)
+            is_branch = cls.is_mutable_branch(ref)
+            if is_trusted and is_semver:
+                return ("TRUSTED_PUBLISHER_MUTABLE_REF", "LOW", "TRUSTED_PUBLISHER_MUTABLE_REF")
+            severity = "HIGH" if is_branch else "MEDIUM"
+            return ("UNTRUSTED_THIRD_PARTY_MUTABLE_REF", severity, "UNTRUSTED_THIRD_PARTY_MUTABLE_REF")
+
 # ── Dockerfile ────────────────────────────────────────────────────────────
 RUN_INSTRUCTIONS = frozenset({"CMD", "ENTRYPOINT"})
 # Values that keep the process running with full privileges.
@@ -186,14 +245,26 @@ def audit_workflow(file_path: str, source: str) -> List[Dict[str, Any]]:
             continue
         if not _is_remote_action(action_name):
             continue
-        if PINNED_SHA_RE.match(reference):
+
+        classification, severity, category = TrustedPublisherPolicy.evaluate(action_name, reference)
+        if classification == "SEALED_IMMUTABLE_PIN" or severity is None:
             continue
 
-        message = (
-            f"GitHub Action step is pinned to a mutable tag instead of an immutable"
-            f" commit SHA: {action_name}@{reference}. Pin to the full 40-character"
-            f" commit SHA so an upstream tag move cannot silently change the code that runs"
-        )
+        if classification == "TRUSTED_PUBLISHER_MUTABLE_REF":
+            message = (
+                f"GitHub Action step is pinned to a mutable semantic version tag from an official"
+                f" trusted publisher: {action_name}@{reference}. Pin to the full 40-character"
+                f" commit SHA for complete build immutability"
+            )
+        else:
+            ref_type = "mutable branch" if severity == "HIGH" else "mutable tag"
+            message = (
+                f"GitHub Action step uses an untrusted third-party component pinned to a"
+                f" {ref_type} instead of an immutable commit SHA: {action_name}@{reference}."
+                f" Pin to the full 40-character commit SHA so an upstream tag move or compromise"
+                f" cannot silently change the code that runs"
+            )
+
         # One record per vulnerable line. CWE-1357 is the primary id (the pipeline runs code
         # it does not control). CWE-353 is the same defect seen from the integrity side, so it
         # rides inside the alert text and in `related_cwes` instead of a second row that doubles
@@ -204,8 +275,8 @@ def audit_workflow(file_path: str, source: str) -> List[Dict[str, Any]]:
             "file": file_path,
             "line": lineno,
             "cwe": "CWE-1357",
-            "severity": "MEDIUM",
-            "category": "RELIANCE_ON_UNTRUSTED_COMPONENT",
+            "severity": severity,
+            "category": category,
             "message": (
                 f"CWE-1357: {message}"
                 " (missing immutable commit reference — also CWE-353)"
