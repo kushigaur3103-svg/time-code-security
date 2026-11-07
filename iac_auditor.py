@@ -102,6 +102,65 @@ RUN_INSTRUCTIONS = frozenset({"CMD", "ENTRYPOINT"})
 ROOT_USER_VALUES = frozenset({"root", "0", "root:root", "0:0"})
 CONTINUATION = "\\"
 
+PRODUCTION_DEPLOY_SEGMENTS = frozenset({
+    "deploy",
+    "deployment",
+    "deployments",
+    "production",
+    "prod",
+    "k8s",
+    "kubernetes",
+    "helm",
+    "release",
+    "releases",
+})
+
+NON_PRODUCTION_DOCKER_SEGMENTS = frozenset({
+    "docker",
+    "examples",
+    "example",
+    "tests",
+    "test",
+    "testing",
+    "ci",
+    "scripts",
+    "fixtures",
+    "fixture",
+    "samples",
+    "sample",
+    "demos",
+    "demo",
+    "target_arena",
+    "scratch",
+})
+
+PRIVILEGED_INSTRUCTION_RE = re.compile(
+    r"(?:\b--privileged\b|\bsudo\b|\bsetfacl\b|\bchmod\s+(?:-[a-zA-Z]+\s+)?(?:[0-7]*777|a\+[rwxXst]+)\b)",
+    re.IGNORECASE,
+)
+
+
+def _is_non_production_dockerfile(file_path: str) -> bool:
+    normalized = str(file_path).replace("\\", "/").lower()
+    parts = set(normalized.strip("/").split("/"))
+    if parts & PRODUCTION_DEPLOY_SEGMENTS:
+        return False
+    return bool(parts & NON_PRODUCTION_DOCKER_SEGMENTS)
+
+
+def _has_explicit_privileged_instructions(
+    source: str,
+    instructions: Optional[Sequence[Tuple[int, str, str]]] = None,
+) -> bool:
+    if instructions is None:
+        instructions = _parse_dockerfile_instructions(source)
+    for _line, keyword, arguments in instructions:
+        if keyword == "USER":
+            val = arguments.split()[0].lower() if arguments.split() else ""
+            if val in ROOT_USER_VALUES:
+                return True
+    return bool(PRIVILEGED_INSTRUCTION_RE.search(source))
+
 # ── GitHub Actions ────────────────────────────────────────────────────────
 WORKFLOW_DIR_PARTS = frozenset({".github"})
 WORKFLOW_SUBDIR = "workflows"
@@ -194,12 +253,22 @@ def _declares_non_root_user(instructions: Sequence[Tuple[int, str, str]]) -> boo
     return True
 
 
-def audit_dockerfile(file_path: str, source: str) -> List[Dict[str, Any]]:
+def audit_dockerfile(file_path: str, source: str, audit_all: bool = False) -> List[Dict[str, Any]]:
     """Emit CWE-250 / CWE-269 findings for a Dockerfile that runs as root."""
     instructions = _parse_dockerfile_instructions(source)
     if not instructions:
         return []
     if _declares_non_root_user(instructions):
+        return []
+
+    # If the file path indicates testing, examples, or local CI infrastructure,
+    # suppress generic missing non-root USER warnings unless audit_all is set
+    # or the Dockerfile has explicit privileged execution vulnerabilities.
+    if (
+        _is_non_production_dockerfile(file_path)
+        and not audit_all
+        and not _has_explicit_privileged_instructions(source, instructions)
+    ):
         return []
 
     cmd_lines = [line for line, kw, _ in instructions if kw == "CMD"]
@@ -250,7 +319,7 @@ def _is_remote_action(action_name: str) -> bool:
     return not action_name.startswith(LOCAL_ACTION_PREFIXES)
 
 
-def audit_workflow(file_path: str, source: str) -> List[Dict[str, Any]]:
+def audit_workflow(file_path: str, source: str, audit_all: bool = False) -> List[Dict[str, Any]]:
     """Emit one CWE-1357 finding per action step pinned to a mutable reference."""
     findings: List[Dict[str, Any]] = []
 
@@ -270,6 +339,8 @@ def audit_workflow(file_path: str, source: str) -> List[Dict[str, Any]]:
             continue
 
         if classification == "TRUSTED_PUBLISHER_MUTABLE_REF":
+            if not audit_all:
+                continue
             message = (
                 f"GitHub Action step is pinned to a mutable semantic version tag from an official"
                 f" trusted publisher: {action_name}@{reference}. Pin to the full 40-character"
@@ -312,18 +383,18 @@ def audit_workflow(file_path: str, source: str) -> List[Dict[str, Any]]:
     return findings
 
 
-def audit_iac_file(file_path: str, source: str) -> List[Dict[str, Any]]:
+def audit_iac_file(file_path: str, source: str, audit_all: bool = False) -> List[Dict[str, Any]]:
     """Dispatch a single IaC document to the appropriate auditor."""
     if is_dockerfile_path(file_path):
-        return audit_dockerfile(file_path, source)
+        return audit_dockerfile(file_path, source, audit_all=audit_all)
     if is_workflow_path(file_path):
-        return audit_workflow(file_path, source)
+        return audit_workflow(file_path, source, audit_all=audit_all)
     return []
 
 
-def audit_iac_files(files: Dict[str, str]) -> List[Dict[str, Any]]:
+def audit_iac_files(files: Dict[str, str], audit_all: bool = False) -> List[Dict[str, Any]]:
     """Audit a mapping of ``{file_path: source}`` IaC documents deterministically."""
     findings: List[Dict[str, Any]] = []
     for file_path in sorted(files):
-        findings.extend(audit_iac_file(file_path, files[file_path]))
+        findings.extend(audit_iac_file(file_path, files[file_path], audit_all=audit_all))
     return sorted(findings, key=lambda item: (item["file"], item["line"], item["cwe"]))

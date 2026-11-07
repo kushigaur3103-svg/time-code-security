@@ -1451,7 +1451,12 @@ def _scan(args):
             # because "with 8 worker(s)" is not what `treesitter` is doing (it runs single-process).
             _progress(f"parsing {len(files)} python file(s) with {workers} worker(s)"
                       + ("" if _parser_mode == DEFAULT_PARSER_MODE else f", parser={_parser_mode}"))
-            tracker = TaintTracker(files=files, max_workers=workers, parser_mode=_parser_mode)
+            tracker = TaintTracker(
+                files=files,
+                max_workers=workers,
+                parser_mode=_parser_mode,
+                audit_all=getattr(args, "audit_all", False),
+            )
             _PARTIAL["tracker"] = tracker
             _clock.mark("Parse+Init")
             for fpath, reason in sorted(tracker.skipped_files.items()):
@@ -1508,7 +1513,11 @@ def _scan(args):
         parse_governor.setdefault("execution_mode", getattr(tracker, "execution_mode", "not_started"))
         parse_governor.setdefault("parallel_fallback_reason",
                                   getattr(tracker, "parallel_fallback_reason", None))
-        findings = _merge_findings(ast_findings, audit_templates(templates), audit_iac_files(iac))
+        findings = _merge_findings(
+            ast_findings,
+            audit_templates(templates),
+            audit_iac_files(iac, audit_all=getattr(args, "audit_all", False)),
+        )
         findings = consolidate_findings(findings)
         # Template/IaC auditors report a structural match and no data-flow provenance, which
         # is exactly MEDIUM; AST findings arrive with their own label.
@@ -1919,6 +1928,10 @@ def main(argv=None):
              "tolerant tree-sitter CST reader for every file, single-process, CPython still catches "
              "what it declines; 'ast' = native ast.parse and the block-level sweep, tree-sitter "
              "never invoked",
+    )
+    scan_parser.add_argument(
+        "--audit-all", action="store_true", default=False,
+        help="Emit speculative POTENTIAL findings and non-actionable IaC notes",
     )
     compare_parser = commands.add_parser("compare", help="Compare TimeCodeSecurity findings with Semgrep or Bandit")
     compare_parser.add_argument("path", type=Path, help="Python file or directory to compare")
