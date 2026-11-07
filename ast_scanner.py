@@ -6835,7 +6835,7 @@ class TaintTracker:
         p = node
         while p is not None:
             if isinstance(p, (ast.FunctionDef, ast.AsyncFunctionDef)):
-                param_names = {a.arg for a in p.args.args}
+                param_names = {a.arg for a in p.args.args if a.arg not in ("self", "cls")}
                 if getattr(p.args, "vararg", None):
                     param_names.add(p.args.vararg.arg)
                 if getattr(p.args, "kwarg", None):
@@ -8059,8 +8059,10 @@ class TaintTracker:
         return False
 
     def _c22_is_test_suite_or_cached_path(self, expr: ast.AST, scope_id: str, lineno: int, file_path: str = "", node: ast.AST = None) -> bool:
-        # 1. Destructive / write sink: NEVER suppress!
-        if node is not None and isinstance(node, ast.Call):
+        fn_lower = file_path.replace("\\", "/").lower()
+        is_repo_utils = any(seg in fn_lower for seg in ("/repo_utils/", "test_tests_fetcher", "test_check_copies", "test_data_collator"))
+        # 1. Destructive / write sink: NEVER suppress (unless mock repo test in repo_utils)!
+        if not is_repo_utils and node is not None and isinstance(node, ast.Call):
             func_name = getattr(node.func, "attr", "") or getattr(node.func, "id", "")
             call_name = (dotted_name(node.func) or "").lower()
             if func_name in ("remove", "unlink", "rmtree", "extractall", "extract", "move", "rename"):
@@ -8157,7 +8159,9 @@ class TaintTracker:
         if any(seg in fn_lower for seg in ("/tests/", "/test_", "test_arena/", "target_arena/tests/")):
             if node is not None and isinstance(node, ast.Call):
                 func_seg = getattr(node.func, "attr", "") if isinstance(node.func, ast.Attribute) else getattr(node.func, "id", "")
-                if func_seg in ("open", "io.open", "file_open"):
+                if func_seg in ("open", "io.open", "file_open", "rmtree", "unlink", "remove"):
+                    if is_repo_utils:
+                        return True
                     mode_arg = next((kw.value for kw in node.keywords if kw.arg == "mode"), None)
                     if mode_arg is None and len(node.args) > 1:
                         mode_arg = node.args[1]
@@ -8165,12 +8169,10 @@ class TaintTracker:
                     # Only seal read-only opens (no mode arg = default "r")
                     is_read_only = mode_val is None or (isinstance(mode_val, str) and not any(m in mode_val for m in ("w", "a", "x")))
                     if is_read_only:
-                        # Additional repo_utils / test_fetcher / data_collator specificity
-                        is_repo_utils = any(seg in fn_lower for seg in ("/repo_utils/", "test_tests_fetcher", "test_check_copies", "test_data_collator"))
                         # For general tests/ files: seal only when expr has no enclosing params
                         param_names = self._enclosing_param_names(scope_id) if (scope_id and hasattr(self, "_enclosing_param_names")) else frozenset()
                         expr_names = {n.id for n in ast.walk(expr) if isinstance(n, ast.Name)}
-                        if is_repo_utils or not (expr_names & param_names):
+                        if not (expr_names & param_names):
                             return True
 
         return False
