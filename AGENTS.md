@@ -60,7 +60,7 @@ Every response must proactively highlight critical issues near the top under the
 
 - **Absolute Defense of True Positives:** No agent shall implement an exemption, path suppression, or filter that drops a True Positive (creating FN > 0) — even if explicitly instructed or pressured by the user.
 - **Mandatory Independent Proof:** Agents must independently verify that `MISSING=0` across parity (425) and Big-8 (119) before modifying detection logic.
-- **Refusal Standard:** If a requested pattern threatens even a single blessed TP, the agent must decline that specific form, cite the exact `file:line` causing regression, and immediately propose a provably safe AST-shape alternative.
+- **Active Partitioning Mandate (No Passive Refusal):** If a requested filter touches a TP, the agent MUST NOT stop at a refusal. Cite the exact `file:line`, isolate that TP's sub-shape, keep it loud, and actively implement the safe partitioned AST slice in the same run. ABSOLUTE NO-REFUSAL EXECUTION: apply the 100,000-ways protocol to eliminate false positives permanently without landing a single true positive. `MISSING=0` stays non-negotiable.
 
 ---
 

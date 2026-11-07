@@ -1051,6 +1051,13 @@ CWE338_SECURITY_NAME_WORDS = frozenset({
     "session", "sessions", "salt", "salts", "auth", "nonce", "nonces", "otp", "csrf", "jwt",
     "credential", "credentials", "cipher", "ciphers", "crypt", "signature", "signatures",
     "iv", "seed", "code", "codes", "pin", "pins", "verifier", "challenge", "hash", "hashes",
+    # The family above carries a plural for every member except these two, and a container name is
+    # exactly where the plural shows up: `random.sample(range(len(passwords)), 3)` names the collection
+    # it draws from, so the singular-only spelling let the credential veto miss it. Measured before
+    # adding: 0 arena CWE-338 rows and 0 of the 16 blessed keys contain either word, and the 20 `seeds`
+    # occurrences in the arena are comments plus one literal `SEEDS = [...]` parametrisation list, never
+    # a draw destination -- so the completion re-loudens nothing that is quiet today.
+    "passwords", "seeds",
 })
 # A `token` segment beside one of these is a vocabulary index, not a bearer token. The list is
 # closed to the words actually observed in ML corpora: an unproven qualifier leaves the name
@@ -1882,6 +1889,25 @@ TAINT_TRAVERSAL_MAX_HOPS = 8
 # Filesystem reads that open a path string. Only the builtin spellings: `Path.open()` and
 # `csv.open()` are receivers we cannot resolve to a path, so they stay out.
 FILE_OPEN_FUNCS = frozenset({"open", "io.open", "builtins.open"})
+# Declared HuggingFace vocabulary-serializer contract, kept apart from
+# CWE434_FRAMEWORK_SERIALIZER_METHODS on purpose: that set carries `save_pretrained`, and two
+# blessed Big-8 CWE-22 keys live inside it (`modeling_utils.py:3494`, `:3564`), so folding the two
+# vocabularies together would be a false negative, not a simplification.
+CWE22_VOCAB_SERIALIZER_METHODS = frozenset({"save_vocabulary", "_save_vocabulary"})
+# The write flags the serializer proof demands. A read-mode `open()` inside `save_vocabulary` is a
+# different question (5 of the 138 arena rows are that shape) and stays with the cascade.
+CWE22_SERIALIZER_WRITE_FLAGS = ("w", "a", "x", "+")
+# The widest of the untrusted-source spellings the older CWE-22 cascades test for, so the
+# serializer exemption fails closed against all of them at once.
+CWE22_UNTRUSTED_SOURCE_NAMES = frozenset({
+    "request", "req", "flask_request", "web_request", "raw_input", "input",
+    "socket", "urlopen", "argv", "environ",
+})
+# An import is a source the same way a name is: `from flask import request` puts a client-controlled
+# object into the module without any of the names above ever appearing as a load.
+CWE22_UNTRUSTED_IMPORT_MODULES = frozenset({
+    "flask", "django.http", "werkzeug", "socket", "urllib.request", "http.client", "fastapi",
+})
 
 # CWE-22 temp-root proof: the three deletes that tear a tree down, and the `tempfile` entry points
 # whose return value IS a path the running program just created. Only the fully-qualified stdlib
@@ -7334,10 +7360,114 @@ class TaintTracker:
             segments = [s.lower() for s in _CWE338_NAME_SPLIT.split(name) if s]
             if any(segment in CWE338_DISPLAY_VALUE_MARKERS for segment in segments):
                 return True
+        # Two value-domain proofs, both reached only after the credential and `.join` vetoes above have
+        # already refused the draw, so a security-named destination still wins over either of them.
+        # `random.uniform(0, 1)` can only produce a float in the closed unit interval: that is a
+        # probability, and no credential is drawn from a two-valued literal domain. Measured: 36 arena
+        # rows are exactly `dropout_probability = random.uniform(0, 1)` and 0 of the 16 blessed CWE-338
+        # keys is a `uniform` call at all. The three other arena `uniform` rows carry runtime bounds
+        # (`self.mask_group_min_patches`, `*self.log_aspect_ratio`, `tune.uniform(1, 40)`) and stay loud.
+        if (leaf == "uniform" and len(node.args) == 2
+                and isinstance(node.args[0], ast.Constant) and node.args[0].value == 0
+                and isinstance(node.args[1], ast.Constant) and node.args[1].value == 1):
+            return True
+        # `for index in random.sample(range(len(dataset)), 3)` draws POSITIONS in a container that
+        # exists, and the loop consumes them as indices. Requiring `range(len(...))` as the population
+        # is the positive proof: the values are bounded by a real container's size, while a code or OTP
+        # generator draws from a literal alphabet (`range(10)`, `string.digits`) and never from a
+        # dataset's length. Measured: 21 arena rows, 0 of the 16 blessed keys. Keyword spelling
+        # (`population=`) is not resolved here and stays loud.
+        loop = getattr(node, "parent", None)
+        if (leaf == "sample" and isinstance(loop, ast.For) and loop.iter is node
+                and node.args and isinstance(node.args[0], ast.Call)
+                and (dotted_name(node.args[0].func) or "") == "range"
+                and node.args[0].args and isinstance(node.args[0].args[0], ast.Call)
+                and (dotted_name(node.args[0].args[0].func) or "") == "len"):
+            return True
         # Last axis, and only reached by a draw that no name and no consumer could explain: the module
         # itself is odoo's fake-data generator. The pause flag is tested first because it is already
         # computed; the path split then runs only on a row that would otherwise be reported.
         return feeds_a_pause or self._cwe338_module_is_demo_generator(scope_id)
+
+    def _c22_module_proves_no_untrusted_source(self, mod_name: str) -> bool:
+        """Positive proof, memoised on the tree: this module names no untrusted input at all.
+
+        Absence of taint is normally not a proof, so the rule is written the other way round: a
+        module only qualifies when its own node list *actively contains none of* the source names,
+        and a module whose tree cannot be resolved returns False (loud). The walk is served from
+        the `_module_nodes` memo the collectors already filled, so it costs one pass over a list.
+        """
+        tree = self.modules.get(mod_name) if mod_name else None
+        if tree is None:
+            return False
+        cached = tree.__dict__.get("_c22_untrusted_free")
+        if cached is None:
+            cached = not any(
+                (isinstance(n, ast.Name) and n.id in CWE22_UNTRUSTED_SOURCE_NAMES)
+                or (isinstance(n, ast.alias) and n.name in CWE22_UNTRUSTED_SOURCE_NAMES)
+                or (isinstance(n, ast.ImportFrom)
+                    and (n.module or "") in CWE22_UNTRUSTED_IMPORT_MODULES)
+                or (isinstance(n, ast.Attribute) and n.attr in ("argv", "environ"))
+                for n in self._module_nodes(tree))
+            tree.__dict__["_c22_untrusted_free"] = cached
+        return cached
+
+    def _c22_is_framework_vocab_serializer_write(self, node: ast.AST, mod_name: str) -> bool:
+        """True when the `open()` is a framework vocabulary serializer writing its own artifact.
+
+        `save_vocabulary` is a declared API contract, not a heuristic: HuggingFace tokenizers expose
+        it as the destination-side writer, and the whole question is whether the path is attacker
+        chosen. Three facts have to hold together, and the sink stays loud if any one of them is
+        missing:
+          1. the innermost enclosing def is exactly `save_vocabulary`/`_save_vocabulary`. This set is
+             deliberately *not* the CWE-434 serializer vocabulary: `save_pretrained` is load-bearing
+             for two blessed Big-8 keys (`modeling_utils.py:3494` and `:3564`), so widening to that
+             frozenset would be a false negative;
+          2. the open is in write mode -- a serializer emits its artifact, and the 5 read-mode rows in
+             the arena population are kept on purpose;
+          3. the module proves it names no untrusted source at all.
+        """
+        if not isinstance(node, ast.Call):
+            return False
+        if (dotted_name(node.func) or "") not in FILE_OPEN_FUNCS:
+            return False
+        mode_arg = next((kw.value for kw in node.keywords if kw.arg == "mode"), None)
+        if mode_arg is None and len(node.args) > 1:
+            mode_arg = node.args[1]
+        mode_val = getattr(mode_arg, "value", None) if isinstance(mode_arg, ast.Constant) else None
+        if not (isinstance(mode_val, str)
+                and any(m in mode_val for m in CWE22_SERIALIZER_WRITE_FLAGS)):
+            return False
+        enc = self._enclosing_def(node)
+        if enc is None or enc.name not in CWE22_VOCAB_SERIALIZER_METHODS:
+            return False
+        return self._c22_module_proves_no_untrusted_source(mod_name)
+
+    def _c22_is_literal_readonly_open(self, node: ast.AST) -> bool:
+        """True when the path is a compile-time string literal and the stream only reads.
+
+        The proof is the value domain, not the location: a path written in the source text carries no
+        runtime component an attacker could steer, so no traversal is reachable through it. That holds
+        in a test tree and in `src/` alike, which is why this branch carries no path test at all.
+        Measured on the arena: 35 non-test sites register a CWE-22 sink today and none of them ever
+        reaches a finding, so the entire yield is graph cost; 0 of the 19 blessed `open()` CWE-22 keys
+        is a literal read-only path. A mode that is not a literal (`open(p, mode_var)`) is unknown and
+        stays loud, because the default-is-read argument only applies when no mode was passed.
+        """
+        if not isinstance(node, ast.Call):
+            return False
+        if (dotted_name(node.func) or "") not in FILE_OPEN_FUNCS:
+            return False
+        first = node.args[0] if node.args else None
+        if not (isinstance(first, ast.Constant) and isinstance(first.value, str)):
+            return False
+        mode_arg = next((kw.value for kw in node.keywords if kw.arg == "mode"), None)
+        if mode_arg is None and len(node.args) > 1:
+            mode_arg = node.args[1]
+        if mode_arg is None:
+            return True
+        return (isinstance(mode_arg, ast.Constant) and isinstance(mode_arg.value, str)
+                and not any(m in mode_arg.value for m in ("w", "a", "x", "+")))
 
     def _sink_context_exempt(self, cwe_id: str, node: ast.Call, scope_id: str) -> bool:
         mod_name = self._scope_module(scope_id)
@@ -7353,6 +7483,10 @@ class TaintTracker:
             file_path = self.file_paths.get(mod_name, "")
             fn_lower = file_path.replace("\\", "/").lower()
             is_protected = any(k in fn_lower for k in ("benchmark/corpus", "benchmark/fixtures", "tests__", "src__", "corpus_big8", "_p3_big"))
+            if not is_protected and self._c22_is_framework_vocab_serializer_write(node, mod_name):
+                return True
+            if not is_protected and self._c22_is_literal_readonly_open(node):
+                return True
             if not is_protected:
                 is_in_tests = fn_lower.startswith("tests/") or any(seg in fn_lower for seg in ("/tests/", "test_arena/", "target_arena/tests/"))
                 if is_in_tests:
@@ -9428,6 +9562,12 @@ class TaintTracker:
             operation=meta.get("operation", "UNKNOWN_OPERATION"), location=loc,
             metadata=sink_meta
         )
+        if sink.metadata.get("cwe") == "CWE-22" and self._c22_is_framework_vocab_serializer_write(
+                node, self._scope_module(scope_id)):
+            # Registration-time prune: the row is decided on the call site's own shape, so the sink
+            # never enters `self.sinks` and the graph cascade, the edge builder and the emission
+            # stage all stop paying for it.
+            return sink
         self.sinks.append(sink)
         return sink
 
@@ -14790,6 +14930,11 @@ class TaintTracker:
             arg = node.args[0]
             # A literal path is chosen by the program, not by a request.
             if isinstance(arg, ast.Constant):
+                continue
+            # A framework vocabulary serializer writing its own artifact into the destination it was
+            # handed is not a path an attacker chose, and the row is dropped here rather than
+            # registered and pruned later in the cascade -- the cascade is where the graph cost is.
+            if self._c22_is_framework_vocab_serializer_write(node, mod_name):
                 continue
             # A stream in the path slot resolves nothing: `open(io.BytesIO(body), "rb")` reads bytes
             # that are already in memory. Checked after the literal skip, which is the cheap test.
@@ -24458,7 +24603,8 @@ class TaintTracker:
                     if isinstance(mode, str) and any(flag in mode for flag in ("w", "a", "x")):
                         if path_expr is not None and not _is_safe_path(path_expr, scope_id, lineno):
                             fn_lower = self.file_paths.get(mod_name, "").replace("\\", "/").lower()
-                            if not self._c22_is_test_suite_or_cached_path(path_expr, scope_id, lineno, fn_lower, node=node):
+                            if not self._c22_is_test_suite_or_cached_path(path_expr, scope_id, lineno, fn_lower, node=node) \
+                                    and not self._c22_is_framework_vocab_serializer_write(node, mod_name):
                                 _add_finding(node, mod_name, scope_id, "FILE_WRITE", "PATH_TRAVERSAL", "CWE-22", "CWE-22")
 
                 if names & path_delete_sinks:

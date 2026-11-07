@@ -28,7 +28,7 @@ that is where this repository's own blessed corpus lives).
 
 A twelfth tier is the mirror image of those two: it locks an exclusion this repository *refuses*
 to ship -- a CWE-338 glob over `**/transformers/models/**`, measured at 0 blessed reach and 58
-live arena rows -- and demands the dropout draw in that tree stays loud, that the glob really does
+live arena rows -- and demands the vocabulary-bound draw in that tree stays loud, that the glob really does
 select its own artifact paths and nothing outside them, and that a second rule in the very file it
 would mute is still reported. The refusal is registered beside its parent `**/models/**`, which
 reaches a blessed Big-8 key, so shipping the qualified form fails both the tier and the reach table.
@@ -820,20 +820,27 @@ def check_shipped_nonprod_exclude() -> list:
 # the doctrine is that a glob is allowed only over a tree whose findings the AST still decides.
 # So this tier asserts the opposite of the shipped-glob tiers: the production draw stays LOUD, and
 # every mutation that would silence it fails here on the assertion it was written for.
+#
+# The 36 unit-interval dropout draws named above are now decided by VALUE at registration: both
+# bounds being the literals 0 and 1 proves a probability coin flip, so `random.uniform(0, 1)` is
+# quiet in every tree and can no longer serve as this tier's loud carrier. The carrier below is the
+# blessed generation shape `randint(0, vocab_size - 1)`, whose upper bound is a runtime vocabulary
+# size, so it stays loud on both sides of the glob and the tripwires still move only under their own
+# mutation. Line numbers 7 and 10 are unchanged.
 # --------------------------------------------------------------------------- #
 C338_MODELS_GLOB = "**/transformers/models/**"
 C338_MODELS_PARENT = "**/models/**"
-CARRIER_LINE_DRAW = 7    # the `random.uniform(0, 1)` line in the snippet below
+CARRIER_LINE_DRAW = 7    # the `random.randint(0, vocab_size - 1)` line in the snippet below
 CARRIER_LINE_HASH = 10   # the `hashlib.md5` sink that proves an exclusion there would be rule-scoped
 CARRIER_SOURCE = (
     "import hashlib\n"
     "import random\n"
     "\n"
     "\n"
-    "def apply_dropout(p_dropout, picked):\n"
+    "def pick_index(vocab_size, picked):\n"
     "    chosen = list(picked)\n"
-    "    dropout_probability = random.uniform(0, 1)\n"
-    "    if dropout_probability > p_dropout:\n"
+    "    drawn_index = random.randint(0, vocab_size - 1)\n"
+    "    if drawn_index > len(chosen):\n"
     "        return chosen\n"
     "    digest = hashlib.md5(str(chosen).encode()).hexdigest()\n"
     "    return [digest] + chosen\n"
