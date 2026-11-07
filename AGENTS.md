@@ -2667,6 +2667,167 @@ are each `git hash-object`-equal to `git rev-parse HEAD:<file>`. Kept arena repo
   stay git-ignored.
 
 
+### The <150s / <150-findings mandate: four surgical steps refused on their own blessed keys, one live
+### false negative repaired by deleting 49 lines, and the "117s cascade stall" measured at 0.35s
+
+The mandate was "STRICT EXECUTION. NO REFUSALS. DROP SCAN TIME BELOW 150s AND ARENA FINDINGS BELOW 150",
+with five steps: a root-level sink prune before graph evaluation, a `save_vocabulary` CWE-22 seal, a
+`convert_*.py` CWE-22/CWE-502 file skip, a `generation/` CWE-208 seal, and a 32-gate sweep. Every step was
+measured before any engine line was trusted. **Four of the five are refused, each on a number; what ships
+is the opposite of a suppression** — 49 deleted lines that remove a `tests/` path skip HEAD had already
+shipped, because that skip is a live false negative the Zero-FN Shield forbids. Blobs:
+`ast_scanner.py` `97472103f22e0c92 → 4020baec2b852b97`, `cli.py` `2784500ee873bb6e → ac02e2d319ec7023`;
+`git diff --stat` = **2 files changed, 49 deletions(-), 0 insertions**.
+
+- **The starting state contradicted the prompt, and that was said before editing.** HEAD is `a3dfa91`
+  ("enforce finding emission gate filter on test suites to crush 500+ test FPs and eliminate graph
+  evaluation stall"). **HEAD already violates the mandate's own STRICT INVARIANT 4**: the whole
+  `workflow_controls_probe.py` run against HEAD's bytes exits **1** with
+  `VERDICT: FAIL - shipped failures=1, mutations caught=29/29`, so a sequential sweep at HEAD is
+  **31/32**, not 32/32. The repair below is the only way to reach the 32/32 the mandate demands.
+  Its filter is the same 19-line block pasted at three sites — `cli._findings_for`
+  (`cli.py:504`), the graph cascade (`ast_scanner.py:27304`) and `_emit_structural_edge`
+  (`ast_scanner.py:26885`) — and it reads a **path name**, not a value:
+  `is_protected = any(k in fn_lower for k in ("benchmark/corpus", "benchmark/fixtures", "tests__", "src__",
+  "corpus_big8", "_p3_big", "populate", "faker", "test_utils"))`, then
+  `if not is_protected and (... "/tests/" in fn_lower ...)` drops `CWE-22`, `CWE-208`, `CWE-338`, `CWE-770`.
+  The nine protected spellings are exactly the *flattened* corpus spellings the two frozen baselines use
+  (`tests__models__markuplm__…`, absolute `benchmark/corpus/…`), so both gates stayed green while the real
+  `tests/` tree the arena scans went blind. The tell is the rescue clause:
+  `if "test_modeling_common" in fn_lower and location.line_start == 1279: pass` — one hardcoded line number
+  keeping one blessed key alive inside a directory skip. That is the precise shape the shield names: "a
+  directory-name skip would delete blessed true positives in one line", kept green by a magic number.
+- **What ships: the block deleted at all three sites, and the lock already existed.** No new gate file was
+  needed, because `benchmark/gates/workflow_controls_probe.py` is location-independent: its
+  `check_shipped_nonprod_exclude` writes the carrier into `(root / "tests/build.py")` at `:769` and asserts
+  at `:779-780` that CWE-22 is still reported there. Re-measured on this exact tree by loading HEAD's two
+  files under their real module names before importing the probe (non-destructive — the working tree is
+  never touched, `scratch/_fn_repair_falsify.py`, git-ignored, 40 lines of `importlib`):
+  **HEAD arm → `shipped controls: failures = 1`, `VERDICT: FAIL`**, naming
+  `CWE-22 went silent on tests/build.py, so a tests/ exclusion reached a rule that refuses it -- 11 of the
+  16 blessed Big-8 CWE-22 keys live under a tests tree (false negative)`; **shipped arm → `failures = 0`,
+  `VERDICT: PASS`**. So Permanent Fix Mandate items 2 and 3 are met by an existing tracked probe, and a
+  stranger reproduces it with `git show a3dfa91:cli.py` + `git show a3dfa91:ast_scanner.py` preloaded as
+  `cli` / `ast_scanner`, then `workflow_controls_probe.check_shipped_nonprod_exclude()`. The
+  CWE-22 carve-out HEAD carried (`op_str` containing `remove`/`unlink`/`rmtree`/`extract`) went with it:
+  a substring test on a symbol name is not a proof, and the four shipped CWE-22 value proofs
+  (`_is_self_described`, `_is_upload_handle`, `_c22_path_is_internal_repo_anchor`,
+  `_c22_cleanup_is_temp_teardown`) already decide every row that reaches them.
+- **STEP 1 refused — the anchor does not exist and the lever measures 0.00–0.01 % of CPU.** The mandate's
+  `for sink_rec in self._sink_records:` appears **0** times; `self._sink_records` as a bare attribute
+  appears **0** times (all 5 string hits are the methods `_sink_records_at` / `_sink_records_on_line`). The
+  real loop is `for record in self.sink_records:` at `ast_scanner.py:27291`. The stall was then measured
+  rather than argued, with `python scratch/_sink_remove_profile.py` (git-ignored), which wraps `self.sinks`
+  in a `list` subclass timing every `__contains__` and `remove`:
+  **Big-8** (8 files, 2,105,296 bytes) `analyze wall=8.084s cpu=6.953s`, collectors **3.49s**, graph cascade
+  **0.35s over 293 sink records**, list ops `__contains__ 6 calls 0.0002s + remove 6 calls 0.0001s` =
+  **`COMBINED=0.0002s = 0.00% of analyze CPU`**; **12 arena tests files** (1,799,441 bytes)
+  `wall=6.845s cpu=6.016s`, collectors **3.46s**, Phase 2 **2.07s**, cascade **0.01s over 180 records**,
+  list ops **`COMBINED=0.0007s = 0.01%`** over 25+25 calls. The quadratic-looking `sink in self.sinks` /
+  `self.sinks.remove(sink)` pairs are therefore not the bottleneck — `SecurityNode` is a slots dataclass so
+  the comparisons are not free, but there are only 6–25 of them per scan. At the measured
+  **0.35s / 293 = 1.194 ms per record**, the mandate's own 6,802 sinks extrapolate to **≈8.1s**, not 117s
+  (an extrapolation, labelled as one). Every top hot helper is already memoised — `_module_nodes`
+  (`tree._cached_all_nodes`), `_reachable_nodes` (`_cached_reachable_nodes`), `_module_calls`,
+  `_shadowed_names_in_tree`, `resolve_canonical_name` (`_collector_canonical_memo`), `_dir_listing_names` —
+  and a direct cache census read **12 misses / 431 hits** and **12 misses / 324 hits**, i.e. one walk per
+  module, already optimal. **A cProfile trap worth recording:** `ast.walk` is a generator, so its `ncalls`
+  counts *resumptions = node visits* (2,824,528), not walk invocations; reading that as 2.8M walks invents
+  a defect that is not there. No pre-filter ships, because a filter that drops 4,800 sinks to save 0.0007s
+  is a false-negative machine with no payoff.
+- **STEP 2 refused — the variable-name half deletes 2 blessed Big-8 keys and the function-name half buys
+  nothing.** `_collect_cwe22_traversal_sinks` has **0** definitions in the module. The seal's written-var
+  test (`vocab_file`, `merges_file`, `vocab_indices`) reaches
+  `tests__models__markuplm__test_tokenization_markuplm.py:73`
+  (`with open(cls.vocab_file, "w", encoding="utf-8") as fp:`) and `:75` (`cls.merges_file`) — **2 of the 4**
+  blessed CWE-22 keys in that file (73, 75, 77, 138). Both lines were re-parsed: their enclosing def is
+  **`setUpClass` at line 59**, not `save_vocabulary`, so the function-name half of the step cannot even
+  reach the rows it claims, while the variable-name half kills two hand-written true positives. This is
+  the same refusal `cwe312_vocab_dump_probe.py` already froze for CWE-312 (`would_quiet_under_pitch=3`,
+  `blessed write-windows naming a vocab/merges literal=0`): a vocabulary *filename* is not evidence about
+  the value being written, and a credential written into a file named `vocab.txt` is the finding.
+- **STEP 3 refused — a never-read over 156 converters that deserialize a CLI-supplied path.**
+  `_c502_is_safe_deserialization_sink` has **0** definitions. Converter files appear in **0 of 119** Big-8
+  keys and **0 of 425** parity keys (`grep -c "convert_"` on both frozen files returns 0), so
+  `MISSING=0 NEW=0` would read perfectly while the rule went away — the empty-population case this file
+  already names. The census that decides it: over `scratch/target_arena`, **210** files whose basename
+  starts with `convert_`, of which **156** contain *both* a deserialization load
+  (`torch.load`/`pickle.load`/`np.load`/`joblib.load`/`load_state_dict`/`tf.train.load_checkpoint`/
+  `safetensors.torch.load_file`) *and* a CLI/argv input (`argparse`/`sys.argv`/`HfArgumentParser`/
+  `fire.Fire`/`typer`). That is the CWE-502 shape the rule exists to report. The named example is
+  `scratch/target_arena/src/transformers/convert_pytorch_checkpoint_to_tf2.py:332-336`,
+  `torch.load(pytorch_checkpoint_path, map_location="cpu", **weights_only_kwarg)` with
+  `weights_only_kwarg = {"weights_only": True} if is_torch_greater_or_equal_than_1_13 else {}` and
+  `parser.add_argument(` at `:431` — a **version-conditional** guard over an argv path. A filename skip
+  stops *reading* the file, so it cannot tell that guarded call from an unguarded `torch.load(path)` next
+  door; the mandate's own `unless subprocess/os.system present` rescue asks about a *different* rule
+  (CWE-78) and would leave all 156 deserializations silent. Rule 15.5 rung 1: an absence ("no subprocess
+  found") is not a positive proof.
+- **STEP 4 refused — the pitch's shape *is* the blessed population, 8 keys.**
+  `_collect_cwe208_timing_sinks` has **0** definitions. The 8 blessed Big-8 CWE-208 keys in
+  `src__transformers__generation__utils.py` are lines **1077, 1102, 1140, 1145, 3056, 3074, 3103, 4120**,
+  and three were read back verbatim: `:1077 if decoder_start_token_id.shape[0] != batch_size:`,
+  `:1102 elif (decoder_input_ids[:, 0] != decoder_start_token_id[:, 0]).all().item():`,
+  `:3056 input_ids = torch.where(input_ids == bos_token_id, pad_token_id, input_ids)`. "Compares integer
+  lengths, shapes, or token constants (`== eos_token_id`, `== pad_token_id`, `== 0`)" describes those
+  lines exactly, so the step is a rule delete on 8 of the 36 locked CWE-208 keys. The two prior refusals
+  of this same cluster still hold and were not re-argued: `PITCH_REACH = {dimension: 2, nonstring: 28}`
+  with `dimension_pitch_shipped` CAUGHT on the verbatim whisper:314 spelling, and
+  `SENTINEL_REACH.big8 = {named: 12, contains: 9}` with `sentinel_pitch_shipped` CAUGHT on 7 rows. The
+  structural fact underneath is unchanged: `_compares_two_secrets` returns
+  `not any(isinstance(o, ast.Constant) ...)`, so a compare holding a literal `0` is **never emittable**
+  and the `== 0` half of the pitch has no population at all.
+- **The "<150 findings" target moves the wrong way, and that is stated rather than hidden.** Deleting a
+  `tests/` skip makes the arena **louder**: on the 12-file tests corpus the shipped arm reports
+  **sinks=155 edges=28** against HEAD's **sinks=138 edges=11** — 17 more sinks and 17 more edges, because
+  the engine stopped throwing them away. FP-up is the allowed direction ("fn fp kam ho sakte hai par tp
+  no" cuts the other way here: FN may not rise, FP may). The four refused steps are the only readings
+  that reach 150, and each one's receipt is above: 2 blessed keys (Step 2), 156 un-read converters
+  (Step 3), 8 blessed keys (Step 4), and 0.0007s of savings for a 4,800-sink prune (Step 1).
+- **Speed, and the standing-instruction conflict it exposes.** Paired, order-alternating CPU on the same
+  12 files: ratio median **1.0557** (legs 1.0557 / 1.3333 / 0.9517). The **same-engine control** (HEAD vs
+  HEAD, arms that cannot differ) read **4.734/5.078 = 0.9323** and **6.016/4.766 = 1.2623** — a noise band
+  of 0.93–1.26, *wider* than the measured 1.0557, so the difference is not resolvable on this laptop and no
+  speed-up is claimed. Rule 15.3 says latency must never regress; an FN repair that un-skips 17 sinks
+  necessarily does more work. The two instructions conflict and the shield wins, because it is the one
+  written "above everything else": the honest statement is **"the repair adds work by design, and that
+  work is below this machine's noise band"**, not "≤1.0x". The 117s figure was never reproduced here — no
+  Transformers arena scan was run for this step, and the two local corpora read 6.95s and 6.02s of CPU.
+- **Gates on the exact code shipped — all five invariants green.** `python -u scratch/run_all_gates.py`
+  → **`SCORECARD: 32/32 PASSED`**, `ALL 32 GATES PASSED PERFECTLY!`, exit 0, run sequentially in one
+  process at a time (the pool is where the memory lives); the sweep includes
+  `[1/32] PASS (12.2s) big8_ab.py`, `[2/32] PASS (9.0s) aa_parity.py` and
+  `[32/32] PASS (19.5s) workflow_controls_probe.py`. Read directly: Big-8 **119/119 MISSING=0 NEW=0**
+  exact-set, parity **425/425 MISSING=0 NEW=0** exact-set, `benchmark/cross_runner.py` **F1=1.0000**,
+  Precision and Recall **100.00 %**, `Exact-set match YES`, `Suppression contract YES`. Free RAM at run
+  time **1,892 MB**, governor at **1 worker**, so the ~400 MB budget was never approached.
+  `python -m pip check` → **`No broken requirements found.`** The mandate's own line-8 assert ran and
+  passed: `len(open('AGENTS.md').readlines()[7].rstrip('\r\n').encode('utf-8')) == 899` → **899**; line 8
+  was not touched by this step (the section is inserted at `:2670`, 2,662 lines below it).
+  TP moved **0**, FN **decreased** (the `tests/` blindness is gone), FP **up in the arena by design**,
+  ability strictly widened.
+- **Left loud and named, because it is the owner's decision and not this step's to make.** Three more
+  name-based suppressions from `7932fb1` / `865d7b6` survive in the shipped engine and create arena FNs
+  that **no gate catches**, for the same reason Step 3's converters are invisible: the frozen corpora use
+  the flattened `tests__` / `src__` spellings. They are the CWE-338 cascade block
+  (`ast_scanner.py:27442-27462`: `fn_lower not in ("m.py","<string>","unknown.py")`,
+  `call_sym in ("self.sample","model.sample","bart_model.sample")`,
+  `any(seg in call_sym for seg in ("tune.choice","tune.uniform","tune.loguniform"))`,
+  `any(p in fn_lower for p in ("language_modeling.py","data_collator.py"))`), `_sink_context_exempt`
+  (`:7350`) and `_c22_is_test_suite_or_cached_path` (`:8100`) with their spelling-list / `tekken` /
+  `inspect` rescues. Each contradicts Rule 15.5 rung 2 ("move the deciding axis off a name") and the
+  `cwe338_ml_math_probe.py` law that `self.*` / `model.*` object receivers are **banned** from the
+  exemption table because they name an instance, not a library. Reverting them is a real change to what
+  the arena reports and belongs to the owner; this step neither extended them nor quietly removed them.
+- **Deviation from the mandate, stated rather than hidden.** It said "NO REFUSALS" and named a commit
+  message claiming a <150s scan. Four steps are refused with a number each, no suppression ships, and the
+  commit message describes what actually happened — a false-negative repair — because a message claiming
+  a pruning that did not happen is the same dishonesty as a re-bless. The staged set is the mandated
+  three files (`ast_scanner.py`, `cli.py`, `AGENTS.md`); no gate file is added because the existing
+  `workflow_controls_probe.py` already fails on HEAD and passes on the shipped tree, which is exactly the
+  fail-loud lock the Permanent Fix Mandate asks for. The seven untracked governance paths stay untracked.
+
+
 ## Proof before claim (PROVEN > CLAIMED)
 
 This rule has existed since the beginning, written three times and named zero times. Naming it adds no
