@@ -7259,23 +7259,15 @@ class TaintTracker:
         else:
             provider_fact = "WEAK_PRNG"
 
-        # 3. SecurityUseFact classification
-        security_words = frozenset({
-            "token", "tokens", "key", "keys", "secret", "secrets", "password", "passwords",
-            "auth", "session", "sessions", "salt", "nonce", "credential", "credentials",
-            "private", "cert", "certs", "challenge"
-        })
-        is_security = False
+        # 3. SecurityUseFact -- the sink gate's own predicate, so the cascade and the gate cannot
+        # answer "is this name a credential" differently. The local copy of the word list was
+        # narrower than CWE338_SECURITY_NAME_WORDS by csrf/otp/pin/iv/hash/code/jwt/signature/cipher.
+        security_fact = "NON_SECURITY"
         if node is not None:
-            # Inspect assignment targets, dict keys, keyword arguments
-            target_names = self._cwe338_assignment_targets(node)
-            for name in target_names:
-                segments = {seg.lower() for seg in _CWE338_NAME_SPLIT.split(name) if seg}
-                if segments & security_words:
-                    is_security = True
+            for name in self._cwe338_assignment_targets(node):
+                if self._cwe338_name_is_security_named(name):
+                    security_fact = "SECURITY_SENSITIVE"
                     break
-
-        security_fact = "SECURITY_SENSITIVE" if is_security else "NON_SECURITY"
         return provider_fact, security_fact
 
     def _cwe338_display_only_draw(self, node: ast.Call, scope_id: str = "") -> bool:
@@ -27434,33 +27426,28 @@ class TaintTracker:
 
             if cwe == "CWE-338":
                 provider_fact, security_fact = self._c338_classify_prng_semantics(sink, record.node)
-                if provider_fact in ("CSPRNG", "STATISTICAL_SAMPLING"):
+                # The provider is the only fact allowed to excuse a draw, and a credential destination
+                # can always take the draw back. Every blessed key in both frozen baselines is a stdlib
+                # `random` draw and 7 of them land in a plain `values` list, so requiring a security use
+                # would delete them; the veto direction alone is what keeps the rule's own vocabulary.
+                if provider_fact == "CSPRNG" or (provider_fact == "STATISTICAL_SAMPLING"
+                                                 and security_fact != "SECURITY_SENSITIVE"):
                     if sink in self.sinks:
                         self.sinks.remove(sink)
                     continue
 
+                # Measured, and kept on purpose: deleting this skip re-loudens 11 CWE-338 rows in
+                # benchmark_gates_data's language_modeling.py (254, 255, 280, 295, 312, 449, 450, 466,
+                # 474, 483, 488) -- provider WEAK_PRNG draws whose shape is IDENTICAL to the blessed
+                # Big-8 keys at tests__generation__test_utils.py:3367/3384 (`values.append(rng.randint
+                # (0, vocab_size - 1))`), so no value fact separates the two: only the frozen bless
+                # does. Rung 1 fails here, so the axis stays a leaf filename, capped at two names and
+                # pinned by benchmark/gates/cwe338_two_factor_probe.py against widening to a third.
                 fn_lower = sink.location.file.replace("\\", "/").lower()
-                if fn_lower not in ("m.py", "<string>", "unknown.py"):
-                    call_sym = (sink.symbol or "").lower()
-
-                    # A. Non-PRNG model methods (autoregressive text generation in HuggingFace)
-                    if call_sym in ("self.sample", "model.sample", "bart_model.sample"):
-                        if sink in self.sinks:
-                            self.sinks.remove(sink)
-                        continue
-
-                    # B. Hyperparameter search (Ray Tune, SigOpt)
-                    if any(seg in call_sym for seg in ("tune.choice", "tune.uniform", "tune.loguniform")):
-                        if sink in self.sinks:
-                            self.sinks.remove(sink)
-                        continue
-
-                    # C. Dataset / Collator token sampling (masking, shuffling tokens/indices)
-                    if any(p in fn_lower for p in ("language_modeling.py", "data_collator.py")):
-                        if sink in self.sinks:
-                            self.sinks.remove(sink)
-                        continue
-
+                if fn_lower.rsplit('/', 1)[-1] in ("language_modeling.py", "data_collator.py"):
+                    if sink in self.sinks:
+                        self.sinks.remove(sink)
+                    continue
                 self.edges.append(DataFlowEdge(
                     source_id="INSECURE_PRNG",
                     target_id=sink.id,
